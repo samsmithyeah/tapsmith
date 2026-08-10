@@ -155,9 +155,9 @@ export interface SessionDevice {
  * change between runs; project names do not.
  */
 export async function resolveDeviceTarget(
-  request?: { device?: string; platform?: string },
+  request?: { device?: string; project?: RequestedProject },
 ): Promise<{ client: TapsmithGrpcClient; device?: string }> {
-  const { device, platform } = request ?? {};
+  const { device, project } = request ?? {};
   if (device) return { client: await ensureConnected(device), device };
 
   // Discovery has to run before the session can say what it is driving.
@@ -169,22 +169,58 @@ export async function resolveDeviceTarget(
   await refreshUiConnections();
   const targets = sessionTargetDevices();
 
-  if (platform) {
-    const match = targets.filter((t) => t.platform === platform);
-    if (match.length === 1) return { client: await ensureConnected(match[0].serial), device: match[0].serial };
-    if (match.length === 0) {
-      throw new Error(
-        `This session has no ${platform} device. ${describeTargets(targets)}`,
-      );
-    }
-    throw new Error(
-      `This session has ${match.length} ${platform} devices (${match.map((t) => t.serial).join(', ')}). `
-      + 'Pass `device` with the serial this should act on.',
-    );
+  if (project) {
+    const chosen = selectProjectDevice(targets, project);
+    if ('error' in chosen) throw new Error(chosen.error);
+    return forDevice(chosen.serial);
   }
 
-  if (targets.length <= 1) return { client: fallback, device: targets[0]?.serial };
+  // The daemon that *holds* the device, not whichever sits at index 0 — those
+  // are different connections as soon as the session has a daemon it has not
+  // pointed anywhere, and answering from the wrong one is the whole failure
+  // this function exists to prevent.
+  if (targets.length === 1) return forDevice(targets[0].serial);
+  if (targets.length === 0) return { client: fallback };
   throw new Error(ambiguousDeviceMessage(targets)!);
+}
+
+/** A project a caller named, and the platform it runs on (which may be none). */
+export interface RequestedProject {
+  name: string
+  platform?: string
+}
+
+/**
+ * The device a named project runs on, or why it cannot be picked.
+ *
+ * Matched on the project's platform, `undefined` included: a config whose root
+ * declares no platform gives its unqualified projects exactly that, and they
+ * run on the session's unqualified device. Treating that as "no project was
+ * named" fell through to the generic path, whose message told the caller to
+ * pass the `project` they had just passed.
+ *
+ * @internal — exported for unit testing.
+ */
+export function selectProjectDevice(
+  targets: SessionDevice[],
+  project: RequestedProject,
+): { serial: string } | { error: string } {
+  const match = targets.filter((t) => t.platform === project.platform);
+  if (match.length === 1) return { serial: match[0].serial };
+  const called = project.platform ? `${project.platform} ` : '';
+  if (match.length === 0) {
+    return {
+      error: `This session has no ${called}device for project "${project.name}". ${describeTargets(targets)}`,
+    };
+  }
+  return {
+    error: `Project "${project.name}" matches ${match.length} ${called}devices `
+      + `(${match.map((t) => t.serial).join(', ')}). Pass \`device\` with the serial this should act on.`,
+  };
+}
+
+async function forDevice(serial: string): Promise<{ client: TapsmithGrpcClient; device: string }> {
+  return { client: await ensureConnected(serial), device: serial };
 }
 
 /**
@@ -226,9 +262,10 @@ export function sessionTargetDevices(): SessionDevice[] {
     const serial = conn.preparedDevice ?? conn.activeDevice;
     if (serial) bySerial.set(serial, { serial, platform: conn.platform });
   }
-  for (const serial of _sessionDevices ?? []) {
-    if (!bySerial.has(serial)) bySerial.set(serial, { serial });
-  }
+  // Deliberately not `_sessionDevices`: that is what the UI server *says* it
+  // has, and a worker whose daemon we could not reach is not something this
+  // session can act on. Counting it made a one-device session refuse every
+  // device tool as ambiguous, naming a phantom that no argument could select.
   return [...bySerial.values()];
 }
 
@@ -1020,7 +1057,15 @@ function updateRegistry(
   const file = privateRegistryFile();
   if (!file) return;
   try {
-    if (!fs.existsSync(file)) fs.writeFileSync(file, '[]', { encoding: 'utf-8', mode: 0o600 });
+    // `wx`, not exists-then-write: two sessions starting together both see it
+    // missing, and the loser's `[]` lands on top of the winner's entry while
+    // the winner holds the lock — so neither can see the other's daemon and
+    // both start one, which is the pile-up this file exists to prevent.
+    try {
+      fs.writeFileSync(file, '[]', { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
     const { locked } = withFileLockSync(file, () => {
       // Share before transforming as well as after: the row being removed here
       // is often the only one carrying the daemon pid, and the same is true of

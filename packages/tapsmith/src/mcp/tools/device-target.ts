@@ -1,4 +1,4 @@
-import { resolveDeviceTarget } from '../connection.js';
+import { resolveDeviceTarget, type RequestedProject } from '../connection.js';
 import type { TapsmithGrpcClient } from '../../grpc-client.js';
 import type { TestDispatcher } from '../test-dispatcher.js';
 
@@ -28,10 +28,10 @@ export async function deviceClientFor(
   request: DeviceRequest,
   dispatcher?: TestDispatcher,
 ): Promise<TapsmithGrpcClient> {
-  const platform = request.project
-    ? await platformForProject(request.project, dispatcher)
+  const project = request.project
+    ? await resolveProject(request.project, dispatcher)
     : undefined;
-  const { client } = await resolveDeviceTarget({ device: request.device, platform });
+  const { client } = await resolveDeviceTarget({ device: request.device, project });
   // Only for an explicitly named device: it may be one this daemon can see but
   // is not currently pointed at. Everything else resolved to the daemon's own
   // device, and re-pointing a UI worker's daemon at what it already holds is a
@@ -40,21 +40,23 @@ export async function deviceClientFor(
   return client;
 }
 
-async function platformForProject(
-  project: string,
+async function resolveProject(
+  name: string,
   dispatcher?: TestDispatcher,
-): Promise<string | undefined> {
+): Promise<RequestedProject> {
   if (!dispatcher) {
     throw new Error('This session cannot resolve a project name. Pass `device` instead.');
   }
   await dispatcher.ensureInitialized?.();
   const projects = dispatcher.getSessionInfo().projects;
-  const match = projects.find((p) => p.name === project);
+  const match = projects.find((p) => p.name === name);
   if (!match) {
     const known = projects.map((p) => p.name).join(', ');
     throw new Error(
-      `Unknown project "${project}". ${known ? `This config declares: ${known}.` : 'This config declares none.'}`,
+      `Unknown project "${name}". ${known ? `This config declares: ${known}.` : 'This config declares none.'}`,
     );
   }
-  return match.platform;
+  // The platform may legitimately be undefined — a project inherits it from a
+  // root config that declares none — and that is a real answer, not a miss.
+  return { name, platform: match.platform };
 }

@@ -91,6 +91,10 @@ function findExecutableOnPath(name: string): string | undefined {
     if (!dir) continue;
     const candidate = path.join(dir, name);
     try {
+      // A directory passes X_OK too — that bit means "traversable" there — and
+      // handing a directory to `fork` as `execPath` fails every child with a
+      // spawn error instead of the actionable "install tsx".
+      if (!fs.statSync(candidate).isFile()) continue;
       fs.accessSync(candidate, fs.constants.X_OK);
       return candidate;
     } catch {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { deviceClientFor } from '../mcp/tools/device-target.js';
+import { selectProjectDevice } from '../mcp/connection.js';
 import type { TestDispatcher } from '../mcp/test-dispatcher.js';
 
 // A device tool used to fall back to the first pooled daemon whenever no
@@ -34,6 +35,7 @@ function dispatcherWith(projects: Array<{ name: string; platform?: string }>): T
 }
 
 describe('deviceClientFor project routing', () => {
+
   it('rejects a project the config does not declare, and says what it does', async () => {
     const dispatcher = dispatcherWith([
       { name: 'android', platform: 'android' },
@@ -56,5 +58,41 @@ describe('deviceClientFor project routing', () => {
     await expect(deviceClientFor({ project: 'ios' }, undefined)).rejects.toThrow(
       /Pass `device` instead/,
     );
+  });
+});
+
+describe('selectProjectDevice', () => {
+  const android = { serial: 'EMU-1', platform: 'android' };
+  const ios = { serial: 'SIM-1', platform: 'ios' };
+
+  it('picks the device for the project\'s platform', () => {
+    expect(selectProjectDevice([android, ios], { name: 'ios', platform: 'ios' }))
+      .toEqual({ serial: 'SIM-1' });
+  });
+
+  // A root config that declares no platform gives its projects none either.
+  // Reading that as "no project was named" fell through to the generic path,
+  // whose message tells the caller to pass the `project` they just passed.
+  it('treats a project with no platform as matching the session\'s unqualified device', () => {
+    expect(selectProjectDevice([{ serial: 'SIM-1' }], { name: 'smoke' }))
+      .toEqual({ serial: 'SIM-1' });
+  });
+
+  it('does not let a platform-less project match a platform-bound device', () => {
+    const chosen = selectProjectDevice([android, ios], { name: 'smoke' });
+    expect(chosen).toEqual({ error: expect.stringContaining('no device for project "smoke"') });
+  });
+
+  it('names the project, not just the platform, when there is no such device', () => {
+    const chosen = selectProjectDevice([android], { name: 'ios', platform: 'ios' });
+    expect(chosen).toEqual({ error: expect.stringContaining('no ios device for project "ios"') });
+  });
+
+  it('asks for a serial when one platform has several devices', () => {
+    const chosen = selectProjectDevice(
+      [android, { serial: 'EMU-2', platform: 'android' }],
+      { name: 'android', platform: 'android' },
+    );
+    expect(chosen).toEqual({ error: expect.stringContaining('EMU-1, EMU-2') });
   });
 });

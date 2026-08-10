@@ -43,7 +43,7 @@ const ACTIVITY_MONITOR_MAX_READ_BYTES = 1024 * 1024;
 
 export type {
   TestDispatcher, TestRunResult, TestResultEntry, TestFailureDetail,
-  TestTreeEntry, ProjectInfo, SessionInfo,
+  TestTreeEntry, ProjectInfo, SessionInfo, DiscoveryError, DeviceTarget,
 } from './test-dispatcher.js';
 
 export interface McpServerOptions {

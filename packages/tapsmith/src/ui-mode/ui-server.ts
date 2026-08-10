@@ -21,7 +21,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { McpEventEmitter } from '../mcp/events.js';
 import { McpSessionRouter } from '../mcp/http-session-router.js';
 import { matchRequestedFiles } from '../mcp/headless-dispatcher.js';
-import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo } from '../mcp/index.js';
+import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
 import type { TapsmithConfig } from '../config.js';
 import { findDaemonBin } from '../daemon-bin.js';
 import { resolveChildLoader } from '../child-scripts.js';
@@ -707,6 +707,8 @@ export async function startUIServer(
     resolveRequestedFiles: (files) => resolveRequested(files),
     getProjects: () => realProjects().map((p) => p.name),
     getTestTree: () => testTree.map(toTreeEntry),
+    getDiscoveryErrors: (): DiscoveryError[] =>
+      [...discoveryErrors].map(([filePath, error]) => ({ filePath, error })),
     getSessionInfo: (): SessionInfo => {
       const projects = realProjects().map((p) => ({
         name: p.name,
@@ -715,6 +717,15 @@ export async function startUIServer(
         testFiles: p.testFiles,
         dependencies: p.dependencies,
       }));
+      // The same per-platform view the headless dispatcher reports. Workers
+      // spawn on the first run, so before then this is the primary device —
+      // which is genuinely all the session is driving at that point.
+      const live = uiWorkers.filter((w) => !w.retired);
+      const deviceTargets: DeviceTarget[] = live.length > 0
+        ? live.map((w) => ({ platform: resolveWorkerPlatform(ctx, w), device: w.deviceSerial }))
+        : ctx.deviceSerial
+          ? [{ platform: singleWorkerPlatform ?? ctx.config.platform, device: ctx.deviceSerial }]
+          : [];
       return {
         platform: singleWorkerPlatform ?? ctx.config.platform,
         package: ctx.config.package,
@@ -722,6 +733,7 @@ export async function startUIServer(
         timeout: ctx.config.timeout,
         retries: ctx.config.retries,
         projects,
+        deviceTargets,
         configPath: ctx.configPath,
       };
     },
@@ -771,6 +783,9 @@ export async function startUIServer(
 
   // ─── Test Discovery ───
 
+  /** Files that failed to load, so a caller is not left with a silently short list. */
+  const discoveryErrors = new Map<string, string>();
+
   async function discoverFile(filePath: string): Promise<TestTreeNode | null> {
     // Resolved once: a miss re-runs the filesystem and PATH probes, and this
     // is called for every discovered file.
@@ -793,9 +808,11 @@ export async function startUIServer(
         settled = true;
 
         if (response.type === 'discover-result') {
+          discoveryErrors.delete(filePath);
           resolve(response.tree);
         } else {
           console.error(`Discovery error for ${filePath}: ${response.error.message}`);
+          discoveryErrors.set(filePath, response.error.message);
           resolve(null);
         }
       });
