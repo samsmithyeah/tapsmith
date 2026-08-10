@@ -525,7 +525,11 @@ describe('MCP daemon registry', () => {
   });
 
   afterEach(() => {
-    process.env.TMPDIR = originalTmp;
+    // Assigning undefined to an env var stores the string "undefined", which
+    // os.tmpdir() then hands back as a path. On Linux CI, where TMPDIR is
+    // normally unset, that poisoned every test after the first.
+    if (originalTmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = originalTmp;
     fs.rmSync(root, { recursive: true, force: true });
   });
 
