@@ -17,6 +17,7 @@ import {
 import { registerSessionInfoTool } from '../mcp/tools/session-info.js';
 import { loadMcpConfig } from '../mcp/config-loader.js';
 import {
+  ambiguousDeviceMessage,
   daemonSpawnArgs,
   isRepointing,
   noDeviceMessage,
@@ -1015,6 +1016,41 @@ describe('isRepointing', () => {
     // A freshly started daemon, and the fallback when the daemon cannot be
     // reached to ask. Neither is a move.
     expect(isRepointing(undefined, 'EMU-1')).toBe(false);
+  });
+});
+
+// A session holds a daemon per platform now, so "no device argument" stopped
+// having one obvious answer: the old fallback to the first pooled daemon meant
+// a screenshot taken while debugging an iOS failure could come back showing the
+// Android emulator, with nothing in the response saying which device it was.
+describe('ambiguousDeviceMessage', () => {
+  it('says nothing when the session drives one device', () => {
+    expect(ambiguousDeviceMessage([{ serial: 'EMU-1', platform: 'android' }])).toBeNull();
+  });
+
+  it('says nothing when the session has resolved no device yet', () => {
+    expect(ambiguousDeviceMessage([])).toBeNull();
+  });
+
+  it('names each device, with its platform, when there is more than one', () => {
+    const msg = ambiguousDeviceMessage([
+      { serial: 'EMU-1', platform: 'android' },
+      { serial: 'SIM-1', platform: 'ios' },
+    ]);
+    expect(msg).toContain('android: EMU-1');
+    expect(msg).toContain('ios: SIM-1');
+    // `project` first: it is the argument a caller can know without looking a
+    // serial up, and the one `run_tests` already takes.
+    expect(msg).toContain('`project`');
+    expect(msg).toContain('`device`');
+    expect(msg!.indexOf('`project`')).toBeLessThan(msg!.indexOf('`device`'));
+  });
+
+  it('still names devices whose platform is unknown', () => {
+    // UI-mode worker daemons are attached to, not prepared, so nothing here
+    // knows their platform — the serials are the actionable part regardless.
+    const msg = ambiguousDeviceMessage([{ serial: 'SIM-1' }, { serial: 'SIM-2' }]);
+    expect(msg).toContain('SIM-1, SIM-2');
   });
 });
 

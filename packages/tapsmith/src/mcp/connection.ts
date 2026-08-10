@@ -42,7 +42,11 @@ interface DaemonConnection {
   devices: string[]
   daemonProcess?: ChildProcess
   source: DaemonSource
-  /** Platform this daemon was started for. Unknown for daemons we found. */
+  /**
+   * Platform this daemon serves — set when it was started for one, or when a
+   * platform target claimed a platform-less one. Unknown only for a daemon we
+   * found and have not claimed.
+   */
   platform?: string
   /** Set once a platform target claims this daemon, so a second cannot. */
   claimedBy?: string
@@ -53,6 +57,8 @@ interface DaemonConnection {
    */
   preparedDevice?: string
   agentDevice?: string
+  /** The device this daemon reports as Active, refreshed with the device index. */
+  activeDevice?: string
 }
 
 let _connections: DaemonConnection[] = [];
@@ -131,6 +137,137 @@ export async function ensureConnected(device?: string): Promise<TapsmithGrpcClie
   return _connections[0].client;
 }
 
+export interface SessionDevice {
+  serial: string
+  platform?: string
+}
+
+/**
+ * The device a device tool should act on, and the client that serves it.
+ *
+ * `ensureConnected()` with no device falls back to the first pooled daemon —
+ * a fair guess when a session had one, and now merely the first platform to
+ * resolve. Nothing in the response said which device answered, so a screenshot
+ * taken while debugging an iOS failure could be the Android emulator's.
+ *
+ * `platform` is how a caller says which one it means without knowing a serial:
+ * tools take a project name, which maps to a platform, which maps here. Serials
+ * change between runs; project names do not.
+ */
+export async function resolveDeviceTarget(
+  request?: { device?: string; platform?: string },
+): Promise<{ client: TapsmithGrpcClient; device?: string }> {
+  const { device, platform } = request ?? {};
+  if (device) return { client: await ensureConnected(device), device };
+
+  // Discovery has to run before the session can say what it is driving.
+  const fallback = await ensureConnected();
+  // UI mode spawns its worker daemons on the first run, which is usually after
+  // the first tool call — and the pool is cached once discovery has succeeded.
+  // Without this refresh a UI session keeps answering from the primary daemon
+  // and reports no per-platform devices at all, however many workers exist.
+  await refreshUiConnections();
+  const targets = sessionTargetDevices();
+
+  if (platform) {
+    const match = targets.filter((t) => t.platform === platform);
+    if (match.length === 1) return { client: await ensureConnected(match[0].serial), device: match[0].serial };
+    if (match.length === 0) {
+      throw new Error(
+        `This session has no ${platform} device. ${describeTargets(targets)}`,
+      );
+    }
+    throw new Error(
+      `This session has ${match.length} ${platform} devices (${match.map((t) => t.serial).join(', ')}). `
+      + 'Pass `device` with the serial this should act on.',
+    );
+  }
+
+  if (targets.length <= 1) return { client: fallback, device: targets[0]?.serial };
+  throw new Error(ambiguousDeviceMessage(targets)!);
+}
+
+/**
+ * Why this session cannot pick a device on the caller's behalf, or null when it
+ * can. @internal — exported for unit testing.
+ */
+export function ambiguousDeviceMessage(targets: SessionDevice[]): string | null {
+  if (targets.length <= 1) return null;
+  return `This session is driving ${targets.length} devices, so there is no single default. `
+    + `${describeTargets(targets)} `
+    + 'Pass `project` to say which one this should act on, or `device` for a specific serial.';
+}
+
+function describeTargets(targets: SessionDevice[]): string {
+  if (targets.length === 0) return 'It is driving none.';
+  const listed = targets
+    .map((t) => (t.platform ? `${t.platform}: ${t.serial}` : t.serial))
+    .join(', ');
+  return `Devices: ${listed}.`;
+}
+
+/**
+ * The devices this session is actually driving — not every device it can see.
+ *
+ * A daemon lists devices it was never pointed at (two booted simulators, say),
+ * and treating those as targets would demand an argument from a session that
+ * only ever uses one. `preparedDevice` is what we pointed a daemon at, and for
+ * a UI worker it is what the UI server told us that worker holds — the two
+ * transports answer this the same way.
+ *
+ * @internal — exported for unit testing.
+ */
+export function sessionTargetDevices(): SessionDevice[] {
+  const bySerial = new Map<string, SessionDevice>();
+  for (const conn of _connections) {
+    // `devices` is refreshed from each daemon's own list, so the one it reports
+    // Active is what it drives even when nothing here pointed it there — a
+    // daemon found at the default address, say.
+    const serial = conn.preparedDevice ?? conn.activeDevice;
+    if (serial) bySerial.set(serial, { serial, platform: conn.platform });
+  }
+  for (const serial of _sessionDevices ?? []) {
+    if (!bySerial.has(serial)) bySerial.set(serial, { serial });
+  }
+  return [...bySerial.values()];
+}
+
+/**
+ * Pick up UI worker daemons that appeared after discovery ran.
+ *
+ * Cheap enough to do per interactive call: one loopback GET, and connections
+ * we already hold are left alone. Silent on every failure — a session with no
+ * UI server behind it is the normal case, not an error.
+ */
+async function refreshUiConnections(): Promise<void> {
+  const { daemons, deviceSerials } = await discoverFromUiServer();
+  if (daemons.length === 0) return;
+  if (deviceSerials.size > 0) _sessionDevices = deviceSerials;
+
+  const added: DaemonConnection[] = [];
+  for (const daemon of daemons) {
+    if (_connections.some((c) => c.address === daemon.address)) continue;
+    const client = new TapsmithGrpcClient(daemon.address);
+    try {
+      if (!(await client.waitForReady(1_000))) { client.close(); continue; }
+    } catch {
+      client.close();
+      continue;
+    }
+    added.push({
+      client,
+      address: daemon.address,
+      devices: [],
+      source: 'ui',
+      platform: daemon.platform,
+      preparedDevice: daemon.deviceSerial,
+    });
+  }
+  if (added.length === 0) return;
+  _connections.push(...added);
+  await refreshDeviceIndex();
+}
+
 export async function listAllDevices(): Promise<DeviceInfoProto[]> {
   await ensureConnected();
   const perConn = await Promise.all(_connections.map(async (conn) => {
@@ -181,8 +318,9 @@ async function discover(): Promise<void> {
 
   // 3. UI mode discovery — query the UI server for worker daemon ports
   const uiDaemons = await discoverFromUiServer();
-  for (const addr of uiDaemons.addresses) {
-    addCandidate(addr, 'ui');
+  const uiByAddress = new Map(uiDaemons.daemons.map((d) => [d.address, d]));
+  for (const daemon of uiDaemons.daemons) {
+    addCandidate(daemon.address, 'ui');
   }
   if (uiDaemons.deviceSerials.size > 0) {
     _sessionDevices = uiDaemons.deviceSerials;
@@ -249,7 +387,18 @@ async function discover(): Promise<void> {
         // Adopting a peer session's daemon makes us a user of it, so its
         // starter must not kill it while we are still here.
         if (source === 'peer' || source === 'orphan') registerDaemon(address);
-        return { client, address, devices: [], source } as DaemonConnection;
+        // A UI worker's device and platform come from the UI server, not from
+        // anything we did to the daemon — record them so this connection
+        // answers the same questions a headless one does.
+        const ui = uiByAddress.get(address);
+        return {
+          client,
+          address,
+          devices: [],
+          source,
+          platform: ui?.platform,
+          preparedDevice: ui?.deviceSerial,
+        } as DaemonConnection;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log(`Failed to connect to daemon at ${address}: ${msg}`);
@@ -438,11 +587,18 @@ export async function ensurePlatformTarget(config: TapsmithConfig): Promise<Plat
     // other platform could take it and this one would start a second daemon
     // on its next attempt.
     const previousClaim = existing.conn.claimedBy;
+    const previousPlatform = existing.conn.platform;
     existing.conn.claimedBy = key;
+    // A daemon started without `--platform` serves whichever platform claims
+    // it, and from here it serves only that one. Recording it is what lets a
+    // caller name a device by its project: without it the session knows it
+    // drives an emulator but not that the emulator is the android target.
+    existing.conn.platform ??= platform;
     try {
       await prepareTarget(existing.conn, existing.serial, config);
     } catch (err) {
       existing.conn.claimedBy = previousClaim;
+      existing.conn.platform = previousPlatform;
       throw err;
     }
     return { address: existing.conn.address, deviceSerial: existing.serial, platform };
@@ -647,12 +803,18 @@ async function prepareTarget(
   _deviceIndex.set(serial, conn);
 }
 
+interface UiDaemonRecord {
+  address: string
+  deviceSerial?: string
+  platform?: string
+}
+
 interface UiDiscoveryResult {
-  addresses: string[]
+  daemons: UiDaemonRecord[]
   deviceSerials: Set<string>
 }
 
-const EMPTY_DISCOVERY: UiDiscoveryResult = { addresses: [], deviceSerials: new Set() };
+const EMPTY_DISCOVERY: UiDiscoveryResult = { daemons: [], deviceSerials: new Set() };
 
 async function discoverFromUiServer(): Promise<UiDiscoveryResult> {
   let portFileContent: string;
@@ -666,11 +828,17 @@ async function discoverFromUiServer(): Promise<UiDiscoveryResult> {
 
   try {
     const json = await httpGet(`http://127.0.0.1:${uiMcpPort}/api/daemon-ports`, 2_000);
-    const data = JSON.parse(json) as { daemons?: Array<{ address: string; deviceSerial?: string }> };
+    // The UI server publishes each worker's platform alongside its address. We
+    // used to drop it, which left UI-mode sessions unable to answer "which
+    // device does the ios project run on?" — the one question routing a device
+    // tool by project needs. Headless knows it from `conn.platform`; this is
+    // the same fact from the other transport.
+    const data = JSON.parse(json) as { daemons?: UiDaemonRecord[] };
     if (!Array.isArray(data.daemons)) return EMPTY_DISCOVERY;
+    const daemons = data.daemons.filter((d) => Boolean(d.address));
     return {
-      addresses: data.daemons.map(d => d.address).filter(Boolean),
-      deviceSerials: new Set(data.daemons.map(d => d.deviceSerial).filter(Boolean) as string[]),
+      daemons,
+      deviceSerials: new Set(daemons.map(d => d.deviceSerial).filter(Boolean) as string[]),
     };
   } catch (err) {
     log(`UI server discovery failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -995,6 +1163,7 @@ async function refreshDeviceIndex(): Promise<void> {
   }
   for (const { conn, devices } of results) {
     conn.devices = devices.map(d => d.serial);
+    conn.activeDevice = activeDeviceOf(devices);
     for (const d of devices) {
       if (!_deviceIndex.has(d.serial)) {
         _deviceIndex.set(d.serial, conn);

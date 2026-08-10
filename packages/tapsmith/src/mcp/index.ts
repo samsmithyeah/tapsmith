@@ -76,11 +76,14 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
     wrapToolRegistrationsWithEvents(server, events);
   }
 
-  registerSnapshotTool(server);
-  registerScreenshotTool(server);
-  registerTestSelectorTool(server);
-  registerDeviceActionTools(server);
-  registerAppControlTools(server);
+  // The dispatcher is what turns a project name into a platform, and so into a
+  // device. Both transports build the server here, so both route device tools
+  // the same way runs are routed.
+  registerSnapshotTool(server, dispatcher);
+  registerScreenshotTool(server, dispatcher);
+  registerTestSelectorTool(server, dispatcher);
+  registerDeviceActionTools(server, dispatcher);
+  registerAppControlTools(server, dispatcher);
   registerListDevicesTool(server);
   registerRunTestsTool(server, dispatcher);
   registerReadTraceTool(server);
