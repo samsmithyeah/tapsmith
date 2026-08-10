@@ -13,9 +13,12 @@ import { createRequire } from 'node:module';
  * entirely when it is forked without the loader.
  */
 
+function isTypeScript(file: string): boolean {
+  return file.endsWith('.ts') || file.endsWith('.tsx');
+}
+
 /** Whether the forked children need the tsx loader. */
 export function needsTsxLoader(scriptPaths: string[], testFiles: string[]): boolean {
-  const isTypeScript = (f: string): boolean => f.endsWith('.ts') || f.endsWith('.tsx');
   return scriptPaths.some(isTypeScript) || testFiles.some(isTypeScript);
 }
 
@@ -69,8 +72,13 @@ export function resolveChildLoader(
 
   const tsxBin = resolveTsxBin(tapsmithPkgDir);
   if (!tsxBin) {
+    // Name whichever side actually needs it. Blaming the test files when the
+    // suite is entirely JavaScript sends the reader looking in the wrong place.
+    const source = testFiles.some(isTypeScript)
+      ? 'TypeScript test files were found'
+      : "Tapsmith's own child scripts are TypeScript";
     onMissing?.(
-      'TypeScript test files were found but the tsx loader could not be located. '
+      `${source} but the tsx loader could not be located. `
       + 'Test discovery and runs will fail for any file importing a sibling module '
       + '(e.g. `import { test } from "./fixtures.js"`). Install tsx: npm install -D tsx',
     );

@@ -603,6 +603,41 @@ describe('MCP daemon registry', () => {
     expect(readDaemonRegistry()).toEqual(['127.0.0.1:50161']);
   });
 
+  // Only the session that started a daemon knows its pid. Keeping that on one
+  // row meant the daemon outlived every session that could reap it: the
+  // starter's row goes when it exits (or when a prune notices it was killed),
+  // and the peers left behind have neither a child handle nor a recorded pid.
+  it('hands the daemon pid to the sessions still holding the address', () => {
+    registerDaemon('127.0.0.1:50161', 99001);
+    fs.writeFileSync(
+      mcpDaemonRegistryPath(),
+      JSON.stringify([
+        { address: '127.0.0.1:50161', pid: process.pid, daemonPid: 99001 },
+        { address: '127.0.0.1:50161', pid: process.ppid },
+      ]),
+      'utf-8',
+    );
+
+    // Our own exit removes our row; the peer's must come away knowing the pid.
+    unregisterDaemon('127.0.0.1:50161');
+
+    const entries = JSON.parse(fs.readFileSync(mcpDaemonRegistryPath(), 'utf-8'));
+    expect(entries).toEqual([
+      { address: '127.0.0.1:50161', pid: process.ppid, daemonPid: 99001 },
+    ]);
+  });
+
+  it('does not let a later pid-less registration erase the daemon pid', () => {
+    registerDaemon('127.0.0.1:50161', 99001);
+    // A re-discovery adopting the same address as a peer would otherwise
+    // overwrite the row that says which process to reap.
+    registerDaemon('127.0.0.1:50161');
+    const entries = JSON.parse(fs.readFileSync(mcpDaemonRegistryPath(), 'utf-8'));
+    expect(entries).toEqual([
+      { address: '127.0.0.1:50161', pid: process.pid, daemonPid: 99001 },
+    ]);
+  });
+
   it('ignores a registry whose directory cannot be made private', () => {
     // A plain file where the directory belongs stands in for a directory this
     // user cannot secure: either way the path is not a private directory, and

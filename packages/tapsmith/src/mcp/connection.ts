@@ -336,8 +336,18 @@ export async function ensurePlatformTarget(config: TapsmithConfig): Promise<Plat
 
   const existing = await findConnectionForPlatform(platform, key, config.device);
   if (existing) {
+    // Claim it only for as long as the claim holds: a failed prepare would
+    // otherwise leave the daemon marked as this platform's forever, so no
+    // other platform could take it and this one would start a second daemon
+    // on its next attempt.
+    const previousClaim = existing.conn.claimedBy;
     existing.conn.claimedBy = key;
-    await prepareTarget(existing.conn, existing.serial, config);
+    try {
+      await prepareTarget(existing.conn, existing.serial, config);
+    } catch (err) {
+      existing.conn.claimedBy = previousClaim;
+      throw err;
+    }
     return { address: existing.conn.address, deviceSerial: existing.serial, platform };
   }
 
@@ -359,7 +369,16 @@ export async function ensurePlatformTarget(config: TapsmithConfig): Promise<Plat
   }
 
   conn.claimedBy = key;
-  await prepareTarget(conn, serial, config);
+  try {
+    await prepareTarget(conn, serial, config);
+  } catch (err) {
+    // Same reasoning as the no-device case above: a daemon we started and
+    // could not prepare is dead weight, and leaving it pooled means the next
+    // attempt starts another one beside it.
+    discardDaemon(conn);
+    await refreshDeviceIndex();
+    throw err;
+  }
   await refreshDeviceIndex();
   return { address: conn.address, deviceSerial: serial, platform };
 }
@@ -594,6 +613,42 @@ function isProcessAlive(pid: number): boolean {
  * next session then starts a third daemon on the same device — the pile-up
  * the registry exists to prevent.
  */
+/**
+ * Collapse duplicate rows for one session and address, keeping the daemon pid.
+ *
+ * Last-write-wins would let a later pid-less row — a peer adoption after a
+ * re-`discover()`, say — overwrite the row that recorded which process to
+ * reap, leaving the daemon unreapable.
+ */
+function mergeByAddressAndPid(entries: DaemonRegistryEntry[]): Map<string, DaemonRegistryEntry> {
+  const merged = new Map<string, DaemonRegistryEntry>();
+  for (const entry of entries) {
+    const key = `${entry.address}::${entry.pid}`;
+    const existing = merged.get(key);
+    merged.set(key, existing ? { ...existing, ...entry, daemonPid: entry.daemonPid ?? existing.daemonPid } : entry);
+  }
+  return merged;
+}
+
+/**
+ * Give every session holding an address the daemon pid recorded for it.
+ *
+ * Only the session that *started* a daemon knows its pid; a peer adopts the
+ * address alone. That pid then lived on exactly one row, which disappears as
+ * soon as the starter exits or is killed — after which the remaining sessions
+ * have no way to reap the daemon, and it holds the device forever. Copying it
+ * to every row for the address means any survivor can finish the job.
+ */
+function shareDaemonPids(entries: DaemonRegistryEntry[]): DaemonRegistryEntry[] {
+  const known = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.daemonPid) known.set(entry.address, entry.daemonPid);
+  }
+  return entries.map((entry) => (
+    entry.daemonPid ? entry : { ...entry, daemonPid: known.get(entry.address) }
+  ));
+}
+
 function updateRegistry(
   transform: (entries: DaemonRegistryEntry[]) => DaemonRegistryEntry[],
 ): void {
@@ -601,13 +656,23 @@ function updateRegistry(
   if (!file) return;
   try {
     if (!fs.existsSync(file)) fs.writeFileSync(file, '[]', { encoding: 'utf-8', mode: 0o600 });
+    // A dropped write is not fatal, but it is worth saying: the session then
+    // holds a daemon no peer knows about, and whoever started it may reap it
+    // mid-session believing nobody else is attached.
+    let wrote = false;
     withFileLockSync(file, () => {
-      const next = transform(readRegistryEntries()).filter((e) => isProcessAlive(e.pid));
-      const deduped = [...new Map(next.map((e) => [`${e.address}::${e.pid}`, e])).values()];
+      wrote = true;
+      // Share before transforming as well as after: the row being removed here
+      // is often the only one carrying the daemon pid, and the same is true of
+      // a row about to be dropped for a dead session.
+      const current = shareDaemonPids(readRegistryEntries());
+      const next = transform(current).filter((e) => isProcessAlive(e.pid));
+      const deduped = shareDaemonPids([...mergeByAddressAndPid(next).values()]);
       const tmp = `${file}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(deduped), { encoding: 'utf-8', mode: 0o600 });
       fs.renameSync(tmp, file);
     });
+    if (!wrote) log(`Warning: could not lock the daemon registry at ${file}; this session's daemon record was not written`);
   } catch {
     // The registry is an optimisation; never fail a session over it.
   }
@@ -701,7 +766,11 @@ async function refreshDeviceIndex(): Promise<void> {
 
 function removeConnection(conn: DaemonConnection): void {
   conn.client.close();
-  if (conn.daemonProcess) conn.daemonProcess.kill();
+  // Dropping an unresponsive daemon is not licence to kill one other sessions
+  // are still registered against — a failed readiness probe here can be a
+  // transient stall, and they may well still be talking to it.
+  unregisterDaemon(conn.address);
+  if (conn.daemonProcess && !daemonInUseByOthers(conn.address)) conn.daemonProcess.kill();
   _connections = _connections.filter(c => c !== conn);
   for (const [serial, c] of _deviceIndex) {
     if (c === conn) _deviceIndex.delete(serial);

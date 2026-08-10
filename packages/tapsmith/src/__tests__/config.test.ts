@@ -47,13 +47,25 @@ describe('loadConfig rootDir anchoring', () => {
 
   it('does not mistake defineConfig\'s default rootDir for a user-pinned one', async () => {
     const projectDir = path.join(root, 'e2e');
-    // defineConfig stamps rootDir from the loading process's cwd, which used to
-    // win over the caller's argument.
+    // What defineConfig produces: a concrete rootDir from the *loading*
+    // process's cwd, plus the symbol saying the author did not ask for it.
+    // Stamped by hand rather than imported — a config in an OS temp dir cannot
+    // resolve the bare specifier "tapsmith", so `import { defineConfig } from
+    // "tapsmith"` throws ERR_MODULE_NOT_FOUND, loadConfig swallows it and
+    // returns defaults, and the assertion below would pass without ever
+    // reaching the symbol branch this test exists to cover.
     writeConfig(
       projectDir,
-      'import { defineConfig } from "tapsmith"\nexport default defineConfig({ platform: "ios" })\n',
+      'const config = { platform: "ios", rootDir: process.cwd() }\n'
+      + 'Object.defineProperty(config, Symbol.for("tapsmith.explicitRootDir"), '
+      + '{ value: false, enumerable: false })\n'
+      + 'export default config\n',
     );
-    expect((await loadConfig(projectDir)).rootDir).toBe(projectDir);
+    const loaded = await loadConfig(projectDir);
+    // Proves the file was read: falling back to defaults would leave this unset
+    // and make the rootDir assertion pass for the wrong reason.
+    expect(loaded.platform).toBe('ios');
+    expect(loaded.rootDir).toBe(projectDir);
   });
 
   it('keeps a rootDir the config itself pins, resolved against the root', async () => {

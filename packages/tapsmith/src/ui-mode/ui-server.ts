@@ -503,13 +503,20 @@ export async function startUIServer(
    * loader decided once at startup would fork that file under bare node, so it
    * silently drops out of the test tree until the server is restarted.
    */
+  let warnedAboutMissingTsx = false;
   function childLoader(files: string[] = ctx.testFiles): string | undefined {
     if (tsxBin) return tsxBin;
     tsxBin = resolveChildLoader(
       childScripts,
       files,
       tapsmithPkgDir,
-      (message) => console.error(`Warning: ${message}`),
+      (message) => {
+        // Only the first time: this runs per fork, so an unresolvable tsx
+        // would otherwise print once per test file during discovery.
+        if (warnedAboutMissingTsx) return;
+        warnedAboutMissingTsx = true;
+        console.error(`Warning: ${message}`);
+      },
     );
     return tsxBin;
   }

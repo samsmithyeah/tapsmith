@@ -449,6 +449,12 @@ export class HeadlessTestDispatcher implements TestDispatcher {
    * A platform that cannot be satisfied (no emulator running, say) is recorded
    * rather than thrown: the other platform's tests still run, and a request for
    * the missing one fails with the reason.
+   *
+   * One device per platform, deliberately: an MCP session runs files one at a
+   * time, so a second device for the same platform would sit idle. Projects on
+   * one platform that pin *different* devices via `use: { device }` therefore
+   * all run on the first one's — `tapsmith test` honours `deviceSignature` and
+   * gives each its own, but a session here does not.
    */
   private async _resolvePlatformTargets(config: TapsmithConfig | null): Promise<void> {
     this._targets.clear();

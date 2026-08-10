@@ -20,13 +20,18 @@ export function registerSessionInfoTool(server: McpServer, dispatcher: TestDispa
       // at once, and a platform that failed to provision must not look like it
       // is simply sharing the other one's device.
       const targets = info.deviceTargets ?? [];
+      const unavailable = (t: { error?: string }): string =>
+        `unavailable — ${t.error ?? 'no reason was recorded'}`;
       if (targets.length > 1) {
         for (const t of targets) {
           const label = t.platform ?? 'device';
-          lines.push(t.device ? `Device (${label}): ${t.device}` : `Device (${label}): unavailable — ${t.error}`);
+          lines.push(`Device (${label}): ${t.device ?? unavailable(t)}`);
         }
-      } else if (targets.length === 1 && !targets[0].device) {
-        lines.push(`Device: unavailable — ${targets[0].error}`);
+      } else if (targets.length === 1) {
+        // The target's own serial before `info.device`: a dispatcher may fill
+        // one and not the other, and a session that names no device at all
+        // reads as if it had not resolved one.
+        lines.push(`Device: ${targets[0].device ?? info.device ?? unavailable(targets[0])}`);
       } else if (info.device) {
         lines.push(`Device: ${info.device}`);
       }
