@@ -2079,6 +2079,9 @@ async function main(): Promise<void> {
     const { deviceSignature: makeDeviceSignature } = await import('./project.js');
     const defaultProject: import('./project.js').ResolvedProject = {
       name: 'default',
+      // Invented because the config declares no projects — the flag is what
+      // stops the UI and MCP from presenting it as one the user can name.
+      synthesized: true,
       testMatch: config.testMatch,
       testIgnore: [],
       dependencies: [],

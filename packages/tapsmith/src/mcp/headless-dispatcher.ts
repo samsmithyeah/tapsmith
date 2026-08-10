@@ -471,11 +471,22 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     this._deviceSerial = [...this._targets.values()][0]?.deviceSerial ?? null;
   }
 
-  /** One effective config per platform the session runs on. */
+  /**
+   * One effective config per platform the session runs on.
+   *
+   * First project wins per platform, matching what `_resolvePlatformTargets`
+   * documents: a `Map` built from the full list would keep the *last* one, so
+   * two projects pinning different devices would resolve the target for the
+   * second while the comment promised the first.
+   */
   private _wantedConfigs(config: TapsmithConfig): TapsmithConfig[] {
-    return this._hasRealProjects()
-      ? [...new Map(this._projects.map((p) => [platformKey(p.effectiveConfig.platform), p.effectiveConfig])).values()]
-      : [config];
+    if (!this._hasRealProjects()) return [config];
+    const byPlatform = new Map<string, TapsmithConfig>();
+    for (const project of this._projects) {
+      const key = platformKey(project.effectiveConfig.platform);
+      if (!byPlatform.has(key)) byPlatform.set(key, project.effectiveConfig);
+    }
+    return [...byPlatform.values()];
   }
 
   /** Resolve (or re-resolve) a single platform, leaving the others alone. */

@@ -18,6 +18,7 @@ import { registerSessionInfoTool } from '../mcp/tools/session-info.js';
 import { loadMcpConfig } from '../mcp/config-loader.js';
 import {
   daemonSpawnArgs,
+  isRepointing,
   readDaemonRegistry,
   registerDaemon,
   unregisterDaemon,
@@ -803,6 +804,34 @@ describe('project listing', () => {
     expect(retried).toEqual(['ios']);
   });
 
+  // An MCP session runs one device per platform, so projects on the same
+  // platform that pin different devices share a target. Which one they share
+  // is documented as the first — a Map built from the whole project list kept
+  // the last instead, so the session ran on a device no reader expected.
+  it('resolves one target per platform, from the first project on it', async () => {
+    const dispatcher = new HeadlessTestDispatcher({});
+    const internals = dispatcher as unknown as {
+      _config: Record<string, unknown> | null
+      _projects: Array<{ name: string; effectiveConfig: Record<string, unknown> }>
+      _resolveOnePlatformTarget: (effective: { platform?: string; device?: string }) => Promise<void>
+      _resolvePlatformTargets: (config: Record<string, unknown> | null) => Promise<void>
+    };
+    internals._config = { platform: 'ios' };
+    internals._projects = [
+      { name: 'ios-a', effectiveConfig: { platform: 'ios', device: 'SIM-1' } },
+      { name: 'ios-b', effectiveConfig: { platform: 'ios', device: 'SIM-2' } },
+      { name: 'android', effectiveConfig: { platform: 'android', device: 'EMU-1' } },
+    ];
+
+    const resolved: Array<string | undefined> = [];
+    internals._resolveOnePlatformTarget = async (effective): Promise<void> => {
+      resolved.push(effective.device);
+    };
+
+    await internals._resolvePlatformTargets(internals._config);
+    expect(resolved).toEqual(['SIM-1', 'EMU-1']);
+  });
+
   it('gives up on a platform that stays unavailable instead of retrying per file', async () => {
     const dispatcher = new HeadlessTestDispatcher({});
     const internals = dispatcher as unknown as {
@@ -854,5 +883,28 @@ describe('daemonSpawnArgs', () => {
     const ios = daemonSpawnArgs('50052', '18902', 'ios');
     const portOf = (args: string[]): string => args[args.indexOf('--agent-port') + 1];
     expect(portOf(android)).not.toBe(portOf(ios));
+  });
+});
+
+// Two decisions hang on this: whether to force the agent to restart after
+// `set_device`, and whether a peer session's daemon may be adopted at all.
+// Both were previously answered from `preparedDevice`, which records only what
+// *this* process did — so a daemon inherited from another session looked
+// untouched however it was actually pointed.
+describe('isRepointing', () => {
+  it('is true when the daemon is serving a different device', () => {
+    expect(isRepointing('EMU-1', 'EMU-2')).toBe(true);
+  });
+
+  it('is false when the daemon already serves the device we want', () => {
+    // Forcing here would kill an agent that is already correct — including one
+    // a peer session is mid-run against.
+    expect(isRepointing('EMU-1', 'EMU-1')).toBe(false);
+  });
+
+  it('is false when the daemon has no device yet', () => {
+    // A freshly started daemon, and the fallback when the daemon cannot be
+    // reached to ask. Neither is a move.
+    expect(isRepointing(undefined, 'EMU-1')).toBe(false);
   });
 });

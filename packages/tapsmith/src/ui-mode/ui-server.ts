@@ -218,6 +218,20 @@ function resultEntryKey(entry: Pick<UITestResultEntry, 'projectName' | 'filePath
   return `${entry.projectName ?? ''}::${entry.filePath}::${entry.fullName}`;
 }
 
+/**
+ * The project name to attribute a result to, or undefined when there is no
+ * project to speak of.
+ *
+ * Keyed on `synthesized`, not on the name being "default": a config that
+ * declares no projects gets one synthesized for it under that name, but a
+ * config may also *name* a project "default". Testing the name drops the
+ * latter's attribution, so its results are broadcast and stored project-less
+ * while `getProjects` still lists it — filtering by it then finds nothing.
+ */
+function projectLabel(project: ResolvedProject | undefined): string | undefined {
+  return project && !project.synthesized ? project.name : undefined;
+}
+
 // ─── UI Server ───
 
 export async function startUIServer(
@@ -390,10 +404,12 @@ export async function startUIServer(
   /** Callers (MCP stop_tests) waiting for the in-flight run to end. */
   const runEndWaiters: Array<(r: TestRunResult) => void> = [];
 
-  // Detect whether meaningful projects are configured (not just a synthetic 'default')
+  // Detect whether meaningful projects are configured (not just a synthesized
+  // one). Keyed on the flag rather than the name for the same reason as
+  // `projectLabel`: a config may genuinely name its only project "default".
   const hasRealProjects = ctx.projects != null
     && ctx.projects.length > 0
-    && !(ctx.projects.length === 1 && ctx.projects[0].name === 'default');
+    && !(ctx.projects.length === 1 && ctx.projects[0].synthesized);
 
   // Build file → project lookup. Note: when the same file matches multiple
   // projects (e.g. an Android and an iOS project both using `**\/*.test.ts`),
@@ -968,7 +984,7 @@ export async function startUIServer(
     clearRunBuffers();
     const project = projectForFile(filePath, explicitProjectName);
     const useOptions = project?.use as RunFileUseOptions | undefined;
-    const projectName = project && project.name !== 'default' ? project.name : undefined;
+    const projectName = projectLabel(project);
 
     broadcastFileStatus(filePath, 'running', projectName);
     broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter, projectName });
@@ -1041,7 +1057,7 @@ export async function startUIServer(
           if (stopRequested) break;
           const project = fileToProject.get(file);
           const useOptions = project?.use as RunFileUseOptions | undefined;
-          const projectName = project && project.name !== 'default' ? project.name : undefined;
+          const projectName = projectLabel(project);
 
           broadcastFileStatus(file, 'running', projectName);
 
@@ -1081,7 +1097,7 @@ export async function startUIServer(
   }> {
     let passed = 0, failed = 0, skipped = 0, duration = 0, anyFailed = false;
     const useOptions = project.use as RunFileUseOptions | undefined;
-    const projectName = project.name !== 'default' ? project.name : undefined;
+    const projectName = projectLabel(project);
 
     for (const file of project.testFiles) {
       if (stopRequested) break;
@@ -1183,7 +1199,7 @@ export async function startUIServer(
       const files: TaggedFile[] = target.testFiles.map((f) => ({
         filePath: f,
         projectUseOptions: target.use as RunFileUseOptions | undefined,
-        projectName: target.name !== 'default' ? target.name : undefined,
+        projectName: projectLabel(target),
       }));
 
       broadcast({ type: 'run-start', fileCount: files.length });
@@ -1426,7 +1442,7 @@ export async function startUIServer(
       fileCount: depFileCount + 1,
       filePath,
       testFilter,
-      projectName: project.name !== 'default' ? project.name : undefined,
+      projectName: projectLabel(project),
     });
 
     let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
@@ -1454,7 +1470,7 @@ export async function startUIServer(
         }
       }
 
-      const pName = project.name !== 'default' ? project.name : undefined;
+      const pName = projectLabel(project);
       const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
       if (stopRequested) {
         broadcastFileStatus(filePath, 'done', pName);
@@ -2267,7 +2283,7 @@ export async function startUIServer(
               waveFiles.push({
                 filePath: file,
                 projectUseOptions: project.use as RunFileUseOptions | undefined,
-                projectName: project.name !== 'default' ? project.name : undefined,
+                projectName: projectLabel(project),
               });
             }
           }
@@ -2296,7 +2312,7 @@ export async function startUIServer(
           return {
             filePath: f,
             projectUseOptions: project?.use as RunFileUseOptions | undefined,
-            projectName: project && project.name !== 'default' ? project.name : undefined,
+            projectName: projectLabel(project),
           };
         });
 
@@ -2343,7 +2359,7 @@ export async function startUIServer(
     parallelRunAborted = false;
 
     const project = projectForFile(filePath, explicitProjectName);
-    const projectName = project && project.name !== 'default' ? project.name : undefined;
+    const projectName = projectLabel(project);
     broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter, projectName });
 
     const file: TaggedFile = {
@@ -2630,7 +2646,7 @@ export async function startUIServer(
               waveFiles.push({
                 filePath: file,
                 projectUseOptions: project.use as RunFileUseOptions | undefined,
-                projectName: project.name !== 'default' ? project.name : undefined,
+                projectName: projectLabel(project),
               });
             }
           }
@@ -2694,7 +2710,7 @@ export async function startUIServer(
         fileCount: depFileCount + 1,
         filePath,
         testFilter,
-        projectName: project.name !== 'default' ? project.name : undefined,
+        projectName: projectLabel(project),
       });
 
       let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
@@ -2716,7 +2732,7 @@ export async function startUIServer(
               waveFiles.push({
                 filePath: f,
                 projectUseOptions: depProject.use as RunFileUseOptions | undefined,
-                projectName: depProject.name !== 'default' ? depProject.name : undefined,
+                projectName: projectLabel(depProject),
               });
             }
           }
@@ -2733,7 +2749,7 @@ export async function startUIServer(
         }
 
         const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
-        const projectNameForBroadcast = project.name !== 'default' ? project.name : undefined;
+        const projectNameForBroadcast = projectLabel(project);
         if (blockedBy) {
           broadcast({ type: 'error', message: `Skipping "${path.basename(filePath)}" — dependency "${blockedBy}" failed` });
           broadcastFileStatus(filePath, 'done', projectNameForBroadcast);
@@ -2741,7 +2757,7 @@ export async function startUIServer(
           const targetFile: TaggedFile = {
             filePath,
             projectUseOptions: project.use as RunFileUseOptions | undefined,
-            projectName: project.name !== 'default' ? project.name : undefined,
+            projectName: projectLabel(project),
             testFilter,
           };
           const r = await dispatchFilesParallel([targetFile]);
@@ -3250,7 +3266,7 @@ export async function startUIServer(
           return {
             filePath: file,
             projectUseOptions: project?.use as RunFileUseOptions | undefined,
-            projectName: project && project.name !== 'default' ? project.name : undefined,
+            projectName: projectLabel(project),
             testFilter: r.testFilter,
           };
         });
@@ -3405,7 +3421,7 @@ export async function startUIServer(
                 return {
                   filePath: f,
                   projectUseOptions: project?.use as RunFileUseOptions | undefined,
-                  projectName: project && project.name !== 'default' ? project.name : undefined,
+                  projectName: projectLabel(project),
                 };
               });
 

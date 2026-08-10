@@ -388,7 +388,7 @@ export async function ensurePlatformTarget(config: TapsmithConfig): Promise<Plat
     throw new Error(`Failed to start a ${platform ?? 'Tapsmith'} daemon. Is tapsmith-core installed?`);
   }
 
-  const serial = await pickDevice(conn, platform, config.device);
+  const serial = (await pickDevice(conn, platform, config.device))?.serial;
   if (!serial) {
     // A daemon with no device to drive is dead weight: it would sit in the pool
     // and the shared registry, and a second unsatisfiable platform would start
@@ -432,6 +432,12 @@ function noDeviceMessage(platform?: string): string {
  *   the same daemon twice; the second claim repoints it away from the first
  *   platform's device, and `startAgentFromConfig` skips the agent because the
  *   daemon already reports one connected (the first platform's).
+ * - It belongs to a live peer MCP session and is already pointed somewhere
+ *   else. The registry lists a peer's daemon precisely because that session is
+ *   still running, so the UI-mode reasoning applies unchanged: repointing it
+ *   sends the peer's next tap to our device. Adopting it is only safe when it
+ *   already serves the device we want — the case reuse exists for — or when it
+ *   has no active device yet.
  */
 async function findConnectionForPlatform(
   platform: string | undefined,
@@ -443,17 +449,39 @@ async function findConnectionForPlatform(
     if (conn.claimedBy && conn.claimedBy !== key) continue;
     // A daemon started for another platform cannot serve this one.
     if (conn.platform && platform && conn.platform !== platform) continue;
-    const serial = await pickDevice(conn, platform, wantedSerial);
-    if (serial) return { conn, serial };
+    const choice = await pickDevice(conn, platform, wantedSerial);
+    if (!choice) continue;
+    if (conn.source === 'peer' && isRepointing(choice.activeSerial, choice.serial)) continue;
+    return { conn, serial: choice.serial };
   }
   return null;
+}
+
+interface DeviceChoice {
+  /** The device this daemon would serve for us. */
+  serial: string
+  /** The device it is pointed at now, whoever pointed it there. */
+  activeSerial?: string
+}
+
+/**
+ * Whether taking `serial` on a daemon currently pointed at `currentDevice`
+ * moves it off another device.
+ *
+ * Both places that need this answer get it wrong on their own. A daemon whose
+ * current device is unknown must be treated as *not* being moved: forcing an
+ * agent restart on one that already serves this device tears down a working
+ * agent, possibly mid-run.
+ */
+export function isRepointing(currentDevice: string | undefined, serial: string): boolean {
+  return currentDevice !== undefined && currentDevice !== serial;
 }
 
 async function pickDevice(
   conn: DaemonConnection,
   platform: string | undefined,
   wantedSerial: string | undefined,
-): Promise<string | undefined> {
+): Promise<DeviceChoice | undefined> {
   let devices: DeviceInfoProto[];
   try {
     ({ devices } = await conn.client.listDevices());
@@ -461,13 +489,37 @@ async function pickDevice(
     return undefined;
   }
 
+  const activeSerial = activeDeviceOf(devices);
   const candidates = platform ? devices.filter((d) => d.platform === platform) : devices;
-  if (wantedSerial) return candidates.find((d) => d.serial === wantedSerial)?.serial;
-  return (
-    candidates.find((d) => d.state === 'Active' || d.state === 'online')
-    ?? candidates.find((d) => d.state === 'Discovered')
-    ?? candidates[0]
-  )?.serial;
+  const serial = wantedSerial
+    ? candidates.find((d) => d.serial === wantedSerial)?.serial
+    : (
+        candidates.find((d) => d.state === 'Active' || d.state === 'online')
+        ?? candidates.find((d) => d.state === 'Discovered')
+        ?? candidates[0]
+      )?.serial;
+  return serial ? { serial, activeSerial } : undefined;
+}
+
+/**
+ * The device a daemon is pointed at, as the daemon itself reports it.
+ *
+ * `set_device` marks its target `Active` and demotes the previous one, so this
+ * is the one piece of daemon state that survives across processes — unlike
+ * `preparedDevice`, which only records what *this* process did.
+ */
+function activeDeviceOf(devices: DeviceInfoProto[]): string | undefined {
+  return devices.find((d) => d.state === 'Active')?.serial;
+}
+
+/** {@link activeDeviceOf} for a connection; undefined if the daemon can't be reached. */
+async function currentDevice(conn: DaemonConnection): Promise<string | undefined> {
+  try {
+    const { devices } = await conn.client.listDevices();
+    return activeDeviceOf(devices);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Point a daemon at a device and make sure its agent is running. */
@@ -476,17 +528,26 @@ async function prepareTarget(
   serial: string,
   config: TapsmithConfig,
 ): Promise<void> {
+  // Ask the daemon where it is pointed *before* moving it. `agentConnected` is
+  // daemon-global and `set_device` does not disconnect the agent, so a daemon
+  // repointed to a different device still reports one as connected — the
+  // platform's real agent would never start and the session would drive the
+  // previous device's agent. Force a start exactly when the device changed.
+  //
+  // The daemon's own `Active` device, not `preparedDevice`: the latter records
+  // only what this process did, so an adopted 'peer' or 'configured' daemon
+  // already serving another device looks untouched and the force is skipped.
+  // Fall back to `preparedDevice` when the daemon can't be reached — forcing on
+  // a daemon that already serves this device would tear down a working agent,
+  // including one a peer session is mid-run against.
+  const wasPointedAt = await currentDevice(conn) ?? conn.preparedDevice;
   await conn.client.setDevice(serial);
-  // `agentConnected` is daemon-global and `set_device` does not disconnect the
-  // agent, so a daemon repointed to a different device still reports one as
-  // connected — the platform's real agent would never start, and the session
-  // would drive the previous device's agent. Force a start only when we know
-  // *we* moved it: an unset `preparedDevice` means we have never pointed this
-  // daemon anywhere, and forcing then would tear down an agent that is already
-  // serving this device — including one a peer session is mid-run against.
-  const repointed = conn.preparedDevice !== undefined && conn.preparedDevice !== serial;
-  await startAgentFromConfig(conn.client, config, { force: repointed, required: true });
+  const repointed = isRepointing(wasPointedAt, serial);
+  // Record the move before starting the agent: `setDevice` has already
+  // happened, so if the agent start throws, the next claim must still see this
+  // daemon as pointed here rather than assume it never moved.
   conn.preparedDevice = serial;
+  await startAgentFromConfig(conn.client, config, { force: repointed, required: true });
   conn.agentDevice = serial;
   // The daemon that was prepared for a serial is the one that serves it, even
   // when another daemon can merely see it.
