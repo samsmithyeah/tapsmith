@@ -272,12 +272,29 @@ async function discover(): Promise<void> {
  * Android and iOS needs one of each — hence this is callable outside the
  * initial discovery.
  */
+/**
+ * Arguments for a daemon this session spawns.
+ *
+ * @internal — exported for unit testing.
+ */
+export function daemonSpawnArgs(port: string, agentPort: string, platform?: string): string[] {
+  const args = ['--port', port, '--agent-port', agentPort];
+  if (platform) args.push('--platform', platform);
+  return args;
+}
+
 async function startDaemon(platform?: string): Promise<DaemonConnection | null> {
   log(platform ? `Starting a ${platform} daemon...` : 'No daemon found, starting one...');
   const port = String(await pickFreePort());
+  // Its own agent port, like every other daemon we spawn (see dispatcher.ts
+  // and ui-server.ts). Daemons default to a shared one, which was harmless
+  // while a session had a single daemon — but a session now runs one per
+  // platform, and the second would attach to the first platform's agent:
+  // iOS tools would drive the Android device, and iOS-only calls would come
+  // back as "Unknown method".
+  const agentPort = String(await pickFreePort());
   const bin = findDaemonBin();
-  const daemonArgs = ['--port', port];
-  if (platform) daemonArgs.push('--platform', platform);
+  const daemonArgs = daemonSpawnArgs(port, agentPort, platform);
 
   const daemonProcess = spawn(bin, daemonArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
   daemonProcess.unref();
@@ -296,7 +313,7 @@ async function startDaemon(platform?: string): Promise<DaemonConnection | null> 
 
   try {
     const { version } = await client.ping();
-    log(`Started daemon v${version} on port ${port}${platform ? ` (${platform})` : ''}`);
+    log(`Started daemon v${version} on port ${port} (agent ${agentPort})${platform ? ` [${platform}]` : ''}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`Daemon started but did not respond: ${msg}`);

@@ -17,6 +17,7 @@ import {
 import { registerSessionInfoTool } from '../mcp/tools/session-info.js';
 import { loadMcpConfig } from '../mcp/config-loader.js';
 import {
+  daemonSpawnArgs,
   readDaemonRegistry,
   registerDaemon,
   unregisterDaemon,
@@ -830,5 +831,28 @@ describe('project listing', () => {
     const dispatcher = dispatcherWithProjects([{ name: 'default' }]);
     expect(dispatcher.getProjects()).toEqual(['default']);
     expect(dispatcher.getSessionInfo().projects.map((p) => p.name)).toEqual(['default']);
+  });
+});
+
+// Daemons default to a shared agent port. That was harmless while a session
+// had one daemon, but a multi-platform session runs one per platform — and the
+// second attaching to the first platform's agent meant iOS tools drove the
+// Android device and iOS-only calls came back "Unknown method". Every other
+// daemon we spawn (dispatcher.ts, ui-server.ts) passes its own port.
+describe('daemonSpawnArgs', () => {
+  it('gives every daemon its own agent port', () => {
+    expect(daemonSpawnArgs('50051', '18901')).toEqual(['--port', '50051', '--agent-port', '18901']);
+  });
+
+  it('keeps the platform filter alongside the agent port', () => {
+    expect(daemonSpawnArgs('50052', '18902', 'ios'))
+      .toEqual(['--port', '50052', '--agent-port', '18902', '--platform', 'ios']);
+  });
+
+  it('never spawns two daemons sharing an agent port', () => {
+    const android = daemonSpawnArgs('50051', '18901', 'android');
+    const ios = daemonSpawnArgs('50052', '18902', 'ios');
+    const portOf = (args: string[]): string => args[args.indexOf('--agent-port') + 1];
+    expect(portOf(android)).not.toBe(portOf(ios));
   });
 });
