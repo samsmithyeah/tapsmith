@@ -478,6 +478,10 @@ function rawHasExplicitWorkers(raw: Partial<TapsmithConfig>): boolean {
  * never went through `defineConfig`.
  */
 function rawHasExplicitRootDir(raw: Partial<TapsmithConfig>): boolean {
+  // Every config this module hands out carries the symbol, so the fallback
+  // below only ever sees an object literal from a config file — never one of
+  // our own results fed back in, whose concrete rootDir would otherwise read
+  // as a deliberate pin and override the root its new caller asked for.
   const symbolPresent = Object.getOwnPropertySymbols(raw).includes(EXPLICIT_ROOT_DIR);
   if (symbolPresent) return (raw as unknown as Record<symbol, boolean>)[EXPLICIT_ROOT_DIR] === true;
   return raw.rootDir !== undefined;
@@ -535,6 +539,7 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
       { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, root) },
       raw,
     );
+    withExplicitRootDir(merged, rawHasExplicitRootDir(original));
     return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
   }
 
@@ -550,6 +555,7 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
           { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, root) },
           raw,
         );
+        withExplicitRootDir(merged, rawHasExplicitRootDir(original));
         return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
       } catch (err) {
         console.warn(`Warning: failed to load ${configPath}: ${err}`);
@@ -557,5 +563,7 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
     }
   }
 
-  return withExplicitWorkers({ ...DEFAULT_CONFIG, rootDir: root }, false);
+  const defaults: TapsmithConfig = { ...DEFAULT_CONFIG, rootDir: root };
+  withExplicitRootDir(defaults, false);
+  return withExplicitWorkers(defaults, false);
 }

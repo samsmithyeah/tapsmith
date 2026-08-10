@@ -66,6 +66,24 @@ describe('loadConfig rootDir anchoring', () => {
     expect((await loadConfig(root)).rootDir).toBe(root);
   });
 
+  // A config loaded here has a concrete rootDir but, without the symbol, no
+  // record of whether the file pinned it. Re-resolving such an object would
+  // fall back to "rootDir is set" and re-pin the previous caller's root — the
+  // ambiguity the symbol exists to remove. Every result carries it.
+  it('records whether the file pinned rootDir, not merely that one is set', async () => {
+    const pinned = path.join(root, 'pinned');
+    writeConfig(pinned, 'export default { rootDir: "../suites" }\n');
+    const inherited = path.join(root, 'inherited');
+    writeConfig(inherited, 'export default { platform: "ios" }\n');
+
+    const explicit = (config: object): unknown =>
+      (config as Record<symbol, unknown>)[EXPLICIT_ROOT_DIR];
+
+    expect(explicit(await loadConfig(pinned))).toBe(true);
+    expect(explicit(await loadConfig(inherited))).toBe(false);
+    expect(explicit(await loadConfig(root))).toBe(false);
+  });
+
   // `loadConfig` returns the merged config and nothing about where it came
   // from, so UI mode reported "Config: none — using built-in defaults" over
   // MCP even when launched with `-c`. Naming the file is the whole point of
@@ -94,6 +112,7 @@ import {
   loadConfig,
   resolveConfigPath,
   normalizeGrep,
+  EXPLICIT_ROOT_DIR,
 } from '../config.js';
 
 describe('defineConfig()', () => {
