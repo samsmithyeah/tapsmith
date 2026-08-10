@@ -32,6 +32,13 @@ interface DaemonConnection {
   platform?: string
   /** Set once a platform target claims this daemon, so a second cannot. */
   claimedBy?: string
+  /**
+   * The device this daemon was pointed at, and the device its agent was
+   * started for. A daemon can list devices it is not driving, so these — not
+   * `devices` — say which connection actually serves a serial.
+   */
+  preparedDevice?: string
+  agentDevice?: string
 }
 
 let _connections: DaemonConnection[] = [];
@@ -447,7 +454,17 @@ async function prepareTarget(
   config: TapsmithConfig,
 ): Promise<void> {
   await conn.client.setDevice(serial);
-  await startAgentFromConfig(conn.client, config);
+  // `agentConnected` is daemon-global and `set_device` does not disconnect the
+  // agent, so a daemon repointed to a different device still reports one as
+  // connected — the platform's real agent would never start, and the session
+  // would drive the previous device's agent. Force a start whenever the device
+  // changed under it.
+  await startAgentFromConfig(conn.client, config, conn.agentDevice !== serial);
+  conn.preparedDevice = serial;
+  conn.agentDevice = serial;
+  // The daemon that was prepared for a serial is the one that serves it, even
+  // when another daemon can merely see it.
+  _deviceIndex.set(serial, conn);
 }
 
 interface UiDiscoveryResult {
@@ -752,6 +769,12 @@ async function refreshDeviceIndex(): Promise<void> {
     }
   }));
   _deviceIndex.clear();
+  // Prepared bindings first. A platform-less daemon enumerates every device,
+  // including ones a *second* daemon was started to drive, so first-seen-wins
+  // would route an iOS tap to the daemon holding the Android emulator.
+  for (const { conn } of results) {
+    if (conn.preparedDevice) _deviceIndex.set(conn.preparedDevice, conn);
+  }
   for (const { conn, devices } of results) {
     conn.devices = devices.map(d => d.serial);
     for (const d of devices) {
@@ -768,9 +791,16 @@ function removeConnection(conn: DaemonConnection): void {
   conn.client.close();
   // Dropping an unresponsive daemon is not licence to kill one other sessions
   // are still registered against — a failed readiness probe here can be a
-  // transient stall, and they may well still be talking to it.
-  unregisterDaemon(conn.address);
-  if (conn.daemonProcess && !daemonInUseByOthers(conn.address)) conn.daemonProcess.kill();
+  // transient stall, and they may well still be talking to it. Only the
+  // sources that ever registered pay for the locked registry write: this runs
+  // from `ensureConnected` whenever a 1s probe fails, and the lock blocks the
+  // event loop while it waits.
+  if (conn.source === 'started' || conn.source === 'peer') {
+    unregisterDaemon(conn.address);
+    if (conn.daemonProcess && !daemonInUseByOthers(conn.address)) conn.daemonProcess.kill();
+  } else if (conn.daemonProcess) {
+    conn.daemonProcess.kill();
+  }
   _connections = _connections.filter(c => c !== conn);
   for (const [serial, c] of _deviceIndex) {
     if (c === conn) _deviceIndex.delete(serial);
@@ -807,9 +837,12 @@ async function setDeviceAndAgent(
 async function startAgentFromConfig(
   client: TapsmithGrpcClient,
   config: TapsmithConfig | null,
+  force = false,
 ): Promise<void> {
-  const { agentConnected } = await client.ping();
-  if (agentConnected) return;
+  if (!force) {
+    const { agentConnected } = await client.ping();
+    if (agentConnected) return;
+  }
 
   const rootDir = config?.rootDir ?? process.cwd();
   const agentApk = config?.agentApk ? path.resolve(rootDir, config.agentApk) : undefined;

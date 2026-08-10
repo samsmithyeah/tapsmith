@@ -624,9 +624,7 @@ export async function startUIServer(
    * or its files look project-less and cannot be targeted by name.
    */
   function realProjects(): ResolvedProject[] {
-    const projects = ctx.projects ?? [];
-    if (projects.length === 1 && projects[0].name === 'default') return [];
-    return projects;
+    return (ctx.projects ?? []).filter((p) => !p.synthesized);
   }
 
   /**

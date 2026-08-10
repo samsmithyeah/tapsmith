@@ -11,7 +11,7 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { loadConfig, resolveConfigPath, normalizeGrep, resolveDeviceStrategy, EXPLICIT_WORKERS, isExplicitWorkers, type TapsmithConfig } from './config.js';
+import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, EXPLICIT_WORKERS, isExplicitWorkers, type TapsmithConfig } from './config.js';
 import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
@@ -1934,7 +1934,7 @@ async function main(): Promise<void> {
 
   // Load config
   const config = await loadConfig(undefined, args.config);
-  const configPath = resolveConfigPath(undefined, args.config);
+  const configPath = configPathOf(config);
   if (args.device) {
     config.device = args.device;
   }

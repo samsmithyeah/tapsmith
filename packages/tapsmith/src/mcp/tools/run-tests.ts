@@ -270,7 +270,11 @@ function buildNoTestsExecutedMessage(
 }
 
 function buildZeroMatchMessage(dispatcher: TestDispatcher, files: string[], testFilter: string): string {
-  const inFiles = flattenTestNodes(dispatcher.getTestTree()).filter((t) => files.includes(t.filePath));
+  // Resolve first: `files` may hold relative paths or globs, and comparing
+  // those to absolute discovered paths finds nothing — so a run whose *filter*
+  // matched no test would blame the path instead of listing the test names.
+  const resolved = dispatcher.resolveRequestedFiles?.(files) ?? files;
+  const inFiles = flattenTestNodes(dispatcher.getTestTree()).filter((t) => resolved.includes(t.filePath));
   if (inFiles.length === 0) {
     return `No tests were found in the requested file(s): ${files.join(', ')}. Check the path(s) are correct and were discovered — run tapsmith_list_tests to see available files and tests.`;
   }

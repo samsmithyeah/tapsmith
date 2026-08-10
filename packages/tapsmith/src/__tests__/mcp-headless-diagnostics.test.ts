@@ -724,18 +724,22 @@ describe('selectPlatformTarget', () => {
 // — in the e2e iOS config that is 33 of 35 files, listed in the test tree but
 // absent from `Projects:`, so no caller could pass it to run_tests.
 describe('project listing', () => {
-  function dispatcherWithProjects(names: string[]): TestDispatcher {
+  function dispatcherWithProjects(
+    projects: Array<{ name: string; synthesized?: boolean }>,
+  ): TestDispatcher {
     const dispatcher = new HeadlessTestDispatcher({});
     const internals = dispatcher as unknown as {
       _projects: Array<{
         name: string
+        synthesized?: boolean
         effectiveConfig: Record<string, unknown>
         testFiles: string[]
         dependencies: string[]
       }>
     };
-    internals._projects = names.map((name) => ({
+    internals._projects = projects.map(({ name, synthesized }) => ({
       name,
+      synthesized,
       effectiveConfig: { platform: 'ios' },
       testFiles: [`/tests/${name}.test.ts`],
       dependencies: [],
@@ -744,15 +748,27 @@ describe('project listing', () => {
   }
 
   it('hides the project synthesized for a config that declares none', () => {
-    const dispatcher = dispatcherWithProjects(['default']);
+    const dispatcher = dispatcherWithProjects([{ name: 'default', synthesized: true }]);
     expect(dispatcher.getProjects()).toEqual([]);
     expect(dispatcher.getSessionInfo().projects).toEqual([]);
   });
 
   it('lists a project the config genuinely named "default"', () => {
-    const dispatcher = dispatcherWithProjects(['authentication', 'default', 'authenticated']);
+    const dispatcher = dispatcherWithProjects([
+      { name: 'authentication' }, { name: 'default' }, { name: 'authenticated' },
+    ]);
     expect(dispatcher.getProjects()).toEqual(['authentication', 'default', 'authenticated']);
     expect(dispatcher.getSessionInfo().projects.map((p) => p.name))
       .toEqual(['authentication', 'default', 'authenticated']);
+  });
+
+  // The name alone cannot tell the two apart, and a config whose *only*
+  // project is called "default" is the case where getting it wrong hurts
+  // most: its testMatch, platform and agent artifacts all get ignored in
+  // favour of the root config's.
+  it('lists a lone project the config named "default" itself', () => {
+    const dispatcher = dispatcherWithProjects([{ name: 'default' }]);
+    expect(dispatcher.getProjects()).toEqual(['default']);
+    expect(dispatcher.getSessionInfo().projects.map((p) => p.name)).toEqual(['default']);
   });
 });

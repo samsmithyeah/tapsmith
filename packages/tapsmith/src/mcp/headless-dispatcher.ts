@@ -298,8 +298,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     // Hide only the project synthesized for a config that declares none — a
     // config that genuinely names a project "default" must still list it, or
     // the caller cannot pass it to `run_tests`.
-    if (!this._hasRealProjects()) return [];
-    return this._projects.map((p) => p.name);
+    return this._projects.filter((p) => !p.synthesized).map((p) => p.name);
   }
 
   getTestTree(): TestTreeEntry[] {
@@ -323,7 +322,8 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   }
 
   getSessionInfo(): SessionInfo {
-    const projects = (this._hasRealProjects() ? this._projects : [])
+    const projects = this._projects
+      .filter((p) => !p.synthesized)
       .map((p) => ({
         name: p.name,
         platform: p.effectiveConfig.platform,
@@ -773,8 +773,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   // ─── Helpers ───
 
   private _hasRealProjects(): boolean {
-    return this._projects.length > 0
-      && !(this._projects.length === 1 && this._projects[0].name === 'default');
+    return this._projects.some((p) => !p.synthesized);
   }
 
   private _projectForFile(filePath: string, explicitProjectName?: string): ResolvedProject | undefined {

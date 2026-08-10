@@ -510,15 +510,29 @@ const CONFIG_CANDIDATES = ['tapsmith.config.ts', 'tapsmith.config.js', 'tapsmith
  * backs a session need this: `loadConfig` returns the merged config only, so
  * without it a synthesized default is indistinguishable from a real project.
  */
-export function resolveConfigPath(dir?: string, configFile?: string): string | undefined {
-  const root = dir ?? process.cwd();
-  if (configFile) {
-    const configPath = path.resolve(root, configFile);
-    return fs.existsSync(configPath) ? configPath : undefined;
-  }
-  return CONFIG_CANDIDATES
-    .map((name) => path.resolve(root, name))
-    .find((candidate) => fs.existsSync(candidate));
+/** Set to the config file a loaded config was actually read from. */
+export const CONFIG_PATH = Symbol.for('tapsmith.configPath');
+
+function withConfigPath(config: TapsmithConfig, configPath?: string): TapsmithConfig {
+  Object.defineProperty(config, CONFIG_PATH, {
+    value: configPath,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  return config;
+}
+
+/**
+ * The file a config was read from, or undefined for built-in defaults.
+ *
+ * Existence is not enough to report: `loadConfig` warns and moves on when a
+ * candidate throws on import, so the file that exists may not be the one in
+ * effect — and naming it would misreport the session exactly the way an
+ * unnamed synthesized config does.
+ */
+export function configPathOf(config: TapsmithConfig): string | undefined {
+  return (config as unknown as Record<symbol, string | undefined>)[CONFIG_PATH];
 }
 
 export async function loadConfig(dir?: string, configFile?: string): Promise<TapsmithConfig> {
@@ -540,6 +554,7 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
       raw,
     );
     withExplicitRootDir(merged, rawHasExplicitRootDir(original));
+    withConfigPath(merged, configPath);
     return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
   }
 
@@ -556,6 +571,7 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
           raw,
         );
         withExplicitRootDir(merged, rawHasExplicitRootDir(original));
+        withConfigPath(merged, configPath);
         return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
       } catch (err) {
         console.warn(`Warning: failed to load ${configPath}: ${err}`);
@@ -565,5 +581,6 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
 
   const defaults: TapsmithConfig = { ...DEFAULT_CONFIG, rootDir: root };
   withExplicitRootDir(defaults, false);
+  withConfigPath(defaults, undefined);
   return withExplicitWorkers(defaults, false);
 }

@@ -100,20 +100,29 @@ describe('loadConfig rootDir anchoring', () => {
   // from, so UI mode reported "Config: none — using built-in defaults" over
   // MCP even when launched with `-c`. Naming the file is the whole point of
   // that line, so it has to be resolved the same way loadConfig resolves it.
-  describe('resolveConfigPath', () => {
-    it('names the explicitly requested config file', () => {
+  describe('configPathOf', () => {
+    it('names the explicitly requested config file', async () => {
       const file = writeConfig(path.join(root, 'configs'), 'export default {}\n');
-      expect(resolveConfigPath(root, path.relative(root, file))).toBe(file);
+      expect(configPathOf(await loadConfig(root, path.relative(root, file)))).toBe(file);
     });
 
-    it('names the config it discovers in the directory', () => {
+    it('names the config it discovers in the directory', async () => {
       const file = writeConfig(root, 'export default {}\n');
-      expect(resolveConfigPath(root)).toBe(file);
+      expect(configPathOf(await loadConfig(root))).toBe(file);
     });
 
-    it('reports no config when none exists, rather than a path that is not read', () => {
-      expect(resolveConfigPath(root)).toBeUndefined();
-      expect(resolveConfigPath(root, 'missing.config.mjs')).toBeUndefined();
+    it('reports no config when there is none to read', async () => {
+      expect(configPathOf(await loadConfig(root))).toBeUndefined();
+    });
+
+    // Existence is not the same as being in effect: loadConfig warns and moves
+    // on when a candidate throws, and naming the file anyway would tell the
+    // caller the session is backed by a config it never read.
+    it('names no config when the one that exists could not be loaded', async () => {
+      writeConfig(root, 'throw new Error("boom")\n');
+      const config = await loadConfig(root);
+      expect(configPathOf(config)).toBeUndefined();
+      expect(config.rootDir).toBe(root);
     });
   });
 });
@@ -122,7 +131,7 @@ import {
   resolveDeviceStrategy,
   isExplicitWorkers,
   loadConfig,
-  resolveConfigPath,
+  configPathOf,
   normalizeGrep,
   EXPLICIT_ROOT_DIR,
 } from '../config.js';

@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { loadConfig, type TapsmithConfig } from '../config.js';
+import { loadConfig, configPathOf, type TapsmithConfig } from '../config.js';
 
 const CONFIG_NAMES = ['tapsmith.config.ts', 'tapsmith.config.js', 'tapsmith.config.mjs'];
 
@@ -28,17 +28,21 @@ export async function loadMcpConfig(configFile?: string): Promise<McpConfigLoadR
   }
 
   const cwd = process.cwd();
+  // `configPathOf`, not the path we probed for: a candidate that throws on
+  // import leaves the session on defaults, and naming it anyway would hide
+  // that behind a real-looking config.
   const cwdConfig = findConfigInDir(cwd);
   if (cwdConfig) {
-    return { config: await loadConfig(cwd), configPath: cwdConfig };
+    const config = await loadConfig(cwd);
+    const loaded = configPathOf(config);
+    if (loaded) return { config, configPath: loaded };
   }
 
   const nested = findImmediateNestedConfigs(cwd);
   if (nested.length === 1) {
-    return {
-      config: await loadConfig(nested[0].dir),
-      configPath: nested[0].configPath,
-    };
+    const config = await loadConfig(nested[0].dir);
+    const loaded = configPathOf(config);
+    if (loaded) return { config, configPath: loaded };
   }
 
   const suggestion = nested.length > 1

@@ -462,7 +462,12 @@ function withManifestLock<T>(
   const locked = withFileLockSync(file, () => {
     const entries = readManifestUnlocked(file);
     const { result, updated } = fn(entries);
-    if (updated !== undefined) atomicWriteManifest(file, updated);
+    // Best effort inside the lock too. While the lock never worked, every call
+    // took the fallback below, where a failed write is swallowed; letting it
+    // throw here would turn bookkeeping nobody waits on into a failed run.
+    if (updated !== undefined) {
+      try { atomicWriteManifest(file, updated); } catch { /* stale entry cleaned up next run */ }
+    }
     return { result };
   }, { attempts: 10, waitMs: 50 });
   if (locked) return locked.result;

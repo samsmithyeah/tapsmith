@@ -27,6 +27,12 @@ export interface ResolvedProject {
    */
   deviceSignature: string
   /**
+   * True for the project invented when a config declares none. Callers that
+   * present projects to a user hide it — but they must not do that by name,
+   * because a config may legitimately call one of its own projects "default".
+   */
+  synthesized?: boolean
+  /**
    * Explicit per-project worker count. When set, this project's bucket
    * gets exactly this many devices and bypasses the proportional split.
    */
@@ -281,6 +287,7 @@ export function resolveProjects(config: TapsmithConfig): ResolvedProject[] {
   if (!config.projects || config.projects.length === 0) {
     return [{
       name: 'default',
+      synthesized: true,
       testMatch: config.testMatch,
       testIgnore: [],
       dependencies: [],
