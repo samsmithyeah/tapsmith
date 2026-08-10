@@ -390,12 +390,16 @@ export async function ensurePlatformTarget(config: TapsmithConfig): Promise<Plat
 
   const serial = (await pickDevice(conn, platform, config.device))?.serial;
   if (!serial) {
+    // Ask what it *could* see before discarding it, so a config pinning a
+    // serial that does not exist is not reported as "no device available"
+    // while the device the user is looking at sits there booted.
+    const visible = await visibleDevices(conn, platform);
     // A daemon with no device to drive is dead weight: it would sit in the pool
     // and the shared registry, and a second unsatisfiable platform would start
     // yet another one.
     discardDaemon(conn);
     await refreshDeviceIndex();
-    throw new Error(noDeviceMessage(platform));
+    throw new Error(noDeviceMessage(platform, config.device, visible));
   }
 
   conn.claimedBy = key;
@@ -413,8 +417,30 @@ export async function ensurePlatformTarget(config: TapsmithConfig): Promise<Plat
   return { address: conn.address, deviceSerial: serial, platform };
 }
 
-function noDeviceMessage(platform?: string): string {
+/** The serials a daemon can see for a platform; empty if it cannot be reached. */
+async function visibleDevices(conn: DaemonConnection, platform: string | undefined): Promise<string[]> {
+  try {
+    const { devices } = await conn.client.listDevices();
+    return (platform ? devices.filter((d) => d.platform === platform) : devices).map((d) => d.serial);
+  } catch {
+    return [];
+  }
+}
+
+export function noDeviceMessage(platform?: string, wanted?: string, visible: string[] = []): string {
   const what = platform ? `No ${platform} device is available.` : 'No device is available.';
+  // A pinned serial that does not exist is a different problem with a
+  // different fix, and telling the user to boot a simulator when one is
+  // already booted sends them looking in the wrong place entirely.
+  if (wanted && visible.length > 0) {
+    return `Device "${wanted}" from your config is not available. `
+      + `${platform ? `Visible ${platform} devices` : 'Visible devices'}: ${visible.join(', ')}. `
+      + 'Update `device` in your config, or start that device.';
+  }
+  if (wanted) {
+    return `Device "${wanted}" from your config is not available, and no other `
+      + `${platform ?? 'device'} was found. Start it, or update \`device\` in your config.`;
+  }
   if (platform === 'android') return `${what} Start an emulator (or connect a device) and try again.`;
   if (platform === 'ios') return `${what} Boot a simulator (or connect a device) and try again.`;
   return `${what} Connect a device or start an emulator and try again.`;
@@ -770,7 +796,7 @@ function updateRegistry(
       // is often the only one carrying the daemon pid, and the same is true of
       // a row about to be dropped for a dead session.
       const current = shareDaemonPids(readRegistryEntries());
-      const next = transform(current).filter((e) => isProcessAlive(e.pid));
+      const next = transform(current).filter(entryIsLive);
       const deduped = shareDaemonPids([...mergeByAddressAndPid(next).values()]);
       const tmp = `${file}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(deduped), { encoding: 'utf-8', mode: 0o600 });
@@ -782,9 +808,26 @@ function updateRegistry(
   }
 }
 
+/**
+ * Whether a registry row still describes something real.
+ *
+ * A row outlives its session when the daemon that session started is still
+ * running. That row is the only record of the daemon's pid, so dropping it
+ * strands the process: no later session can find it to reuse, and none can
+ * find it to reap. Sessions killed with SIGKILL never reach `closeAllClients`,
+ * which makes this the ordinary way daemons leak rather than an edge case.
+ *
+ * Checked in that order because `isTapsmithDaemonProcess` shells out to `ps` —
+ * a live session is the common row and answers for free.
+ */
+function entryIsLive(entry: DaemonRegistryEntry): boolean {
+  if (isProcessAlive(entry.pid)) return true;
+  return Boolean(entry.daemonPid && isTapsmithDaemonProcess(entry.daemonPid));
+}
+
 /** Addresses of daemons this project's MCP sessions are using. @internal — exported for unit testing. */
 export function readDaemonRegistry(): string[] {
-  return [...new Set(readRegistryEntries().filter((e) => isProcessAlive(e.pid)).map((e) => e.address))];
+  return [...new Set(readRegistryEntries().filter(entryIsLive).map((e) => e.address))];
 }
 
 /** Record that this session is using a daemon. @internal — exported for unit testing. */

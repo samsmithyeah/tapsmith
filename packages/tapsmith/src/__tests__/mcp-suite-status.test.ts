@@ -168,16 +168,37 @@ describe('tapsmith_suite_status', () => {
     expect(text).toContain('/app/a.test.ts [ios]: 1 not run');
   });
 
-  it("joins tests under a 'default' project node with results that have no projectName", async () => {
-    // A config mixing named and unnamed projects produces a tree with a
-    // project node literally named 'default', but the dispatchers record the
-    // default project's results with projectName undefined. The join must
-    // normalize or every default-project test shows as not run (seen live
-    // against the e2e session's authentication/authenticated/default setup).
+  it("joins a project the config genuinely named 'default' on its own name", async () => {
+    // The e2e iOS config really does name a project "default" alongside
+    // "authentication" and "authenticated". The dispatcher records its results
+    // under that name, so the join has to use it too: stripping "default" to
+    // undefined here missed every result and reported a finished run as
+    // entirely not run.
     const tree = [
       projectNode('default', [fileNode('/app/a.test.ts', [testNode('/app/a.test.ts', 'auth > logs in')])]),
       projectNode('authenticated', [fileNode('/app/b.test.ts', [testNode('/app/b.test.ts', 'cart > adds item')])]),
     ];
+    const dispatcher = makeDispatcher({
+      getTestTree: () => tree,
+      getResults: () => [
+        result('/app/a.test.ts', 'auth > logs in', 'passed', { projectName: 'default' }),
+      ],
+    });
+
+    const { server, tools } = makeToolCapture();
+    registerSuiteStatusTool(server, dispatcher);
+    const text = textOf(await tools.get('tapsmith_suite_status')!({}, extra));
+
+    expect(text).toContain('Suite status: 1 passed, 0 failed, 0 skipped, 1 not run (1/2 tests run)');
+    expect(text).toContain('/app/a.test.ts [default]: 1 passed');
+    expect(text).toContain('/app/b.test.ts [authenticated]: 1 not run');
+  });
+
+  it('joins project-less results when the config declares no projects', async () => {
+    // The other half of the same contract: a config with no projects gets a
+    // synthesized one, which never becomes a tree node — so the tree is bare
+    // files and the results carry no projectName.
+    const tree = [fileNode('/app/a.test.ts', [testNode('/app/a.test.ts', 'auth > logs in')])];
     const dispatcher = makeDispatcher({
       getTestTree: () => tree,
       getResults: () => [result('/app/a.test.ts', 'auth > logs in', 'passed')],
@@ -187,9 +208,8 @@ describe('tapsmith_suite_status', () => {
     registerSuiteStatusTool(server, dispatcher);
     const text = textOf(await tools.get('tapsmith_suite_status')!({}, extra));
 
-    expect(text).toContain('Suite status: 1 passed, 0 failed, 0 skipped, 1 not run (1/2 tests run)');
+    expect(text).toContain('Suite status: 1 passed, 0 failed, 0 skipped, 0 not run (1/1 tests run)');
     expect(text).toContain('/app/a.test.ts: 1 passed');
-    expect(text).toContain('/app/b.test.ts [authenticated]: 1 not run');
   });
 
   it('ignores in-flight (running/idle) statuses when merging', async () => {

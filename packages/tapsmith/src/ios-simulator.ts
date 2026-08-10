@@ -449,12 +449,32 @@ function atomicWriteManifest(file: string, entries: SimulatorManifestEntry[]): v
   fs.renameSync(tmp, file);
 }
 
+/**
+ * How long a held manifest lock stays valid before another process may break
+ * it.
+ *
+ * One value for every acquirer, deliberately. `proper-lockfile` judges
+ * staleness against the *acquirer's* window, not the holder's, so a caller
+ * declaring a longer window protects nothing: any other caller using the
+ * default would break the lock on its own schedule and both would proceed —
+ * and the original holder's `release()` then removes the new holder's lock
+ * directory, because the removal is unconditional.
+ *
+ * Sized for the longest critical section, `cleanupStaleSimulators`: it runs
+ * synchronous `simctl` probes and deletes per entry, which block the event
+ * loop, so proper-lockfile's own mtime-refresh timer never fires while it
+ * holds the lock. The cost is that a process crashing mid-write leaves the
+ * lock unbreakable for this long — survivable, because the fast paths fall
+ * through to an unlocked best-effort write and the sweep skips itself.
+ */
+const MANIFEST_STALE_MS = 5 * 60_000;
+
 // Run a read-modify-write operation under an exclusive file lock so concurrent
 // Tapsmith runs can't corrupt the manifest. proper-lockfile uses a `.lock` dir
 // next to the target file with retry/backoff and stale-lock detection.
 function withManifestLock<T>(
   fn: (entries: SimulatorManifestEntry[]) => { result: T; updated?: SimulatorManifestEntry[] },
-  options?: { staleMs?: number; onContended?: () => T },
+  options?: { onContended?: () => T },
 ): T {
   const file = ensureManifestFile();
   // withFileLockSync, not lockfile.lockSync directly: the sync API rejects a
@@ -470,7 +490,7 @@ function withManifestLock<T>(
       try { atomicWriteManifest(file, updated); } catch { /* stale entry cleaned up next run */ }
     }
     return { result };
-  }, { attempts: 10, waitMs: 50, staleMs: options?.staleMs });
+  }, { attempts: 10, waitMs: 50, staleMs: MANIFEST_STALE_MS });
   if (locked) return locked.result;
 
   // Couldn't acquire the lock. For bookkeeping the unlocked fallback below is
@@ -688,11 +708,7 @@ export function cleanupStaleSimulators(
     }
 
     return { result: true, updated: surviving };
-  // Each entry runs synchronous simctl probes and deletes, which block the
-  // event loop — so proper-lockfile's mtime refresh timer never fires and the
-  // default 10s stale window would let a concurrent run break this lock and
-  // delete the same UDIDs. Declare a window that covers the whole sweep.
-  }, { staleMs: 5 * 60_000, onContended: () => false });
+  }, { onContended: () => false });
 
   if (!swept) {
     // Another run is sweeping right now. Don't fall through: phase 2 deletes by

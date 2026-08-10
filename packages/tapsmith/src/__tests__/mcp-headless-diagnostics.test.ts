@@ -19,6 +19,7 @@ import { loadMcpConfig } from '../mcp/config-loader.js';
 import {
   daemonSpawnArgs,
   isRepointing,
+  noDeviceMessage,
   readDaemonRegistry,
   registerDaemon,
   unregisterDaemon,
@@ -572,6 +573,21 @@ describe('MCP daemon registry', () => {
     expect(readDaemonRegistry()).toEqual([]);
   });
 
+  // A dead session's row is the only record of the daemon pid it started, so
+  // it is kept while that daemon is alive — otherwise the process is stranded:
+  // invisible for reuse and, because nothing knows its pid, never reaped.
+  // Here the recorded pid belongs to this test process, which is emphatically
+  // not a tapsmith-core, so the row is correctly discarded.
+  it('drops a dead session\'s entry when its daemon pid is not a live daemon', () => {
+    fs.mkdirSync(path.dirname(mcpDaemonRegistryPath()), { recursive: true });
+    fs.writeFileSync(
+      mcpDaemonRegistryPath(),
+      JSON.stringify([{ address: '127.0.0.1:50161', pid: 2147483647, daemonPid: process.pid }]),
+      'utf-8',
+    );
+    expect(readDaemonRegistry()).toEqual([]);
+  });
+
   it('keeps another live session\'s entry when pruning our own dead addresses', () => {
     registerDaemon('127.0.0.1:50161');
     // A peer session (this test's own pid stands in for "still alive") holding
@@ -906,5 +922,29 @@ describe('isRepointing', () => {
     // A freshly started daemon, and the fallback when the daemon cannot be
     // reached to ask. Neither is a move.
     expect(isRepointing(undefined, 'EMU-1')).toBe(false);
+  });
+});
+
+// "No ios device is available. Boot a simulator and try again." sent people
+// looking for a simulator that was already booted, when the real cause was a
+// serial in their config that no longer exists.
+describe('noDeviceMessage', () => {
+  it('names the configured device and what the daemon could actually see', () => {
+    const msg = noDeviceMessage('ios', 'OLD-UDID', ['SIM-1', 'SIM-2']);
+    expect(msg).toContain('"OLD-UDID"');
+    expect(msg).toContain('SIM-1, SIM-2');
+    expect(msg).not.toContain('Boot a simulator');
+  });
+
+  it('says the configured device is missing even when nothing else is there', () => {
+    const msg = noDeviceMessage('android', 'emulator-9999', []);
+    expect(msg).toContain('"emulator-9999"');
+    expect(msg).toContain('no other android was found');
+  });
+
+  it('keeps the start-a-device advice when the config pins nothing', () => {
+    expect(noDeviceMessage('ios')).toContain('Boot a simulator');
+    expect(noDeviceMessage('android')).toContain('Start an emulator');
+    expect(noDeviceMessage()).toContain('Connect a device');
   });
 });

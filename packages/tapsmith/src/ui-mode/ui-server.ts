@@ -28,7 +28,7 @@ import { resolveChildLoader } from '../child-scripts.js';
 import { TapsmithGrpcClient } from '../grpc-client.js';
 import type { Device } from '../device.js';
 import type { ResolvedProject } from '../project.js';
-import { collectTransitiveDeps } from '../project.js';
+import { collectTransitiveDeps, projectLabel } from '../project.js';
 import { matchesTestFilter } from '../test-filter.js';
 import { LaunchSetupError } from '../dispatcher.js';
 import type { LaunchedEmulator } from '../emulator.js';
@@ -216,20 +216,6 @@ interface UITestResultEntry extends TestResultEntry {
  */
 function resultEntryKey(entry: Pick<UITestResultEntry, 'projectName' | 'filePath' | 'fullName'>): string {
   return `${entry.projectName ?? ''}::${entry.filePath}::${entry.fullName}`;
-}
-
-/**
- * The project name to attribute a result to, or undefined when there is no
- * project to speak of.
- *
- * Keyed on `synthesized`, not on the name being "default": a config that
- * declares no projects gets one synthesized for it under that name, but a
- * config may also *name* a project "default". Testing the name drops the
- * latter's attribution, so its results are broadcast and stored project-less
- * while `getProjects` still lists it — filtering by it then finds nothing.
- */
-function projectLabel(project: ResolvedProject | undefined): string | undefined {
-  return project && !project.synthesized ? project.name : undefined;
 }
 
 // ─── UI Server ───

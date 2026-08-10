@@ -261,16 +261,16 @@ function App() {
   };
 
   // Extract the project name from a tree node id, or undefined if the id has
-  // no project prefix. The synthetic "default" project is normalized to
-  // undefined to match how the server tags trace-event messages (the server
-  // strips "default" on broadcast); without this, trace lookup keys mismatch
-  // for tests under the default project and the Actions tab stays empty.
+  // no project prefix. The name is used as-is: the server only builds project
+  // nodes for projects the config declared, and tags trace events with the
+  // same names, so a node named "default" is a real project. Stripping that
+  // name here mismatched the trace lookup key and left the Actions tab empty
+  // for every test in it.
   const extractProject = (id: string): string | undefined => {
     if (!id.startsWith('project::')) return undefined;
     const afterProject = id.slice('project::'.length);
     const sep = afterProject.indexOf('::');
-    const name = sep === -1 ? afterProject : afterProject.slice(0, sep);
-    return name === 'default' ? undefined : name;
+    return sep === -1 ? afterProject : afterProject.slice(0, sep);
   };
 
   // Composite key for trace storage. Trace data is stored per (project, test)

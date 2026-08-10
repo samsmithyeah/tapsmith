@@ -1991,7 +1991,7 @@ async function main(): Promise<void> {
   }
 
   // ─── Project resolution & test file discovery ───
-  const { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames } = await import('./project.js');
+  const { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, projectLabel } = await import('./project.js');
   const hasProjects = config.projects && config.projects.length > 0;
   const hasExplicitFiles = args.files && args.files.length > 0;
   const selectedProjects = args.project && args.project.length > 0 ? args.project : undefined;
@@ -2651,7 +2651,7 @@ async function main(): Promise<void> {
             screenshotDir,
             reporter,
             projectUseOptions: project.use,
-            projectName: project.name !== 'default' ? project.name : undefined,
+            projectName: projectLabel(project),
             projectGrep: projectGrepRe.length > 0 ? projectGrepRe : undefined,
             projectGrepInvert: projectGrepInvertRe.length > 0 ? projectGrepInvertRe : undefined,
             sessionContext: {

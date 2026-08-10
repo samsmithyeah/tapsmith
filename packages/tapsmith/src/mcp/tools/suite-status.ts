@@ -87,9 +87,13 @@ export function registerSuiteStatusTool(server: McpServer, dispatcher: TestDispa
  * Flatten the test tree into one row per test leaf, joined with the session's
  * accumulated results. Tests without a recorded result are 'not run'. Project
  * nodes set the projectName for everything beneath them, matching how run
- * results are keyed. The tree includes a project node literally named
- * 'default' when a config mixes named and unnamed projects, but results record
- * the default project as no projectName — normalize so the join matches.
+ * results are keyed.
+ *
+ * A project node's name is used as-is. The dispatcher only builds project
+ * nodes when the config declares projects of its own, so a node named
+ * "default" is a project the user named that — and its results are recorded
+ * under that name. Mapping it to `undefined` here missed every one of them and
+ * reported a completed run as entirely 'not run'.
  */
 function collectRows(
   nodes: TestTreeEntry[],
@@ -109,9 +113,7 @@ function collectRows(
       });
     }
     if (node.children) {
-      const childProject = node.type === 'project'
-        ? (node.name === 'default' ? undefined : node.name)
-        : projectName;
+      const childProject = node.type === 'project' ? node.name : projectName;
       collectRows(node.children, childProject, store, out);
     }
   }
