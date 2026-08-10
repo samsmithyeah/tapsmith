@@ -817,16 +817,25 @@ export async function startUIServer(
         }
       });
 
-      child.on('exit', () => {
+      // A child that dies without messaging — a crash, an OOM, or an
+      // `execPath` loader that cannot run — leaves the file with no tests and
+      // no reason. Record why, or the file simply vanishes from the tree and
+      // looks like one that genuinely holds none.
+      child.on('exit', (code, signal) => {
         if (!settled) {
           settled = true;
+          discoveryErrors.set(
+            filePath,
+            `Discovery process exited without a result (code ${code ?? 'null'}, signal ${signal ?? 'none'})`,
+          );
           resolve(null);
         }
       });
 
-      child.on('error', () => {
+      child.on('error', (err) => {
         if (!settled) {
           settled = true;
+          discoveryErrors.set(filePath, `Discovery process failed to start: ${err.message}`);
           resolve(null);
         }
       });

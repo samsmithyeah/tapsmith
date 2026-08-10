@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { deviceClientFor } from '../mcp/tools/device-target.js';
-import { selectProjectDevice } from '../mcp/connection.js';
+import { selectProjectDevice, retiredUiConnections } from '../mcp/connection.js';
 import type { TestDispatcher } from '../mcp/test-dispatcher.js';
 
 // A device tool used to fall back to the first pooled daemon whenever no
@@ -94,5 +94,36 @@ describe('selectProjectDevice', () => {
       { name: 'android', platform: 'android' },
     );
     expect(chosen).toEqual({ error: expect.stringContaining('EMU-1, EMU-2') });
+  });
+});
+
+// A UI worker that dies mid-run is retired and its daemon killed, but its
+// connection kept the `preparedDevice` it was handed at discovery — and that is
+// what `sessionTargetDevices` reads. So a two-worker session that lost one went
+// on reporting two devices, refusing every device tool as ambiguous over a
+// serial that no `device` or `project` argument could route to.
+describe('retiredUiConnections', () => {
+  const a = { address: '127.0.0.1:50151', source: 'ui' };
+  const b = { address: '127.0.0.1:50152', source: 'ui' };
+
+  it('drops a UI connection the server no longer lists', () => {
+    expect(retiredUiConnections([a, b], [{ address: a.address }])).toEqual([b]);
+  });
+
+  it('keeps every UI connection while the server still lists it', () => {
+    expect(retiredUiConnections([a, b], [{ address: a.address }, { address: b.address }]))
+      .toEqual([]);
+  });
+
+  // The worker list says nothing about a daemon we started, adopted, or were
+  // configured with — none of them appear in it even while perfectly alive.
+  it('never drops a connection from another source', () => {
+    const ours = [
+      { address: '127.0.0.1:50051', source: 'started' },
+      { address: '127.0.0.1:50052', source: 'peer' },
+      { address: '127.0.0.1:50053', source: 'orphan' },
+      { address: '127.0.0.1:50054', source: 'configured' },
+    ];
+    expect(retiredUiConnections(ours, [])).toEqual([]);
   });
 });

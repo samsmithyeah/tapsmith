@@ -270,16 +270,45 @@ export function sessionTargetDevices(): SessionDevice[] {
 }
 
 /**
- * Pick up UI worker daemons that appeared after discovery ran.
+ * UI worker connections the UI server no longer lists.
+ *
+ * A worker that dies mid-run is retired and its daemon killed, so it drops out
+ * of `/api/daemon-ports`. Dropping it here too is what keeps the session
+ * honest: the connection still carries the `preparedDevice` it was handed, and
+ * `sessionTargetDevices` reads that in preference to anything live — so a
+ * session that lost one of two workers would go on refusing every device tool
+ * as ambiguous, naming a device no argument could successfully select.
+ *
+ * Only `ui` connections: every other source answers to something other than
+ * the UI server's worker list, and absence from it says nothing about them.
+ *
+ * @internal — exported for unit testing.
+ */
+export function retiredUiConnections<T extends { address: string; source: string }>(
+  connections: T[],
+  daemons: Array<{ address: string }>,
+): T[] {
+  return connections.filter(
+    (c) => c.source === 'ui' && !daemons.some((d) => d.address === c.address),
+  );
+}
+
+/**
+ * Re-sync this session's UI worker daemons with the ones the UI server has.
  *
  * Cheap enough to do per interactive call: one loopback GET, and connections
  * we already hold are left alone. Silent on every failure — a session with no
  * UI server behind it is the normal case, not an error.
  */
 async function refreshUiConnections(): Promise<void> {
-  const { daemons, deviceSerials } = await discoverFromUiServer();
-  if (daemons.length === 0) return;
+  const { reachable, daemons, deviceSerials } = await discoverFromUiServer();
+  if (!reachable) return;
   if (deviceSerials.size > 0) _sessionDevices = deviceSerials;
+
+  for (const conn of retiredUiConnections(_connections, daemons)) {
+    log(`UI worker daemon at ${conn.address} is gone — dropping it from this session`);
+    removeConnection(conn);
+  }
 
   const added: DaemonConnection[] = [];
   for (const daemon of daemons) {
@@ -337,7 +366,11 @@ async function discover(): Promise<void> {
   // from — provenance decides whether we may repoint that daemon later.
   const candidates = new Map<string, DaemonSource>();
   const addCandidate = (address: string, source: DaemonSource): void => {
-    if (!candidates.has(address)) candidates.set(address, source);
+    // First source wins, except that `ui` overrides whatever named the address
+    // first. A UI worker's daemon is mid-run for someone else however else it
+    // was reached, and the sources ahead of it here are both `configured`,
+    // which `isOurs` would have us repoint and install our agent on.
+    if (!candidates.has(address) || source === 'ui') candidates.set(address, source);
   };
 
   // 1. Env var (supports comma-separated for multi-daemon)
@@ -479,22 +512,30 @@ async function discover(): Promise<void> {
  * Android and iOS needs one of each — hence this is callable outside the
  * initial discovery.
  */
+/** Every port this session has handed to a daemon, gRPC and agent alike. */
+const _issuedPorts = new Set<number>();
+
 /**
- * A free port that is not `taken`.
+ * A free port this session has not already given out.
  *
  * `pickFreePort` binds `:0` and closes again, so two calls in a row can be
  * handed the same port — nothing holds it in between, and with no connection
- * made there is no TIME_WAIT to keep it reserved. The daemon would then serve
- * gRPC on a port it also tries to forward the agent to, and the agent never
- * attaches. Other spawn paths avoid this by drawing agent ports from their own
- * 18700+ band; this one picks both, so it has to check.
+ * made there is no TIME_WAIT to keep it reserved. That is a hazard within one
+ * daemon, which would serve gRPC on the port it also forwards its agent to,
+ * and *between* two: a session spanning both platforms starts a daemon per
+ * platform, and the second one's gRPC port can be the first one's agent port,
+ * which stays unbound until that agent actually starts. Either way one agent
+ * never attaches. Other spawn paths avoid this by drawing agent ports from
+ * their own 18700+ band; this one picks both, so it has to remember.
  */
-async function pickDistinctFreePort(taken: number): Promise<number> {
+async function pickUnissuedPort(): Promise<number> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const port = await pickFreePort();
-    if (port !== taken) return port;
+    if (_issuedPorts.has(port)) continue;
+    _issuedPorts.add(port);
+    return port;
   }
-  throw new Error(`Could not find a free agent port distinct from ${taken}`);
+  throw new Error('Could not find a free port this session has not already used');
 }
 
 /**
@@ -510,14 +551,14 @@ export function daemonSpawnArgs(port: string, agentPort: string, platform?: stri
 
 async function startDaemon(platform?: string): Promise<DaemonConnection | null> {
   log(platform ? `Starting a ${platform} daemon...` : 'No daemon found, starting one...');
-  const port = String(await pickFreePort());
+  const port = String(await pickUnissuedPort());
   // Its own agent port, like every other daemon we spawn (see dispatcher.ts
   // and ui-server.ts). Daemons default to a shared one, which was harmless
   // while a session had a single daemon — but a session now runs one per
   // platform, and the second would attach to the first platform's agent:
   // iOS tools would drive the Android device, and iOS-only calls would come
   // back as "Unknown method".
-  const agentPort = String(await pickDistinctFreePort(Number(port)));
+  const agentPort = String(await pickUnissuedPort());
   const bin = findDaemonBin();
   const daemonArgs = daemonSpawnArgs(port, agentPort, platform);
 
@@ -847,11 +888,18 @@ interface UiDaemonRecord {
 }
 
 interface UiDiscoveryResult {
+  /**
+   * Whether the UI server answered. An empty `daemons` list means "no workers"
+   * only when it did — otherwise it means "no UI server here", and the two must
+   * not be confused: one is grounds for dropping worker connections, the other
+   * would drop every one of them on a single timed-out poll.
+   */
+  reachable: boolean
   daemons: UiDaemonRecord[]
   deviceSerials: Set<string>
 }
 
-const EMPTY_DISCOVERY: UiDiscoveryResult = { daemons: [], deviceSerials: new Set() };
+const EMPTY_DISCOVERY: UiDiscoveryResult = { reachable: false, daemons: [], deviceSerials: new Set() };
 
 async function discoverFromUiServer(): Promise<UiDiscoveryResult> {
   let portFileContent: string;
@@ -874,6 +922,7 @@ async function discoverFromUiServer(): Promise<UiDiscoveryResult> {
     if (!Array.isArray(data.daemons)) return EMPTY_DISCOVERY;
     const daemons = data.daemons.filter((d) => Boolean(d.address));
     return {
+      reachable: true,
       daemons,
       deviceSerials: new Set(daemons.map(d => d.deviceSerial).filter(Boolean) as string[]),
     };
@@ -1349,6 +1398,7 @@ export function closeAllClients(): void {
   }
   _connections = [];
   _deviceIndex = new Map();
+  _issuedPorts.clear();
   _sessionDevices = null;
   _ready = false;
   _connectingPromise = null;
