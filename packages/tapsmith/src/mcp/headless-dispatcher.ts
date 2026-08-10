@@ -990,6 +990,7 @@ export function fileFailureEntry(
     duration: 0,
     error: err instanceof Error ? err.message : String(err),
     projectName,
+    fileLevelFailure: true,
   };
 }
 

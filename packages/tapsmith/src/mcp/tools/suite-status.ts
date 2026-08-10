@@ -131,8 +131,11 @@ function collectRows(
  */
 function unmatchedFailures(all: TestResultEntry[], rows: SuiteTestRow[]): SuiteTestRow[] {
   const known = new Set(rows.map((r) => `${r.projectName ?? ''}::${r.filePath}::${r.fullName}`));
+  // Only the flagged file-level entries, not any failed result that happens to
+  // miss the tree: a test deleted since it last failed would otherwise be
+  // resurrected onto the board forever.
   return all
-    .filter((r) => r.status === 'failed')
+    .filter((r) => r.status === 'failed' && r.fileLevelFailure)
     .filter((r) => !known.has(`${r.projectName ?? ''}::${r.filePath}::${r.fullName}`))
     .map((r) => ({
       projectName: r.projectName,

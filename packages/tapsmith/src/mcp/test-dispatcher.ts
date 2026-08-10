@@ -26,6 +26,13 @@ export interface TestResultEntry {
   tracePath?: string
   videoPath?: string
   projectName?: string
+  /**
+   * True for the synthetic entry standing in for a whole file that could not
+   * run. It has no counterpart in the test tree, so consumers that join on the
+   * tree have to handle it specially — and it must be dropped as soon as the
+   * file runs for real, or a fixed file keeps reporting the old failure.
+   */
+  fileLevelFailure?: boolean
 }
 
 /** A test file that could not be loaded, so it holds no entry in the test tree. */

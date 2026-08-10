@@ -460,29 +460,28 @@ function atomicWriteManifest(file: string, entries: SimulatorManifestEntry[]): v
  * and the original holder's `release()` then removes the new holder's lock
  * directory, because the removal is unconditional.
  *
- * Sized for the longest critical section, `cleanupStaleSimulators`: it runs
- * synchronous `simctl` probes and deletes per entry, which block the event
- * loop, so proper-lockfile's own mtime-refresh timer never fires while it
- * holds the lock. The cost is that a process crashing mid-write leaves the
- * lock unbreakable for this long — survivable, because the fast paths fall
- * through to an unlocked best-effort write and the sweep skips itself.
+ * Short, because the sweep heartbeats. Sizing it to cover the whole sweep
+ * instead — it runs synchronous `simctl` calls per entry, which block the
+ * event loop and stop proper-lockfile's own refresh timer — meant a run killed
+ * mid-sweep left a lock nobody could break for minutes, and every run in that
+ * window stalled and then skipped its cleanup entirely.
  */
-const MANIFEST_STALE_MS = 5 * 60_000;
+const MANIFEST_STALE_MS = 60_000;
 
 // Run a read-modify-write operation under an exclusive file lock so concurrent
 // Tapsmith runs can't corrupt the manifest. proper-lockfile uses a `.lock` dir
 // next to the target file with retry/backoff and stale-lock detection.
 function withManifestLock<T>(
-  fn: (entries: SimulatorManifestEntry[]) => { result: T; updated?: SimulatorManifestEntry[] },
-  options?: { onContended?: () => T; waitBudget?: 'brief' | 'whole-sweep' },
+  fn: (entries: SimulatorManifestEntry[], heartbeat: () => void) => { result: T; updated?: SimulatorManifestEntry[] },
+  options?: { onContended?: () => T; waitBudget?: 'brief' | 'sweep' },
 ): T {
   const file = ensureManifestFile();
   // withFileLockSync, not lockfile.lockSync directly: the sync API rejects a
   // `retries` option ("Cannot use retries with the sync api"), so passing one
   // threw every time and this always ran unlocked.
-  const outcome = withFileLockSync(file, () => {
+  const outcome = withFileLockSync(file, (heartbeat) => {
     const entries = readManifestUnlocked(file);
-    const { result, updated } = fn(entries);
+    const { result, updated } = fn(entries, heartbeat);
     // Best effort inside the lock too. While the lock never worked, every call
     // took the fallback below, where a failed write is swallowed; letting it
     // throw here would turn bookkeeping nobody waits on into a failed run.
@@ -491,12 +490,12 @@ function withManifestLock<T>(
     }
     return { result };
   // A bookkeeping write waits briefly and then proceeds unlocked; the sweep
-  // waits out the holder instead. ~500ms is nowhere near a sweep's runtime — it
-  // shells out to `simctl` per manifest entry — so the second of two concurrent
-  // runs would give up every time and clone every simulator fresh, losing the
-  // reuse the lock was protecting.
-  }, options?.waitBudget === 'whole-sweep'
-    ? { attempts: 120, waitMs: 250, staleMs: MANIFEST_STALE_MS }
+  // waits longer, because giving up means cloning every simulator fresh. Every
+  // millisecond here is spent in `Atomics.wait` on the main thread, so the
+  // budget is a few seconds, not the length of a sweep — a holder that dies is
+  // reclaimed by the stale window, not by us out-waiting it.
+  }, options?.waitBudget === 'sweep'
+    ? { attempts: 20, waitMs: 250, staleMs: MANIFEST_STALE_MS }
     : { attempts: 10, waitMs: 50, staleMs: MANIFEST_STALE_MS });
   if (outcome.locked) return outcome.value.result;
 
@@ -508,7 +507,7 @@ function withManifestLock<T>(
   if (options?.onContended) return options.onContended();
 
   const entries = readManifestUnlocked(file);
-  const { result, updated } = fn(entries);
+  const { result, updated } = fn(entries, () => {});
   if (updated !== undefined) {
     try { atomicWriteManifest(file, updated); } catch { /* best effort */ }
   }
@@ -687,10 +686,15 @@ export function cleanupStaleSimulators(
   // entire read-modify-write so two concurrent Tapsmith runs don't both try to
   // reclaim the same simulator. The lock is released before phase 2/3, which
   // operate on simulators outside the manifest.
-  const swept = withManifestLock<boolean>((manifest) => {
+  const swept = withManifestLock<boolean>((manifest, heartbeat) => {
     const surviving: SimulatorManifestEntry[] = [];
 
     for (const entry of manifest) {
+      // Each iteration blocks the event loop on `simctl`, so the lock's own
+      // refresh timer never runs — say we are alive by hand, or a slow sweep
+      // looks abandoned and a concurrent run breaks the lock underneath it.
+      heartbeat();
+
       // Only reclaim clones matching the current simulator name
       if (entry.sourceName !== simulatorName) {
         surviving.push(entry);
@@ -715,7 +719,7 @@ export function cleanupStaleSimulators(
     }
 
     return { result: true, updated: surviving };
-  }, { waitBudget: 'whole-sweep', onContended: () => false });
+  }, { waitBudget: 'sweep', onContended: () => false });
 
   if (!swept) {
     // Another run is sweeping right now. Don't fall through: phase 2 deletes by

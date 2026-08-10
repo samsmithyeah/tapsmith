@@ -222,8 +222,9 @@ describe('tapsmith_suite_status', () => {
       getTestTree: () => tree,
       getResults: () => [
         result('/app/a.test.ts', 'auth > logs in', 'passed'),
-        result('/app/broken.test.ts', '/app/broken.test.ts — file failed to run', 'failed', {
+        result('/app/broken.test.ts', 'broken.test.ts — file failed to run', 'failed', {
           error: "Cannot find module '/app/fixtures.js'",
+          fileLevelFailure: true,
         }),
       ],
     });
@@ -235,6 +236,37 @@ describe('tapsmith_suite_status', () => {
     expect(text).toContain('Suite status: 1 passed, 1 failed, 0 skipped, 0 not run (2/2 tests run)');
     expect(text).toContain('/app/broken.test.ts: 1 failed');
     expect(text).toContain("Cannot find module '/app/fixtures.js'");
+  });
+
+  // The synthetic entry is keyed on a name no real test has, so nothing would
+  // ever overwrite it: without retiring it explicitly, fixing the import error
+  // and re-running green still left the board reporting the original failure
+  // for the rest of the session.
+  it('retires a file-level failure once the file runs for real', async () => {
+    const tree = [fileNode('/app/broken.test.ts', [testNode('/app/broken.test.ts', 'cart > adds item')])];
+    const dispatcher = makeDispatcher({
+      getTestTree: () => tree,
+      getResults: () => [
+        result('/app/broken.test.ts', 'broken.test.ts — file failed to run', 'failed', {
+          error: "Cannot find module '/app/fixtures.js'",
+          fileLevelFailure: true,
+        }),
+      ],
+    });
+
+    const { server, tools } = makeToolCapture();
+    registerSuiteStatusTool(server, dispatcher);
+    // First call: the file could not run.
+    expect(textOf(await tools.get('tapsmith_suite_status')!({}, extra))).toContain('1 failed');
+
+    // The user fixes it and re-runs; the file now reports a real result.
+    dispatcher.getResults = (): ReturnType<typeof dispatcher.getResults> => [
+      result('/app/broken.test.ts', 'cart > adds item', 'passed'),
+    ];
+    const text = textOf(await tools.get('tapsmith_suite_status')!({}, extra));
+
+    expect(text).toContain('Suite status: 1 passed, 0 failed, 0 skipped, 0 not run (1/1 tests run)');
+    expect(text).not.toContain('file failed to run');
   });
 
   it('does not duplicate a failure that the test tree already accounts for', async () => {

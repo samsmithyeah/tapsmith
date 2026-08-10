@@ -18,7 +18,21 @@ export class SessionResultsStore {
   merge(results: TestResultEntry[]): void {
     for (const r of results) {
       if (r.status !== 'passed' && r.status !== 'failed' && r.status !== 'skipped') continue;
+      // A real result proves the file ran, which retires the synthetic "failed
+      // to run" entry for it. That entry is keyed on a name no real test has,
+      // so nothing would ever overwrite it: fix the import error, re-run green,
+      // and the board would still report the original failure for the rest of
+      // the session.
+      if (!r.fileLevelFailure) this._dropFileLevelFailure(r.projectName, r.filePath);
       this._results.set(this._key(r.projectName, r.filePath, r.fullName), r);
+    }
+  }
+
+  private _dropFileLevelFailure(projectName: string | undefined, filePath: string): void {
+    for (const [key, entry] of this._results) {
+      if (entry.fileLevelFailure && entry.filePath === filePath && entry.projectName === projectName) {
+        this._results.delete(key);
+      }
     }
   }
 

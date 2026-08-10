@@ -294,6 +294,24 @@ async function discover(): Promise<void> {
  * initial discovery.
  */
 /**
+ * A free port that is not `taken`.
+ *
+ * `pickFreePort` binds `:0` and closes again, so two calls in a row can be
+ * handed the same port — nothing holds it in between, and with no connection
+ * made there is no TIME_WAIT to keep it reserved. The daemon would then serve
+ * gRPC on a port it also tries to forward the agent to, and the agent never
+ * attaches. Other spawn paths avoid this by drawing agent ports from their own
+ * 18700+ band; this one picks both, so it has to check.
+ */
+async function pickDistinctFreePort(taken: number): Promise<number> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const port = await pickFreePort();
+    if (port !== taken) return port;
+  }
+  throw new Error(`Could not find a free agent port distinct from ${taken}`);
+}
+
+/**
  * Arguments for a daemon this session spawns.
  *
  * @internal — exported for unit testing.
@@ -313,7 +331,7 @@ async function startDaemon(platform?: string): Promise<DaemonConnection | null> 
   // platform, and the second would attach to the first platform's agent:
   // iOS tools would drive the Android device, and iOS-only calls would come
   // back as "Unknown method".
-  const agentPort = String(await pickFreePort());
+  const agentPort = String(await pickDistinctFreePort(Number(port)));
   const bin = findDaemonBin();
   const daemonArgs = daemonSpawnArgs(port, agentPort, platform);
 
