@@ -527,10 +527,39 @@ function isLoopbackAddress(address: string): boolean {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
 }
 
+/**
+ * The registry file, once its directory is known to be private to this user.
+ *
+ * `mkdirSync(..., { mode })` applies the mode only when it creates the
+ * directory, so a pre-existing one is used with whatever permissions it
+ * already has — and the name is only `tapsmith-<uid>`, which anyone on a
+ * shared host can create first in a sticky temp dir. Loosen permissions we
+ * own back to 0700; refuse the registry outright when it belongs to someone
+ * else, since planting entries there is exactly the redirect the loopback
+ * filter cannot catch. Returns null when the registry cannot be trusted, in
+ * which case sessions simply stop sharing daemons.
+ */
+function privateRegistryFile(): string | null {
+  const file = mcpDaemonRegistryPath();
+  const dir = path.dirname(file);
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const stat = fs.lstatSync(dir);
+    if (!stat.isDirectory()) return null;
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return null;
+    if (stat.mode & 0o077) fs.chmodSync(dir, 0o700);
+    return file;
+  } catch {
+    return null;
+  }
+}
+
 function readRegistryEntries(): DaemonRegistryEntry[] {
+  const file = privateRegistryFile();
+  if (!file) return [];
   let parsed: unknown;
   try {
-    parsed = JSON.parse(fs.readFileSync(mcpDaemonRegistryPath(), 'utf-8'));
+    parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
   } catch {
     return [];
   }
@@ -568,9 +597,9 @@ function isProcessAlive(pid: number): boolean {
 function updateRegistry(
   transform: (entries: DaemonRegistryEntry[]) => DaemonRegistryEntry[],
 ): void {
-  const file = mcpDaemonRegistryPath();
+  const file = privateRegistryFile();
+  if (!file) return;
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     if (!fs.existsSync(file)) fs.writeFileSync(file, '[]', { encoding: 'utf-8', mode: 0o600 });
     withFileLockSync(file, () => {
       const next = transform(readRegistryEntries()).filter((e) => isProcessAlive(e.pid));

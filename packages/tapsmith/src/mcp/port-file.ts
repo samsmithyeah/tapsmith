@@ -25,10 +25,11 @@ export function uiPortFilePath(): string {
  * default port.
  */
 export function mcpDaemonRegistryPath(): string {
-  // Under a per-user directory (created 0700 by the writer) rather than loose
-  // in the shared temp dir: the file name is derived only from the project
-  // path, so on a multi-user host anyone could otherwise plant one and hand
-  // the session a daemon address of their choosing.
+  // Under a per-user directory rather than loose in the shared temp dir: the
+  // file name is derived only from the project path, so on a multi-user host
+  // anyone could otherwise plant one and hand the session a daemon address of
+  // their choosing. The directory is only as good as its permissions, which
+  // the writer verifies before trusting it (see `privateRegistryFile`).
   const uid = typeof process.getuid === 'function' ? process.getuid() : 'user';
   return path.join(os.tmpdir(), `tapsmith-${uid}`, `mcp-daemons-${projectHash()}.json`);
 }

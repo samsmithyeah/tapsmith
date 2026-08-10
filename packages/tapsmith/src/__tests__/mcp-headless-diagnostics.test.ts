@@ -591,6 +591,28 @@ describe('MCP daemon registry', () => {
     expect(readDaemonRegistry()).toEqual(['127.0.0.1:50161']);
   });
 
+  // mkdirSync applies its mode only when it creates the directory, so a
+  // pre-existing `tapsmith-<uid>` — a name anyone on a shared host can claim
+  // first in a sticky temp dir — was used with whatever permissions it had.
+  it('tightens a group- or world-writable registry directory it owns', () => {
+    const dir = path.dirname(mcpDaemonRegistryPath());
+    fs.mkdirSync(dir, { recursive: true });
+    fs.chmodSync(dir, 0o777);
+    registerDaemon('127.0.0.1:50161');
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50161']);
+  });
+
+  it('ignores a registry whose directory cannot be made private', () => {
+    // A plain file where the directory belongs stands in for a directory this
+    // user cannot secure: either way the path is not a private directory, and
+    // trusting it hands the session an address someone else chose.
+    const dir = path.dirname(mcpDaemonRegistryPath());
+    fs.writeFileSync(dir, 'not a directory', 'utf-8');
+    registerDaemon('127.0.0.1:50161');
+    expect(readDaemonRegistry()).toEqual([]);
+  });
+
   it('does not record the same daemon twice', () => {
     registerDaemon('127.0.0.1:50161');
     registerDaemon('127.0.0.1:50161');
