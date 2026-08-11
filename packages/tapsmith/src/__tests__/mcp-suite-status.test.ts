@@ -238,6 +238,41 @@ describe('tapsmith_suite_status', () => {
     expect(text).toContain("Cannot find module '/app/fixtures.js'");
   });
 
+  // The empty tree and the file-level failure have the same cause — every file
+  // failed to load — so the board bailed on "nothing discovered" in exactly the
+  // case these entries were added for, moments after the run reported them.
+  it('shows file-level failures when no file in the suite could be loaded', async () => {
+    const dispatcher = makeDispatcher({
+      getTestTree: () => [],
+      getResults: () => [
+        result('/app/a.test.ts', 'a.test.ts — file failed to run', 'failed', {
+          error: "Cannot find module '/app/fixtures.js'",
+          fileLevelFailure: true,
+        }),
+        result('/app/b.test.ts', 'b.test.ts — file failed to run', 'failed', {
+          error: "Cannot find module '/app/fixtures.js'",
+          fileLevelFailure: true,
+        }),
+      ],
+    });
+
+    const { server, tools } = makeToolCapture();
+    registerSuiteStatusTool(server, dispatcher);
+    const text = textOf(await tools.get('tapsmith_suite_status')!({}, extra));
+
+    expect(text).not.toContain('No test files discovered');
+    expect(text).toContain('Suite status: 0 passed, 2 failed');
+    expect(text).toContain('/app/a.test.ts');
+    expect(text).toContain('/app/b.test.ts');
+  });
+
+  it('still says nothing was discovered when there is nothing at all', async () => {
+    const { server, tools } = makeToolCapture();
+    registerSuiteStatusTool(server, makeDispatcher({ getTestTree: () => [] }));
+    expect(textOf(await tools.get('tapsmith_suite_status')!({}, extra)))
+      .toContain('No test files discovered');
+  });
+
   // The synthetic entry is keyed on a name no real test has, so nothing would
   // ever overwrite it: without retiring it explicitly, fixing the import error
   // and re-running green still left the board reporting the original failure

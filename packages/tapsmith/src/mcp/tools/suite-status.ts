@@ -29,13 +29,17 @@ export function registerSuiteStatusTool(server: McpServer, dispatcher: TestDispa
       store.merge(dispatcher.getResults());
 
       const tree = dispatcher.getTestTree();
-      if (tree.length === 0) {
-        return { content: [{ type: 'text' as const, text: 'No test files discovered.' }] };
-      }
-
       let rows: SuiteTestRow[] = [];
       collectRows(tree, undefined, store, rows);
+      // Before any bail on an empty tree: when every discovered file fails to
+      // load, the tree *is* empty and these synthetic failures are the only
+      // record the run happened. Answering "No test files discovered" there
+      // reports nothing to see moments after reporting N failures.
       rows.push(...unmatchedFailures(store.all(), rows));
+      if (rows.length === 0) {
+        const text = tree.length === 0 ? 'No test files discovered.' : 'No tests match the filter.';
+        return { content: [{ type: 'text' as const, text }] };
+      }
       if (file) rows = rows.filter((r) => r.filePath.includes(file));
       if (rows.length === 0) {
         return { content: [{ type: 'text' as const, text: 'No tests match the filter.' }] };

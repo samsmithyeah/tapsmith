@@ -770,22 +770,33 @@ export interface PlatformTarget {
 }
 
 /**
- * Whether the daemon behind a resolved target is still answering.
+ * Whether the daemon behind a resolved target is still answering — dropping it
+ * from the pool when it is not.
  *
  * A target is resolved once and then handed to every run child, which connects
  * to `address` itself. Nothing revisits that decision, so a daemon that dies
  * mid-session — killed by hand, OOM, a crash — leaves the session pointing at a
  * dead port with no way back short of restarting the server. Callers holding a
  * cached target check here and re-resolve when this comes back false.
+ *
+ * The pruning is not tidiness. Re-resolving adds a *new* connection beside the
+ * dead one, and nothing else would ever remove it: `ensureConnected()` probes
+ * only `_connections[0]`. Its stale `preparedDevice` survives every
+ * `refreshDeviceIndex`, so the session goes on advertising a device that no
+ * longer exists — enough to make every no-argument tool refuse as ambiguous,
+ * and `project: "ios"` match two iOS devices, one of them a shut-down
+ * simulator.
  */
 export async function platformTargetIsLive(target: PlatformTarget): Promise<boolean> {
   const conn = _connections.find((c) => c.address === target.address);
   if (!conn) return false;
   try {
-    return await conn.client.waitForReady(1_000);
+    if (await conn.client.waitForReady(1_000)) return true;
   } catch {
-    return false;
+    // Unreachable — treated the same as a failed probe.
   }
+  removeConnection(conn);
+  return false;
 }
 
 /**

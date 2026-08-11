@@ -462,6 +462,11 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     this._projects = [];
     this._projectWaves = [];
     this._projectConfigs.clear();
+    // Including the load failures: `_discoverTestTree` clears them, but
+    // `_initialize` only runs it when files were found. A second pass that
+    // discovers none kept reporting "N test file(s) failed to load" for paths
+    // this session no longer knows anything about.
+    this._discoveryErrors.clear();
     const config = await this._loadConfigWithFallback();
     this._config = config;
 
