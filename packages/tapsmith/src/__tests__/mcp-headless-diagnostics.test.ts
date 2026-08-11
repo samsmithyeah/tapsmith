@@ -1162,6 +1162,26 @@ describe('ambiguousDeviceMessage', () => {
     expect(msg!.indexOf('`project`')).toBeLessThan(msg!.indexOf('`device`'));
   });
 
+  // `project` names a platform, so it cannot separate two devices on the same
+  // one — the two workers of a single-platform UI run, say. Offering it there
+  // sends the caller through "Unknown project" or "matches 2 devices" before
+  // they reach the serial that was the only answer available.
+  it('does not offer `project` when the devices share a platform', () => {
+    const msg = ambiguousDeviceMessage([
+      { serial: 'SIM-1', platform: 'ios' },
+      { serial: 'SIM-2', platform: 'ios' },
+    ]);
+    expect(msg).toContain('ios: SIM-1');
+    expect(msg).toContain('ios: SIM-2');
+    expect(msg).toContain('`device`');
+    expect(msg).not.toContain('Pass `project`');
+  });
+
+  it('does not offer `project` when no device has a known platform', () => {
+    const msg = ambiguousDeviceMessage([{ serial: 'SIM-1' }, { serial: 'SIM-2' }]);
+    expect(msg).not.toContain('Pass `project`');
+  });
+
   it('still names devices whose platform is unknown', () => {
     // UI-mode worker daemons are attached to, not prepared, so nothing here
     // knows their platform — the serials are the actionable part regardless.

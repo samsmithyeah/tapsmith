@@ -333,9 +333,18 @@ async function clientPointedAt(serial: string): Promise<TapsmithGrpcClient> {
  */
 export function ambiguousDeviceMessage(targets: SessionDevice[]): string | null {
   if (targets.length <= 1) return null;
+  // `project` picks a device by its platform, so it can only tell these apart
+  // when they differ. Two workers of a single-platform UI run are the case that
+  // matters: offering `project` there sends the caller through "Unknown
+  // project" (a synthesized project has no name to pass) or "matches 2
+  // devices", when a serial was the only answer from the start.
+  const oneEach = new Set(targets.map((t) => t.platform)).size === targets.length;
   return `This session is driving ${targets.length} devices, so there is no single default. `
     + `${describeTargets(targets)} `
-    + 'Pass `project` to say which one this should act on, or `device` for a specific serial.';
+    + (oneEach
+      ? 'Pass `project` to say which one this should act on, or `device` for a specific serial.'
+      : 'They do not divide by platform, so `project` cannot choose between them — '
+        + 'pass `device` with one of the serials above.');
 }
 
 function describeTargets(targets: SessionDevice[]): string {

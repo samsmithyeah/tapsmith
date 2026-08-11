@@ -114,9 +114,20 @@ function isExecutableFile(candidate: string): boolean {
 }
 
 function findExecutableOnPath(name: string): string | undefined {
+  // On Windows the executable is `tsx.cmd`, not `tsx`. Handing the bare name to
+  // `spawn` used to work because it applies PATHEXT itself; scanning PATH by
+  // hand does not, so a suite there would find no loader, fork bare node, and
+  // drop every test file that imports a sibling — while reporting tsx missing
+  // with tsx installed.
+  const extensions = process.platform === 'win32'
+    ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+    : [''];
   for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
     if (!dir) continue;
-    if (isExecutableFile(path.join(dir, name))) return path.join(dir, name);
+    for (const extension of extensions) {
+      const candidate = path.join(dir, `${name}${extension}`);
+      if (isExecutableFile(candidate)) return candidate;
+    }
   }
   return undefined;
 }
