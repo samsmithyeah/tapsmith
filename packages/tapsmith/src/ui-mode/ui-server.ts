@@ -21,7 +21,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { McpEventEmitter } from '../mcp/events.js';
 import { McpSessionRouter } from '../mcp/http-session-router.js';
 import { configureMcpConnection } from '../mcp/connection.js';
-import { matchRequestedFiles } from '../mcp/headless-dispatcher.js';
+import { matchRequestedFiles, fileFailureEntry } from '../mcp/headless-dispatcher.js';
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
 import type { TapsmithConfig } from '../config.js';
 import { findDaemonBin } from '../daemon-bin.js';
@@ -964,6 +964,22 @@ export async function startUIServer(
     });
   }
 
+  /**
+   * Record a file that failed before any test in it could report.
+   *
+   * The browser learns about this from an `error` broadcast, but nothing was
+   * written to `testResults` — so `getResults()` came back empty and an MCP
+   * client saw "No test results yet" moments after the run reported a failure,
+   * with `suite_status` showing nothing at all. The headless dispatcher has
+   * always recorded a synthetic entry here; this is the same one, so the same
+   * board renders it and the same retirement drops it when the file runs.
+   */
+  function recordFileFailure(filePath: string, projectName: string | undefined, err: unknown): void {
+    const entry = fileFailureEntry(filePath, projectName, err);
+    failedFiles.add(filePath);
+    testResults.set(resultEntryKey(entry), entry);
+  }
+
   /** Broadcast a file-status update, optionally scoped to a project so the
    * client only updates that project's copy of the file node (multi-device
    * configs share the same file across projects). */
@@ -1029,6 +1045,7 @@ export async function startUIServer(
       if (!stopRequested) {
         const msg = err instanceof Error ? err.message : String(err);
         broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${msg}` });
+        recordFileFailure(filePath, projectName, err);
       }
       broadcastFileStatus(filePath, 'done', projectName);
       return endRun({ status: 'failed', passed: 0, failed: stopRequested ? 0 : 1, skipped: 0, duration: 0 });
@@ -1519,6 +1536,7 @@ export async function startUIServer(
           if (!stopRequested) {
             const errMsg = err instanceof Error ? err.message : String(err);
             broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
+            recordFileFailure(filePath, pName, err);
             totalFailed++;
           }
         }
@@ -2094,6 +2112,12 @@ export async function startUIServer(
         const orphaned = drainUnservableFiles(remaining);
         for (const f of orphaned) {
           broadcastFileStatus(f.filePath, 'done', f.projectName);
+          // Counted *and* recorded. Incrementing `failed` alone reported "1
+          // failed" from the run while `list_results` said there were no
+          // results and the status board showed nothing — the failure existed
+          // only in the number. It carries the reason the worker gave, which
+          // is the actual cause (an import error, say) rather than the drain.
+          recordFileFailure(f.filePath, f.projectName, new Error(`No worker could run this file: ${reason}`));
           failed++;
           anyFailed = true;
         }
@@ -2404,6 +2428,7 @@ export async function startUIServer(
       if (!parallelRunAborted) {
         const errMsg = err instanceof Error ? err.message : String(err);
         broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
+        recordFileFailure(filePath, file.projectName, err);
       }
       broadcastFileStatus(filePath, 'done', file.projectName);
       return endRun({ status: 'failed', passed: 0, failed: parallelRunAborted ? 0 : 1, skipped: 0, duration: 0 });
