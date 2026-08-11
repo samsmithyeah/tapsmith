@@ -8,7 +8,7 @@ import { findDaemonBin } from '../daemon-bin.js';
 import { pickFreePort } from '../port-utils.js';
 import type { TapsmithConfig } from '../config.js';
 import { loadMcpConfig } from './config-loader.js';
-import { uiPortFilePath, mcpDaemonRegistryPath } from './port-file.js';
+import { uiPortFilePath, allUiPortFiles, mcpDaemonRegistryPath } from './port-file.js';
 
 const DEFAULT_ADDRESS = 'localhost:50051';
 
@@ -81,6 +81,8 @@ let _uiMode = false;
  * a device tool has no config of its own to hand down.
  */
 let _discoveredConfig: TapsmithConfig | null = null;
+/** Addresses a running UI session told us it owns, from the last discovery. */
+let _uiOwned: Set<string> = new Set();
 
 /**
  * Configure the connection pool for the server that is about to use it.
@@ -556,6 +558,23 @@ async function discover(): Promise<void> {
     }
   }
 
+  // A UI session's daemons are its own, primary one included. Dropped here
+  // rather than guarded later: this address arrives as `configured`, which
+  // `isOurs` would let us repoint and install our agent on, so by the time any
+  // ownership guard runs the run has already been taken over.
+  if (!_uiMode) {
+    const owned = await uiOwnedAddresses();
+    if (owned.size > 0) {
+      for (const address of [...candidates.keys()]) {
+        if (owned.has(normalizeDaemonAddress(address))) {
+          log(`Ignoring ${address} — it belongs to a running UI-mode session`);
+          candidates.delete(address);
+        }
+      }
+      _uiOwned = owned;
+    }
+  }
+
   // Probe candidates in parallel
   type LiveDaemon = { client: TapsmithGrpcClient; address: string; source: DaemonSource };
   const probeAll = async (entries: Array<[string, DaemonSource]>): Promise<LiveDaemon[]> => {
@@ -587,7 +606,8 @@ async function discover(): Promise<void> {
   // falling through to 50051 because theirs is briefly down would hand the
   // session an unrelated daemon, classified `configured` and so treated as ours
   // to repoint and install this config's agent artifacts on.
-  if (live.length === 0 && !pinned && !candidates.has(DEFAULT_ADDRESS)) {
+  if (live.length === 0 && !pinned && !candidates.has(DEFAULT_ADDRESS)
+      && !_uiOwned.has(normalizeDaemonAddress(DEFAULT_ADDRESS))) {
     live = await probeAll([[DEFAULT_ADDRESS, 'configured']]);
   }
   // Probing is the liveness check, so this is the moment we know which
@@ -1096,9 +1116,45 @@ interface UiDiscoveryResult {
   reachable: boolean
   daemons: UiDaemonRecord[]
   deviceSerials: Set<string>
+  /** Every address the UI session drives, including its primary daemon. */
+  owned: string[]
 }
 
-const EMPTY_DISCOVERY: UiDiscoveryResult = { reachable: false, daemons: [], deviceSerials: new Set() };
+const EMPTY_DISCOVERY: UiDiscoveryResult = { reachable: false, daemons: [], deviceSerials: new Set(), owned: [] };
+
+/**
+ * Addresses a running UI session is using, so a headless one can stay off them.
+ *
+ * Not the same question as `discoverFromUiServer`, and asked even in headless
+ * mode. A UI run's *primary* daemon sits at the default `daemonAddress`, which
+ * every headless session probes and classifies `configured` — a source `isOurs`
+ * lets it repoint and start its own agent on, so the `ui` and `peer` guards
+ * never come near it. Measured: a headless iOS session beside a UI Android run
+ * claimed that daemon and pointed it at a simulator.
+ *
+ * @internal — exported for unit testing.
+ */
+export function normalizeDaemonAddress(address: string): string {
+  // Split on the *last* colon: the port is what follows it, and an IPv6 host
+  // is full of the things. Brackets come off with it.
+  const separator = address.lastIndexOf(':');
+  if (separator < 0) return address;
+  const host = address.slice(0, separator).replace(/^\[|\]$/g, '');
+  const port = address.slice(separator + 1);
+  const loopback = host === 'localhost' || host === '::1' || host === '' ? '127.0.0.1' : host;
+  return `${loopback}:${port}`;
+}
+
+async function uiOwnedAddresses(): Promise<Set<string>> {
+  const files = allUiPortFiles();
+  if (files.length === 0) return new Set();
+  const perServer = await Promise.all(files.map((f) => queryUiServerAt(f)));
+  const owned = new Set<string>();
+  for (const result of perServer) {
+    for (const address of result.owned) owned.add(normalizeDaemonAddress(address));
+  }
+  return owned;
+}
 
 async function discoverFromUiServer(): Promise<UiDiscoveryResult> {
   // A headless session does not attach to a UI run's workers. Sharing them made
@@ -1106,10 +1162,17 @@ async function discoverFromUiServer(): Promise<UiDiscoveryResult> {
   // UI run refused as ambiguous over devices belonging to someone else's run,
   // and a UI worker retiring changed what the headless session thought it had.
   if (!_uiMode) return EMPTY_DISCOVERY;
+  return queryUiServer();
+}
 
+function queryUiServer(): Promise<UiDiscoveryResult> {
+  return queryUiServerAt(uiPortFilePath());
+}
+
+async function queryUiServerAt(portFile: string): Promise<UiDiscoveryResult> {
   let portFileContent: string;
   try {
-    portFileContent = (await fs.promises.readFile(uiPortFilePath(), 'utf-8')).trim();
+    portFileContent = (await fs.promises.readFile(portFile, 'utf-8')).trim();
   } catch {
     return EMPTY_DISCOVERY;
   }
@@ -1123,13 +1186,14 @@ async function discoverFromUiServer(): Promise<UiDiscoveryResult> {
     // device does the ios project run on?" — the one question routing a device
     // tool by project needs. Headless knows it from `conn.platform`; this is
     // the same fact from the other transport.
-    const data = JSON.parse(json) as { daemons?: UiDaemonRecord[] };
+    const data = JSON.parse(json) as { daemons?: UiDaemonRecord[]; owned?: string[] };
     if (!Array.isArray(data.daemons)) return EMPTY_DISCOVERY;
     const daemons = data.daemons.filter((d) => Boolean(d.address));
     return {
       reachable: true,
       daemons,
       deviceSerials: new Set(daemons.map(d => d.deviceSerial).filter(Boolean) as string[]),
+      owned: Array.isArray(data.owned) ? data.owned.filter((a) => typeof a === 'string') : daemons.map((d) => d.address),
     };
   } catch (err) {
     log(`UI server discovery failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1619,6 +1683,7 @@ export function closeAllClients(): void {
   _connections = [];
   _deviceIndex = new Map();
   _discoveredConfig = null;
+  _uiOwned = new Set();
   _issuedPorts.clear();
   _sessionDevices = null;
   _ready = false;

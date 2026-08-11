@@ -4031,8 +4031,17 @@ export async function startUIServer(
           // would report no ios device with the worker sitting right there.
           platform: resolveWorkerPlatform(ctx, w),
         }));
+      // Every daemon this session drives, workers *and* the primary one. A
+      // headless MCP server has to be able to tell that the daemon at the
+      // default address belongs to a UI run: it reaches that address through
+      // its own `daemonAddress`, where the `ui` and `peer` guards never apply,
+      // and would claim it, repoint it and start its own agent on it.
+      const owned = [
+        ...daemons.map((d) => d.address),
+        ctx.daemonAddress ?? ctx.config.daemonAddress,
+      ].filter(Boolean);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ daemons }));
+      res.end(JSON.stringify({ daemons, owned }));
       return;
     }
 

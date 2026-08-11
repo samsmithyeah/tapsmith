@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
@@ -10,9 +11,38 @@ function projectHash(): string {
     .slice(0, 8);
 }
 
+const UI_PORT_PREFIX = 'ui-port-';
+
+/**
+ * Where a UI server publishes its MCP port.
+ *
+ * Beside the daemon registry, and for the same reason: `os.tmpdir()` reads
+ * `TMPDIR`, which an MCP client may drop when it spawns its server (the
+ * reference stdio transport passes a small allow-list). A client-launched
+ * headless server and a shell-launched UI server would then disagree about
+ * this path — and the headless one uses it to find out which daemons the UI
+ * session owns, so disagreeing means claiming a daemon mid-run.
+ */
 export function uiPortFilePath(): string {
-  const hash = projectHash();
-  return path.join(os.tmpdir(), `tapsmith-ui-port-${hash}`);
+  return path.join(daemonStateDir(), `${UI_PORT_PREFIX}${projectHash()}`);
+}
+
+/**
+ * Every UI server's port file, not just this project's.
+ *
+ * Two project directories share the default daemon address, so a UI session in
+ * one can own the daemon a headless session in the other is about to adopt.
+ * The question "is this daemon someone's UI run?" is machine-wide.
+ */
+export function allUiPortFiles(): string[] {
+  try {
+    const dir = daemonStateDir();
+    return fs.readdirSync(dir)
+      .filter((f) => f.startsWith(UI_PORT_PREFIX))
+      .map((f) => path.join(dir, f));
+  } catch {
+    return [];
+  }
 }
 
 /**

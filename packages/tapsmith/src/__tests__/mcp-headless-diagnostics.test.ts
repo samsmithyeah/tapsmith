@@ -22,12 +22,13 @@ import {
   isRepointing,
   noDeviceMessage,
   configureMcpConnection,
+  normalizeDaemonAddress,
   readDaemonRegistry,
   registerDaemon,
   unregisterDaemon,
   pruneDaemonRegistry,
 } from '../mcp/connection.js';
-import { mcpDaemonRegistryPath } from '../mcp/port-file.js';
+import { mcpDaemonRegistryPath, uiPortFilePath, allUiPortFiles } from '../mcp/port-file.js';
 import type { DiscoveryError, TestDispatcher, TestTreeEntry } from '../mcp/test-dispatcher.js';
 
 // The headless MCP server forks children to discover and to run test files.
@@ -679,6 +680,38 @@ describe('MCP daemon registry', () => {
     );
     pruneDaemonRegistry([]);
     expect(addresses()).toEqual(['127.0.0.1:50244']);
+  });
+
+  // A UI run's *primary* daemon sits at the default `daemonAddress`, which a
+  // headless session reaches as a `configured` candidate — a source it may
+  // repoint and start its own agent on, so no ownership guard ever sees it.
+  // Measured before this: a headless iOS session beside a UI Android run
+  // reported the simulator and answered from the emulator.
+  describe('UI-owned daemon addresses', () => {
+    it('compares loopback spellings as the same address', () => {
+      expect(normalizeDaemonAddress('localhost:50051')).toBe('127.0.0.1:50051');
+      expect(normalizeDaemonAddress('127.0.0.1:50051')).toBe('127.0.0.1:50051');
+      expect(normalizeDaemonAddress('[::1]:50051')).toBe('127.0.0.1:50051');
+    });
+
+    it('keeps a non-loopback host distinct', () => {
+      expect(normalizeDaemonAddress('10.0.0.5:50051')).toBe('10.0.0.5:50051');
+    });
+
+    // Two project directories share the default daemon port, so "is this
+    // daemon a UI run's?" is a machine-wide question, not a per-project one.
+    it('finds every UI session on the machine, not just this project\'s', () => {
+      fs.mkdirSync(path.dirname(uiPortFilePath()), { recursive: true });
+      fs.writeFileSync(uiPortFilePath(), '9274');
+      fs.writeFileSync(path.join(path.dirname(uiPortFilePath()), 'ui-port-deadbeef'), '9275');
+      const found = allUiPortFiles();
+      expect(found).toHaveLength(2);
+      expect(found.some((f) => f.endsWith('ui-port-deadbeef'))).toBe(true);
+    });
+
+    it('is empty when no UI server is running', () => {
+      expect(allUiPortFiles()).toEqual([]);
+    });
   });
 
   it('remembers a daemon so another session can find it', () => {
