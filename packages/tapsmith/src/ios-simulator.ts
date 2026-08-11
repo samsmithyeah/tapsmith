@@ -546,6 +546,30 @@ export function recordClonedSimulators(
 }
 
 /**
+ * A sweep's surviving entries, plus any that appeared while it was sweeping.
+ *
+ * Phase 1 holds the lock across a `simctl` call per entry, which is long enough
+ * that a concurrent run recording a fresh clone gives up waiting and writes
+ * unlocked — that is the documented fallback for bookkeeping. Writing the
+ * sweep's own list wholesale would then erase the clone's entry, and the *next*
+ * run's phase 2 deletes any `Tapsmith Worker` simulator the manifest does not
+ * know about: a live simulator, deleted out from under the run using it.
+ *
+ * Re-reading here rather than trusting the entry list the sweep started with
+ * shrinks the window from the length of a sweep to the moment before the write,
+ * and the rule is exact — the sweep only ever means to drop what it handled.
+ */
+function withConcurrentAdditions(
+  surviving: SimulatorManifestEntry[],
+  handledUdids: Set<string>,
+): SimulatorManifestEntry[] {
+  const known = new Set(surviving.map((e) => e.udid));
+  const appeared = readManifestUnlocked(ensureManifestFile())
+    .filter((e) => !known.has(e.udid) && !handledUdids.has(e.udid));
+  return appeared.length > 0 ? [...surviving, ...appeared] : surviving;
+}
+
+/**
  * Remove simulators from the manifest (called during force-cleanup).
  */
 export function unrecordSimulators(udids: string[]): void {
@@ -718,7 +742,7 @@ export function cleanupStaleSimulators(
       }
     }
 
-    return { result: true, updated: surviving };
+    return { result: true, updated: withConcurrentAdditions(surviving, handledUdids) };
   }, { waitBudget: 'sweep', onContended: () => false });
 
   if (!swept) {

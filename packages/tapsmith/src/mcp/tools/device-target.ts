@@ -16,8 +16,10 @@ export interface DeviceRequest {
 }
 
 export const DEVICE_ARG_DESCRIPTION =
-  'Device serial from tapsmith_list_devices. Optional when the session drives one device; '
-  + 'use `project` instead to name a device by the project that runs on it.';
+  'Serial of a device this session drives (see tapsmith_session_info). Optional when it '
+  + 'drives one; use `project` instead to name a device by the project that runs on it. '
+  + 'A device the session merely *sees* cannot be acted on: its daemon is pointed elsewhere, '
+  + 'and moving it would leave the agent attached to the previous device.';
 
 export const PROJECT_ARG_DESCRIPTION =
   'Project whose device this should act on (same names as tapsmith_run_tests). '

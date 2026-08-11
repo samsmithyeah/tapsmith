@@ -137,10 +137,14 @@ export class HeadlessTestDispatcher implements TestDispatcher {
 
   async runFiles(files: string[], options?: { testFilter?: string; project?: string }): Promise<TestRunResult> {
     await this._ensureInitialized();
-    this._startRunRequest();
     if (this._isRunning) {
       return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     }
+    // After the guard: a request rejected as already-running is not a new run,
+    // and resetting the budget from here would hand the *in-flight* run a fresh
+    // retry for every remaining file — the per-file daemon churn the budget
+    // exists to prevent.
+    this._startRunRequest();
 
     const { testFilter, project } = options ?? {};
     const validFiles = this.resolveRequestedFiles(files);
@@ -185,10 +189,14 @@ export class HeadlessTestDispatcher implements TestDispatcher {
 
   async runAll(): Promise<TestRunResult> {
     await this._ensureInitialized();
-    this._startRunRequest();
     if (this._isRunning) {
       return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     }
+    // After the guard: a request rejected as already-running is not a new run,
+    // and resetting the budget from here would hand the *in-flight* run a fresh
+    // retry for every remaining file — the per-file daemon churn the budget
+    // exists to prevent.
+    this._startRunRequest();
 
     this._isRunning = true;
     this._stopRequested = false;

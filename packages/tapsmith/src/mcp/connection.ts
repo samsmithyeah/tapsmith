@@ -67,6 +67,13 @@ let _connectingPromise: Promise<void> | null = null;
 let _configFile: string | undefined;
 /** Whether this process is the UI server, whose worker daemons are its own. */
 let _uiMode = false;
+/**
+ * The config discovery loaded, kept for work that happens between discoveries.
+ *
+ * Repointing a daemon has to start that config's agent on the new device, and
+ * a device tool has no config of its own to hand down.
+ */
+let _discoveredConfig: TapsmithConfig | null = null;
 
 /**
  * Configure the connection pool for the server that is about to use it.
@@ -254,18 +261,39 @@ async function clientPointedAt(serial: string): Promise<TapsmithGrpcClient> {
   const client = await ensureConnected(serial);
   const conn = _deviceIndex.get(serial);
   if (!conn || conn.preparedDevice === serial) return client;
-  // A UI worker's daemon is mid-run for someone else, and its device came from
-  // the UI server rather than from anything we did. Moving it sends that run's
-  // next action to our device — the same reason discovery will not claim one.
-  if (conn.source === 'ui' && conn.preparedDevice) {
+  // Only a daemon that is ours to drive. A UI worker's and a peer session's are
+  // both mid-run for someone else, and moving one sends their next action to
+  // our device — the same line `findConnectionForPlatform` draws, for the same
+  // reason.
+  if (!isOurs(conn.source)) {
+    const holding = conn.preparedDevice ?? conn.activeDevice;
+    const owner = conn.source === 'ui' ? 'a UI-mode worker' : 'another MCP session';
     throw new Error(
-      `Device ${serial} is only reachable through a UI-mode worker that is driving `
-      + `${conn.preparedDevice}. Pointing it at ${serial} would redirect that run. `
-      + 'Use that worker\'s device, or run this against a session of your own.',
+      `Device ${serial} is only reachable through a daemon belonging to ${owner}`
+      + `${holding ? `, which is driving ${holding}` : ''}. Pointing it at ${serial} would `
+      + 'redirect that run. Use the device it already holds, or a session of your own.',
     );
   }
-  await client.setDevice(serial);
-  conn.preparedDevice = serial;
+  // A daemon this session has already pointed somewhere is not moved.
+  //
+  // `set_device` does not detach the agent, and forcing a fresh `StartAgent`
+  // afterwards is not enough either: measured against two booted simulators,
+  // a snapshot taken after repointing came back with the *previous* device's
+  // screen — the throwaway showed only SpringBoard while the response
+  // described the test app. Serving that as the named device's state, with
+  // `preparedDevice` updated so nothing looks wrong, is the worst of the
+  // options. A session drives one device per platform; say so instead.
+  if (conn.preparedDevice) {
+    throw new Error(
+      `This session drives ${conn.preparedDevice} on that daemon, and pointing it at `
+      + `${serial} would leave the agent attached to ${conn.preparedDevice} — actions would `
+      + `report ${serial} while acting on ${conn.preparedDevice}. Use ${conn.preparedDevice}, `
+      + 'or start a session configured for the device you want.',
+    );
+  }
+  // Nothing prepared here yet — an adopted daemon we have not pointed anywhere.
+  // Pointing it is what makes it this session's, agent included.
+  await prepareTarget(conn, serial, _discoveredConfig);
   return client;
 }
 
@@ -421,6 +449,7 @@ export async function listAllDevices(): Promise<DeviceInfoProto[]> {
 
 async function discover(): Promise<void> {
   const config = await loadMcpConfig(_configFile).then((result) => result.config).catch(() => null);
+  _discoveredConfig = config;
 
   // Collect candidate addresses from all sources, remembering where each came
   // from — provenance decides whether we may repoint that daemon later.
@@ -937,7 +966,7 @@ async function currentDevice(conn: DaemonConnection): Promise<string | undefined
 async function prepareTarget(
   conn: DaemonConnection,
   serial: string,
-  config: TapsmithConfig,
+  config: TapsmithConfig | null,
 ): Promise<void> {
   // Ask the daemon where it is pointed *before* moving it. `agentConnected` is
   // daemon-global and `set_device` does not disconnect the agent, so a daemon
@@ -1487,6 +1516,7 @@ export function closeAllClients(): void {
   }
   _connections = [];
   _deviceIndex = new Map();
+  _discoveredConfig = null;
   _issuedPorts.clear();
   _sessionDevices = null;
   _ready = false;

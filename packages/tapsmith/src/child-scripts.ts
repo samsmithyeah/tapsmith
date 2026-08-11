@@ -38,7 +38,10 @@ export function resolveTsxBin(tapsmithPkgDir: string): string | undefined {
     path.resolve(tapsmithPkgDir, '..', '.bin', 'tsx'),
   ];
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
+    // Executable, like every other candidate below: a shim extracted without
+    // its mode bits is just as unusable as `execPath`, and accepting it here
+    // skips both the package lookup and the PATH fallback.
+    if (isExecutableFile(candidate)) return candidate;
   }
 
   // The package may be resolvable even when no .bin shim is reachable from here.

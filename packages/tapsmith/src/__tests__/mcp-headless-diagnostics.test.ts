@@ -121,10 +121,22 @@ describe('resolveTsxBin', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  // Executable, the way npm writes a `.bin` shim — `resolveTsxBin` hands what
+  // it finds to `fork` as `execPath`, so a file without the bit is no use and
+  // is deliberately skipped.
   function touch(...segments: string[]): string {
     const file = path.join(root, ...segments);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, '');
+    fs.chmodSync(file, 0o755);
+    return file;
+  }
+
+  function touchNonExecutable(...segments: string[]): string {
+    const file = path.join(root, ...segments);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '');
+    fs.chmodSync(file, 0o644);
     return file;
   }
 
@@ -146,6 +158,16 @@ describe('resolveTsxBin', () => {
     const own = touch('node_modules', 'tapsmith', 'node_modules', '.bin', 'tsx');
     touch('node_modules', '.bin', 'tsx');
     expect(resolveTsxBin(pkgDir)).toBe(own);
+  });
+
+  // A shim extracted without its mode bits becomes `execPath` for every forked
+  // child, and each dies with EACCES — burying the "install tsx" advice and
+  // skipping the fallbacks that would have worked.
+  it('skips a shim that is not executable rather than handing it to fork', () => {
+    const pkgDir = path.join(root, 'packages', 'tapsmith');
+    touchNonExecutable('packages', 'tapsmith', 'node_modules', '.bin', 'tsx');
+    const hoisted = touch('packages', '.bin', 'tsx');
+    expect(resolveTsxBin(pkgDir)).toBe(hoisted);
   });
 
   it('never returns a path that does not exist', () => {
