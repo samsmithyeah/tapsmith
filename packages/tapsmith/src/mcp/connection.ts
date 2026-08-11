@@ -731,6 +731,16 @@ async function startDaemon(platform?: string): Promise<DaemonConnection | null> 
   daemonProcess.unref();
   daemonProcess.on('error', (err) => { log(`Daemon process error: ${err.message}`); });
   daemonProcess.stderr?.on('data', (data: Buffer) => { log(`Daemon: ${data.toString().trim()}`); });
+  // `unref` on the child does not cover its pipes — they are separate handles,
+  // and a piped stderr with a listener holds the event loop open on its own.
+  // This daemon is meant to outlive us when a peer adopts it, and the MCP
+  // server exits by draining rather than by `process.exit` when its client
+  // disconnects: without this the session's node process would sit there until
+  // the daemon it deliberately left running finally died. Reading continues —
+  // `unref` only stops the handle keeping the loop alive.
+  // Typed `Readable`, which has no `unref`; the pipe behind it is a `Socket`,
+  // which does. Optional call so a future stdio change cannot throw here.
+  (daemonProcess.stderr as unknown as { unref?: () => void } | null)?.unref?.();
 
   const address = `127.0.0.1:${port}`;
   const client = new TapsmithGrpcClient(address);

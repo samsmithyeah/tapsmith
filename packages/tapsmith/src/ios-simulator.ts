@@ -578,6 +578,11 @@ function withConcurrentAdditions(
   return [...surviving, ...appeared];
 }
 
+/** Whether the manifest names this simulator *now*, not when the sweep began. */
+function isRecordedInManifest(udid: string): boolean {
+  return readManifestUnlocked(ensureManifestFile()).some((e) => e.udid === udid);
+}
+
 /**
  * Remove simulators from the manifest (called during force-cleanup).
  */
@@ -780,6 +785,11 @@ export function cleanupStaleSimulators(
   for (const sim of allSims) {
     if (handledUdids.has(sim.udid)) continue;
     if (!tapsmithWorkerPattern.test(sim.name)) continue;
+    // Read again, immediately before deleting. Phase 1's view of the manifest
+    // is as old as the sweep, and the lock is released by now — a run that
+    // recorded a clone in between would otherwise have it deleted here on the
+    // strength of a snapshot taken before it existed.
+    if (isRecordedInManifest(sim.udid)) continue;
 
     deleteSimulator(sim.udid);
     killed.push(sim.udid);
@@ -968,6 +978,13 @@ export function provisionSimulators(opts: {
         const createName = `${simulatorName} (Tapsmith Worker ${createIndex})`;
         try {
           const newUdid = createSimulator(createName, primarySim.deviceType, primarySim.runtime);
+          // Recorded before it is booted, and one at a time. A concurrent run's
+          // phase 2 deletes any `Tapsmith Worker N` the manifest does not know,
+          // so every second between creating one and recording it is a second
+          // it can be deleted from under us — and recording the whole batch at
+          // the end left each one exposed for the boot and app install of every
+          // simulator after it.
+          recordClonedSimulators([{ udid: newUdid, name: createName, cloned: true }], simulatorName);
           bootSimulator(newUdid);
           if (opts.appPath) {
             try { installApp(newUdid, opts.appPath); } catch { /* worker will retry */ }
@@ -988,6 +1005,8 @@ export function provisionSimulators(opts: {
         const cloneName = `${simulatorName} (Tapsmith Worker ${cloneIndex})`;
         try {
           const newUdid = cloneSimulator(source.udid, cloneName);
+          // Recorded immediately — see the create path above for why.
+          recordClonedSimulators([{ udid: newUdid, name: cloneName, cloned: true }], simulatorName);
           bootSimulator(newUdid);
           if (opts.appPath) {
             try { installApp(newUdid, opts.appPath); } catch { /* worker will retry */ }
@@ -1011,11 +1030,9 @@ export function provisionSimulators(opts: {
     }
   }
 
-  // Record newly cloned sims in the manifest for reuse by future runs
-  const newlyCloned = clonedSimulators.filter((c) => freshUdids.has(c.udid));
-  if (newlyCloned.length > 0) {
-    recordClonedSimulators(newlyCloned, simulatorName);
-  }
+  // Nothing to record here any more: each simulator is written to the manifest
+  // as it is created, which is the only way it is not deletable by another run
+  // in the meantime.
 
   return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids, reusedUdids };
 }

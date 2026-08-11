@@ -488,6 +488,34 @@ describe('cleanupStaleSimulators', () => {
     expect(result.killed).toContain('ORPHAN');
   });
 
+  // Phase 1's view of the manifest is as old as the sweep, and its lock is
+  // released before phase 2 deletes anything. A run that clones a worker in
+  // between records it immediately — and this is what stops the sweep deleting
+  // that live simulator on the strength of a snapshot taken before it existed.
+  it('spares a worker recorded after the sweep read the manifest', () => {
+    const recordedLater = JSON.stringify([
+      { udid: 'FRESH', name: 'iPhone 16 (Tapsmith Worker 1)', sourceName: 'iPhone 16', createdAt: '2026-01-01' },
+    ]);
+    // Phase 1 and the concurrent-additions re-read both see an empty manifest;
+    // by the time phase 2 checks, the other run has recorded its clone.
+    mockedReadFileSync
+      .mockReturnValueOnce('[]')
+      .mockReturnValueOnce('[]')
+      .mockReturnValue(recordedLater);
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      const a = args as string[];
+      if (cmd === 'xcrun' && a?.[0] === 'simctl' && a?.[1] === 'list') {
+        return makeSimctlOutput([
+          { udid: 'FRESH', name: 'iPhone 16 (Tapsmith Worker 1)', state: 'Booted' },
+        ]) as unknown as Buffer;
+      }
+      return '' as unknown as Buffer;
+    });
+
+    const result = cleanupStaleSimulators('iPhone 16');
+    expect(result.killed).not.toContain('FRESH');
+  });
+
   it('skips manifest entries for different simulator names', () => {
     mockedReadFileSync.mockReturnValue(JSON.stringify([
       { udid: 'OTHER', name: 'C1', sourceName: 'iPad Pro', createdAt: '2026-01-01' },
