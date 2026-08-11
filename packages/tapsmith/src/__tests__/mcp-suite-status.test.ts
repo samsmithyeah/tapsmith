@@ -273,6 +273,18 @@ describe('tapsmith_suite_status', () => {
       .toContain('No test files discovered');
   });
 
+  // Files were found, they just declare no tests. Blaming a filter the caller
+  // never passed sends the reader looking for an argument they did not use.
+  it('does not blame a filter when none was given', async () => {
+    const { server, tools } = makeToolCapture();
+    registerSuiteStatusTool(server, makeDispatcher({
+      getTestTree: () => [fileNode('/app/empty.test.ts', [])],
+    }));
+    const text = textOf(await tools.get('tapsmith_suite_status')!({}, extra));
+    expect(text).not.toContain('filter');
+    expect(text).toContain('declare none');
+  });
+
   // The synthetic entry is keyed on a name no real test has, so nothing would
   // ever overwrite it: without retiring it explicitly, fixing the import error
   // and re-running green still left the board reporting the original failure

@@ -268,32 +268,38 @@ async function clientPointedAt(serial: string): Promise<TapsmithGrpcClient> {
   const client = await ensureConnected(serial);
   const conn = _deviceIndex.get(serial);
   if (!conn) return client;
+
+  // Ask the daemon, and fall back to our notes only when it cannot be reached.
+  // `preparedDevice` records what *this* process did and `activeDevice` is a
+  // cached read; a registered daemon can be adopted by a second session that
+  // has moved it since. Acting on either belief is the failure this function
+  // exists to prevent — reporting one device while acting on another.
+  const pointedAt = await currentDevice(conn) ?? conn.preparedDevice ?? conn.activeDevice;
+
+  // Already there. Nothing to move, whoever owns it — and refusing here
+  // contradicted the step that got us here: a peer's daemon has no
+  // `preparedDevice` of ours, so its device arrives through `activeDevice`,
+  // which `sessionDevicesFrom` counts and `resolveDeviceTarget` may select.
+  // The tool then failed with "which is driving X … use the device it already
+  // holds", where X was the device it had just been asked for.
+  if (pointedAt === serial) return client;
+
   if (conn.preparedDevice === serial) {
-    // Confirm with the daemon rather than trust our own note. `preparedDevice`
-    // records only what *this* process did, and a registered daemon can be
-    // adopted by a second session — which may have pointed it elsewhere since.
-    // Believing the note there is the exact failure this function exists to
-    // prevent: acting on one device while reporting another.
-    const actual = await currentDevice(conn);
-    if (actual && isRepointing(actual, serial)) {
-      throw new Error(
-        `Another session has pointed that daemon at ${actual}, so it no longer drives `
-        + `${serial}. Moving it back would leave the agent attached to ${actual}. `
-        + 'Re-run this against a session of your own, or use ' + actual + '.',
-      );
-    }
-    return client;
+    throw new Error(
+      `Another session has pointed that daemon at ${pointedAt}, so it no longer drives `
+      + `${serial}. Moving it back would leave the agent attached to ${pointedAt}. `
+      + `Re-run this against a session of your own, or use ${pointedAt}.`,
+    );
   }
   // Only a daemon that is ours to drive. A UI worker's and a peer session's are
   // both mid-run for someone else, and moving one sends their next action to
   // our device — the same line `findConnectionForPlatform` draws, for the same
   // reason.
   if (!isOurs(conn.source)) {
-    const holding = conn.preparedDevice ?? conn.activeDevice;
     const owner = conn.source === 'ui' ? 'a UI-mode worker' : 'another MCP session';
     throw new Error(
       `Device ${serial} is only reachable through a daemon belonging to ${owner}`
-      + `${holding ? `, which is driving ${holding}` : ''}. Pointing it at ${serial} would `
+      + `${pointedAt ? `, which is driving ${pointedAt}` : ''}. Pointing it at ${serial} would `
       + 'redirect that run. Use the device it already holds, or a session of your own.',
     );
   }

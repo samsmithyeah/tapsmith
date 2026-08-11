@@ -756,7 +756,12 @@ export async function startUIServer(
   // This process *is* the UI server, so the worker daemons its MCP sessions
   // discover are its own. Only a UI-mode server may adopt them; a headless one
   // gets its own daemon and device (see `configureMcpConnection`).
-  configureMcpConnection({ uiMode: true });
+  // With the config this server was launched with: `configureMcpConnection`
+  // states a whole configuration, so omitting it left `discover()` re-finding
+  // one from the cwd. A daemon started for the MCP endpoint of
+  // `tapsmith test --ui -c configs/ci.config.ts` would then get its device and
+  // agent artifacts from whatever config the working directory happened to hold.
+  configureMcpConnection({ uiMode: true, configFile: ctx.configPath });
 
   // PILOT-221: route MCP over per-session transports so dropped clients can
   // reconnect and multiple agents can attach to this one device session. The

@@ -37,7 +37,11 @@ export function registerSuiteStatusTool(server: McpServer, dispatcher: TestDispa
       // reports nothing to see moments after reporting N failures.
       rows.push(...unmatchedFailures(store.all(), rows));
       if (rows.length === 0) {
-        const text = tree.length === 0 ? 'No test files discovered.' : 'No tests match the filter.';
+        // Not "no tests match the filter": this bail runs before any filtering,
+        // so saying that answered for a filter the caller never passed.
+        const text = tree.length === 0
+          ? 'No test files discovered.'
+          : 'No tests found — the discovered test files declare none.';
         return { content: [{ type: 'text' as const, text }] };
       }
       if (file) rows = rows.filter((r) => r.filePath.includes(file));
