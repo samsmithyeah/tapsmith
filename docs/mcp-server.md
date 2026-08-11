@@ -42,7 +42,7 @@ The MCP panel in the UI shows the connection status and a live activity feed of 
 
 ### Stdio mode
 
-Configure your MCP client to launch `tapsmith mcp-server` over stdio. You normally do not run this command directly; Codex, Claude Code, or another MCP client starts it as a subprocess when needed. The agent gets its own headless test session, daemon, and device, fully independent from any UI session. Test files and projects are discovered lazily on the first test-management tool call.
+Configure your MCP client to launch `tapsmith mcp-server` over stdio. You normally do not run this command directly; Codex, Claude Code, or another MCP client starts it as a subprocess when needed. The agent gets its own headless test session, daemon, and device, fully independent from any UI session — a headless server never attaches to the worker daemons of a running `tapsmith test --ui`, so what it drives does not change when that run starts, scales, or ends. Test files and projects are discovered lazily on the first test-management tool call.
 
 A multi-platform config gets one device and agent **per platform**, taken from
 each project's own settings, and runs are routed to the device matching the

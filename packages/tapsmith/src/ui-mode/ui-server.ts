@@ -20,6 +20,7 @@ import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { McpEventEmitter } from '../mcp/events.js';
 import { McpSessionRouter } from '../mcp/http-session-router.js';
+import { configureMcpConnection } from '../mcp/connection.js';
 import { matchRequestedFiles } from '../mcp/headless-dispatcher.js';
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
 import type { TapsmithConfig } from '../config.js';
@@ -751,6 +752,11 @@ export async function startUIServer(
 
   const mcpEvents = new McpEventEmitter();
   let mcpPort = 0;
+
+  // This process *is* the UI server, so the worker daemons its MCP sessions
+  // discover are its own. Only a UI-mode server may adopt them; a headless one
+  // gets its own daemon and device (see `configureMcpConnection`).
+  configureMcpConnection({ uiMode: true });
 
   // PILOT-221: route MCP over per-session transports so dropped clients can
   // reconnect and multiple agents can attach to this one device session. The

@@ -65,9 +65,21 @@ let _sessionDevices: Set<string> | null = null;
 let _ready = false;
 let _connectingPromise: Promise<void> | null = null;
 let _configFile: string | undefined;
+/** Whether this process is the UI server, whose worker daemons are its own. */
+let _uiMode = false;
 
-export function configureMcpConnection(options?: { configFile?: string }): void {
+/**
+ * Configure the connection pool for the server that is about to use it.
+ *
+ * `uiMode` says this process *is* the UI server, whose MCP endpoint drives that
+ * session's own worker daemons. A headless server is documented as getting its
+ * own session, daemon and device, independent of any UI session — so only the
+ * UI server asks the UI server what it is running. Both call sites state their
+ * whole configuration; there is no merging of successive calls.
+ */
+export function configureMcpConnection(options?: { configFile?: string; uiMode?: boolean }): void {
   _configFile = options?.configFile;
+  _uiMode = options?.uiMode ?? false;
 }
 
 export function getSessionDeviceSerials(): Set<string> | null {
@@ -973,6 +985,12 @@ interface UiDiscoveryResult {
 const EMPTY_DISCOVERY: UiDiscoveryResult = { reachable: false, daemons: [], deviceSerials: new Set() };
 
 async function discoverFromUiServer(): Promise<UiDiscoveryResult> {
+  // A headless session does not attach to a UI run's workers. Sharing them made
+  // it inherit that session's devices — so a headless `tap` beside a two-worker
+  // UI run refused as ambiguous over devices belonging to someone else's run,
+  // and a UI worker retiring changed what the headless session thought it had.
+  if (!_uiMode) return EMPTY_DISCOVERY;
+
   let portFileContent: string;
   try {
     portFileContent = (await fs.promises.readFile(uiPortFilePath(), 'utf-8')).trim();
