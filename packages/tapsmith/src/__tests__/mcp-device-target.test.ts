@@ -150,6 +150,24 @@ describe('sessionDevicesFrom', () => {
     ])).toEqual([{ serial: 'emulator-5554', platform: 'android' }]);
   });
 
+  // `prepareTarget` points the daemon before starting the agent, and keeps
+  // that record when the agent start throws — the daemon really did move. But
+  // a device whose agent never started is not one the session can act on, and
+  // counting it made every no-argument tool refuse as ambiguous over a target
+  // that could not have served one.
+  it('does not count a device whose agent failed to start', () => {
+    expect(sessionDevicesFrom([
+      { preparedDevice: 'SIM-1', platform: 'ios' },
+      { preparedDevice: 'EMU-1', platform: 'android', agentFailed: true },
+    ])).toEqual([{ serial: 'SIM-1', platform: 'ios' }]);
+  });
+
+  it('counts a device again once its agent starts', () => {
+    expect(sessionDevicesFrom([
+      { preparedDevice: 'EMU-1', platform: 'android', agentFailed: false },
+    ])).toEqual([{ serial: 'EMU-1', platform: 'android' }]);
+  });
+
   it('still reports one entry per device the session drives', () => {
     expect(sessionDevicesFrom([
       { preparedDevice: 'emulator-5554', platform: 'android' },

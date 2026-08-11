@@ -212,6 +212,28 @@ describe('resolveChildLoader', () => {
   });
 });
 
+// Review round 13 read this as returning discovery order. It does not: the set
+// is filled by walking the caller's list, and a set keeps insertion order — so
+// a caller that deliberately sequenced its files still gets them in sequence.
+describe('matchRequestedFiles ordering', () => {
+  const files = ['/r/a.test.ts', '/r/b.test.ts', '/r/c.test.ts'];
+
+  it('runs named files in the order the caller asked for', () => {
+    expect(matchRequestedFiles(['/r/c.test.ts', '/r/a.test.ts'], files, ['/r']))
+      .toEqual(['/r/c.test.ts', '/r/a.test.ts']);
+  });
+
+  it('keeps caller order for paths given relative to the root', () => {
+    expect(matchRequestedFiles(['b.test.ts', 'a.test.ts'], files, ['/r']))
+      .toEqual(['/r/b.test.ts', '/r/a.test.ts']);
+  });
+
+  it('never runs a file twice when two requests name it', () => {
+    expect(matchRequestedFiles(['a.test.ts', '/r/a.test.ts'], files, ['/r']))
+      .toEqual(['/r/a.test.ts']);
+  });
+});
+
 describe('fileFailureEntry', () => {
   it('records the cause of a whole-file failure as a failed result', () => {
     const entry = fileFailureEntry(

@@ -455,7 +455,13 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     // only latches on success — and the per-project branch pushes, so a config
     // that failed partway through left its files behind and the next attempt
     // added them a second time. `runAll` then ran each of them twice.
+    // Everything derived from the config, together. This runs again after a
+    // throw, and leaving last attempt's projects behind while the files they
+    // name are gone left `runAll` walking waves of files nothing re-discovered.
     this._testFiles = [];
+    this._projects = [];
+    this._projectWaves = [];
+    this._projectConfigs.clear();
     const config = await this._loadConfigWithFallback();
     this._config = config;
 
@@ -468,25 +474,32 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         this._projectWaves = [];
       }
 
-      if (this._hasRealProjects()) {
-        const seen = new Set<string>();
-        for (const project of this._projects) {
-          const files = await discoverTestFiles(
-            project.testMatch,
-            config.rootDir,
-            undefined,
-            project.testIgnore,
-          );
-          project.testFiles = files;
-          for (const f of files) {
-            if (!seen.has(f)) {
-              seen.add(f);
-              this._testFiles.push(f);
+      // Best effort, like `resolveProjects` above. A device tool waits on this
+      // now, and a `testMatch` glob that throws would otherwise take down
+      // `snapshot` and `tap` — tools with no interest in the test tree at all.
+      try {
+        if (this._hasRealProjects()) {
+          const seen = new Set<string>();
+          for (const project of this._projects) {
+            const files = await discoverTestFiles(
+              project.testMatch,
+              config.rootDir,
+              undefined,
+              project.testIgnore,
+            );
+            project.testFiles = files;
+            for (const f of files) {
+              if (!seen.has(f)) {
+                seen.add(f);
+                this._testFiles.push(f);
+              }
             }
           }
+        } else {
+          this._testFiles = await discoverTestFiles(config.testMatch, config.rootDir);
         }
-      } else {
-        this._testFiles = await discoverTestFiles(config.testMatch, config.rootDir);
+      } catch (err) {
+        log(`Test file discovery failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -834,6 +847,12 @@ export class HeadlessTestDispatcher implements TestDispatcher {
       this._watcher = chokidarWatch([], { ignoreInitial: true });
       this._watcher.on('change', (changedPath) => {
         if (this._watchedEntries.has(changedPath)) {
+          // Nothing re-runs discovery in watch mode, so an import failure
+          // recorded once was reported by `list_tests` for the life of the
+          // server — including after the edit that fixed it. The file just
+          // changed; the old reason no longer describes it, and the run about
+          // to be scheduled reports whatever is true now.
+          this._discoveryErrors.delete(changedPath);
           this._watchQueue.scheduleFiles([changedPath]);
         }
       });

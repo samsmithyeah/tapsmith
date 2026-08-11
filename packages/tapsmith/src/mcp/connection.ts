@@ -57,6 +57,13 @@ interface DaemonConnection {
   preparedDevice?: string
   /** The device this daemon reports as Active, refreshed with the device index. */
   activeDevice?: string
+  /**
+   * Set when this daemon was pointed at `preparedDevice` but its agent would
+   * not start. Both facts are true and both matter: the daemon really did move,
+   * so nothing may assume otherwise — and it is not a device this session can
+   * act on, so it must not be counted as one.
+   */
+  agentFailed?: boolean
 }
 
 let _connections: DaemonConnection[] = [];
@@ -299,7 +306,7 @@ async function clientPointedAt(serial: string): Promise<TapsmithGrpcClient> {
   // described the test app. Serving that as the named device's state, with
   // `preparedDevice` updated so nothing looks wrong, is the worst of the
   // options. A session drives one device per platform; say so instead.
-  if (conn.preparedDevice) {
+  if (conn.preparedDevice && !conn.agentFailed) {
     throw new Error(
       `This session drives ${conn.preparedDevice} on that daemon, and pointing it at `
       + `${serial} would leave the agent attached to ${conn.preparedDevice} — actions would `
@@ -307,7 +314,8 @@ async function clientPointedAt(serial: string): Promise<TapsmithGrpcClient> {
       + 'or start a session configured for the device you want.',
     );
   }
-  // Nothing prepared here yet — an adopted daemon we have not pointed anywhere.
+  // Nothing prepared here yet — an adopted daemon we have not pointed anywhere,
+  // or one whose agent never started, which serves no device as it stands.
   // Pointing it is what makes it this session's, agent included.
   await prepareTarget(conn, serial, _discoveredConfig);
   return client;
@@ -349,10 +357,19 @@ export function sessionTargetDevices(): SessionDevice[] {
 
 /** The decision behind {@link sessionTargetDevices}. @internal — exported for unit testing. */
 export function sessionDevicesFrom(
-  connections: Array<{ preparedDevice?: string; activeDevice?: string; platform?: string }>,
+  connections: Array<{
+    preparedDevice?: string
+    activeDevice?: string
+    platform?: string
+    agentFailed?: boolean
+  }>,
 ): SessionDevice[] {
   const bySerial = new Map<string, SessionDevice>();
   for (const conn of connections) {
+    // A daemon pointed at a device whose agent never started is not a device
+    // this session can act on. Counting it made every no-argument device tool
+    // refuse as ambiguous over a target that could not serve one anyway.
+    if (conn.agentFailed) continue;
     // `devices` is refreshed from each daemon's own list, so the one it reports
     // Active is what it drives even when nothing here pointed it there — a
     // daemon found at the default address, say.
@@ -1010,7 +1027,18 @@ async function prepareTarget(
   // happened, so if the agent start throws, the next claim must still see this
   // daemon as pointed here rather than assume it never moved.
   conn.preparedDevice = serial;
-  await startAgentFromConfig(conn.client, config, { force: repointed, required: true });
+  try {
+    await startAgentFromConfig(conn.client, config, { force: repointed, required: true });
+    conn.agentFailed = false;
+  } catch (err) {
+    // Deliberately *not* rolling `preparedDevice` back: `set_device` already
+    // happened, and a later claim that assumed the daemon never moved would
+    // skip the forced agent start it needs. Recording the failure instead
+    // keeps both facts, so a broken target is not counted as a device the
+    // session drives.
+    conn.agentFailed = true;
+    throw err;
+  }
   // The daemon that was prepared for a serial is the one that serves it, even
   // when another daemon can merely see it.
   _deviceIndex.set(serial, conn);
