@@ -558,6 +558,8 @@ export function recordClonedSimulators(
  * Re-reading here rather than trusting the entry list the sweep started with
  * shrinks the window from the length of a sweep to the moment before the write,
  * and the rule is exact — the sweep only ever means to drop what it handled.
+ *
+ * Adds the udids it finds to `handledUdids`, so phase 2 spares them too.
  */
 function withConcurrentAdditions(
   surviving: SimulatorManifestEntry[],
@@ -566,7 +568,14 @@ function withConcurrentAdditions(
   const known = new Set(surviving.map((e) => e.udid));
   const appeared = readManifestUnlocked(ensureManifestFile())
     .filter((e) => !known.has(e.udid) && !handledUdids.has(e.udid));
-  return appeared.length > 0 ? [...surviving, ...appeared] : surviving;
+  if (appeared.length === 0) return surviving;
+  // Marked handled, not just kept. Phase 2 runs after this, outside the lock,
+  // and deletes any `Tapsmith Worker N` simulator that phase 1 did not record —
+  // so keeping the manifest entry while leaving the udid unhandled deletes the
+  // very simulator the entry describes, and leaves the record pointing at
+  // nothing. The entry and the simulator have to survive together.
+  for (const entry of appeared) handledUdids.add(entry.udid);
+  return [...surviving, ...appeared];
 }
 
 /**

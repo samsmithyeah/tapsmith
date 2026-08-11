@@ -21,6 +21,7 @@ import {
   daemonSpawnArgs,
   isRepointing,
   noDeviceMessage,
+  configureMcpConnection,
   readDaemonRegistry,
   registerDaemon,
   unregisterDaemon,
@@ -661,6 +662,36 @@ describe('MCP daemon registry', () => {
   it('remembers a daemon so another session can find it', () => {
     registerDaemon('127.0.0.1:50161');
     expect(addresses()).toEqual(['127.0.0.1:50161']);
+  });
+
+  // The UI server's daemons are its workers'; a headless session's are its own.
+  // Sharing them either way puts one session's devices in the other's pool —
+  // and a UI device tool then refuses as ambiguous over a device the UI run
+  // never had, while the UI process keeps the headless daemon alive as a
+  // registered user of it.
+  describe('in UI mode', () => {
+    afterEach(() => { configureMcpConnection({}); });
+
+    it('records nothing, so no headless session adopts a UI worker daemon', () => {
+      registerDaemon('127.0.0.1:50161');
+      configureMcpConnection({ uiMode: true });
+
+      registerDaemon('127.0.0.1:50162');
+      // Only the headless session's row. Discovery skips reading the file at
+      // all in UI mode; this asserts the other half — that nothing was written.
+      expect(addresses()).toEqual(['127.0.0.1:50161']);
+    });
+
+    it('leaves another session\'s row alone on the way out', () => {
+      registerDaemon('127.0.0.1:50161');
+      configureMcpConnection({ uiMode: true });
+
+      unregisterDaemon('127.0.0.1:50161');
+      pruneDaemonRegistry([]);
+
+      configureMcpConnection({});
+      expect(addresses()).toEqual(['127.0.0.1:50161']);
+    });
   });
 
   // A live session's daemon and an abandoned one need opposite treatment: the

@@ -260,7 +260,23 @@ async function forDevice(serial: string): Promise<{ client: TapsmithGrpcClient; 
 async function clientPointedAt(serial: string): Promise<TapsmithGrpcClient> {
   const client = await ensureConnected(serial);
   const conn = _deviceIndex.get(serial);
-  if (!conn || conn.preparedDevice === serial) return client;
+  if (!conn) return client;
+  if (conn.preparedDevice === serial) {
+    // Confirm with the daemon rather than trust our own note. `preparedDevice`
+    // records only what *this* process did, and a registered daemon can be
+    // adopted by a second session — which may have pointed it elsewhere since.
+    // Believing the note there is the exact failure this function exists to
+    // prevent: acting on one device while reporting another.
+    const actual = await currentDevice(conn);
+    if (actual && isRepointing(actual, serial)) {
+      throw new Error(
+        `Another session has pointed that daemon at ${actual}, so it no longer drives `
+        + `${serial}. Moving it back would leave the agent attached to ${actual}. `
+        + 'Re-run this against a session of your own, or use ' + actual + '.',
+      );
+    }
+    return client;
+  }
   // Only a daemon that is ours to drive. A UI worker's and a peer session's are
   // both mid-run for someone else, and moving one sends their next action to
   // our device — the same line `findConnectionForPlatform` draws, for the same
@@ -497,8 +513,15 @@ async function discover(): Promise<void> {
   // 5. Daemons started by other MCP sessions in this project. Without this each
   // session starts its own daemon on a random port and they pile up, all
   // driving the same device.
-  for (const { address, orphaned } of readDaemonRegistry()) {
-    addCandidate(address, orphaned ? 'orphan' : 'peer');
+  //
+  // Headless sessions only, and it is the same independence the UI server gets
+  // from the other direction: adopting a headless session's daemon here would
+  // put its device in the UI session's pool, and every UI device tool without a
+  // `project` would refuse as ambiguous over a device the UI run never had.
+  if (usesDaemonRegistry()) {
+    for (const { address, orphaned } of readDaemonRegistry()) {
+      addCandidate(address, orphaned ? 'orphan' : 'peer');
+    }
   }
 
   // Probe candidates in parallel
@@ -1293,8 +1316,21 @@ export function readDaemonRegistry(): Array<{ address: string; orphaned: boolean
   return [...byAddress].map(([address, orphaned]) => ({ address, orphaned }));
 }
 
+/**
+ * Whether this server shares daemons through the registry at all.
+ *
+ * The UI server's daemons are its workers', and a headless session's are its
+ * own — neither should end up in the other's pool. So the UI server neither
+ * reads the registry nor writes to it, and never becomes a registered user
+ * keeping some other session's daemon alive.
+ */
+function usesDaemonRegistry(): boolean {
+  return !_uiMode;
+}
+
 /** Record that this session is using a daemon. @internal — exported for unit testing. */
 export function registerDaemon(address: string, daemonPid?: number): void {
+  if (!usesDaemonRegistry()) return;
   if (!isLoopbackAddress(address)) return;
   updateRegistry((entries) => [...entries, { address, pid: process.pid, daemonPid }]);
 }
@@ -1320,6 +1356,7 @@ function isTapsmithDaemonProcess(pid: number): boolean {
 
 /** Drop this session's use of a daemon. @internal — exported for unit testing. */
 export function unregisterDaemon(address: string): void {
+  if (!usesDaemonRegistry()) return;
   updateRegistry((entries) => entries.filter((e) => !(e.address === address && e.pid === process.pid)));
 }
 
@@ -1343,6 +1380,7 @@ function daemonInUseByOthers(address: string): boolean {
  * @internal — exported for unit testing.
  */
 export function pruneDaemonRegistry(liveAddresses: string[]): void {
+  if (!usesDaemonRegistry()) return;
   const live = new Set(liveAddresses);
   // A daemon whose process is still running has not gone away — a 1s probe can
   // time out under load or a GC pause. Dropping the row on that evidence loses
