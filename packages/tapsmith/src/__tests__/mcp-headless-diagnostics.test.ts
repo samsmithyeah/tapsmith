@@ -28,7 +28,7 @@ import {
   unregisterDaemon,
   pruneDaemonRegistry,
 } from '../mcp/connection.js';
-import { mcpDaemonRegistryPath, uiPortFilePath, allUiPortFiles } from '../mcp/port-file.js';
+import { mcpDaemonRegistryPath, uiPortFilePath, allUiPortFiles, ensureDaemonStateDir } from '../mcp/port-file.js';
 import type { DiscoveryError, TestDispatcher, TestTreeEntry } from '../mcp/test-dispatcher.js';
 
 // The headless MCP server forks children to discover and to run test files.
@@ -711,6 +711,25 @@ describe('MCP daemon registry', () => {
 
     it('is empty when no UI server is running', () => {
       expect(allUiPortFiles()).toEqual([]);
+    });
+
+    // Nothing else creates this directory in UI mode — the registry's mkdir sits
+    // behind writes a UI server deliberately never makes. Without it the port
+    // file write failed with ENOENT on a fresh machine, no UI server was
+    // discoverable, and headless sessions went back to claiming its daemon.
+    it('creates the state directory a UI server publishes its port into', () => {
+      const dir = path.dirname(uiPortFilePath());
+      expect(fs.existsSync(dir)).toBe(false);
+
+      ensureDaemonStateDir();
+      expect(fs.existsSync(dir)).toBe(true);
+      expect(() => fs.writeFileSync(uiPortFilePath(), '9274')).not.toThrow();
+      expect(allUiPortFiles()).toHaveLength(1);
+    });
+
+    it('is safe to call when the directory already exists', () => {
+      ensureDaemonStateDir();
+      expect(() => ensureDaemonStateDir()).not.toThrow();
     });
   });
 

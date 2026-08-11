@@ -28,6 +28,24 @@ export function uiPortFilePath(): string {
 }
 
 /**
+ * Make sure the state directory exists before something writes into it.
+ *
+ * Nothing else creates it in UI mode: the registry's `mkdir` lives behind the
+ * writes a UI server deliberately never makes. On a fresh machine the port
+ * file write then failed with ENOENT into a `catch` that swallows it, no UI
+ * server was discoverable, and headless sessions went back to claiming the
+ * daemon it was driving — the bug this file's location exists to prevent,
+ * reappearing on exactly the installs that never saw it work.
+ */
+export function ensureDaemonStateDir(): void {
+  try {
+    fs.mkdirSync(daemonStateDir(), { recursive: true, mode: 0o700 });
+  } catch {
+    // Best effort: the caller's own write reports the real problem.
+  }
+}
+
+/**
  * Every UI server's port file, not just this project's.
  *
  * Two project directories share the default daemon address, so a UI session in

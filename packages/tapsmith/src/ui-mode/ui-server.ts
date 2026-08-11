@@ -4104,12 +4104,17 @@ export async function startUIServer(
   console.log(`\x1b[2mMCP ready at http://127.0.0.1:${mcpPort}/mcp\x1b[0m`);
 
   // Write port file for standalone MCP server discovery
-  const { uiPortFilePath } = await import('../mcp/port-file.js');
+  const { uiPortFilePath, ensureDaemonStateDir } = await import('../mcp/port-file.js');
   const portFilePath = uiPortFilePath();
   try {
+    // The directory is ours to create: a UI server writes nothing else there,
+    // and without this the first run on a machine publishes no port at all.
+    ensureDaemonStateDir();
     fs.writeFileSync(portFilePath, String(mcpPort));
-  } catch {
-    // Non-fatal
+  } catch (err) {
+    // Non-fatal, but not silent: headless sessions use this file to tell which
+    // daemons belong to this run, and without it they may claim one of them.
+    console.error(`${YELLOW}Could not publish the MCP port to ${portFilePath}: ${err instanceof Error ? err.message : err}.${RESET}`);
   }
 
   // Send device info (single-worker)

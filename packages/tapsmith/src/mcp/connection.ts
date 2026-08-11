@@ -563,15 +563,15 @@ async function discover(): Promise<void> {
   // `isOurs` would let us repoint and install our agent on, so by the time any
   // ownership guard runs the run has already been taken over.
   if (!_uiMode) {
-    const owned = await uiOwnedAddresses();
-    if (owned.size > 0) {
-      for (const address of [...candidates.keys()]) {
-        if (owned.has(normalizeDaemonAddress(address))) {
-          log(`Ignoring ${address} — it belongs to a running UI-mode session`);
-          candidates.delete(address);
-        }
+    // Assigned every time, empty included: a UI session that has since exited
+    // owns nothing, and keeping the old set would go on excluding the default
+    // address from the fallback probe for the rest of this process's life.
+    _uiOwned = await uiOwnedAddresses();
+    for (const address of [...candidates.keys()]) {
+      if (_uiOwned.has(normalizeDaemonAddress(address))) {
+        log(`Ignoring ${address} — it belongs to a running UI-mode session`);
+        candidates.delete(address);
       }
-      _uiOwned = owned;
     }
   }
 
