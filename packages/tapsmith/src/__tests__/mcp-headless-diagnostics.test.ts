@@ -879,6 +879,47 @@ describe('project listing', () => {
     expect(retried).toEqual(['ios']);
   });
 
+  // The budget is per run request, not per server. Spending it once for the
+  // life of the process meant the first run after startup burned the only
+  // retry there was — so a user who read "boot a simulator and try again",
+  // booted one, and tried again got the same cached error forever.
+  it('gives the retry back when the caller asks for another run', async () => {
+    const dispatcher = new HeadlessTestDispatcher({});
+    const internals = dispatcher as unknown as {
+      _targetErrors: Map<string, string>
+      _config: { platform?: string } | null
+      _projects: unknown[]
+      _resolveOnePlatformTarget: (effective: { platform?: string }) => Promise<void>
+      _ensureTargetForProject: (project?: string) => Promise<{ deviceSerial: string }>
+      _dropTargetIfDaemonDied: (key: string) => Promise<void>
+      _startRunRequest: () => void
+    };
+    internals._config = { platform: 'ios' };
+    internals._projects = [];
+    internals._targetErrors.set('ios', 'No ios device is available. Boot a simulator and try again.');
+    internals._dropTargetIfDaemonDied = async (): Promise<void> => {};
+
+    let attempts = 0;
+    // The simulator is still not booted, so the retry changes nothing.
+    internals._resolveOnePlatformTarget = async (): Promise<void> => { attempts++; };
+
+    await expect(internals._ensureTargetForProject()).rejects.toThrow('Boot a simulator');
+    await expect(internals._ensureTargetForProject()).rejects.toThrow('Boot a simulator');
+    expect(attempts).toBe(1);
+
+    // The user boots it and runs again.
+    internals._startRunRequest();
+    internals._resolveOnePlatformTarget = async (): Promise<void> => {
+      attempts++;
+      internals._targetErrors.delete('ios');
+      (dispatcher as unknown as { _targets: Map<string, unknown> })
+        ._targets.set('ios', { address: '127.0.0.1:50051', deviceSerial: 'SIM-1' });
+    };
+    const target = await internals._ensureTargetForProject();
+    expect(target.deviceSerial).toBe('SIM-1');
+    expect(attempts).toBe(2);
+  });
+
   // An MCP session runs one device per platform, so projects on the same
   // platform that pin different devices share a target. Which one they share
   // is documented as the first — a Map built from the whole project list kept

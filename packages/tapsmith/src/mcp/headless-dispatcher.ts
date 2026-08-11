@@ -92,7 +92,11 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private _targets = new Map<string, PlatformTarget>();
   /** Why a platform has no target, kept so a run for it can say so. */
   private _targetErrors = new Map<string, string>();
-  /** Platforms already retried once, so a stuck one is not retried per file. */
+  /**
+   * Platforms already retried during the current run request, so a stuck one is
+   * not retried per file. Cleared when a new request arrives — see
+   * {@link _startRunRequest}.
+   */
   private _retriedTargets = new Set<string>();
   /** Per-project serialized configs handed to workers, built on first use. */
   private _projectConfigs = new Map<string, SerializedConfig>();
@@ -117,8 +121,23 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     await this._ensureInitialized();
   }
 
+  /**
+   * Give every platform its retry back, once per run the caller asks for.
+   *
+   * The budget stops a platform with no device being re-resolved once per file,
+   * which would spawn and discard a daemon each time. Spending it *once for the
+   * life of the server* went too far the other way: the failure says "boot a
+   * simulator and try again", and the first `run_tests` after startup burns the
+   * only retry there is — so the user boots the simulator, tries again, and is
+   * handed the same cached error with nothing left that would notice.
+   */
+  private _startRunRequest(): void {
+    this._retriedTargets.clear();
+  }
+
   async runFiles(files: string[], options?: { testFilter?: string; project?: string }): Promise<TestRunResult> {
     await this._ensureInitialized();
+    this._startRunRequest();
     if (this._isRunning) {
       return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     }
@@ -166,6 +185,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
 
   async runAll(): Promise<TestRunResult> {
     await this._ensureInitialized();
+    this._startRunRequest();
     if (this._isRunning) {
       return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     }
@@ -423,6 +443,11 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   }
 
   private async _prepareDevices(): Promise<void> {
+    // Reset, not append. This runs again after a throw — `ensureDevicesReady`
+    // only latches on success — and the per-project branch pushes, so a config
+    // that failed partway through left its files behind and the next attempt
+    // added them a second time. `runAll` then ran each of them twice.
+    this._testFiles = [];
     const config = await this._loadConfigWithFallback();
     this._config = config;
 
@@ -591,10 +616,10 @@ export class HeadlessTestDispatcher implements TestDispatcher {
    *
    * Targets are resolved at startup, but the failure message tells the user to
    * boot a simulator "and try again" — and a server that caches the error for
-   * its whole life never lets them. Strictly this platform, and strictly once
-   * per platform: re-resolving everything would spawn and discard a daemon per
-   * file for a platform that stays unavailable, and a transient failure while
-   * re-resolving a *healthy* platform would throw away a working target.
+   * its whole life never lets them. Strictly this platform, and at most once
+   * per run request: re-resolving everything would spawn and discard a daemon
+   * per file for a platform that stays unavailable, and a transient failure
+   * while re-resolving a *healthy* platform would throw away a working target.
    */
   private async _ensureTargetForProject(projectName?: string): Promise<PlatformTarget> {
     const key = platformKeyForProject(this._projects, projectName, this._config?.platform);

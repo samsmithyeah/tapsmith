@@ -4013,7 +4013,12 @@ export async function startUIServer(
         .map(w => ({
           address: `127.0.0.1:${w.daemonPort}`,
           deviceSerial: w.deviceSerial,
-          platform: w.platform,
+          // Resolved, like every other consumer of a worker's platform: the raw
+          // field comes from the bucket config and is unset when that config
+          // declares no platform. An MCP session tags its connection from this,
+          // and an untagged one matches no project — so `tap({project: 'ios'})`
+          // would report no ios device with the worker sitting right there.
+          platform: resolveWorkerPlatform(ctx, w),
         }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ daemons }));

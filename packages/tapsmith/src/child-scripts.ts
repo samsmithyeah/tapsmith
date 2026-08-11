@@ -14,7 +14,9 @@ import { createRequire } from 'node:module';
  */
 
 function isTypeScript(file: string): boolean {
-  return file.endsWith('.ts') || file.endsWith('.tsx');
+  // `.mts`/`.cts` are TypeScript too, and a suite written in them would
+  // otherwise fork bare node and fail on the first type-only import.
+  return /\.(ts|tsx|mts|cts)$/.test(file);
 }
 
 /** Whether the forked children need the tsx loader. */
@@ -47,7 +49,12 @@ export function resolveTsxBin(tapsmithPkgDir: string): string | undefined {
     const relative = typeof bin === 'string' ? bin : bin?.tsx;
     if (relative) {
       const resolved = path.resolve(path.dirname(pkgPath), relative);
-      if (fs.existsSync(resolved)) return resolved;
+      // Executable, not merely present. This becomes `execPath` for every
+      // forked child, and a package extracted without mode bits (or a PnP-style
+      // layout) would spawn `EACCES` for each of them — burying the "install
+      // tsx" advice this function exists to produce, and skipping the PATH
+      // lookup below that might well have worked.
+      if (isExecutableFile(resolved)) return resolved;
     }
   } catch {
     // Not resolvable from here — fall through to PATH.
@@ -86,20 +93,27 @@ export function resolveChildLoader(
   return tsxBin;
 }
 
+/**
+ * A file that can actually be handed to `fork` as `execPath`.
+ *
+ * A directory passes X_OK too — that bit means "traversable" there — and
+ * handing one to `fork` fails every child with a spawn error instead of the
+ * actionable "install tsx".
+ */
+function isExecutableFile(candidate: string): boolean {
+  try {
+    if (!fs.statSync(candidate).isFile()) return false;
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function findExecutableOnPath(name: string): string | undefined {
   for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
     if (!dir) continue;
-    const candidate = path.join(dir, name);
-    try {
-      // A directory passes X_OK too — that bit means "traversable" there — and
-      // handing a directory to `fork` as `execPath` fails every child with a
-      // spawn error instead of the actionable "install tsx".
-      if (!fs.statSync(candidate).isFile()) continue;
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // Not in this directory.
-    }
+    if (isExecutableFile(path.join(dir, name))) return path.join(dir, name);
   }
   return undefined;
 }
