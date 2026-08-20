@@ -21,6 +21,7 @@ import {
   daemonSpawnArgs,
   isRepointing,
   noDeviceMessage,
+  primaryDevice,
   configureMcpConnection,
   normalizeDaemonAddress,
   readDaemonRegistry,
@@ -1214,31 +1215,56 @@ describe('ambiguousDeviceMessage', () => {
     expect(msg!.indexOf('`project`')).toBeLessThan(msg!.indexOf('`device`'));
   });
 
-  // `project` names a platform, so it cannot separate two devices on the same
-  // one — the two workers of a single-platform UI run, say. Offering it there
-  // sends the caller through "Unknown project" or "matches 2 devices" before
-  // they reach the serial that was the only answer available.
-  it('does not offer `project` when the devices share a platform', () => {
+  // Several devices on one platform are the workers of a single run — clones
+  // of one config, running the same tests. Any of them answers a device tool,
+  // so `primaryDevice` picks one rather than demanding a serial the caller
+  // could only get from `session_info`. `workers: 2` is the common UI session,
+  // so refusing there broke every no-argument device tool.
+  it('is not ambiguous when the devices share a platform', () => {
+    expect(ambiguousDeviceMessage([
+      { serial: 'SIM-1', platform: 'ios' },
+      { serial: 'SIM-2', platform: 'ios' },
+    ])).toBeNull();
+  });
+
+  it('is not ambiguous when no device has a known platform', () => {
+    // UI-mode worker daemons are attached to, not prepared, so nothing here
+    // knows their platform — they are still one run's workers.
+    expect(ambiguousDeviceMessage([{ serial: 'SIM-1' }, { serial: 'SIM-2' }])).toBeNull();
+  });
+
+  it('is ambiguous as soon as one platform is joined by another', () => {
     const msg = ambiguousDeviceMessage([
       { serial: 'SIM-1', platform: 'ios' },
       { serial: 'SIM-2', platform: 'ios' },
+      { serial: 'EMU-1', platform: 'android' },
     ]);
     expect(msg).toContain('ios: SIM-1');
-    expect(msg).toContain('ios: SIM-2');
-    expect(msg).toContain('`device`');
-    expect(msg).not.toContain('Pass `project`');
+    expect(msg).toContain('android: EMU-1');
+    expect(msg).toContain('`project`');
+  });
+});
+
+describe('primaryDevice', () => {
+  it('is the first device the session prepared', () => {
+    expect(primaryDevice([
+      { serial: 'SIM-1', platform: 'ios' },
+      { serial: 'SIM-2', platform: 'ios' },
+    ])).toEqual({ serial: 'SIM-1', platform: 'ios' });
   });
 
-  it('does not offer `project` when no device has a known platform', () => {
-    const msg = ambiguousDeviceMessage([{ serial: 'SIM-1' }, { serial: 'SIM-2' }]);
-    expect(msg).not.toContain('Pass `project`');
+  // Stability is the whole argument for choosing silently: a snapshot and the
+  // tap that follows it have to land on the same device.
+  it('answers the same way for every call on one session', () => {
+    const targets = [
+      { serial: 'SIM-1', platform: 'ios' },
+      { serial: 'SIM-2', platform: 'ios' },
+    ];
+    expect(primaryDevice(targets)).toEqual(primaryDevice(targets));
   });
 
-  it('still names devices whose platform is unknown', () => {
-    // UI-mode worker daemons are attached to, not prepared, so nothing here
-    // knows their platform — the serials are the actionable part regardless.
-    const msg = ambiguousDeviceMessage([{ serial: 'SIM-1' }, { serial: 'SIM-2' }]);
-    expect(msg).toContain('SIM-1, SIM-2');
+  it('has no answer for a session driving nothing', () => {
+    expect(primaryDevice([])).toBeUndefined();
   });
 });
 

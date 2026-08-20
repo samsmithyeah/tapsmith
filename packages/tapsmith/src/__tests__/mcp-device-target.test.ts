@@ -88,12 +88,23 @@ describe('selectProjectDevice', () => {
     expect(chosen).toEqual({ error: expect.stringContaining('no ios device for project "ios"') });
   });
 
-  it('asks for a serial when one platform has several devices', () => {
+  // Several devices for one project are that project's workers, and the caller
+  // has already answered the only question they could. Refusing here left
+  // `project` unable to select anything on a parallel run.
+  it('takes the project\'s primary device when one platform has several', () => {
     const chosen = selectProjectDevice(
       [android, { serial: 'EMU-2', platform: 'android' }],
       { name: 'android', platform: 'android' },
     );
-    expect(chosen).toEqual({ error: expect.stringContaining('EMU-1, EMU-2') });
+    expect(chosen).toEqual({ serial: 'EMU-1' });
+  });
+
+  it('picks the primary of the matching platform, not of the session', () => {
+    const chosen = selectProjectDevice(
+      [{ serial: 'SIM-1', platform: 'ios' }, android, { serial: 'EMU-2', platform: 'android' }],
+      { name: 'android', platform: 'android' },
+    );
+    expect(chosen).toEqual({ serial: 'EMU-1' });
   });
 });
 

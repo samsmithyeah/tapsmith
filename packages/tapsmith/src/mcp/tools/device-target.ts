@@ -16,14 +16,16 @@ export interface DeviceRequest {
 }
 
 export const DEVICE_ARG_DESCRIPTION =
-  'Serial of a device this session drives (see tapsmith_session_info). Optional when it '
-  + 'drives one; use `project` instead to name a device by the project that runs on it. '
-  + 'A device the session merely *sees* cannot be acted on: its daemon is pointed elsewhere, '
-  + 'and moving it would leave the agent attached to the previous device.';
+  'Serial of a device this session drives (see tapsmith_session_info). Never required: '
+  + 'a session on one platform acts on its primary device (worker 0 in UI mode), and a '
+  + 'session spanning platforms takes `project`. Pass this only to single out one worker '
+  + 'of a parallel run. A device the session merely *sees* cannot be acted on: its daemon '
+  + 'is pointed elsewhere, and moving it would leave the agent attached to the previous device.';
 
 export const PROJECT_ARG_DESCRIPTION =
   'Project whose device this should act on (same names as tapsmith_run_tests). '
-  + 'Required when the session drives more than one device, unless `device` is given.';
+  + 'Required only when the session drives devices on more than one platform, unless '
+  + '`device` is given; it selects that project\'s primary device.';
 
 /** The client for a tool's requested device, with the daemon pointed at it. */
 export async function deviceClientFor(

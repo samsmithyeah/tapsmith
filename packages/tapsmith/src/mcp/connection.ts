@@ -211,7 +211,9 @@ export async function resolveDeviceTarget(
   // empty — in which case this re-discovers instead of handing back a client
   // that is already closed, which surfaces as an opaque "Channel closed".
   if (targets.length === 0) return { client: await ensureConnected() };
-  throw new Error(ambiguousDeviceMessage(targets)!);
+  const ambiguous = ambiguousDeviceMessage(targets);
+  if (ambiguous) throw new Error(ambiguous);
+  return forDevice(primaryDevice(targets)!.serial);
 }
 
 /** A project a caller named, and the platform it runs on (which may be none). */
@@ -243,10 +245,11 @@ export function selectProjectDevice(
       error: `This session has no ${called}device for project "${project.name}". ${describeTargets(targets)}`,
     };
   }
-  return {
-    error: `Project "${project.name}" matches ${match.length} ${called}devices `
-      + `(${match.map((t) => t.serial).join(', ')}). Pass \`device\` with the serial this should act on.`,
-  };
+  // Several devices for one project are that project's workers. The caller
+  // answered the only question they could — which project — so refusing here
+  // would leave `project` unable to select anything on a parallel run, and
+  // send them back to a serial for a device they never picked.
+  return { serial: primaryDevice(match)!.serial };
 }
 
 async function forDevice(serial: string): Promise<{ client: TapsmithGrpcClient; device: string }> {
@@ -335,18 +338,32 @@ async function clientPointedAt(serial: string): Promise<TapsmithGrpcClient> {
  */
 export function ambiguousDeviceMessage(targets: SessionDevice[]): string | null {
   if (targets.length <= 1) return null;
-  // `project` picks a device by its platform, so it can only tell these apart
-  // when they differ. Two workers of a single-platform UI run are the case that
-  // matters: offering `project` there sends the caller through "Unknown
-  // project" (a synthesized project has no name to pass) or "matches 2
-  // devices", when a serial was the only answer from the start.
-  const oneEach = new Set(targets.map((t) => t.platform)).size === targets.length;
-  return `This session is driving ${targets.length} devices, so there is no single default. `
-    + `${describeTargets(targets)} `
-    + (oneEach
-      ? 'Pass `project` to say which one this should act on, or `device` for a specific serial.'
-      : 'They do not divide by platform, so `project` cannot choose between them — '
-        + 'pass `device` with one of the serials above.');
+  // Only a session spanning platforms has a choice the caller must make.
+  // Several devices on one platform are the workers of a single run — clones
+  // of one config, running the same tests — so any of them answers the
+  // question, and `primaryDevice` picks one. Demanding a serial there made
+  // every no-argument device tool fail on the common `workers: 2` UI session,
+  // for an argument the caller could only get from `session_info`.
+  const platforms = new Set(targets.map((t) => t.platform));
+  if (platforms.size <= 1) return null;
+  return `This session is driving devices on ${platforms.size} platforms, `
+    + `so there is no single default. ${describeTargets(targets)} `
+    + 'Pass `project` to say which one this should act on, or `device` for a specific serial.';
+}
+
+/**
+ * The device a session acts on when the caller names none.
+ *
+ * First, not "best": for UI mode that is worker 0, the device the UI itself
+ * treats as primary, and for a headless session the one it prepared first.
+ * Stable ordering is what makes this defensible — the same session answers the
+ * same way for every call, so a snapshot and the tap that follows it land on
+ * one device.
+ *
+ * @internal — exported for unit testing.
+ */
+export function primaryDevice(targets: SessionDevice[]): SessionDevice | undefined {
+  return targets[0];
 }
 
 function describeTargets(targets: SessionDevice[]): string {
