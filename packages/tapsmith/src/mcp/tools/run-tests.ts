@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult, ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
-import type { TestDispatcher, TestResultEntry, TestTreeEntry } from '../test-dispatcher.js';
+import type { ProjectInfo, TestDispatcher, TestResultEntry, TestTreeEntry } from '../test-dispatcher.js';
 import { readTraceSummary } from './trace-utils.js';
 import { getAllDaemonAddresses } from '../connection.js';
 import { matchesTestFilter } from '../../test-filter.js';
@@ -27,7 +27,7 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
     {
       files: z.array(z.string()).describe('Absolute file paths or glob patterns (e.g. ["/Users/me/project/e2e/tests/login.test.ts"]). Use tapsmith_list_tests to find available files.'),
       test: z.string().optional().describe('Run only tests whose full name contains this text (case-insensitive substring of "Describe > test name", e.g. "submits form"). May match more than one test, and applies across all the given files. If it matches nothing, the run returns an error listing the available tests — it never silently passes. Use tapsmith_list_tests to see exact names.'),
-      project: z.string().optional().describe('Project name to target a specific platform/device (e.g. "android", "ios"). Use tapsmith_list_tests to see available projects. Required when the same test file runs on multiple platforms.'),
+      project: z.string().optional().describe('Project name to target a specific platform/device (e.g. "android", "ios"). Use tapsmith_list_tests to see available projects. Required when a requested file runs under more than one project — such a run is refused rather than sent to whichever project comes first. An unknown name is refused too, never ignored.'),
       device: z.string().optional().describe('Device serial (optional, ignored in UI mode — use project instead to target a platform)'),
     },
     async ({ files, test: testFilter, project, device }, extra) => {
@@ -40,6 +40,15 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
             content: [{ type: 'text' as const, text: 'A test run is already in progress. Wait for it to finish or use tapsmith_stop_tests to abort.' }],
             isError: true,
           };
+        }
+        // Before the run, not inside it: a `project` that names nothing, or a
+        // file that runs under several projects, decides *which device the
+        // tests execute on*. Both dispatchers resolve those by falling back to
+        // the first project holding the file, so the run passed on a platform
+        // the caller never chose and the summary said nothing about it.
+        const projectError = await validateProjectChoice(dispatcher, files, project);
+        if (projectError) {
+          return { content: [{ type: 'text' as const, text: projectError }], isError: true };
         }
         // Capture results of any run this tool didn't start (e.g. triggered
         // from the UI) into the session board before runFiles() resets them.
@@ -212,6 +221,58 @@ function makeProgressSender(
       })
       .catch(() => { /* client gone or transport closed */ });
   };
+}
+
+/**
+ * Why the `project` argument cannot stand as given, or null when it can.
+ *
+ * Both dispatchers pick a project for a file by name first and by "the first
+ * project whose files include it" second, and neither step can fail: an
+ * unknown name silently falls through to the file match, and a file belonging
+ * to several projects silently takes the first. In a multi-platform config
+ * both mean the run lands on a device the caller did not choose — and reports
+ * "All tests passed" without naming it. The check lives here so both
+ * transports answer the same way, next to the other argument validation.
+ *
+ * @internal — exported for unit testing.
+ */
+export async function validateProjectChoice(
+  dispatcher: TestDispatcher,
+  files: string[],
+  project?: string,
+): Promise<string | null> {
+  // A project's `testFiles` are only populated once discovery has run; without
+  // this the check reads an empty project list and passes everything.
+  await dispatcher.ensureInitialized?.();
+  const projects = dispatcher.getSessionInfo().projects;
+
+  if (project !== undefined) {
+    if (projects.some((p) => p.name === project)) return null;
+    const known = projects.map((p) => p.name).join(', ');
+    return `Unknown project "${project}". `
+      + (known
+        ? `This config declares: ${known}. Use tapsmith_list_tests to see which files each one runs.`
+        : 'This config declares no projects, so `project` cannot select anything — omit it.');
+  }
+
+  // No project named: only a file that runs under more than one is ambiguous.
+  const resolve = dispatcher.resolveRequestedFiles;
+  const requested = resolve ? resolve.call(dispatcher, files) : files;
+  const ambiguous = requested
+    .map((file) => ({ file, owners: projects.filter((p) => p.testFiles.includes(file)) }))
+    .filter((entry) => entry.owners.length > 1);
+  if (ambiguous.length === 0) return null;
+
+  const lines = ambiguous.map(
+    (entry) => `  ${entry.file}\n    runs under: ${entry.owners.map(describeProjectOwner).join(', ')}`,
+  );
+  return 'This run needs a `project`: the requested file(s) run under more than one.\n'
+    + `${lines.join('\n')}\n\n`
+    + 'Pass `project` with one of the names above to say which device the tests should run on.';
+}
+
+function describeProjectOwner(project: ProjectInfo): string {
+  return project.platform ? `${project.name} (${project.platform})` : project.name;
 }
 
 /** One-line live summary of an in-flight run for progress notifications. */

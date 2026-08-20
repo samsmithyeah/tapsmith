@@ -104,6 +104,11 @@ either:
 session merely *sees* — another simulator, a peer session's device — cannot be
 acted on: its daemon is pointed elsewhere.
 
+The same rule governs `tapsmith_run_tests`, with one addition: if a requested
+file runs under more than one project, the run is **refused** until you pass
+`project`, rather than being sent to whichever project comes first. An unknown
+project name is refused too, never ignored.
+
 ### Device interaction tools (both modes)
 
 #### `tapsmith_snapshot`

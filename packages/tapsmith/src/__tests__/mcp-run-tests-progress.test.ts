@@ -88,7 +88,11 @@ describe('tapsmith_run_tests progress notifications', () => {
     const { extra, notifications } = makeExtra('tok-1');
     const callPromise = runTests({ files: ['/app/a.test.ts'] }, extra);
 
-    // Initial notification fires as soon as the run starts.
+    // Initial notification fires as soon as the run starts — which is after
+    // the `project` argument has been checked, so that a run about to be
+    // refused never announces itself as started. That check awaits discovery,
+    // hence the flush.
+    await vi.advanceTimersByTimeAsync(0);
     expect(notifications).toHaveLength(1);
     expect(notifications[0].params.progressToken).toBe('tok-1');
     expect(notifications[0].params.message).toContain('1 file(s)');
