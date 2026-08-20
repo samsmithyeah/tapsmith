@@ -157,6 +157,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     this._testResults.clear();
     try {
       let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
+      let totalInterrupted = 0;
       for (const f of validFiles) {
         if (this._stopRequested) break;
         const proj = this._projectForFile(f, project);
@@ -171,8 +172,11 @@ export class HeadlessTestDispatcher implements TestDispatcher {
           totalSkipped += results.filter((r) => r.status === 'skipped').length;
           totalDuration += suite.durationMs;
         } catch (err) {
+          if (this._accountForFileError(f, projectName, err) === 'interrupted') {
+            totalInterrupted++;
+            break;
+          }
           totalFailed++;
-          this._recordFileError(f, projectName, err);
         }
       }
       return this._finishRun(this._withFailures({
@@ -180,6 +184,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
+        ...(totalInterrupted > 0 ? { interrupted: totalInterrupted } : {}),
         duration: totalDuration,
       }));
     } finally {
@@ -203,6 +208,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     this._testResults.clear();
     try {
       let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
+      let totalInterrupted = 0;
 
       if (this._hasRealProjects() && this._projectWaves.length > 0) {
         const failedProjects = new Set<string>();
@@ -231,9 +237,12 @@ export class HeadlessTestDispatcher implements TestDispatcher {
                 totalDuration += suite.durationMs;
                 if (results.some((r) => r.status === 'failed')) projectFailed = true;
               } catch (err) {
+                if (this._accountForFileError(file, projectName, err) === 'interrupted') {
+                  totalInterrupted++;
+                  break;
+                }
                 totalFailed++;
                 projectFailed = true;
-                this._recordFileError(file, projectName, err);
               }
             }
 
@@ -250,8 +259,11 @@ export class HeadlessTestDispatcher implements TestDispatcher {
             totalSkipped += results.filter((r) => r.status === 'skipped').length;
             totalDuration += suite.durationMs;
           } catch (err) {
+            if (this._accountForFileError(file, undefined, err) === 'interrupted') {
+              totalInterrupted++;
+              break;
+            }
             totalFailed++;
-            this._recordFileError(file, undefined, err);
           }
         }
       }
@@ -261,6 +273,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
+        ...(totalInterrupted > 0 ? { interrupted: totalInterrupted } : {}),
         duration: totalDuration,
       }));
     } finally {
@@ -922,6 +935,25 @@ export class HeadlessTestDispatcher implements TestDispatcher {
       if (byName) return byName;
     }
     return this._projects.find((p) => p.testFiles.includes(filePath));
+  }
+
+  /**
+   * Account for a file whose child died, and say what it counts as.
+   *
+   * A child killed by `stop()` did not fail: the error it leaves behind is the
+   * SIGTERM we sent it ("exited with code 143"). Recording that as a
+   * file-level failure made the user's own stop show up in `list_results` and
+   * `suite_status` as a red file with a meaningless cause — while UI mode
+   * reported the same stop as interrupted.
+   */
+  private _accountForFileError(
+    filePath: string,
+    projectName: string | undefined,
+    err: unknown,
+  ): 'interrupted' | 'failed' {
+    if (this._stopRequested) return 'interrupted';
+    this._recordFileError(filePath, projectName, err);
+    return 'failed';
   }
 
   /**
