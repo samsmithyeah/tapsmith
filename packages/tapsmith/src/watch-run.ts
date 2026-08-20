@@ -38,6 +38,14 @@ export interface WatchRunMessage {
   projectName?: string
   /** Run only tests whose fullName matches this (case-insensitive substring). */
   testFilter?: string
+  /**
+   * What to call this run in preflight errors, e.g. "Watch" or "Run".
+   *
+   * The MCP dispatcher runs its files through this same child, so the default
+   * put "Watch (<serial>): … during watch reset" in front of failures from a
+   * plain `tapsmith_run_tests` — naming a mode the caller was not using.
+   */
+  label?: string
 }
 
 export interface WatchRunTestEndMessage {
@@ -115,9 +123,10 @@ function buildSessionContext(
   device: Device,
   client: TapsmithGrpcClient,
   deviceSerial: string,
+  label = 'Watch',
 ): SessionPreflightContext {
   return {
-    label: `Watch (${deviceSerial})`,
+    label: `${label} (${deviceSerial})`,
     config,
     device,
     client,
@@ -151,7 +160,9 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
   await device.wake();
   await device.unlock();
 
-  const ctx = buildSessionContext(config, device, client, msg.deviceSerial);
+  const label = msg.label ?? 'Watch';
+  const ctx = buildSessionContext(config, device, client, msg.deviceSerial, label);
+  const phase = label.toLowerCase();
 
   // Live progress lines for slow device actions (preflight reset, app-state
   // save/restore, …) — the child's stdout reaches the terminal directly (PILOT-232).
@@ -160,9 +171,9 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
   try {
     // Reset app for clean state
     if (config.package) {
-      await launchConfiguredApp(ctx, `watch reset for ${path.basename(msg.filePath)}`);
+      await launchConfiguredApp(ctx, `${phase} reset for ${path.basename(msg.filePath)}`);
     } else {
-      await ensureSessionReady(ctx, `watch preflight for ${path.basename(msg.filePath)}`);
+      await ensureSessionReady(ctx, `${phase} preflight for ${path.basename(msg.filePath)}`);
     }
 
     const screenshotDir = msg.screenshotDir;

@@ -770,7 +770,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         settled = true;
         clearActiveChild();
         try { child.kill(); } catch { /* already dead */ }
-        reject(new Error(`Watch worker timed out after ${RUN_CHILD_TIMEOUT_MS}ms`));
+        reject(new Error(`Test worker timed out after ${RUN_CHILD_TIMEOUT_MS}ms`));
       }, RUN_CHILD_TIMEOUT_MS);
       timeout.unref?.();
       const resolveOnce = (value: RunFileChildResult): void => {
@@ -821,7 +821,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
 
       child.on('exit', (code) => {
         if (!settled) {
-          rejectOnce(new Error(`Watch worker exited with code ${code ?? 0} without sending results`));
+          rejectOnce(new Error(`Test worker exited with code ${code ?? 0} without sending results`));
         } else {
           clearActiveChild();
         }
@@ -843,6 +843,9 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         projectUseOptions,
         projectName,
         testFilter,
+        // These runs are `tapsmith_run_tests`, not watch mode, whatever child
+        // script they happen to share.
+        label: 'Run',
       };
 
       child.send(msg);
