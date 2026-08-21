@@ -150,9 +150,9 @@ test.describe("Test explorer", () => {
         },
       )
 
-      await expect(explorer.statusFilter("Pass")).toHaveAccessibleName("Pass 1")
-      await expect(explorer.statusFilter("Fail")).toHaveAccessibleName("Fail 1")
-      await expect(explorer.statusFilter("Skip")).toHaveAccessibleName("Skip 1")
+      await expect(explorer.statusFilterCount("Pass")).toHaveText("1")
+      await expect(explorer.statusFilterCount("Fail")).toHaveText("1")
+      await expect(explorer.statusFilterCount("Skip")).toHaveText("1")
     })
   })
 

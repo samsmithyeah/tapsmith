@@ -110,7 +110,7 @@ test.describe("Run controls", () => {
         status: "failed",
         error: "boom",
       })
-      await expect(explorer.statusFilter("Fail")).toHaveAccessibleName("Fail 1")
+      await expect(explorer.statusFilterCount("Fail")).toHaveText("1")
 
       await runControls.pressShortcut("f")
       await ui.waitForMessage("run-failed")

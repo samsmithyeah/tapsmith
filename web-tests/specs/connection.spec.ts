@@ -17,7 +17,7 @@ test.describe("Connection", () => {
   test("shows Disconnected when the socket drops", async ({ app, runControls }) => {
     const ui = app
     ui.drop()
-    await expect(runControls.disconnectedIndicator).toBeVisible()
+    await expect(runControls.connection).toHaveText("Disconnected")
   })
 
   test("reconnects and rehydrates the tree", async ({ app, explorer, runControls }) => {
@@ -25,11 +25,11 @@ test.describe("Connection", () => {
     expect(ui.connections).toBe(1)
 
     ui.drop()
-    await expect(runControls.disconnectedIndicator).toBeVisible()
+    await expect(runControls.connection).toHaveText("Disconnected")
 
     // The 1s reconnect timer fires and the replayed seed restores the view.
     await expect.poll(() => ui.connections, { timeout: 5000 }).toBe(2)
-    await expect(runControls.disconnectedIndicator).toHaveCount(0)
+    await expect(runControls.connection).toHaveText("emulator-5554")
     await expect(explorer.node("gestures.test.ts")).toBeVisible()
   })
 
@@ -45,7 +45,7 @@ test.describe("Connection", () => {
     await expect(explorer.nodesOfTypeWithStatus("test", "passed")).toHaveCount(1)
 
     ui.drop()
-    await expect(runControls.disconnectedIndicator).toBeVisible()
+    await expect(runControls.connection).toHaveText("Disconnected")
     await expect.poll(() => ui.connections, { timeout: 5000 }).toBe(2)
 
     await explorer.expandAll()
@@ -58,7 +58,7 @@ test.describe("Connection", () => {
 
     ui.drop()
     await expect.poll(() => ui.connections, { timeout: 5000 }).toBe(2)
-    await expect(runControls.disconnectedIndicator).toHaveCount(0)
+    await expect(runControls.connection).toHaveText("emulator-5554")
 
     expect(ui.received).toEqual([])
   })
@@ -72,6 +72,9 @@ test.describe("Connection", () => {
   test("surfaces a server error message", async ({ app, runControls }) => {
     const ui = app
     ui.send({ type: "error", message: "Device disconnected: emulator-5554" })
-    await expect(runControls.errorBanner).toContainText("Device disconnected: emulator-5554")
+
+    await expect(runControls.notification).toHaveText("Device disconnected: emulator-5554")
+    // An error is assertive, unlike the polite notices — worth pinning too.
+    await expect(runControls.errorBanner).toHaveCount(1)
   })
 })

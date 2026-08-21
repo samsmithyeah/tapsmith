@@ -1529,13 +1529,13 @@ function App() {
       filmstripCollapsed={filmstripCollapsed}
       errorBanner={errorMessage ? (
         <div class="test-error-banner" role="alert" onClick={() => setErrorMessage(null)}>
-          <span class="test-error-banner-icon">!</span>
-          <span class="test-error-banner-text">{errorMessage}</span>
+          <span class="test-error-banner-icon" aria-hidden="true">!</span>
+          <span class="test-error-banner-text" data-testid="run-notification">{errorMessage}</span>
         </div>
       ) : infoMessage ? (
         <div class="test-error-banner info" role="status" onClick={() => setInfoMessage(null)}>
-          <span class="test-error-banner-icon">■</span>
-          <span class="test-error-banner-text">{infoMessage}</span>
+          <span class="test-error-banner-icon" aria-hidden="true">■</span>
+          <span class="test-error-banner-text" data-testid="run-notification">{infoMessage}</span>
         </div>
       ) : undefined}
       topBar={

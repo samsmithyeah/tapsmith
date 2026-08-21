@@ -30,11 +30,16 @@ export class TestExplorerPane {
   }
 
   /**
-   * One of the All / Pass / Fail / Skip filters. Its accessible name carries the
-   * count too ("Pass 1"), so it's matched on the leading label.
+   * One of the All / Pass / Fail / Skip filters. Matched on the leading label
+   * because the accessible name also carries the count.
    */
   statusFilter(label: StatusFilter) {
     return this.statusFilters.getByRole("tab", { name: new RegExp(`^${label}\\b`) })
+  }
+
+  /** The count badge on a filter — a bare number, so read its value. */
+  statusFilterCount(label: StatusFilter) {
+    return this.statusFilter(label).getByTestId("filter-count")
   }
 
   // ─── Toolbar ───
@@ -61,12 +66,8 @@ export class TestExplorerPane {
 
   // ─── Tree ───
 
-  get tree() {
-    return this.page.getByRole("tree", { name: "Tests" })
-  }
-
   get emptyState() {
-    return this.page.getByText("No tests found")
+    return this.page.getByTestId("tests-empty")
   }
 
   /** Every rendered tree row, in document order. */

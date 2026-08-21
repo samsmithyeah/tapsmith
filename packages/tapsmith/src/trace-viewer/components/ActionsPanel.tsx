@@ -326,7 +326,7 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
           <div class="ui-empty-state preflight">
             <div class="action-spinner preflight-spinner" aria-label="running" />
             <div class="ui-empty-title">Running</div>
-            <div class="ui-empty-hint">{preflightMessage}</div>
+            <div class="ui-empty-hint" data-testid="preflight-message">{preflightMessage}</div>
           </div>
         ) : (
           <div class="ui-empty-state">

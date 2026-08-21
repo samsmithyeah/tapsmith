@@ -279,7 +279,7 @@ test.describe("Run lifecycle", () => {
         interrupted: 2,
       })
 
-      await expect(runControls.notification(/2 tests interrupted/)).toBeVisible()
+      await expect(runControls.notification).toHaveText("Run stopped (2 tests interrupted)")
     })
   })
 
@@ -304,7 +304,7 @@ test.describe("Run lifecycle", () => {
     test("surfaces a long device action instead of the generic wait", async ({
       app,
       explorer,
-      page,
+      actions,
     }) => {
       const ui = app
       await explorer.expandAll()
@@ -314,7 +314,7 @@ test.describe("Run lifecycle", () => {
       await explorer.clickNode(TEST_NAME)
 
       // With no device action in flight, the panel shows the generic message.
-      await expect(page.getByText("Waiting for first action…")).toBeVisible()
+      await expect(actions.preflightMessage).toHaveText("Waiting for first action…")
 
       ui.send({
         type: "run-progress",
@@ -322,8 +322,7 @@ test.describe("Run lifecycle", () => {
         message: "Clearing app data (dev.tapsmith.testapp)…",
       })
 
-      await expect(page.getByText("Clearing app data (dev.tapsmith.testapp)…")).toBeVisible()
-      await expect(page.getByText("Waiting for first action…")).toHaveCount(0)
+      await expect(actions.preflightMessage).toHaveText("Clearing app data (dev.tapsmith.testapp)…")
     })
   })
 })

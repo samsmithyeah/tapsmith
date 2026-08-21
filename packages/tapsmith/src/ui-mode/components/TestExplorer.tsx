@@ -136,7 +136,7 @@ export function TestExplorer(props: TestExplorerProps) {
           />
         ))}
         {files.length === 0 && (
-          <div class="te-empty" role="status">No tests found</div>
+          <div class="te-empty" data-testid="tests-empty">No tests found</div>
         )}
       </div>
     </div>
@@ -163,7 +163,7 @@ function StatusButton({ label, value, count, active, onClick }: StatusButtonProp
       onClick={() => onClick(value)}
     >
       {value !== 'all' && <span class={`ind ind-${value}`} />}
-      {label} {count > 0 && <span class="te-count ct">{count}</span>}
+      {label} {count > 0 && <span class="te-count ct" data-testid="filter-count">{count}</span>}
     </button>
   );
 }

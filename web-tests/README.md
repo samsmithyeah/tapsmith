@@ -63,7 +63,7 @@ suite applies the same conventions to UI mode's panes:
 
 ## Locators
 
-Accessible locators only — `getByRole`, `getByLabel`, `getByTitle`, `getByText`. The classes in
+Accessible locators first — `getByRole`, `getByLabel`, `getByTitle`. The classes in
 `styles/ui-mode.css.ts` are styling hooks and only incidentally stable, so nothing here selects on
 them. Where a surface had no accessible name, the fix was to give it the ARIA it should already have
 had rather than to bolt on a testid:
@@ -71,23 +71,40 @@ had rather than to bolt on a testid:
 | Surface | Now |
 |---|---|
 | Test tree | `tree` of `treeitem`s with `aria-level`/`-expanded`/`-selected`, each row explicitly named |
-| Status filters (All/Pass/Fail/Skip) | `tablist` of `tab`s; the count rides in the accessible name |
+| Status filters (All/Pass/Fail/Skip) | `tablist` of `tab`s |
 | Detail tabs, worker tabs | `tablist`/`tab` instead of clickable `div`s |
 | Action list | `listbox` of `option`s; in-flight rows carry `aria-busy` |
 | Filter box | `aria-label` (a placeholder is not a label) |
 | Elapsed time | `role="timer"` |
-| Connection strip, mirror placeholder, empty state | `role="status"` live regions |
+| Connection strip, mirror placeholder | `role="status"` live regions |
 | Notification banners | `role="alert"` (errors) / `role="status"` (notices) |
 | Mirror canvas | labelled, per worker in the grid |
 | Theme select, per-row run/watch buttons | labelled, so they're distinguishable |
 
-`getByTestId` is the deliberate fallback where there is genuinely no semantics — currently just the
-formatted duration on a tree row (`node-duration`).
+### Locate structurally, assert the value
+
+Nothing is located by its text content. A text locator conflates finding with asserting, so a wrong
+value reports "element not found" rather than showing what it actually said. Value readouts are
+located by role or test id and then asserted:
+
+```ts
+await expect(runControls.connection).toHaveText("Disconnected")     // role="status"
+await expect(runControls.passedCount).toHaveText("1 passed")        // data-testid
+await expect(explorer.statusFilterCount("Fail")).toHaveText("1")    // data-testid
+```
+
+`getByTestId` is the deliberate fallback where there is genuinely no semantics to appeal to — bare
+numbers and message strings: `node-duration`, `filter-count`, `count-passed`/`-failed`/`-skipped`,
+`tests-empty`, `run-notification`, `preflight-message`, `mirror-status`/`-hint`.
 
 Two exceptions worth knowing: a row's `data-type` and `data-status` are still used for type and
 status, because ARIA has no role or state meaning "this test failed" and those are pre-existing
 product attributes rather than styling hooks. Both are applied via `.and()` on top of the role, so the
 accessible locator stays primary.
+
+Pane objects are trimmed to what the specs exercise. Locators for surfaces without tests yet (pick
+mode, worker views, mirror gestures) go in alongside the specs that prove them — an unverified locator
+is a liability, not a head start.
 
 ## Writing a spec
 

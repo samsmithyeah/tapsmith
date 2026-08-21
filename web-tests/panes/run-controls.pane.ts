@@ -7,19 +7,20 @@ export class RunControlsPane {
 
   // ─── Counts ───
   //
-  // Each count renders its own sentence ("1 passed"), so the visible text is
-  // both the clearest locator and what the user actually reads.
+  // Located structurally and asserted on, rather than located by their text: a
+  // text locator conflates the two, so a wrong count reports "element not
+  // found" instead of showing what it actually said.
 
   get passedCount() {
-    return this.page.getByText(/^\d+ passed$/)
+    return this.page.getByTestId("count-passed")
   }
 
   get failedCount() {
-    return this.page.getByText(/^\d+ failed$/)
+    return this.page.getByTestId("count-failed")
   }
 
   get skippedCount() {
-    return this.page.getByText(/^\d+ skipped$/)
+    return this.page.getByTestId("count-skipped")
   }
 
   /** Only rendered while a run is in flight. */
@@ -41,24 +42,24 @@ export class RunControlsPane {
     return this.page.getByRole("status", { name: "Device connection" })
   }
 
-  get disconnectedIndicator() {
-    return this.connection.getByText("Disconnected")
-  }
-
   // ─── Notifications ───
   //
   // The banner sits in the app chrome just below this rail. Deliberately located
   // by role and text rather than by an aria-label: naming a live region would
   // make assistive tech announce the label instead of the message.
 
-  /** Server errors — an assertive live region. */
-  get errorBanner() {
-    return this.page.getByRole("alert")
+  /**
+   * The run notification banner. Errors render it as an assertive live region
+   * and notices as a polite one, so `role` is worth asserting separately from
+   * the message.
+   */
+  get notification() {
+    return this.page.getByTestId("run-notification")
   }
 
-  /** Run notices such as "Run stopped" — a polite live region. */
-  notification(text: string | RegExp) {
-    return this.page.getByRole("status").filter({ hasText: text })
+  /** Server errors specifically — `alert` is unique to the error variant. */
+  get errorBanner() {
+    return this.page.getByRole("alert")
   }
 
   // ─── Flows ───

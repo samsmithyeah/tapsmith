@@ -160,9 +160,9 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
         )}
         {counts.total > 0 && (
           <div class="rc-counts">
-            {counts.passed > 0 && <span class="rc-count passed">{counts.passed} passed</span>}
-            {counts.failed > 0 && <span class="rc-count failed">{counts.failed} failed</span>}
-            {counts.skipped > 0 && <span class="rc-count skipped">{counts.skipped} skipped</span>}
+            {counts.passed > 0 && <span class="rc-count passed" data-testid="count-passed">{counts.passed} passed</span>}
+            {counts.failed > 0 && <span class="rc-count failed" data-testid="count-failed">{counts.failed} failed</span>}
+            {counts.skipped > 0 && <span class="rc-count skipped" data-testid="count-skipped">{counts.skipped} skipped</span>}
           </div>
         )}
         <span class="rc-divider" />

@@ -103,8 +103,8 @@ export function DeviceMirror({ canvasRef, connected, loading, platform, formFact
                 <rect x="22" y="84" width="12" height="3" rx="1.5" fill="currentColor" opacity="0.3" />
                 <circle cx="28" cy="8" r="2" fill="currentColor" opacity="0.2" />
               </svg>
-              <div class="dm-placeholder-text">{connected ? 'Starting mirror…' : 'Waiting for device'}</div>
-              {!connected && <div class="dm-placeholder-hint">Connect a device or start a test run</div>}
+              <div class="dm-placeholder-text" data-testid="mirror-status">{connected ? 'Starting mirror…' : 'Waiting for device'}</div>
+              {!connected && <div class="dm-placeholder-hint" data-testid="mirror-status-hint">Connect a device or start a test run</div>}
               <div class="dm-placeholder-dots">
                 <span class="dm-dot" />
                 <span class="dm-dot" />

@@ -19,18 +19,17 @@ export class ActionsPane {
     return this.items.filter({ hasText: name })
   }
 
-  get selectedItem() {
-    return this.items.and(this.page.locator('[aria-selected="true"]'))
-  }
-
   /** Rows still awaiting their `lifecycle: "completed"` event. */
   get inProgressItems() {
     return this.items.and(this.page.locator('[aria-busy="true"]'))
   }
 
-  // ─── Flows ───
-
-  async selectAction(name: string) {
-    await this.item(name).first().click()
+  /**
+   * Stands in for the list while the device is busy outside a traced action —
+   * either the generic wait or, when the server reports one, the actual
+   * operation in flight.
+   */
+  get preflightMessage() {
+    return this.page.getByTestId("preflight-message")
   }
 }

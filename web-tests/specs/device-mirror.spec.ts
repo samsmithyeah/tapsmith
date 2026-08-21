@@ -77,8 +77,8 @@ test.describe("Device mirror", () => {
   test("shows a placeholder while no device is connected", async ({ app, device }) => {
     const ui = app
     ui.drop()
-    await expect(device.placeholder).toContainText("Waiting for device")
-    await expect(device.placeholder).toContainText("Connect a device or start a test run")
+    await expect(device.mirrorStatus).toHaveText("Waiting for device")
+    await expect(device.mirrorStatusHint).toHaveText("Connect a device or start a test run")
   })
 
   test("names the mirror for assistive tech", async ({ app, device }) => {
