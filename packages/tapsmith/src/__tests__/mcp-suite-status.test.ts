@@ -67,6 +67,54 @@ function textOf(callResult: CallToolResult): string {
     .join('\n');
 }
 
+// A test the user stopped reached no verdict, but the board must not file it
+// under "not run" — that conflates the test we cut short with the ones we never
+// attempted, and disagrees with `list_results` about the very same run.
+describe('tapsmith_suite_status and a stopped test', () => {
+  const FILE = '/repo/tests/gestures.test.ts';
+  const tree = [projectNode('default', [fileNode(FILE, [
+    testNode(FILE, 'Gestures > first'),
+    testNode(FILE, 'Gestures > cut'),
+    testNode(FILE, 'Gestures > never started'),
+  ])])];
+
+  function boardFor(results: TestResultEntry[]): Promise<string> {
+    const { server, tools } = makeToolCapture();
+    const dispatcher = makeDispatcher({ getTestTree: () => tree, getResults: () => results });
+    registerSuiteStatusTool(server, dispatcher);
+    return tools.get('tapsmith_suite_status')!({ details: true }, extra).then(textOf);
+  }
+
+  it('shows it as stopped, not as never attempted', async () => {
+    const text = await boardFor([
+      result(FILE, 'Gestures > first', 'passed', { projectName: 'default' }),
+      result(FILE, 'Gestures > cut', 'interrupted', { projectName: 'default', error: 'Stopped by user' }),
+    ]);
+    expect(text).toContain('[STOP] Gestures > cut');
+    // The one that never started is the only 'not run' on this board.
+    expect(text).toContain('1 passed, 1 interrupted, 1 not run');
+  });
+
+  it('does not count it as a failure', async () => {
+    const text = await boardFor([
+      result(FILE, 'Gestures > cut', 'interrupted', { projectName: 'default', error: 'Stopped by user' }),
+    ]);
+    expect(text).toContain('0 failed');
+    expect(text).toContain('1 interrupted');
+    expect(text).not.toContain('[FAIL]');
+  });
+
+  it('still retires a file-level failure, because the file did run', async () => {
+    const text = await boardFor([
+      result(FILE, `${FILE} — file failed to run`, 'failed', {
+        projectName: 'default', error: 'Cannot find module', fileLevelFailure: true,
+      }),
+      result(FILE, 'Gestures > cut', 'interrupted', { projectName: 'default', error: 'Stopped by user' }),
+    ]);
+    expect(text).not.toContain('file failed to run');
+  });
+});
+
 describe('tapsmith_suite_status', () => {
   it('reports every discovered test as passed, failed, skipped, or not run', async () => {
     const tree = [
