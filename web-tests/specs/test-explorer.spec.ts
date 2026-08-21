@@ -150,9 +150,9 @@ test.describe("Test explorer", () => {
         },
       )
 
-      await expect(explorer.statusFilterCount("Pass")).toHaveText("1")
-      await expect(explorer.statusFilterCount("Fail")).toHaveText("1")
-      await expect(explorer.statusFilterCount("Skip")).toHaveText("1")
+      await expect(explorer.statusFilter("Pass")).toHaveAccessibleName("Pass 1")
+      await expect(explorer.statusFilter("Fail")).toHaveAccessibleName("Fail 1")
+      await expect(explorer.statusFilter("Skip")).toHaveAccessibleName("Skip 1")
     })
   })
 
@@ -199,7 +199,7 @@ test.describe("Test explorer", () => {
   test("shows project dependencies on the project node", async ({ ui, explorer }) => {
     ui.seed(idleSeed(twoProjectTree()))
     await ui.open()
-    await expect(explorer.node("[ios]").locator(".te-deps")).toContainText("android")
+    await expect(explorer.dependenciesFor("[ios]")).toContainText("android")
   })
 
   test("keeps a single-file tree stable when re-seeded", async ({ app, explorer }) => {

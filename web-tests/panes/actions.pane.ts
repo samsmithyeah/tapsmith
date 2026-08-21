@@ -1,19 +1,18 @@
-// Actions panel — the per-test action list, its Metadata tab, and the
-// run-progress indicator. Shared with the standalone trace viewer
-// (`src/trace-viewer/components/ActionsPanel.tsx`).
+// Actions panel — the per-test action list. Shared with the standalone trace
+// viewer (`src/trace-viewer/components/ActionsPanel.tsx`).
 
 import type { Page } from "@playwright/test"
 
 export class ActionsPane {
   constructor(private page: Page) {}
 
-  get root() {
-    return this.page.locator(".actions-panel")
+  get list() {
+    return this.page.getByRole("listbox", { name: "Actions" })
   }
 
   /** One row per traced action or assertion. */
   get items() {
-    return this.page.locator(".action-item")
+    return this.list.getByRole("option")
   }
 
   item(name: string) {
@@ -21,53 +20,17 @@ export class ActionsPane {
   }
 
   get selectedItem() {
-    return this.page.locator(".action-item.selected")
+    return this.items.and(this.page.locator('[aria-selected="true"]'))
   }
 
   /** Rows still awaiting their `lifecycle: "completed"` event. */
   get inProgressItems() {
-    return this.page.locator(".action-item.in-progress")
-  }
-
-  get failedItems() {
-    return this.page.locator(".action-item.failed")
-  }
-
-  // ─── Header tabs ───
-
-  get actionsTab() {
-    return this.page.locator("button.actions-header-tab", { hasText: "Actions" })
-  }
-
-  get metadataTab() {
-    return this.page.locator("button.actions-header-tab", { hasText: "Metadata" })
-  }
-
-  // ─── Metadata ───
-
-  get metadataPanel() {
-    return this.page.locator(".metadata-panel")
-  }
-
-  /** The value cell next to a metadata label, e.g. "Device" or "Status". */
-  metadataValue(label: string) {
-    return this.page
-      .locator(".metadata-grid > *")
-      .filter({ hasText: new RegExp(`^${label}$`) })
-      .locator("xpath=following-sibling::*[1]")
+    return this.items.and(this.page.locator('[aria-busy="true"]'))
   }
 
   // ─── Flows ───
 
   async selectAction(name: string) {
     await this.item(name).first().click()
-  }
-
-  async showMetadata() {
-    await this.metadataTab.click()
-  }
-
-  async showActions() {
-    await this.actionsTab.click()
   }
 }

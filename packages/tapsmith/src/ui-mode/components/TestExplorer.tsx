@@ -59,12 +59,13 @@ export function TestExplorer(props: TestExplorerProps) {
           <input
             class="te-search"
             type="text"
+            aria-label="Filter tests"
             placeholder="Filter tests..."
             value={nameFilter}
             onInput={(e) => onSetNameFilter((e.target as HTMLInputElement).value)}
           />
         </div>
-        <div class="te-status-filters filter-tabs">
+        <div class="te-status-filters filter-tabs" role="tablist" aria-label="Filter by status">
           <StatusButton label="All" value="all" count={counts.total} active={statusFilter} onClick={onSetStatusFilter} />
           <StatusButton label="Pass" value="passed" count={counts.passed} active={statusFilter} onClick={onSetStatusFilter} />
           <StatusButton label="Fail" value="failed" count={counts.failed} active={statusFilter} onClick={onSetStatusFilter} />
@@ -135,7 +136,7 @@ export function TestExplorer(props: TestExplorerProps) {
           />
         ))}
         {files.length === 0 && (
-          <div class="te-empty">No tests found</div>
+          <div class="te-empty" role="status">No tests found</div>
         )}
       </div>
     </div>
@@ -157,6 +158,8 @@ function StatusButton({ label, value, count, active, onClick }: StatusButtonProp
   return (
     <button
       class={`te-status-btn filter-tab ${isActive ? 'active' : ''} te-status-${value}`}
+      role="tab"
+      aria-selected={isActive}
       onClick={() => onClick(value)}
     >
       {value !== 'all' && <span class={`ind ind-${value}`} />}
@@ -281,7 +284,7 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
         )}
 
         {node.duration !== undefined && node.duration > 0 && (
-          <span class="te-duration dur">{formatDuration(node.duration)}</span>
+          <span class="te-duration dur" data-testid="node-duration">{formatDuration(node.duration)}</span>
         )}
 
         <div class="te-actions">

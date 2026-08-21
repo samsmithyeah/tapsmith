@@ -3,78 +3,71 @@
 // Follows the screen-object guidelines in docs/writing-tests.md: getters (never
 // constructor assignments) so each access yields a fresh lazy locator,
 // multi-step flows as methods, and no assertions — specs decide what to assert.
+//
+// Locators are role- and text-based. Where a surface had no accessible name, the
+// fix was to give it the ARIA it should already have had rather than to reach for
+// a CSS class from `styles/ui-mode.css.ts` — those are styling hooks and only
+// incidentally stable. `getByTestId` is the deliberate fallback for the few bits
+// carrying no semantics at all.
 
 import type { Locator, Page } from "@playwright/test"
 
 type NodeStatus = "idle" | "running" | "passed" | "failed" | "skipped"
+type NodeType = "project" | "file" | "suite" | "test"
+type StatusFilter = "All" | "Pass" | "Fail" | "Skip"
 
 export class TestExplorerPane {
   constructor(private page: Page) {}
 
-  // ─── Container ───
+  // ─── Search and status filters ───
 
-  get root() {
-    return this.page.locator(".test-explorer")
+  get searchInput() {
+    return this.page.getByRole("textbox", { name: "Filter tests" })
   }
+
+  get statusFilters() {
+    return this.page.getByRole("tablist", { name: "Filter by status" })
+  }
+
+  /**
+   * One of the All / Pass / Fail / Skip filters. Its accessible name carries the
+   * count too ("Pass 1"), so it's matched on the leading label.
+   */
+  statusFilter(label: StatusFilter) {
+    return this.statusFilters.getByRole("tab", { name: new RegExp(`^${label}\\b`) })
+  }
+
+  // ─── Toolbar ───
+
+  get runAllButton() {
+    return this.page.getByRole("button", { name: "Run all tests" })
+  }
+
+  get stopButton() {
+    return this.page.getByRole("button", { name: "Stop current run" })
+  }
+
+  get watchAllButton() {
+    return this.page.getByRole("button", { name: "Watch all files for changes" })
+  }
+
+  get expandAllButton() {
+    return this.page.getByRole("button", { name: "Expand all" })
+  }
+
+  get collapseAllButton() {
+    return this.page.getByRole("button", { name: "Collapse all" })
+  }
+
+  // ─── Tree ───
 
   get tree() {
     return this.page.getByRole("tree", { name: "Tests" })
   }
 
   get emptyState() {
-    return this.page.locator(".te-empty")
+    return this.page.getByText("No tests found")
   }
-
-  // ─── Search and status filters ───
-
-  get searchInput() {
-    return this.page.locator("input.te-search")
-  }
-
-  /** One of the All / Pass / Fail / Skip filter buttons. */
-  statusFilter(label: "All" | "Pass" | "Fail" | "Skip") {
-    return this.page.locator(".te-status-filters button", {
-      has: this.page.locator(`text="${label}"`),
-    })
-  }
-
-  /** The count badge inside a status filter, e.g. "3" on Pass. */
-  statusFilterCount(label: "All" | "Pass" | "Fail" | "Skip") {
-    return this.statusFilter(label).locator(".te-count")
-  }
-
-  // ─── Toolbar ───
-
-  get runAllButton() {
-    return this.page.getByTitle("Run all tests")
-  }
-
-  get stopButton() {
-    return this.page.getByTitle("Stop current run")
-  }
-
-  /** The stop button once a stop is in flight — its title changes. */
-  get stoppingButton() {
-    return this.page.getByTitle("Stopping…")
-  }
-
-  get watchAllButton() {
-    return this.page.getByTitle("Watch all files for changes")
-  }
-
-  get disableWatchButton() {
-    return this.page.getByTitle("Disable watch mode")
-  }
-
-  get expandAllButton() {
-    return this.page.getByTitle("Expand all")
-  }
-
-  get collapseAllButton() {
-    return this.page.getByTitle("Collapse all")
-  }
-
-  // ─── Tree nodes ───
 
   /** Every rendered tree row, in document order. */
   get nodes() {
@@ -83,25 +76,23 @@ export class TestExplorerPane {
 
   /**
    * A tree row by its visible name — its last path segment, or `[name]` for a
-   * project. `exact` because "smoke" must not also match "smoke test".
+   * project. Exact, so "smoke" doesn't also match "smoke test".
    */
   node(name: string): Locator {
     return this.page.getByRole("treeitem", { name, exact: true })
   }
 
-  /** Rows of one kind — handy for asserting structure. */
-  nodesOfType(type: "project" | "file" | "suite" | "test") {
-    return this.page.locator(`.te-node[data-type="${type}"]`)
+  // `data-type` and `data-status` have no ARIA equivalent — there is no role or
+  // state for "this test failed" — and they are pre-existing product
+  // attributes rather than styling hooks. Refining the role keeps the accessible
+  // locator primary.
+
+  nodesOfType(type: NodeType) {
+    return this.nodes.and(this.page.locator(`[data-type="${type}"]`))
   }
 
-  /** Rows currently showing a given status. */
-  nodesWithStatus(status: NodeStatus) {
-    return this.page.locator(`.te-node[data-status="${status}"]`)
-  }
-
-  /** Rows of one kind showing a given status — e.g. only the leaf tests. */
-  nodesOfTypeWithStatus(type: "project" | "file" | "suite" | "test", status: NodeStatus) {
-    return this.page.locator(`.te-node[data-type="${type}"][data-status="${status}"]`)
+  nodesOfTypeWithStatus(type: NodeType, status: NodeStatus) {
+    return this.nodes.and(this.page.locator(`[data-type="${type}"][data-status="${status}"]`))
   }
 
   // Each row holds exactly one run and one watch button, so a name prefix is
@@ -116,8 +107,14 @@ export class TestExplorerPane {
     return this.node(name).getByRole("button", { name: /^Watch / })
   }
 
+  /** A formatted duration is a bare number with no role of its own. */
   durationFor(name: string) {
-    return this.node(name).locator(".te-duration")
+    return this.node(name).getByTestId("node-duration")
+  }
+
+  /** The "depends on" badge on a project row, named by its tooltip. */
+  dependenciesFor(name: string) {
+    return this.node(name).getByTitle(/^Depends on:/)
   }
 
   // ─── Flows ───
@@ -146,7 +143,7 @@ export class TestExplorerPane {
     await this.searchInput.fill("")
   }
 
-  async filterByStatus(label: "All" | "Pass" | "Fail" | "Skip") {
+  async filterByStatus(label: StatusFilter) {
     await this.statusFilter(label).click()
   }
 
@@ -156,15 +153,5 @@ export class TestExplorerPane {
 
   async collapseAll() {
     await this.collapseAllButton.click()
-  }
-
-  /** Expand every ancestor needed to reveal a descendant row. */
-  async reveal(...names: string[]) {
-    for (const name of names) {
-      const node = this.node(name)
-      if ((await node.getAttribute("aria-expanded")) === "false") {
-        await node.click()
-      }
-    }
   }
 }

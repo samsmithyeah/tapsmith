@@ -11,7 +11,7 @@ import { idleSeed, singleFileTree } from "../messages/scenarios.js"
 test.describe("Connection", () => {
   test("reports the connected device in the top rail", async ({ app, runControls }) => {
     void app
-    await expect(runControls.devices).toHaveText("emulator-5554")
+    await expect(runControls.connection).toHaveText("emulator-5554")
   })
 
   test("shows Disconnected when the socket drops", async ({ app, runControls }) => {
@@ -69,11 +69,9 @@ test.describe("Connection", () => {
     await expect(explorer.runAllButton).toBeDisabled()
   })
 
-  test("surfaces a server error message", async ({ app, page }) => {
+  test("surfaces a server error message", async ({ app, runControls }) => {
     const ui = app
     ui.send({ type: "error", message: "Device disconnected: emulator-5554" })
-    await expect(page.locator(".test-error-banner")).toContainText(
-      "Device disconnected: emulator-5554",
-    )
+    await expect(runControls.errorBanner).toContainText("Device disconnected: emulator-5554")
   })
 })

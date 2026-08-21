@@ -96,7 +96,7 @@ export function DeviceMirror({ canvasRef, connected, loading, platform, formFact
       <div class="dm-viewport">
         {(!connected || loading) && (
           <div class="dm-overlay">
-            <div class="dm-placeholder">
+            <div class="dm-placeholder" role="status">
               <svg class="dm-phone-icon" viewBox="0 0 56 96" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <rect x="2" y="2" width="52" height="92" rx="8" stroke="currentColor" stroke-width="2.5" />
                 <rect x="8" y="14" width="40" height="64" rx="2" fill="currentColor" opacity="0.08" />

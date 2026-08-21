@@ -1,4 +1,4 @@
-// Device pane — the live screen mirror, its lock/pick toggles, and worker tabs.
+// Device pane — the live screen mirror and its toggles.
 
 import type { Page } from "@playwright/test"
 
@@ -6,41 +6,33 @@ export class DevicePane {
   constructor(private page: Page) {}
 
   get root() {
-    return this.page.locator(".device-col")
-  }
-
-  get title() {
-    return this.page.locator(".device-head-title")
+    return this.page.getByRole("region", { name: "Live device mirror" })
   }
 
   // ─── Mirror ───
 
   get canvas() {
-    return this.page.getByLabel("Device screen mirror")
+    return this.page.getByLabel("Device screen mirror", { exact: true })
   }
 
-  /** Shown until the first frame arrives. */
+  /** One canvas per worker in the multi-device grid, named by worker. */
+  mirrorFor(workerLabel: string) {
+    return this.page.getByLabel(`Device screen mirror — ${workerLabel}`)
+  }
+
+  /** Live region shown until the first frame arrives. */
   get placeholder() {
-    return this.page.locator(".dm-placeholder-text")
-  }
-
-  get placeholderHint() {
-    return this.page.locator(".dm-placeholder-hint")
-  }
-
-  /** One canvas per worker in the multi-device grid. */
-  get gridCanvases() {
-    return this.page.locator(".device-pane-grid canvas")
+    return this.root.getByRole("status")
   }
 
   // ─── Toggles ───
 
   get lockToggle() {
-    return this.page.locator("button.mirror-lock-toggle")
+    return this.page.getByRole("button", { name: /^Interaction (locked|unlocked)/ })
   }
 
   get pickToggle() {
-    return this.page.locator("button.mirror-pick-toggle")
+    return this.page.getByRole("button", { name: /^(Pick an element|Picking element)/ })
   }
 
   // ─── Worker tabs ───
@@ -53,17 +45,7 @@ export class DevicePane {
     return this.workerTabs.getByRole("tab", { name: label })
   }
 
-  get allWorkersTab() {
-    return this.workerTab("All")
-  }
-
   // ─── Flows ───
-
-  async unlockInteraction() {
-    if ((await this.lockToggle.getAttribute("class"))?.includes("locked")) {
-      await this.lockToggle.click()
-    }
-  }
 
   async enablePickMode() {
     await this.pickToggle.click()

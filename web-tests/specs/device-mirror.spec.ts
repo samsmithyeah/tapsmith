@@ -77,8 +77,8 @@ test.describe("Device mirror", () => {
   test("shows a placeholder while no device is connected", async ({ app, device }) => {
     const ui = app
     ui.drop()
-    await expect(device.placeholder).toHaveText("Waiting for device")
-    await expect(device.placeholderHint).toHaveText("Connect a device or start a test run")
+    await expect(device.placeholder).toContainText("Waiting for device")
+    await expect(device.placeholder).toContainText("Connect a device or start a test run")
   })
 
   test("names the mirror for assistive tech", async ({ app, device }) => {
@@ -86,6 +86,6 @@ test.describe("Device mirror", () => {
     // A bare <canvas> is invisible to screen readers; the label is the only
     // thing that names it.
     await expect(device.canvas).toHaveCount(1)
-    await expect(device.title).toHaveText("Live device mirror")
+    await expect(device.root).toHaveCount(1)
   })
 })

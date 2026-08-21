@@ -1,67 +1,64 @@
-// Top rail — result counts, elapsed timer, connection state, MCP toggle, theme.
+// Top rail — result counts, elapsed timer, connection state.
 
 import type { Page } from "@playwright/test"
 
 export class RunControlsPane {
   constructor(private page: Page) {}
 
-  get root() {
-    return this.page.locator(".rail")
-  }
-
-  // ─── Counts and timing ───
-
-  get counts() {
-    return this.page.locator(".rc-counts")
-  }
+  // ─── Counts ───
+  //
+  // Each count renders its own sentence ("1 passed"), so the visible text is
+  // both the clearest locator and what the user actually reads.
 
   get passedCount() {
-    return this.page.locator(".rc-count.passed")
+    return this.page.getByText(/^\d+ passed$/)
   }
 
   get failedCount() {
-    return this.page.locator(".rc-count.failed")
+    return this.page.getByText(/^\d+ failed$/)
   }
 
   get skippedCount() {
-    return this.page.locator(".rc-count.skipped")
+    return this.page.getByText(/^\d+ skipped$/)
   }
 
   /** Only rendered while a run is in flight. */
   get elapsed() {
-    return this.page.locator(".rc-elapsed")
+    return this.page.getByRole("timer", { name: "Elapsed run time" })
   }
 
   // ─── Run failed ───
 
   /** Only rendered once at least one test has failed. */
   get rerunFailedButton() {
-    return this.page.locator("button.rc-run-failed")
+    return this.page.getByRole("button", { name: /Rerun Failed/ })
   }
 
   // ─── Connection ───
 
-  /** One entry per device; the text is the serial, or Connected/Disconnected. */
-  get devices() {
-    return this.page.locator(".rc-device")
+  /** Live region holding the device serial, or Connected/Disconnected. */
+  get connection() {
+    return this.page.getByRole("status", { name: "Device connection" })
   }
 
   get disconnectedIndicator() {
-    return this.page.locator(".rc-device", { hasText: "Disconnected" })
+    return this.connection.getByText("Disconnected")
   }
 
-  // ─── MCP and theme ───
+  // ─── Notifications ───
+  //
+  // The banner sits in the app chrome just below this rail. Deliberately located
+  // by role and text rather than by an aria-label: naming a live region would
+  // make assistive tech announce the label instead of the message.
 
-  get mcpIndicator() {
-    return this.page.locator("button.rc-mcp-indicator")
+  /** Server errors — an assertive live region. */
+  get errorBanner() {
+    return this.page.getByRole("alert")
   }
 
-  get mcpDot() {
-    return this.mcpIndicator.locator(".mcp-dot")
-  }
-
-  get themeSelect() {
-    return this.page.locator("select.rc-theme-select")
+  /** Run notices such as "Run stopped" — a polite live region. */
+  notification(text: string | RegExp) {
+    return this.page.getByRole("status").filter({ hasText: text })
   }
 
   // ─── Flows ───
@@ -70,20 +67,12 @@ export class RunControlsPane {
     await this.rerunFailedButton.click()
   }
 
-  async toggleMcpPanel() {
-    await this.mcpIndicator.click()
-  }
-
-  async chooseTheme(theme: "system" | "light" | "dark") {
-    await this.themeSelect.selectOption(theme)
-  }
-
   /**
    * Fire a bare-key shortcut: `r` run-all, `f` run-failed, `Escape` stop,
    * `w` toggle-watch (see `keyboard-shortcuts.ts`). Pressed on `body` so no
    * input holds focus — the shortcuts are deliberately suppressed while typing.
    */
-  async pressShortcut(key: "r" | "f" | "w" | "Escape") {
+  async pressShortcut(key: string) {
     await this.page.locator("body").press(key)
   }
 }

@@ -224,7 +224,9 @@ test.describe("Run lifecycle", () => {
       ui.send({ type: "test-start", fullName: DOUBLE_TAP, filePath: GESTURES_FILE })
       await explorer.clickNode(TEST_NAME)
       ui.send(actionStarted({ testFullName: DOUBLE_TAP, actionIndex: 0, action: "waitFor" }))
-      await expect(actions.items).toHaveCount(1)
+      // Asserted positively first, so the toHaveCount(0) below can't pass just
+      // because the in-flight locator matches nothing.
+      await expect(actions.inProgressItems).toHaveCount(1)
 
       // A run aborted mid-action must not leave a spinner behind.
       ui.send({
@@ -264,7 +266,7 @@ test.describe("Run lifecycle", () => {
       await expect(explorer.node(TEST_NAME)).toHaveAttribute("data-status", "idle")
     })
 
-    test("announces a stopped run", async ({ app, page }) => {
+    test("announces a stopped run", async ({ app, runControls }) => {
       const ui = app
       ui.send({ type: "run-start", fileCount: 1 })
       ui.send({
@@ -277,7 +279,7 @@ test.describe("Run lifecycle", () => {
         interrupted: 2,
       })
 
-      await expect(page.locator(".test-error-banner")).toContainText("2 tests interrupted")
+      await expect(runControls.notification(/2 tests interrupted/)).toBeVisible()
     })
   })
 

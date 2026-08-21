@@ -156,7 +156,7 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
           </button>
         )}
         {isRunning && (
-          <span class="rc-elapsed mono">{formatElapsed(runElapsed)}</span>
+          <span class="rc-elapsed mono" role="timer" aria-label="Elapsed run time">{formatElapsed(runElapsed)}</span>
         )}
         {counts.total > 0 && (
           <div class="rc-counts">
@@ -166,7 +166,7 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
           </div>
         )}
         <span class="rc-divider" />
-        <div class="rc-connection">
+        <div class="rc-connection" role="status" aria-label="Device connection">
           {!connected
             ? (
               <span class="rc-device">
@@ -198,6 +198,7 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
         <span class="rc-divider" />
         <select
           class="rc-theme-select"
+          aria-label="Theme"
           value={theme}
           onChange={(e) => onThemeChange((e.target as HTMLSelectElement).value as Theme)}
         >

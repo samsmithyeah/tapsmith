@@ -61,11 +61,33 @@ suite applies the same conventions to UI mode's panes:
 - **Multi-step flows as methods**, so specs read as intent: `explorer.runNode("smoke")`.
 - **No assertions in pane objects.** They expose locators and actions; specs decide what to assert.
 
-Prefer `getByRole` / `getByLabel` / `getByTitle` / text over CSS classes. The classes in
-`styles/ui-mode.css.ts` are styling hooks and only incidentally stable; where a surface had no
-accessible name at all, the fix was to give it the ARIA role it should already have had (the test tree
-is a `tree` of `treeitem`s, the detail tabs are a `tablist`, the mirror canvas has a label) rather
-than to bolt on `data-testid`s.
+## Locators
+
+Accessible locators only — `getByRole`, `getByLabel`, `getByTitle`, `getByText`. The classes in
+`styles/ui-mode.css.ts` are styling hooks and only incidentally stable, so nothing here selects on
+them. Where a surface had no accessible name, the fix was to give it the ARIA it should already have
+had rather than to bolt on a testid:
+
+| Surface | Now |
+|---|---|
+| Test tree | `tree` of `treeitem`s with `aria-level`/`-expanded`/`-selected`, each row explicitly named |
+| Status filters (All/Pass/Fail/Skip) | `tablist` of `tab`s; the count rides in the accessible name |
+| Detail tabs, worker tabs | `tablist`/`tab` instead of clickable `div`s |
+| Action list | `listbox` of `option`s; in-flight rows carry `aria-busy` |
+| Filter box | `aria-label` (a placeholder is not a label) |
+| Elapsed time | `role="timer"` |
+| Connection strip, mirror placeholder, empty state | `role="status"` live regions |
+| Notification banners | `role="alert"` (errors) / `role="status"` (notices) |
+| Mirror canvas | labelled, per worker in the grid |
+| Theme select, per-row run/watch buttons | labelled, so they're distinguishable |
+
+`getByTestId` is the deliberate fallback where there is genuinely no semantics — currently just the
+formatted duration on a tree row (`node-duration`).
+
+Two exceptions worth knowing: a row's `data-type` and `data-status` are still used for type and
+status, because ARIA has no role or state meaning "this test failed" and those are pre-existing
+product attributes rather than styling hooks. Both are applied via `.and()` on top of the role, so the
+accessible locator stays primary.
 
 ## Writing a spec
 

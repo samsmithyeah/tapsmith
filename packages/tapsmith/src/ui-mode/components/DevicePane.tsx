@@ -104,6 +104,7 @@ function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas
         <DeviceFrame platform={framePlatform} formFactor={frameFormFactor}>
           <canvas
             ref={ref}
+            aria-label={`Device screen mirror — ${label}`}
             class={`dm-canvas ${interactive ? 'interactive' : 'locked'}`}
             tabIndex={interactive ? 0 : -1}
             onPointerDown={interactive ? interaction.onPointerDown : undefined}
@@ -153,7 +154,7 @@ export function DevicePane({
   });
 
   return (
-    <div class="device-col">
+    <div class="device-col" role="region" aria-label="Live device mirror">
       <div class="device-head">
         <span class="device-head-title">Live device mirror</span>
         <span class="device-head-meta">
