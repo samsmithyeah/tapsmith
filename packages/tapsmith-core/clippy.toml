@@ -1,0 +1,12 @@
+# `tonic::Status` is 176 bytes, which trips clippy's `result_large_err` (default
+# threshold: 128) on every helper in `grpc_server.rs` that returns
+# `Result<_, Status>`. Boxing is not a real option: the orphan rule forbids
+# `impl From<Box<Status>> for Status`, so every one of the ~86 call sites would
+# need a manual `.map_err(|e| *e)` to satisfy the generated tonic trait methods,
+# which must return a bare `Status`.
+#
+# The principled fix is an internal error enum with `impl From<InternalError> for
+# Status`, converting only at the service boundary — tracked separately. Until
+# then, raise the threshold just past `Status` so the lint still catches error
+# types genuinely worth shrinking.
+large-error-threshold = 192

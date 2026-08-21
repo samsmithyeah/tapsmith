@@ -1,0 +1,13 @@
+# Pin the toolchain so a new stable cannot break CI without a deliberate bump.
+#
+# CI runs `cargo clippy -- -D warnings`, which turns every newly-added lint into
+# a build failure. Rust 1.98.0 (2026-08-18) added `result_large_err` coverage
+# that broke every build on an unpinned `@stable`, including commits that had
+# been green for weeks.
+#
+# `components` matters: the workflows install clippy/rustfmt for whatever
+# `dtolnay/rust-toolchain@stable` resolves to, so once that diverges from this
+# pin the components must come from here or `cargo clippy` is not found.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
