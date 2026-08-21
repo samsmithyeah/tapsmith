@@ -66,9 +66,27 @@ buf lint proto/
 buf breaking proto/ --against '.git#ref=origin/main,subdir=proto'
 ```
 
+### UI mode web tests (`web-tests/`)
+```bash
+npm ci                  # install deps (@playwright/test only)
+npx playwright install chromium
+npm run typecheck       # tsc --noEmit
+npm run test            # playwright test
+npm run test:ui         # Playwright's UI runner, for authoring
+```
+Hermetic Playwright suite for UI mode — **no device or daemon needed**. It serves the built
+`packages/tapsmith/dist/ui-mode/index.html` and drives the SPA through an intercepted WebSocket
+(`page.routeWebSocket()`), so `npm run build` in `packages/tapsmith` must run first. Pane objects in
+`web-tests/panes/` follow the same screen-object conventions as `e2e/screens/` (see
+`docs/writing-tests.md`).
+
 ## CI
 
-GitHub Actions runs 4 parallel jobs: `proto-lint`, `typescript`, `rust`, `android`. All must pass. See `.github/workflows/ci.yml`.
+GitHub Actions runs 8 parallel jobs: `proto-lint`, `typescript`, `rust`, `rust-macos`, `android`,
+`website`, `test-app`, `ui-web`. All must pass. See `.github/workflows/ci.yml`.
+
+Device E2E runs separately on every PR: `e2e-android.yml` (ubuntu + KVM emulator, 5 shards) and
+`e2e-ios.yml` (macOS simulators, 5 shards).
 
 ## npm packaging & releases
 

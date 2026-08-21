@@ -237,3 +237,63 @@ jobs:
 
       - name: Unused code check (knip)
         run: npm run knip
+
+  ui-web:
+    name: UI Web Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            packages/tapsmith/package-lock.json
+            web-tests/package-lock.json
+
+      # The suite drives the built single-file SPA (dist/ui-mode/index.html) —
+      # the same artifact ui-server.ts serves to users — so the SDK has to be
+      # built first. This job builds its own copy rather than depending on the
+      # typescript job: they run in parallel, so it costs no wall-clock time and
+      # keeps the check independent.
+      - name: Install SDK dependencies
+        working-directory: packages/tapsmith
+        run: npm ci
+
+      - name: Build SDK (includes the UI mode bundle)
+        working-directory: packages/tapsmith
+        run: npm run build
+
+      - name: Install web-test dependencies
+        working-directory: web-tests
+        run: npm ci
+
+      - name: Type check
+        working-directory: web-tests
+        run: npm run typecheck
+
+      # Chromium only: this is our own app on one engine, not a cross-browser
+      # support matrix.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('web-tests/package-lock.json') }}
+
+      - name: Install Chromium
+        working-directory: web-tests
+        run: npx playwright install --with-deps chromium
+
+      - name: Run UI mode web tests
+        working-directory: web-tests
+        run: npx playwright test
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            web-tests/playwright-report/
+            web-tests/test-results/
+          retention-days: 7

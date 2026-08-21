@@ -116,6 +116,7 @@ export function DeviceMirror({ canvasRef, connected, loading, platform, formFact
         <DeviceFrame platform={platform} formFactor={formFactor} heightBound>
           <canvas
             ref={canvasRef}
+            aria-label="Device screen mirror"
             class={`dm-canvas ${pickMode ? 'pick-mode' : interactive ? 'interactive' : 'locked'}`}
             tabIndex={gesturesEnabled ? 0 : -1}
             onPointerDown={gesturesEnabled ? interaction.onPointerDown : undefined}

@@ -188,9 +188,11 @@ export function DevicePane({
       </div>
 
       {hasWorkers && (
-        <div class="worker-tabs">
+        <div class="worker-tabs" role="tablist" aria-label="Device views">
           <button
             class={`worker-tab ${deviceViewMode === 'all' ? 'active' : ''}`}
+            role="tab"
+            aria-selected={deviceViewMode === 'all'}
             onClick={() => onSelectDeviceView('all')}
           >
             All
@@ -199,6 +201,8 @@ export function DevicePane({
             <button
               key={w.workerId}
               class={`worker-tab ${deviceViewMode === w.workerId ? 'active' : ''}`}
+              role="tab"
+              aria-selected={deviceViewMode === w.workerId}
               onClick={() => onSelectDeviceView(w.workerId)}
               title={`${w.displayName} (${w.deviceSerial}) — ${w.status}`}
             >

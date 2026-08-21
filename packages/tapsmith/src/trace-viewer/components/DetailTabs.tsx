@@ -78,19 +78,19 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
 
   return (
     <div class="detail-panel">
-      <div class="detail-tabs-bar">
-        <div class={`detail-tab vtab${tab === 'call' ? ' active' : ''}`} onClick={() => setTab('call')}>Call</div>
-        <div class={`detail-tab vtab${tab === 'log' ? ' active' : ''}`} onClick={() => setTab('log')}>Log</div>
-        <div class={`detail-tab vtab${tab === 'console' ? ' active' : ''}`} onClick={() => setTab('console')}>
+      <div class="detail-tabs-bar" role="tablist" aria-label="Trace details">
+        <div class={`detail-tab vtab${tab === 'call' ? ' active' : ''}`} role="tab" aria-selected={tab === 'call'} onClick={() => setTab('call')}>Call</div>
+        <div class={`detail-tab vtab${tab === 'log' ? ' active' : ''}`} role="tab" aria-selected={tab === 'log'} onClick={() => setTab('log')}>Log</div>
+        <div class={`detail-tab vtab${tab === 'console' ? ' active' : ''}`} role="tab" aria-selected={tab === 'console'} onClick={() => setTab('console')}>
           Console{consoleEvents.length > 0 && <span class="detail-tab-dot" />}
         </div>
-        <div class={`detail-tab vtab${tab === 'source' ? ' active' : ''}`} onClick={() => setTab('source')}>Source</div>
-        <div class={`detail-tab vtab${tab === 'hierarchy' ? ' active' : ''}`} onClick={() => setTab('hierarchy')}>Hierarchy</div>
-        {locatorTab && <div class={`detail-tab vtab${tab === 'locator' ? ' active' : ''}`} onClick={() => setTab('locator')}>Locator</div>}
-        <div class={`detail-tab vtab${tab === 'network' ? ' active' : ''}`} onClick={() => setTab('network')}>
+        <div class={`detail-tab vtab${tab === 'source' ? ' active' : ''}`} role="tab" aria-selected={tab === 'source'} onClick={() => setTab('source')}>Source</div>
+        <div class={`detail-tab vtab${tab === 'hierarchy' ? ' active' : ''}`} role="tab" aria-selected={tab === 'hierarchy'} onClick={() => setTab('hierarchy')}>Hierarchy</div>
+        {locatorTab && <div class={`detail-tab vtab${tab === 'locator' ? ' active' : ''}`} role="tab" aria-selected={tab === 'locator'} onClick={() => setTab('locator')}>Locator</div>}
+        <div class={`detail-tab vtab${tab === 'network' ? ' active' : ''}`} role="tab" aria-selected={tab === 'network'} onClick={() => setTab('network')}>
           Network{networkEntries.length > 0 && <span class="ct">{networkEntries.length}</span>}
         </div>
-        <div class={`detail-tab vtab${tab === 'errors' ? ' active' : ''}${hasError ? ' has-error' : ''}`} onClick={() => setTab('errors')}>
+        <div class={`detail-tab vtab${tab === 'errors' ? ' active' : ''}${hasError ? ' has-error' : ''}`} role="tab" aria-selected={tab === 'errors'} onClick={() => setTab('errors')}>
           Errors{failedCount > 0 && <span class="ct">{failedCount}</span>}
         </div>
       </div>
