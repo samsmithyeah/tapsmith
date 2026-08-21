@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fork, type ChildProcess } from 'node:child_process';
 import { resolveChildLoader } from '../child-scripts.js';
+import { STOPPED_BY_USER } from '../abort.js';
+import type { WatchRunAbortMessage } from '../watch-run.js';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { minimatch } from 'minimatch';
 import { resolveProjects, topologicalSort, type ResolvedProject } from '../project.js';
@@ -28,6 +30,7 @@ import type {
   DiscoveryError,
   DeviceTarget,
 } from './test-dispatcher.js';
+import { classifyEntryStatus, isInterruptedEntry } from './test-dispatcher.js';
 import { loadMcpConfig } from './config-loader.js';
 import type { TestTreeNode, UIDiscoverMessage, UIDiscoverChildMessage } from '../ui-mode/ui-protocol.js';
 
@@ -62,6 +65,17 @@ const RUN_CHILD_TIMEOUT_MS = 60 * 60 * 1000;
 
 // ─── HeadlessTestDispatcher ───
 
+/** Per-test counts one file contributes to a run's summary. */
+interface RunTally {
+  passed: number
+  failed: number
+  skipped: number
+  interrupted: number
+}
+
+/** Grace period between the cooperative abort and the signal that follows it. */
+const STOP_GRACE_MS = 5_000;
+
 export class HeadlessTestDispatcher implements TestDispatcher {
   private readonly _configFile?: string;
   private _config: import('../config.js').TapsmithConfig | null = null;
@@ -75,6 +89,8 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private _lastRunEnd: TestRunResult | null = null;
   private readonly _runEndWaiters: Array<(r: TestRunResult) => void> = [];
   private _activeChild: ChildProcess | null = null;
+  /** Escalation from the cooperative abort to a signal (see `stop`). */
+  private _stopEscalationTimer: ReturnType<typeof setTimeout> | null = null;
   private _initialized = false;
   private _initPromise: Promise<void> | null = null;
   private _deviceSerial: string | null = null;
@@ -167,13 +183,20 @@ export class HeadlessTestDispatcher implements TestDispatcher {
           const { results, suite } = await this._runFileInChild(
             f, useOptions, projectName, testFilter,
           );
-          totalPassed += results.filter((r) => r.status === 'passed').length;
-          totalFailed += results.filter((r) => r.status === 'failed').length;
-          totalSkipped += results.filter((r) => r.status === 'skipped').length;
+          const tally = this._tallyResults(results);
+          totalPassed += tally.passed;
+          totalFailed += tally.failed;
+          totalSkipped += tally.skipped;
+          totalInterrupted += tally.interrupted;
           totalDuration += suite.durationMs;
         } catch (err) {
           if (this._accountForFileError(f, projectName, err) === 'interrupted') {
-            totalInterrupted++;
+            const salvaged = this._salvageFromStore(f, projectName);
+            totalPassed += salvaged.passed;
+            totalFailed += salvaged.failed;
+            totalSkipped += salvaged.skipped;
+            totalInterrupted += salvaged.interrupted;
+            totalDuration += salvaged.duration;
             break;
           }
           totalFailed++;
@@ -231,14 +254,24 @@ export class HeadlessTestDispatcher implements TestDispatcher {
               if (this._stopRequested) break;
               try {
                 const { results, suite } = await this._runFileInChild(file, useOptions, projectName);
-                totalPassed += results.filter((r) => r.status === 'passed').length;
-                totalFailed += results.filter((r) => r.status === 'failed').length;
-                totalSkipped += results.filter((r) => r.status === 'skipped').length;
+                const tally = this._tallyResults(results);
+                totalPassed += tally.passed;
+                totalFailed += tally.failed;
+                totalSkipped += tally.skipped;
+                totalInterrupted += tally.interrupted;
                 totalDuration += suite.durationMs;
-                if (results.some((r) => r.status === 'failed')) projectFailed = true;
+                // A stop is not a failure, so it must not block this project's
+                // dependents — they were never given their chance to run.
+                if (tally.failed > 0) projectFailed = true;
               } catch (err) {
                 if (this._accountForFileError(file, projectName, err) === 'interrupted') {
-                  totalInterrupted++;
+                  const salvaged = this._salvageFromStore(file, projectName);
+                  totalPassed += salvaged.passed;
+                  totalFailed += salvaged.failed;
+                  totalSkipped += salvaged.skipped;
+                  totalInterrupted += salvaged.interrupted;
+                  totalDuration += salvaged.duration;
+                  if (salvaged.failed > 0) projectFailed = true;
                   break;
                 }
                 totalFailed++;
@@ -254,13 +287,20 @@ export class HeadlessTestDispatcher implements TestDispatcher {
           if (this._stopRequested) break;
           try {
             const { results, suite } = await this._runFileInChild(file);
-            totalPassed += results.filter((r) => r.status === 'passed').length;
-            totalFailed += results.filter((r) => r.status === 'failed').length;
-            totalSkipped += results.filter((r) => r.status === 'skipped').length;
+            const tally = this._tallyResults(results);
+            totalPassed += tally.passed;
+            totalFailed += tally.failed;
+            totalSkipped += tally.skipped;
+            totalInterrupted += tally.interrupted;
             totalDuration += suite.durationMs;
           } catch (err) {
             if (this._accountForFileError(file, undefined, err) === 'interrupted') {
-              totalInterrupted++;
+              const salvaged = this._salvageFromStore(file, undefined);
+              totalPassed += salvaged.passed;
+              totalFailed += salvaged.failed;
+              totalSkipped += salvaged.skipped;
+              totalInterrupted += salvaged.interrupted;
+              totalDuration += salvaged.duration;
               break;
             }
             totalFailed++;
@@ -281,12 +321,88 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     }
   }
 
+  /**
+   * Stop the in-flight run, asking before killing.
+   *
+   * A SIGTERM straight away destroyed the run's own account of itself: the
+   * child never sent `file-done`, so every test that had already finished was
+   * absent from the summary — the tool reported "0 passed" for a run whose
+   * `list_results` listed a pass. Requesting an abort lets the run end itself
+   * and report what it has, which is how UI mode has always done it. The
+   * signal stays as the escalation for a child that cannot answer.
+   */
   stop(): void {
     if (!this._isRunning) return;
     this._stopRequested = true;
-    if (this._activeChild) {
-      try { this._activeChild.kill(); } catch { /* already dead */ }
+    const child = this._activeChild;
+    if (!child) return;
+    let asked = false;
+    try {
+      child.send({ type: 'abort' } satisfies WatchRunAbortMessage);
+      asked = true;
+    } catch { /* channel already gone — fall through to the signal */ }
+    if (!asked) {
+      try { child.kill(); } catch { /* already dead */ }
+      return;
     }
+    this._clearStopEscalation();
+    this._stopEscalationTimer = setTimeout(() => {
+      // The abort went unanswered. Kill it, and let the run salvage whatever
+      // the child managed to stream before it stopped listening.
+      try { child.kill(); } catch { /* already dead */ }
+    }, STOP_GRACE_MS);
+    this._stopEscalationTimer.unref?.();
+  }
+
+  private _clearStopEscalation(): void {
+    if (this._stopEscalationTimer) {
+      clearTimeout(this._stopEscalationTimer);
+      this._stopEscalationTimer = null;
+    }
+  }
+
+  /**
+   * One file's contribution to a run's totals.
+   *
+   * A test the user's stop ended is `interrupted`, not `failed` — it is
+   * subtracted back out of the failure count, since the runner reports it as a
+   * failure carrying {@link STOPPED_BY_USER}. Counted per *test*, which is what
+   * `passed`/`failed`/`skipped` alongside it have always meant, and what UI
+   * mode reports; counting interrupted *files* here made one field in one
+   * summary silently change units.
+   */
+  private _tallyResults(results: { status: string; error?: { message?: string } }[]): RunTally {
+    const interrupted = results.filter(
+      (r) => r.status === 'failed' && r.error?.message === STOPPED_BY_USER,
+    ).length;
+    return {
+      passed: results.filter((r) => r.status === 'passed').length,
+      failed: results.filter((r) => r.status === 'failed').length - interrupted,
+      skipped: results.filter((r) => r.status === 'skipped').length,
+      interrupted,
+    };
+  }
+
+  /**
+   * What a file managed to report before its child died without a `file-done`.
+   *
+   * Every finished test has already streamed a `test-end` into the result
+   * store, so the run is not the blank the rejected promise makes it look
+   * like. Reading them back is what keeps the summary and `list_results` —
+   * which is this same store — telling one story.
+   */
+  private _salvageFromStore(filePath: string, projectName: string | undefined): RunTally & { duration: number } {
+    const entries = [...this._testResults.values()].filter(
+      (e) => e.filePath === filePath && e.projectName === projectName && !e.fileLevelFailure,
+    );
+    const interrupted = entries.filter(isInterruptedEntry).length;
+    return {
+      passed: entries.filter((e) => e.status === 'passed').length,
+      failed: entries.filter((e) => e.status === 'failed').length - interrupted,
+      skipped: entries.filter((e) => e.status === 'skipped').length,
+      interrupted,
+      duration: entries.reduce((sum, e) => sum + (e.duration ?? 0), 0),
+    };
   }
 
   waitForRunEnd(timeoutMs: number): Promise<TestRunResult | null> {
@@ -325,6 +441,9 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private _endRunState(): void {
     this._isRunning = false;
     this._stopRequested = false;
+    // Nothing left to escalate against, and a pending timer would outlive the
+    // run to kill whatever process happens to be in `_activeChild` next.
+    this._clearStopEscalation();
     if (this._runEndWaiters.length > 0) {
       const fallback: TestRunResult = { status: 'stopped', passed: 0, failed: 0, skipped: 0, duration: 0 };
       for (const w of this._runEndWaiters.splice(0)) w(fallback);
@@ -332,7 +451,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   }
 
   getResults(): TestResultEntry[] {
-    return [...this._testResults.values()];
+    return [...this._testResults.values()].map(classifyEntryStatus);
   }
 
   getTestFiles(): string[] {
@@ -764,6 +883,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
       let settled = false;
       const clearActiveChild = (): void => {
         if (this._activeChild === child) this._activeChild = null;
+        this._clearStopEscalation();
       };
       const timeout = setTimeout(() => {
         if (settled) return;
@@ -981,7 +1101,9 @@ export class HeadlessTestDispatcher implements TestDispatcher {
 
   private _collectFailures(): TestFailureDetail[] {
     return [...this._testResults.values()]
-      .filter((r) => r.status === 'failed' && r.error)
+      // A stop is not a failure, so it must not be listed as one under a run
+      // whose summary counted it as interrupted.
+      .filter((r) => r.status === 'failed' && r.error && !isInterruptedEntry(r))
       .map((r) => ({
         fullName: r.fullName,
         filePath: r.filePath,

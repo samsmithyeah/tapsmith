@@ -3,7 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { TestDispatcher, TestResultEntry, TestTreeEntry } from '../test-dispatcher.js';
 import { getSessionResultsStore } from '../session-results.js';
 
-type SuiteTestStatus = 'passed' | 'failed' | 'skipped' | 'not run';
+type SuiteTestStatus = 'passed' | 'failed' | 'skipped' | 'interrupted' | 'not run';
 
 interface SuiteTestRow {
   projectName?: string
@@ -155,7 +155,7 @@ function unmatchedFailures(all: TestResultEntry[], rows: SuiteTestRow[]): SuiteT
 }
 
 function countByStatus(rows: SuiteTestRow[]): Record<SuiteTestStatus, number> {
-  const counts: Record<SuiteTestStatus, number> = { passed: 0, failed: 0, skipped: 0, 'not run': 0 };
+  const counts: Record<SuiteTestStatus, number> = { passed: 0, failed: 0, skipped: 0, interrupted: 0, 'not run': 0 };
   for (const row of rows) counts[row.status]++;
   return counts;
 }
@@ -165,6 +165,7 @@ function statusIcon(status: SuiteTestStatus): string {
     case 'passed': return 'PASS';
     case 'failed': return 'FAIL';
     case 'skipped': return 'SKIP';
+    case 'interrupted': return 'STOP';
     case 'not run': return ' -- ';
   }
 }

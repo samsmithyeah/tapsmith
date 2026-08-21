@@ -32,6 +32,8 @@ import type { ResolvedProject } from '../project.js';
 import { collectTransitiveDeps, projectLabel } from '../project.js';
 import { matchesTestFilter } from '../test-filter.js';
 import { LaunchSetupError } from '../dispatcher.js';
+import { STOPPED_BY_USER } from '../abort.js';
+import { classifyEntryStatus, isInterruptedEntry } from '../mcp/test-dispatcher.js';
 import type { LaunchedEmulator } from '../emulator.js';
 import { preserveEmulatorsForReuse, getRunningAvdName } from '../emulator.js';
 import { listSimulators, getSimulatorScreenScale } from '../ios-simulator.js';
@@ -58,7 +60,7 @@ import type {
   UIWorkerChildMessage,
   UIWorkerMessage,
 } from './ui-protocol.js';
-import { encodeScreenFrame } from './ui-protocol.js';
+import { encodeScreenFrame, type TestNodeStatus } from './ui-protocol.js';
 import { RunQueue } from '../watch-queue.js';
 import {
   forkStdioForLaunchProgress,
@@ -591,7 +593,8 @@ export async function startUIServer(
 
   function collectFailures(): import('../mcp/test-dispatcher.js').TestFailureDetail[] {
     return [...testResults.values()]
-      .filter((r) => r.status === 'failed' && r.error)
+      // A stop is not a failure — same rule the headless dispatcher applies.
+      .filter((r) => r.status === 'failed' && r.error && !isInterruptedEntry(r))
       .map((r) => ({
         fullName: r.fullName,
         filePath: r.filePath,
@@ -605,6 +608,18 @@ export async function startUIServer(
     if (result.failed > 0) result.failures = collectFailures();
     return result;
   }
+
+/**
+ * The status the UI client's tree understands.
+ *
+ * That tree has no 'interrupted' node state — a stopped test has always shown
+ * there as failed, and its interrupted *count* is reported separately. This
+ * store holds raw runner statuses anyway, so the mapping is a formality; it
+ * exists to keep the wire type honest rather than casting the difference away.
+ */
+function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
+  return status === 'interrupted' ? 'failed' : status;
+}
 
   function toTreeEntry(node: TestTreeNode): TestTreeEntry {
     const entry: TestTreeEntry = {
@@ -703,7 +718,7 @@ export async function startUIServer(
       });
     },
     isRunning: () => isRunning,
-    getResults: () => [...testResults.values()],
+    getResults: () => [...testResults.values()].map(classifyEntryStatus),
     getTestFiles: () => ctx.testFiles,
     resolveRequestedFiles: (files) => resolveRequested(files),
     getProjects: () => realProjects().map((p) => p.name),
@@ -2230,7 +2245,7 @@ export async function startUIServer(
               // — keeps graceful-abort accounting consistent with the
               // kill-path accounting (single-worker stop / SIGKILL escalation).
               const interruptedHere = results.filter(
-                (r) => r.status === 'failed' && r.error?.message === 'Stopped by user',
+                (r) => r.status === 'failed' && r.error?.message === STOPPED_BY_USER,
               ).length;
               interruptedCount += interruptedHere;
 
@@ -2457,7 +2472,7 @@ export async function startUIServer(
       // the child's exit handler nulls singleWorkerRunningTest.
       if (singleWorkerRunningTest) {
         const { fullName, filePath, projectName } = singleWorkerRunningTest;
-        updateTestStatus(fullName, filePath, 'failed', undefined, 'Stopped by user', undefined, undefined, undefined, projectName);
+        updateTestStatus(fullName, filePath, 'failed', undefined, STOPPED_BY_USER, undefined, undefined, undefined, projectName);
         interruptedCount++;
       }
       if (activeChild) { try { activeChild.kill(); } catch { /* already dead */ } }
@@ -3012,7 +3027,7 @@ export async function startUIServer(
         type: 'test-status',
         fullName: r.fullName,
         filePath: r.filePath,
-        status: r.status,
+        status: wireStatus(r.status),
         duration: r.duration,
         error: r.error,
         tracePath: r.tracePath,
@@ -3842,7 +3857,7 @@ export async function startUIServer(
         type: 'test-status',
         fullName: r.fullName,
         filePath: r.filePath,
-        status: r.status,
+        status: wireStatus(r.status),
         duration: r.duration,
         error: r.error,
         tracePath: r.tracePath,

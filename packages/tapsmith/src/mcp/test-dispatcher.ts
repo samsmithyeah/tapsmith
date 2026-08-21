@@ -1,3 +1,5 @@
+import { STOPPED_BY_USER } from '../abort.js';
+
 export interface TestRunResult {
   status: 'passed' | 'failed' | 'stopped'
   passed: number
@@ -17,10 +19,30 @@ export interface TestFailureDetail {
   projectName?: string
 }
 
+/**
+ * The status an MCP client should see for a test, given what the runner said.
+ *
+ * A test the user's stop cut short arrives as a failure carrying
+ * {@link STOPPED_BY_USER}, because that is how the runner ends it. Passing that
+ * on made `list_results` render the user's own stop as a red `[FAIL]` while the
+ * summary for that very run called it interrupted — the two halves of one
+ * answer disagreeing. Applied where each transport hands entries to the MCP
+ * tools, so the tree the UI renders keeps the runner's own vocabulary.
+ */
+export function classifyEntryStatus(entry: TestResultEntry): TestResultEntry {
+  return isInterruptedEntry(entry) ? { ...entry, status: 'interrupted' } : entry;
+}
+
+/** True for an entry the user's stop ended, which is not a failure. */
+export function isInterruptedEntry(entry: { status: string; error?: string }): boolean {
+  return entry.status === 'interrupted'
+    || (entry.status === 'failed' && entry.error === STOPPED_BY_USER);
+}
+
 export interface TestResultEntry {
   fullName: string
   filePath: string
-  status: 'passed' | 'failed' | 'skipped' | 'idle' | 'running'
+  status: 'passed' | 'failed' | 'skipped' | 'idle' | 'running' | 'interrupted'
   duration?: number
   error?: string
   tracePath?: string
