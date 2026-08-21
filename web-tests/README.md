@@ -1,91 +1,135 @@
-# UI mode web tests
+# Web tests
 
-Playwright suite for the UI mode SPA. **No device, emulator, simulator, or daemon required** — it
-runs in a couple of seconds on any machine and in CI.
+Playwright suites for Tapsmith's two web apps. **No device, emulator, simulator,
+or daemon required** — the whole thing runs in under 20 seconds on any machine
+and in CI.
+
+| Project | App | Driven by |
+|---|---|---|
+| `ui-mode` | UI mode SPA (`src/ui-mode/`) | an intercepted WebSocket |
+| `trace-viewer` | standalone trace viewer (`src/trace-viewer/`) | an intercepted trace archive |
+
+The two apps share their whole inspection layer — `ActionsPanel`,
+`ScreenshotPanel`, `DetailTabs`, `NetworkTab`, `HierarchyTree`,
+`SelectorPlayground` and `TimelineFilmstrip` are imported by UI mode from the
+trace viewer. Those are covered through the **trace-viewer** project, where a
+static archive is far less setup than choreographing a live session, and the
+coverage lands on both apps. The **ui-mode** project covers what only it has: the
+test tree, run control, the live device mirror, workers, and the MCP feed.
 
 ## Running
 
 ```bash
-# once, and after any change to the SPA (the suite tests the built bundle)
+# once, and after any change to either app (the suites test the built bundles)
 cd ../packages/tapsmith && npm ci && npm run build
 
 cd ../../web-tests
 npm ci
 npx playwright install chromium
 
-npm test              # run everything
-npm run test:ui       # Playwright's UI runner — best for authoring
+npm test                                  # everything
+npx playwright test --project=ui-mode
+npx playwright test --project=trace-viewer
+npm run test:ui                           # Playwright's UI runner, for authoring
 npm run typecheck
 ```
 
+Because the suites run against `dist/`, **rebuild after changing either app**:
+`cd ../packages/tapsmith && npm run build:ui-mode` (or `build:trace-viewer`).
+
 ## How it works
 
-UI mode's SPA has exactly two inputs: one WebSocket, and two download-only HTTP routes (`/trace/`,
-`/video/`). Everything the user sees — the test tree, statuses, trace actions, screenshots, hierarchy
-XML, network entries, device-mirror frames — arrives as a `ServerMessage` on that socket. So the whole
-app can be driven from the test process.
+Neither app's data comes from the server. `serve.mjs` serves only the two built
+`index.html` files; every payload is fulfilled from the test process.
 
-- `serve-ui.mjs` serves the built `packages/tapsmith/dist/ui-mode/index.html`. The Vite build inlines
-  every asset into one file, so there is exactly one thing to serve. It has to be HTTP rather than
-  `file://`, because `use-websocket.ts` derives its socket URL from `location.host`.
-- `fake-ui-server.ts` intercepts the socket with Playwright's `page.routeWebSocket()`. It never calls
-  `connectToServer()`, so nothing reaches a real socket: **the route is the server**. It can push any
-  `ServerMessage`, push binary screen frames, record every `ClientMessage` the SPA sends, and drop the
-  connection to exercise the 1s reconnect.
-- `protocol.ts` is the only file that reaches into `packages/tapsmith/dist`. Types and
-  `encodeScreenFrame` come from the real `ui-protocol.ts`, so fixtures can't drift from the SPA under
-  test — and mis-shaped fixtures fail `npm run typecheck` rather than at runtime.
+- **UI mode** has exactly two inputs: one WebSocket, and two download-only HTTP
+  routes. Everything the user sees — the tree, statuses, trace actions,
+  screenshots, hierarchy XML, network entries, device-mirror frames — arrives as
+  a `ServerMessage`. `ui-mode/fake-ui-server.ts` intercepts the socket with
+  Playwright's `page.routeWebSocket()` and never calls `connectToServer()`, so
+  **the route is the server**. It can push any message, push binary screen
+  frames, record every `ClientMessage` the SPA sends, and drop the connection to
+  exercise the 1s reconnect.
+- **The trace viewer** takes a `?trace=<url>` parameter and `fetch`es it.
+  `trace-viewer/trace-builder.ts` builds an archive in memory and the fixture
+  fulfils that request. The archive layout is the viewer's real input contract,
+  read off `parseTraceZip`.
 
-Because the suite runs against `dist/`, **rebuild after changing the SPA**:
-`cd ../packages/tapsmith && npm run build:ui-mode`.
+Serving over HTTP rather than `file://` matters for UI mode: `use-websocket.ts`
+derives its socket URL from `location.host`.
+
+`protocol.ts` and `trace-types.ts` are the only files reaching into
+`packages/tapsmith/dist`. Types come from the SDK's own `ui-protocol.ts` and
+`trace/types.ts`, so a fixture whose shape drifts fails `npm run typecheck`
+rather than silently exercising nothing — which has already caught several
+mis-shaped fixtures.
 
 ## Layout
 
-| Path | What |
-|---|---|
-| `specs/` | The tests |
-| `panes/` | Pane objects — one class per UI surface |
-| `messages/` | Builders for protocol payloads (trees, trace events, PNG frames) |
-| `fixtures.ts` | Composes the harness and pane objects via `test.extend` |
-| `fake-ui-server.ts` | The `routeWebSocket` harness |
-| `protocol.ts` | Re-exports the real wire protocol |
-| `serve-ui.mjs` | Static server for the built SPA |
+```
+web-tests/
+  serve.mjs            static server for both built apps
+  protocol.ts          UI mode's wire protocol, re-exported
+  trace-types.ts       the trace-archive format, re-exported
+  png.ts               minimal PNG encoder, used by both halves
+  panes/               pane objects for the shared inspection components
+  ui-mode/
+    fixtures.ts        the fake server + UI-mode panes
+    fake-ui-server.ts  the routeWebSocket harness
+    messages/          builders for trees, trace events, screen frames
+    panes/             test explorer, run controls, device pane, MCP panel
+    specs/
+  trace-viewer/
+    fixtures.ts        the archive-serving harness + panes
+    trace-builder.ts   builds archives, and the events inside them
+    specs/
+```
 
 ## Pane objects
 
-The mobile suite in `e2e/` uses the screen-object pattern documented in `docs/writing-tests.md`; this
-suite applies the same conventions to UI mode's panes:
+The mobile suite in `e2e/` uses the screen-object pattern documented in
+`docs/writing-tests.md`; these suites apply the same conventions to the web apps'
+panes:
 
-- **One class per pane**, wrapping `page`.
-- **Getters, not constructor assignments** — each access yields a fresh lazy locator.
-- **Multi-step flows as methods**, so specs read as intent: `explorer.runNode("smoke")`.
-- **No assertions in pane objects.** They expose locators and actions; specs decide what to assert.
+- **One class per pane**, wrapping `page`. Panes for shared components live in
+  the top-level `panes/` so both projects use the same ones.
+- **Getters, not constructor assignments** — each access yields a fresh lazy
+  locator.
+- **Multi-step flows as methods**, so specs read as intent:
+  `explorer.runNode("smoke")`, `network.openDetailTab("Response")`.
+- **No assertions in pane objects.** They expose locators and actions; specs
+  decide what to assert.
+- Panes are trimmed to what the specs exercise. An unverified locator is a
+  liability, not a head start — several written ahead of their specs turned out
+  to be wrong.
 
 ## Locators
 
-Accessible locators first — `getByRole`, `getByLabel`, `getByTitle`. The classes in
-`styles/ui-mode.css.ts` are styling hooks and only incidentally stable, so nothing here selects on
-them. Where a surface had no accessible name, the fix was to give it the ARIA it should already have
-had rather than to bolt on a testid:
+Accessible locators first — `getByRole`, `getByLabel`, `getByTitle`. The classes
+in `styles/ui-mode.css.ts` are styling hooks and only incidentally stable, so
+nothing here selects on them. Where a surface had no accessible name, the fix was
+to give it the ARIA it should already have had:
 
 | Surface | Now |
 |---|---|
-| Test tree | `tree` of `treeitem`s with `aria-level`/`-expanded`/`-selected`, each row explicitly named |
-| Status filters (All/Pass/Fail/Skip) | `tablist` of `tab`s |
-| Detail tabs, worker tabs | `tablist`/`tab` instead of clickable `div`s |
-| Action list | `listbox` of `option`s; in-flight rows carry `aria-busy` |
-| Filter box | `aria-label` (a placeholder is not a label) |
+| Test tree, view hierarchy | `tree` of `treeitem`s with `aria-level`/`-expanded`/`-selected` |
+| Status filters, detail tabs, worker tabs, screenshot stages | `tablist`/`tab` instead of clickable `div`s |
+| Action list, locator suggestions | `listbox` of `option`s; in-flight rows carry `aria-busy` |
+| Network request list | already a real `<table>` — rows and cells by native role |
+| Network filter pills | `aria-pressed` |
+| Every filter and search box | `aria-label` (a placeholder is not a label) |
 | Elapsed time | `role="timer"` |
-| Connection strip, mirror placeholder | `role="status"` live regions |
+| Console output, MCP feed | `role="log"` |
+| Connection strip, mirror placeholder | `role="status"` |
 | Notification banners | `role="alert"` (errors) / `role="status"` (notices) |
 | Mirror canvas | labelled, per worker in the grid |
-| Theme select, per-row run/watch buttons | labelled, so they're distinguishable |
+| Theme select, per-row run/watch buttons, close buttons | labelled |
 
 ### Locate structurally, assert the value
 
-Nothing is located by its text content. A text locator conflates finding with asserting, so a wrong
-value reports "element not found" rather than showing what it actually said. Value readouts are
-located by role or test id and then asserted:
+Nothing is located by its text content. A text locator conflates finding with
+asserting, so a wrong value reports "element not found" rather than showing what
+it actually said:
 
 ```ts
 await expect(runControls.connection).toHaveText("Disconnected")     // role="status"
@@ -93,20 +137,25 @@ await expect(runControls.passedCount).toHaveText("1 passed")        // data-test
 await expect(explorer.statusFilterCount("Fail")).toHaveText("1")    // data-testid
 ```
 
-`getByTestId` is the deliberate fallback where there is genuinely no semantics to appeal to — bare
-numbers and message strings: `node-duration`, `filter-count`, `count-passed`/`-failed`/`-skipped`,
-`tests-empty`, `run-notification`, `preflight-message`, `mirror-status`/`-hint`.
+`getByTestId` is the deliberate fallback where there is genuinely no semantics to
+appeal to — bare numbers, message strings, and list rows with no role of their
+own: `node-duration`, `filter-count`, `count-passed`/`-failed`/`-skipped`,
+`tests-empty`, `run-notification`, `preflight-message`, `mirror-status`/`-hint`,
+`call-grid`, `no-content`, `log-entry`, `error-entry`, `source-line`,
+`source-filename`, `net-detail-body`, `hierarchy-row`, `hierarchy-properties`,
+`locator-code`, `selector-match-count`, `selector-strict-warning`, `film-frame`,
+`timeline-meta`, `viewer-title`, `screenshot-empty`, `mcp-entry`, `mcp-agent`,
+`mcp-empty`.
 
-Two exceptions worth knowing: a row's `data-type` and `data-status` are still used for type and
-status, because ARIA has no role or state meaning "this test failed" and those are pre-existing
-product attributes rather than styling hooks. Both are applied via `.and()` on top of the role, so the
-accessible locator stays primary.
-
-Pane objects are trimmed to what the specs exercise. Locators for surfaces without tests yet (pick
-mode, worker views, mirror gestures) go in alongside the specs that prove them — an unverified locator
-is a liability, not a head start.
+One exception worth knowing: a tree row's `data-type` and `data-status` are still
+used for type and status, because ARIA has no role or state meaning "this test
+failed" and those are pre-existing product attributes rather than styling hooks.
+Both are applied via `.and()` on top of the role, so the accessible locator stays
+primary.
 
 ## Writing a spec
+
+UI mode — push protocol messages:
 
 ```ts
 import { test, expect } from "../fixtures.js"
@@ -127,19 +176,54 @@ test("marks a test failed", async ({ app, explorer }) => {
 })
 ```
 
-The `app` fixture is the common case: SPA loaded, one-file tree, idle. Take `ui` instead when a spec
-needs to seed a different starting state, then call `ui.open()` — `routeWebSocket` has to be
-registered before the SPA opens its socket, and the seed is replayed on every connect, exactly as the
-real server re-pushes state on reconnect.
+The `app` fixture is the common case: loaded, one-file tree, idle. Take `ui`
+instead when a spec needs a different starting state, then call `ui.open()` —
+`routeWebSocket` has to be registered before the SPA opens its socket, and the
+seed is replayed on every connect, exactly as the real server re-pushes state on
+reconnect.
+
+Trace viewer — describe an archive:
+
+```ts
+import { test, expect } from "../fixtures.js"
+import { actionEvent } from "../trace-builder.js"
+
+test("lists the traced actions", async ({ viewer, actions }) => {
+  await viewer.open({
+    events: [
+      actionEvent({ actionIndex: 0, action: "launchApp" }),
+      actionEvent({ actionIndex: 1, action: "doubleTap" }),
+    ],
+  })
+
+  await expect(actions.items).toHaveCount(2)
+})
+```
 
 ## Regression coverage
 
-Several specs pin bugs that shipped and were found by hand. They are worth keeping honest: revert the
-fix, rebuild, and confirm the spec goes red.
+Several specs pin bugs that shipped and were found by hand. Keep them honest:
+revert the fix, rebuild, and confirm the spec goes red — and that nothing else
+does.
 
 | Spec | Bug |
 |---|---|
-| `run-lifecycle.spec.ts` → `#103` | `Cmd+Shift+R` matched the bare `r` shortcut and fired a run on the way out (fixed in `e9ce4ef`) |
-| `run-lifecycle.spec.ts` → `#186` | An `afterAll` attribution re-tag reset a finished test to running, so `run-end` erased its failure and trace (fixed in `e9639ce`) |
-| `run-lifecycle.spec.ts` → `#147` | An MCP-initiated run showed no pending state (fixed in `06eace0`) |
-| `run-lifecycle.spec.ts` → in-flight actions | The Actions panel looked empty while an action was in flight (`abcf347`) |
+| `ui-mode/specs/run-lifecycle.spec.ts` → `#103` | `Cmd+Shift+R` matched the bare `r` shortcut and fired a run on the way out (`e9ce4ef`) |
+| `ui-mode/specs/run-lifecycle.spec.ts` → `#186` | An `afterAll` attribution re-tag reset a finished test to running, so `run-end` erased its failure and trace (`e9639ce`) |
+| `ui-mode/specs/run-lifecycle.spec.ts` → `#147` | An MCP-initiated run showed no pending state (`06eace0`) |
+| `ui-mode/specs/run-lifecycle.spec.ts` → in-flight actions | The Actions panel looked empty while an action was in flight (`abcf347`) |
+| `ui-mode/specs/mcp-panel.spec.ts` → failed tool call | An errored agent tool call showed as a red row with no message — found while writing these tests |
+
+## Not covered
+
+Deliberately out of scope, so nobody assumes otherwise:
+
+- **Anything server-side.** The harness replaces `ui-server.ts` and
+  `show-trace-server.ts`, so bugs in those are invisible here. Both have their
+  own vitest coverage.
+- **The real socket, and a real archive on disk.** Both are intercepted.
+- **Visual regression.** The mirror is a `<canvas>` and the CSS is oklch- and
+  webfont-heavy, so stable snapshots would need a pinned docker image. Worth
+  revisiting once it is clear which surfaces are worth pinning.
+- **Trace and video downloads**, the `Log` detail tab, filmstrip thumbnail
+  selection, and the drag-and-drop path into the viewer.

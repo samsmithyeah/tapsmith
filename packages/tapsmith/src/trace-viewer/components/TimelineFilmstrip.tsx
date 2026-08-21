@@ -138,7 +138,7 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
 
   return (
     <div class="timeline">
-      <div class="timeline-meta">
+      <div class="timeline-meta" data-testid="timeline-meta">
         {hasTestName
           ? <span class={`test-status ${statusClass}`}>{statusIcon} {breadcrumb ? <>{breadcrumb}{' \u203a '}</> : null}{metadata.testName}</span>
           : <span class="test-status">No test selected</span>}
@@ -159,7 +159,7 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
           const relativeTime = formatRelativeTime(event.timestamp - firstTimestamp);
 
           return (
-            <div key={i} class={`timeline-item film-frame${isFailed ? ' failed' : ''}${isSelected ? ' active' : ''}`}>
+            <div key={i} class={`timeline-item film-frame${isFailed ? ' failed' : ''}${isSelected ? ' active' : ''}`} data-testid="film-frame">
               {url ? (
                 <img
                   ref={isSelected ? selectedRef as preact.RefObject<HTMLImageElement> : undefined}

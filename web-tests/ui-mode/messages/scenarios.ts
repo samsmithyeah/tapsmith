@@ -4,7 +4,7 @@
 // so the fixtures read like a real session rather than invented placeholders.
 
 import { fileNode, projectNode } from "./tree.js"
-import type { ServerMessage, TestTreeNode } from "../protocol.js"
+import type { ServerMessage, TestTreeNode } from "../../protocol.js"
 
 export const GESTURES_FILE = "/repo/e2e/tests/gestures.test.ts"
 export const HOME_FILE = "/repo/e2e/tests/home.test.ts"

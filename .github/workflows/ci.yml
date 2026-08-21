@@ -239,7 +239,7 @@ jobs:
         run: npm run knip
 
   ui-web:
-    name: UI Web Tests
+    name: Web Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -252,16 +252,17 @@ jobs:
             packages/tapsmith/package-lock.json
             web-tests/package-lock.json
 
-      # The suite drives the built single-file SPA (dist/ui-mode/index.html) —
-      # the same artifact ui-server.ts serves to users — so the SDK has to be
-      # built first. This job builds its own copy rather than depending on the
-      # typescript job: they run in parallel, so it costs no wall-clock time and
-      # keeps the check independent.
+      # The suite drives the built single-file apps (dist/ui-mode/index.html and
+      # dist/trace-viewer/index.html) — the same artifacts ui-server.ts and
+      # show-trace serve to users — so the SDK has to be built first. This job
+      # builds its own copy rather than depending on the typescript job: they run
+      # in parallel, so it costs no wall-clock time and keeps the check
+      # independent.
       - name: Install SDK dependencies
         working-directory: packages/tapsmith
         run: npm ci
 
-      - name: Build SDK (includes the UI mode bundle)
+      - name: Build SDK (includes both web app bundles)
         working-directory: packages/tapsmith
         run: npm run build
 
@@ -285,7 +286,7 @@ jobs:
         working-directory: web-tests
         run: npx playwright install --with-deps chromium
 
-      - name: Run UI mode web tests
+      - name: Run web tests
         working-directory: web-tests
         run: npx playwright test
 

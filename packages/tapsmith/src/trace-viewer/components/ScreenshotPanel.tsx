@@ -291,7 +291,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
                 {testStatus === 'passed' ? '✓' : testStatus === 'failed' ? '✗' : '○'}
               </span>
             )}
-            {testName && <span class="viewer-head-title">{testName}</span>}
+            {testName && <span class="viewer-head-title" data-testid="viewer-title">{testName}</span>}
           </div>
           <div class="viewer-head-actions">
             {onPickModeToggle && (
@@ -337,7 +337,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
     return (
       <div class="screenshot-panel">
         <div class="screenshot-container">
-          <div class="screenshot-empty">Select an action to view screenshots</div>
+          <div class="screenshot-empty" data-testid="screenshot-empty">Select an action to view screenshots</div>
         </div>
       </div>
     );
@@ -460,7 +460,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
               {testStatus === 'passed' ? '✓' : testStatus === 'failed' ? '✗' : '○'}
             </span>
           )}
-          {testName && <span class="viewer-head-title">{testName}</span>}
+          {testName && <span class="viewer-head-title" data-testid="viewer-title">{testName}</span>}
         </div>
         <div class="viewer-head-actions">
           {onPickModeToggle && (
@@ -485,10 +485,10 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
       </div>
       <div ref={containerRef} class="screenshot-container viewer-body has-grid" style={{ position: 'relative' }}>
         {(hasBefore && hasAfter) && (
-          <div class="screenshot-tab-float">
-            <div class={`screenshot-tab${tab === 'action' ? ' active' : ''}`} onClick={() => setTab('action')}>Action</div>
-            <div class={`screenshot-tab${tab === 'before' ? ' active' : ''}`} onClick={() => setTab('before')}>Before</div>
-            <div class={`screenshot-tab${tab === 'after' ? ' active' : ''}`} onClick={() => setTab('after')}>After</div>
+          <div class="screenshot-tab-float" role="tablist" aria-label="Screenshot stage">
+            <div class={`screenshot-tab${tab === 'action' ? ' active' : ''}`} role="tab" aria-selected={tab === 'action'} onClick={() => setTab('action')}>Action</div>
+            <div class={`screenshot-tab${tab === 'before' ? ' active' : ''}`} role="tab" aria-selected={tab === 'before'} onClick={() => setTab('before')}>Before</div>
+            <div class={`screenshot-tab${tab === 'after' ? ' active' : ''}`} role="tab" aria-selected={tab === 'after'} onClick={() => setTab('after')}>After</div>
           </div>
         )}
         {currentUrl ? (

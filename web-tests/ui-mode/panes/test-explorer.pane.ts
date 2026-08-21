@@ -56,6 +56,11 @@ export class TestExplorerPane {
     return this.page.getByRole("button", { name: "Watch all files for changes" })
   }
 
+  /** The watch toggle once something is being watched — its label flips. */
+  get disableWatchButton() {
+    return this.page.getByRole("button", { name: "Disable watch mode" })
+  }
+
   get expandAllButton() {
     return this.page.getByRole("button", { name: "Expand all" })
   }

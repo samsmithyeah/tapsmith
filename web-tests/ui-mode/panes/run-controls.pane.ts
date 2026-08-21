@@ -42,6 +42,10 @@ export class RunControlsPane {
     return this.page.getByRole("status", { name: "Device connection" })
   }
 
+  get themeSelect() {
+    return this.page.getByRole("combobox", { name: "Theme" })
+  }
+
   // ─── Notifications ───
   //
   // The banner sits in the app chrome just below this rail. Deliberately located

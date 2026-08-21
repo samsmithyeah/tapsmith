@@ -1,8 +1,9 @@
-// PNG payloads for binary screen-mirror frames.
+// Minimal PNG encoder, shared by both halves of the suite.
 //
-// Real frames are device screenshots; nothing in the SPA cares about their
-// content beyond being decodable, so these are the smallest valid PNGs that
-// still prove the payload survived the wire.
+// UI mode needs bytes for binary screen-mirror frames; the trace viewer needs a
+// screenshot inside an archive. Neither app cares what the image depicts beyond
+// being decodable and the right size, so these are the smallest valid PNGs that
+// still prove the payload survived.
 
 import * as zlib from "node:zlib"
 
@@ -70,16 +71,4 @@ function crc32(buf: Buffer): number {
   let c = 0xffffffff
   for (const byte of buf) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8)
   return (c ^ 0xffffffff) >>> 0
-}
-
-/**
- * A frame whose header dimensions agree with its payload, as the real server
- * always emits (both come from the same screenshot).
- *
- * Worth knowing which is which: `use-screen-mirror.ts` sizes the canvas from
- * the decoded bitmap, while the header dimensions feed `getScreenSize()` for
- * normalising mirror gesture coordinates.
- */
-export function screenFrame(width: number, height: number, seq?: number) {
-  return { width, height, seq, png: solidPng(width, height) }
 }

@@ -12,10 +12,11 @@ import { test as base, expect } from "@playwright/test"
 import { FakeUiServer } from "./fake-ui-server.js"
 import { TestExplorerPane } from "./panes/test-explorer.pane.js"
 import { RunControlsPane } from "./panes/run-controls.pane.js"
-import { ActionsPane } from "./panes/actions.pane.js"
+import { ActionsPane } from "../panes/actions.pane.js"
 import { DevicePane } from "./panes/device.pane.js"
+import { McpPane } from "./panes/mcp.pane.js"
 import { idleSeed, singleFileTree } from "./messages/scenarios.js"
-import type { ServerMessage } from "./protocol.js"
+import type { ServerMessage } from "../protocol.js"
 
 export interface UiHarness extends FakeUiServer {
   /** Navigate to the SPA. Seed first — the server pushes on connect. */
@@ -28,6 +29,7 @@ type Fixtures = {
   runControls: RunControlsPane
   actions: ActionsPane
   device: DevicePane
+  mcp: McpPane
   /** The SPA loaded and idle with a one-file tree — the common starting point. */
   app: UiHarness
 }
@@ -57,6 +59,10 @@ export const test = base.extend<Fixtures>({
 
   device: async ({ page }, use) => {
     await use(new DevicePane(page))
+  },
+
+  mcp: async ({ page }, use) => {
+    await use(new McpPane(page))
   },
 
   app: async ({ ui, explorer }, use) => {

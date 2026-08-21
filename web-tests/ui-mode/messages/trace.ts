@@ -4,7 +4,7 @@
 // finalises it on `"completed"`, so both halves matter — a started-only event is
 // what an in-flight action looks like.
 
-import type { TraceEventMessage } from "../protocol.js"
+import type { TraceEventMessage } from "../../protocol.js"
 
 export interface ActionOptions {
   testFullName: string

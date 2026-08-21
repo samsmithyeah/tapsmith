@@ -10,8 +10,8 @@
 // IS the server.
 
 import type { Page, WebSocketRoute } from "@playwright/test"
-import { encodeScreenFrame } from "./protocol.js"
-import type { ClientMessage, ServerMessage } from "./protocol.js"
+import { encodeScreenFrame } from "../protocol.js"
+import type { ClientMessage, ServerMessage } from "../protocol.js"
 
 export interface ScreenFrame {
   width: number

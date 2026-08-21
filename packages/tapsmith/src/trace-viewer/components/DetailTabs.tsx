@@ -135,12 +135,12 @@ function formatSelectorForCall(sel: string | undefined): ComponentChildren {
 }
 
 function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; metadata: TraceMetadata }) {
-  if (!event) return <div class="no-content">No action selected</div>;
+  if (!event) return <div class="no-content" data-testid="no-content">No action selected</div>;
   const wallDuration = event.wallDuration ?? event.duration;
 
   if (event.type === 'action') {
     return (
-      <div class="call-grid">
+      <div class="call-grid" data-testid="call-grid">
         <span class="call-label">Action</span>
         <span class="call-value">{event.action}</span>
         {event.selector && <>
@@ -182,7 +182,7 @@ function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTrace
   }
 
   return (
-    <div class="call-grid">
+    <div class="call-grid" data-testid="call-grid">
       <span class="call-label">Action</span>
       <span class="call-value">{event.assertion}</span>
       {event.selector && <>
@@ -232,18 +232,18 @@ function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTrace
 // ─── Log Tab (internal action log) ───
 
 function LogTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | undefined }) {
-  if (!event) return <div class="no-content">No action selected</div>;
+  if (!event) return <div class="no-content" data-testid="no-content">No action selected</div>;
 
   const log = event.type === 'action' ? event.log : undefined;
 
   if (!log || log.length === 0) {
-    return <div class="no-content">No internal log for this action</div>;
+    return <div class="no-content" data-testid="no-content">No internal log for this action</div>;
   }
 
   return (
     <div>
       {log.map((entry, i) => (
-        <div key={i} class="log-entry">
+        <div key={i} class="log-entry" data-testid="log-entry">
           <span class="log-message">{entry}</span>
         </div>
       ))}
@@ -298,7 +298,7 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
     });
   };
 
-  if (consoleEvents.length === 0) return <div class="no-content">No console output recorded</div>;
+  if (consoleEvents.length === 0) return <div class="no-content" data-testid="no-content">No console output recorded</div>;
 
   return (
     <div class="con-container">
@@ -306,6 +306,7 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
         <input
           class="con-search"
           type="text"
+          aria-label="Filter console output"
           placeholder="Filter logs…"
           value={search}
           onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
@@ -345,11 +346,11 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
           </>
         )}
       </div>
-      <div class="con-list">
+      <div class="con-list" role="log" aria-label="Console output">
         {filtered.length === 0
-          ? <div class="no-content">No matching log entries</div>
+          ? <div class="no-content" data-testid="no-content">No matching log entries</div>
           : filtered.map((ev, i) => (
-            <div key={i} class="log-entry">
+            <div key={i} class="log-entry" data-testid="log-entry">
               <span class={`log-level ${ev.level}`}>{ev.level}</span>
               <span class="log-source">{ev.source}</span>
               <span class="log-message">{ev.message}</span>
@@ -535,7 +536,7 @@ function SourceTab({ event, sources, previewHighlight }: { event: ActionTraceEve
     return (
       <div class={`source-tab${showStack ? ' has-stack' : ''}`}>
         <div class="source-main">
-          <div class="no-content">
+          <div class="no-content" data-testid="no-content">
             {filename ? `Source not captured for ${filename.replace(/\\/g, '/').split('/').pop()}` : 'No source files in trace'}
           </div>
         </div>
@@ -556,13 +557,14 @@ function SourceTab({ event, sources, previewHighlight }: { event: ActionTraceEve
   return (
     <div class={`source-tab${showStack ? ' has-stack' : ''}`}>
       <div class="source-main">
-        <div class="source-filename">{filename}</div>
+        <div class="source-filename" data-testid="source-filename">{filename}</div>
         <div class="source-code">
           {tokenizedLines.map((tokens, i) => (
             <div
               key={i}
               ref={highlightLine === i + 1 ? highlightRef : undefined}
               class={`source-line${highlightLine === i + 1 ? ' highlight' : ''}`}
+              data-testid="source-line"
             >
               <span class="source-line-number">{i + 1}</span>
               <span class="source-line-content">
@@ -591,14 +593,14 @@ function HierarchyTabWrapper({ event, hierarchies, onNodeSelect }: {
   hierarchies: Map<string, string>
   onNodeSelect?: (bounds: Bounds | null) => void
 }) {
-  if (!event || hierarchies.size === 0) return <div class="no-content">No view hierarchy available</div>;
+  if (!event || hierarchies.size === 0) return <div class="no-content" data-testid="no-content">No view hierarchy available</div>;
 
   const pad = String(event.actionIndex).padStart(3, '0');
   const afterKey = `hierarchy/action-${pad}-after.xml`;
   const beforeKey = `hierarchy/action-${pad}-before.xml`;
   const xml = hierarchies.get(afterKey) ?? hierarchies.get(beforeKey);
 
-  if (!xml) return <div class="no-content">No hierarchy snapshot for this action</div>;
+  if (!xml) return <div class="no-content" data-testid="no-content">No hierarchy snapshot for this action</div>;
 
   return <HierarchyTree xml={xml} onNodeSelect={onNodeSelect} />;
 }
@@ -638,7 +640,7 @@ function ErrorsTab({ event, events, testError, sources }: {
   const showTestError = testError
     && !failedEvents.some((ev) => ev.error && testError.includes(ev.error));
 
-  if (failedEvents.length === 0 && !testError) return <div class="no-content">No errors</div>;
+  if (failedEvents.length === 0 && !testError) return <div class="no-content" data-testid="no-content">No errors</div>;
 
   return (
     <div class="error-block">
@@ -651,7 +653,7 @@ function ErrorsTab({ event, events, testError, sources }: {
         />
       ))}
       {showTestError && (
-        <div class="error-entry">
+        <div class="error-entry" data-testid="error-entry">
           <div class="error-title"><AlertTriangle size={14} class="error-title-icon" />Test Error</div>
           <div class="error-message">{testError}</div>
         </div>
@@ -674,7 +676,7 @@ function ErrorEntry({ ev, isSelected, sources }: { ev: ActionTraceEvent | Assert
   const hasGrid = ev.selector || (isAssertion && (ev.expected !== undefined || ev.actual !== undefined));
 
   return (
-    <div class={`error-entry${isSelected ? ' error-entry-selected' : ''}`}>
+    <div class={`error-entry${isSelected ? ' error-entry-selected' : ''}`} data-testid="error-entry">
       <div class="error-title"><AlertTriangle size={14} class="error-title-icon" />{title}</div>
 
       {hasGrid && (

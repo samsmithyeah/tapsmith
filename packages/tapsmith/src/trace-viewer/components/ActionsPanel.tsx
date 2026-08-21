@@ -234,6 +234,7 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
             <div class="actions-filter">
               <input
                 type="text"
+                aria-label="Filter actions"
                 placeholder="Filter actions..."
                 value={filter}
                 onInput={e => setFilter((e.target as HTMLInputElement).value)}

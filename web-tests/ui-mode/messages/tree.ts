@@ -6,7 +6,7 @@
 // `ui-server.ts:763-800` (project nodes and the `project::<name>::` id prefix
 // that keeps one file's state independent across projects).
 
-import type { TestTreeNode } from "../protocol.js"
+import type { TestTreeNode } from "../../protocol.js"
 
 export interface TestSpec {
   name: string

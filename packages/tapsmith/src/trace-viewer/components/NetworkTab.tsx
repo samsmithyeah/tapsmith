@@ -356,7 +356,7 @@ export function NetworkTab({ entries, bodies }: Props) {
 
   if (entries.length === 0) {
     return (
-      <div class="no-content">
+      <div class="no-content" data-testid="no-content">
         No network requests captured
         <div class="no-content-note">Enable network capture in your trace config to record HTTP requests.</div>
       </div>
@@ -389,6 +389,7 @@ export function NetworkTab({ entries, bodies }: Props) {
         <input
           class="net-search"
           type="text"
+          aria-label="Filter network requests"
           placeholder="Filter by URL or method..."
           value={urlFilter}
           onInput={(e) => setUrlFilter((e.target as HTMLInputElement).value)}
@@ -398,6 +399,7 @@ export function NetworkTab({ entries, bodies }: Props) {
             <button
               key={f.value}
               class={`net-pill${typeFilter === f.value ? ' active' : ''}`}
+              aria-pressed={typeFilter === f.value}
               onClick={() => setTypeFilter(f.value)}
             >
               {f.label}
@@ -406,6 +408,7 @@ export function NetworkTab({ entries, bodies }: Props) {
           <span class="net-pill-sep" />
           <button
             class={`net-pill${statusFilter === 'all' ? ' active' : ''}`}
+            aria-pressed={statusFilter === 'all'}
             onClick={() => setStatusFilter('all')}
           >
             Any
@@ -414,6 +417,7 @@ export function NetworkTab({ entries, bodies }: Props) {
             <button
               key={f.value}
               class={`net-pill${statusFilter === f.value ? ' active' : ''}`}
+              aria-pressed={statusFilter === f.value}
               onClick={() => setStatusFilter(f.value)}
             >
               {f.label}
@@ -563,9 +567,9 @@ function DetailPanel({ entry, bodies, tab, onTab, onClose, extent }: DetailPanel
             </button>
           ))}
         </div>
-        <button class="net-detail-close" onClick={onClose} title="Close">{'\u2715'}</button>
+        <button class="net-detail-close" onClick={onClose} title="Close" aria-label="Close">{'\u2715'}</button>
       </div>
-      <div class="net-detail-body">
+      <div class="net-detail-body" data-testid="net-detail-body">
         {tab === 'headers' && <HeadersTab entry={entry} />}
         {tab === 'payload' && <PayloadTab entry={entry} body={requestBody} />}
         {tab === 'response' && <ResponseTab entry={entry} body={responseBody} />}

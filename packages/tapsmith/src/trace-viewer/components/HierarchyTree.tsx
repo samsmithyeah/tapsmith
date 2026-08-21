@@ -82,9 +82,14 @@ function TreeNode({ node, selectedNode, onSelect, searchLower, defaultExpanded }
   };
 
   return (
-    <div>
+    <div role="presentation">
       <div
         class={`ht-row${isSelected ? ' ht-selected' : ''}${isDirectMatch ? ' ht-search-match' : ''}`}
+        role="treeitem"
+        aria-level={node.depth + 1}
+        aria-selected={isSelected}
+        aria-expanded={hasChildren ? isExpanded : undefined}
+        data-testid="hierarchy-row"
         style={{ paddingLeft: `${node.depth * 16 + 4}px` }}
         onClick={() => onSelect(node)}
       >
@@ -150,7 +155,7 @@ function PropertySheet({ node, roots }: { node: HierarchyNode; roots: HierarchyN
   const entries = [...node.attributes.entries()];
 
   return (
-    <div class="ht-props">
+    <div class="ht-props" data-testid="hierarchy-properties">
       <div class="ht-props-header">
         <span class="ht-props-title">{node.tagName}</span>
         <button class="ht-copy-btn" onClick={handleCopy}>
@@ -250,12 +255,13 @@ export function HierarchyTree({ xml, onNodeSelect }: Props) {
       <div class="ht-search">
         <input
           type="text"
+          aria-label="Search hierarchy"
           placeholder="Search hierarchy (class, text, id)..."
           value={search}
           onInput={e => setSearch((e.target as HTMLInputElement).value)}
         />
       </div>
-      <div class="ht-tree" ref={treeRef}>
+      <div class="ht-tree" ref={treeRef} role="tree" aria-label="View hierarchy">
         {roots.map((root, i) => (
           <TreeNode
             key={i}
