@@ -71,7 +71,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned, not `@stable`. `cargo clippy -- -D warnings` below makes any lint
+      # a new stable adds fail the build: Rust 1.98.0 (2026-08-18) did exactly
+      # that, breaking commits that had been green for weeks. Bump this
+      # deliberately, together with the macOS job below.
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy, rustfmt
 
@@ -114,7 +118,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned, not `@stable`. `cargo clippy -- -D warnings` below makes any lint
+      # a new stable adds fail the build: Rust 1.98.0 (2026-08-18) did exactly
+      # that, breaking commits that had been green for weeks. Bump this
+      # deliberately, together with the Linux job above.
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy, rustfmt
 
