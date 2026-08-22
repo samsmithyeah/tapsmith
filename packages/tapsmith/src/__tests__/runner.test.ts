@@ -1451,15 +1451,25 @@ describe('retries', () => {
 
   it('still times out on test-side time and enforces the wall-clock cap', async () => {
     pushContext();
-    // 300ms test timeout; 500ms of untracked (test-side) time → timeout.
+    // Both bodies hang forever rather than sleeping a "long enough" amount, so
+    // the timeout is the only way either can end and the assertions cannot lose
+    // a race to the body.
+    //
+    // A finite sleep made this flaky on CI: the runner polls on
+    // `setTimeout(check, min(1000, testTimeoutMs))`, so with a 300ms timeout the
+    // first check lands at ~300ms and only trips if `Date.now() - bodyStart` has
+    // already reached 300. The timer runs on a monotonic clock while the check
+    // reads wall-clock time, so a first check landing fractionally short defers
+    // the next one by a further 300ms — and the old 500ms body resolved first,
+    // reporting 'passed' where the test demands 'failed'.
     tapsmithTest('slow test body', async () => {
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise(() => {});
     });
     // Wall cap: 5× timeout = 1.5s; a tracked action that never ends must
     // still be killed at the cap, not run unbounded.
     tapsmithTest('action never ends', async () => {
       emitActionProgress({ kind: 'start', id: 9002, action: 'openDeepLink' });
-      await new Promise((r) => setTimeout(r, 2_500));
+      await new Promise(() => {});
     });
     const ctx = popContext();
     const result = await runSuiteContext(ctx, '', [], [], makeOpts({
