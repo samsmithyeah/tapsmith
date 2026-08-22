@@ -217,7 +217,7 @@ export function SelectorTab({ hierarchyXml, pickedNode, selector, onSelectorChan
           <code>getByRole</code>) or add <code>.first()</code>.
         </div>
       )}
-      <div class="st-options" role="listbox" aria-label="Suggested locators">
+      <div class="st-options" data-testid="locator-suggestions">
         {generatedSelectors.length > 0 && (
           <>
             <div class="st-section-label">Suggested locators</div>
@@ -230,8 +230,8 @@ export function SelectorTab({ hierarchyXml, pickedNode, selector, onSelectorChan
               <div
                 key={i}
                 class={`st-option${selector === s.code ? ' selected' : ''}`}
-                role="option"
-                aria-selected={selector === s.code}
+                data-testid="locator-option"
+                data-selected={selector === s.code}
                 onClick={() => handleSelectOption(s.code)}
               >
                 <span class="st-option-code" data-testid="locator-code">{s.code}</span>

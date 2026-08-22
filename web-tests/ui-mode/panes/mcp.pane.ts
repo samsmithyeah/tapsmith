@@ -41,7 +41,7 @@ export class McpPane {
 
   /** Toggle in the top rail that opens and closes this panel. */
   get toggle() {
-    return this.page.locator("button.rc-mcp-indicator")
+    return this.page.getByRole("button", { name: /MCP activity$/ })
   }
 
   // ─── Flows ───

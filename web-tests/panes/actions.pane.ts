@@ -1,5 +1,9 @@
 // Actions panel — the per-test action list. Shared with the standalone trace
 // viewer (`src/trace-viewer/components/ActionsPanel.tsx`).
+//
+// The list is addressed by test id rather than a listbox role: it interleaves
+// group headers ("beforeAll Hooks", "Test") with the action rows, which a
+// listbox may not contain, and it has no keyboard operability to justify one.
 
 import type { Page } from "@playwright/test"
 
@@ -7,16 +11,20 @@ export class ActionsPane {
   constructor(private page: Page) {}
 
   get list() {
-    return this.page.getByRole("listbox", { name: "Actions" })
+    return this.page.getByTestId("actions-list")
   }
 
-  /** One row per traced action or assertion. */
+  /** One row per traced action or assertion; group headers are not included. */
   get items() {
-    return this.list.getByRole("option")
+    return this.page.getByTestId("action-item")
   }
 
   item(name: string) {
     return this.items.filter({ hasText: name })
+  }
+
+  get selectedItem() {
+    return this.items.and(this.page.locator('[data-selected="true"]'))
   }
 
   /** Rows still awaiting their `lifecycle: "completed"` event. */

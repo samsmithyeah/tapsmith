@@ -240,7 +240,7 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
                 onInput={e => setFilter((e.target as HTMLInputElement).value)}
               />
             </div>
-            <div class="actions-list" role="listbox" aria-label="Actions">
+            <div class="actions-list" data-testid="actions-list">
               {items.map((item, i) => {
                 if (item.kind === 'group-start') {
                   if (filterLower && !item.event.name.toLowerCase().includes(filterLower)) return null;
@@ -273,8 +273,8 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
                     key={`a-${item.actionIndex}`}
                     ref={isSelected ? selectedRef : undefined}
                     class={`action-item act${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}${isFailed ? ' failed' : ''}${isPassed ? ' passed' : ''}`}
-                    role="option"
-                    aria-selected={isSelected}
+                    data-testid="action-item"
+                    data-selected={isSelected}
                     style={{ '--dur-pct': `${(shownDuration / maxDur * 100)}%` }}
                     onMouseEnter={() => onHover(item.actionIndex)}
                     onMouseLeave={() => onHover(null)}
@@ -305,8 +305,8 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
                     key={`a-inflight-${inFlightAction.actionIndex}`}
                     ref={isSelected ? selectedRef : undefined}
                     class={`action-item act in-progress${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}`}
-                    role="option"
-                    aria-selected={isSelected}
+                    data-testid="action-item"
+                    data-selected={isSelected}
                     aria-busy="true"
                     onMouseEnter={() => onHover(inFlightItemIndex)}
                     onMouseLeave={() => onHover(null)}

@@ -114,7 +114,7 @@ to give it the ARIA it should already have had:
 |---|---|
 | Test tree, view hierarchy | `tree` of `treeitem`s with `aria-level`/`-expanded`/`-selected` |
 | Status filters, detail tabs, worker tabs, screenshot stages | `tablist`/`tab` instead of clickable `div`s |
-| Action list, locator suggestions | `listbox` of `option`s; in-flight rows carry `aria-busy` |
+| Pane resize grips | `separator` with an orientation and a name |
 | Network request list | already a real `<table>` — rows and cells by native role |
 | Network filter pills | `aria-pressed` |
 | Every filter and search box | `aria-label` (a placeholder is not a label) |
@@ -144,14 +144,30 @@ own: `node-duration`, `filter-count`, `count-passed`/`-failed`/`-skipped`,
 `call-grid`, `no-content`, `log-entry`, `error-entry`, `source-line`,
 `source-filename`, `net-detail-body`, `hierarchy-row`, `hierarchy-properties`,
 `locator-code`, `selector-match-count`, `selector-strict-warning`, `film-frame`,
-`timeline-meta`, `viewer-title`, `screenshot-empty`, `mcp-entry`, `mcp-agent`,
-`mcp-empty`.
+`timeline-meta`, `viewer-title`, `screenshot-empty`, `viewer-empty`, `mcp-entry`,
+`mcp-agent`, `mcp-empty`, `actions-list`, `action-item`, `locator-suggestions`,
+`locator-option`, `explorer-pane`.
 
-One exception worth knowing: a tree row's `data-type` and `data-status` are still
-used for type and status, because ARIA has no role or state meaning "this test
-failed" and those are pre-existing product attributes rather than styling hooks.
-Both are applied via `.and()` on top of the role, so the accessible locator stays
-primary.
+Two exceptions worth knowing.
+
+A tree row's `data-type` and `data-status` carry type and status, because ARIA has
+no role or state meaning "this test failed" and those are pre-existing product
+attributes rather than styling hooks. Both are applied via `.and()` on top of the
+role, so the accessible locator stays primary.
+
+The **action list and the locator suggestions are deliberately not listboxes**,
+even though they look like single-select lists. Both interleave non-option content
+with their rows — the action list has group headers (`beforeAll Hooks`, `Test`)
+and the playground has a section label and the WebView setup hint — and a listbox
+may only contain options, so the role would hide exactly that content from
+assistive tech. Neither has the keyboard operability a listbox promises either.
+They stay generic and are addressed by test id, with selection reported through
+`data-selected`.
+
+Note also that `getByRole`'s `name` matches by **substring** unless you pass
+`exact`. That matters wherever one label contains another — `Pick` and `Picking…`
+being the case that bit us: an assertion on the inactive label passed whether or
+not pick mode had exited.
 
 ## Writing a spec
 

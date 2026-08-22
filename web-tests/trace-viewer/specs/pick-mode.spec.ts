@@ -70,9 +70,9 @@ test.describe("Pick mode", () => {
 
   test("reports that picking is active", async ({ viewer, page }) => {
     await viewer.open(SPEC)
-    await page.getByRole("button", { name: "Pick" }).click()
+    await page.getByRole("button", { name: "Pick", exact: true }).click()
     // The label is the only cue that the next click picks rather than navigates.
-    await expect(page.getByRole("button", { name: "Picking…" })).toBeVisible()
+    await expect(page.getByRole("button", { name: "Picking…", exact: true })).toBeVisible()
   })
 
   test("picking an element suggests locators for it", async ({
@@ -83,7 +83,7 @@ test.describe("Pick mode", () => {
     locator,
   }) => {
     await viewer.open(SPEC)
-    await page.getByRole("button", { name: "Pick" }).click()
+    await page.getByRole("button", { name: "Pick", exact: true }).click()
     await clickBounds(screenshotPanel.image, TAP_AREA)
 
     await detailTabs.select("Locator")
@@ -103,7 +103,7 @@ test.describe("Pick mode", () => {
     locator,
   }) => {
     await viewer.open(SPEC)
-    await page.getByRole("button", { name: "Pick" }).click()
+    await page.getByRole("button", { name: "Pick", exact: true }).click()
     await clickBounds(screenshotPanel.image, HEADING)
 
     await detailTabs.select("Locator")
@@ -114,11 +114,14 @@ test.describe("Pick mode", () => {
 
   test("leaves pick mode after a pick", async ({ viewer, page, screenshotPanel }) => {
     await viewer.open(SPEC)
-    await page.getByRole("button", { name: "Pick" }).click()
+    await page.getByRole("button", { name: "Pick", exact: true }).click()
     await clickBounds(screenshotPanel.image, TAP_AREA)
 
     // One pick per activation, so a stray second click can't silently repick.
-    await expect(page.getByRole("button", { name: "Pick" })).toBeVisible()
+    // Exact, because Playwright matches accessible names by substring and the
+    // active label "Picking…" also contains "Pick".
+    await expect(page.getByRole("button", { name: "Pick", exact: true })).toBeVisible()
+    await expect(page.getByRole("button", { name: "Picking…", exact: true })).toHaveCount(0)
   })
 
   test("a suggested locator matches the element it came from", async ({
@@ -129,7 +132,7 @@ test.describe("Pick mode", () => {
     locator,
   }) => {
     await viewer.open(SPEC)
-    await page.getByRole("button", { name: "Pick" }).click()
+    await page.getByRole("button", { name: "Pick", exact: true }).click()
     await clickBounds(screenshotPanel.image, TAP_AREA)
 
     await detailTabs.select("Locator")

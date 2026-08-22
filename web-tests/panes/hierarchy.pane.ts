@@ -14,7 +14,7 @@ export class HierarchyPane {
   }
 
   get rows() {
-    return this.page.getByTestId("hierarchy-row")
+    return this.tree.getByTestId("hierarchy-row")
   }
 
   /**

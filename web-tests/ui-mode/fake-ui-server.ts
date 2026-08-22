@@ -96,20 +96,24 @@ export class FakeUiServer {
   /** Push a binary screen-mirror frame, framed by the production encoder. */
   sendFrame(frame: ScreenFrame) {
     const ws = this.requireRoute()
+    // Track the highest sequence issued, however it was supplied: the SPA drops
+    // frames whose seq went backwards, so an auto-numbered frame following an
+    // explicit high one would silently never paint.
+    const seq = frame.seq ?? this.frameSeq + 1
+    this.frameSeq = Math.max(this.frameSeq, seq)
     ws.send(
-      encodeScreenFrame(
-        frame.seq ?? ++this.frameSeq,
-        frame.workerId ?? 0,
-        frame.width,
-        frame.height,
-        frame.png,
-      ),
+      encodeScreenFrame(seq, frame.workerId ?? 0, frame.width, frame.height, frame.png),
     )
   }
 
-  /** Close the socket from the server side, exercising the SPA's 1s reconnect. */
+  /**
+   * Close the socket from the server side, exercising the SPA's 1s reconnect.
+   * The close is fire-and-forget but its rejection is swallowed: a drop late in
+   * a test can race the page closing, and an unhandled rejection there surfaces
+   * against whichever test runs next.
+   */
   drop(options: { code?: number; reason?: string } = {}) {
-    this.route?.close(options)
+    this.route?.close(options).catch(() => {})
     this.route = null
   }
 

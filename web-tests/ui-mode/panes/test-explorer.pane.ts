@@ -75,9 +75,17 @@ export class TestExplorerPane {
     return this.page.getByTestId("tests-empty")
   }
 
-  /** Every rendered tree row, in document order. */
+  get tree() {
+    return this.page.getByRole("tree", { name: "Tests" })
+  }
+
+  /**
+   * Every rendered tree row, in document order. Scoped to the Tests tree: the
+   * Hierarchy tab is also a tree of treeitems, so a page-wide query would count
+   * its rows too.
+   */
   get nodes() {
-    return this.page.getByRole("treeitem")
+    return this.tree.getByRole("treeitem")
   }
 
   /**
@@ -85,7 +93,7 @@ export class TestExplorerPane {
    * project. Exact, so "smoke" doesn't also match "smoke test".
    */
   node(name: string): Locator {
-    return this.page.getByRole("treeitem", { name, exact: true })
+    return this.tree.getByRole("treeitem", { name, exact: true })
   }
 
   // `data-type` and `data-status` have no ARIA equivalent — there is no role or
@@ -97,6 +105,7 @@ export class TestExplorerPane {
     return this.nodes.and(this.page.locator(`[data-type="${type}"]`))
   }
 
+  /** Rows of one kind showing a given status — e.g. only the leaf tests. */
   nodesOfTypeWithStatus(type: NodeType, status: NodeStatus) {
     return this.nodes.and(this.page.locator(`[data-type="${type}"][data-status="${status}"]`))
   }

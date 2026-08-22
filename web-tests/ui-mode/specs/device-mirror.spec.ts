@@ -29,13 +29,16 @@ test.describe("Device mirror", () => {
     await expect(device.canvas).toHaveAttribute("height", "180")
   })
 
-  test("ignores a frame that arrives out of order", async ({ app, device }) => {
+  test("ignores a frame that arrives out of order", async ({ app, device, page }) => {
     const ui = app
     ui.sendFrame(screenFrame(180, 320, 10))
     await expect(device.canvas).toHaveAttribute("width", "180")
 
-    // A frame from before the current one must not repaint over it.
+    // A frame from before the current one must not repaint over it. Needs a
+    // settle: asserting straight away would pass before the stale frame had
+    // even been decoded, whether or not the SPA drops it.
     ui.sendFrame(screenFrame(64, 64, 9))
+    await page.waitForTimeout(300)
     await expect(device.canvas).toHaveAttribute("width", "180")
     await expect(device.canvas).toHaveAttribute("height", "320")
   })

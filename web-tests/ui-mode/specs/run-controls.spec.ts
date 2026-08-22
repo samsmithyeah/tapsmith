@@ -116,7 +116,7 @@ test.describe("Run controls", () => {
       await ui.waitForMessage("run-failed")
     })
 
-    test("typing in the filter box does not trigger a run", async ({ app, explorer }) => {
+    test("typing in the filter box does not trigger a run", async ({ app, explorer, page }) => {
       const ui = app
       // "r" and "w" are run-all and toggle-watch as bare keys. While focus is
       // in the search input they must be plain text — otherwise filtering for
@@ -125,6 +125,8 @@ test.describe("Run controls", () => {
       await explorer.searchInput.pressSequentially("swipe")
 
       await expect(explorer.searchInput).toHaveValue("swipe")
+      // Settle before concluding nothing was sent, as the #103 specs do.
+      await page.waitForTimeout(300)
       expect(ui.received).toEqual([])
     })
   })

@@ -189,6 +189,8 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
         <button
           class={`rc-mcp-indicator ${mcpPanelOpen ? 'active' : ''}`}
           onClick={onToggleMcpPanel}
+          aria-label={mcpPanelOpen ? 'Hide MCP activity' : 'Show MCP activity'}
+          aria-expanded={mcpPanelOpen}
           title={mcpConnected ? `MCP agents:\n${agentsTooltip(mcpAgents)}\n(click to toggle panel)` : 'MCP: listening (click to toggle panel)'}
         >
           <span class={`mcp-dot ${mcpConnected ? 'connected' : 'listening'}`} />

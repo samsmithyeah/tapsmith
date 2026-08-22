@@ -13,8 +13,14 @@ export class ScreenshotPane {
     return this.page.getByRole("img", { name: /^Screenshot / })
   }
 
+  /** Shown when an action is selected but captured no screenshot. */
   get emptyState() {
     return this.page.getByTestId("screenshot-empty")
+  }
+
+  /** Shown when the trace has no screenshots at all. */
+  get viewerEmpty() {
+    return this.page.getByTestId("viewer-empty")
   }
 
   get stages() {

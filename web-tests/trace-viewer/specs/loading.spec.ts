@@ -63,9 +63,16 @@ test.describe("Loading a trace", () => {
     await expect(page.locator("body")).toContainText(/metadata/i)
   })
 
-  test("loads an archive with no events at all", async ({ viewer, actions }) => {
+  test("loads an archive with no events at all", async ({ viewer, actions, filmstrip }) => {
     // A test that failed before its first action still produces an archive.
-    await viewer.open({ events: [] })
+    await viewer.open({
+      metadata: { testName: "Gestures screen > smoke", testStatus: "failed", error: "boom" },
+      events: [],
+    })
+
+    // Asserted positively first: an empty action list on its own also describes
+    // a viewer that failed to load at all.
+    await expect(filmstrip.summary).toContainText("Gestures screen > smoke")
     await expect(actions.items).toHaveCount(0)
   })
 })

@@ -39,7 +39,9 @@ if (missing.length > 0) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost")
-  const pathname = url.pathname.replace(/index\.html$/, "")
+  // Tolerate a missing trailing slash so `/trace-viewer` works as well as
+  // `/trace-viewer/`.
+  const pathname = url.pathname.replace(/index\.html$/, "").replace(/([^/])$/, "$1/")
   const file = APPS[pathname]
 
   if (file) {

@@ -234,7 +234,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
     return (
       <div class="screenshot-panel">
         <div class="screenshot-container viewer-body has-grid">
-          <div class="viewer-empty">
+          <div class="viewer-empty" data-testid="viewer-empty">
             <div class="viewer-empty-icon"><ListTree size={20} /></div>
             <div class="viewer-empty-title">No test selected</div>
             <div class="viewer-empty-sub">Select a test from the sidebar to view its trace.</div>
@@ -258,7 +258,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
     return (
       <div class="screenshot-panel">
         <div class="screenshot-container viewer-body has-grid">
-          <div class="viewer-empty">
+          <div class="viewer-empty" data-testid="viewer-empty">
             <div class="viewer-empty-icon"><Layers size={20} /></div>
             <div class="viewer-empty-title">{containerSummary.name}</div>
             <div class="viewer-empty-sub">{totalTests} {totalTests === 1 ? 'test' : 'tests'} in this {nodeType === 'suite' ? 'suite' : nodeType}</div>
@@ -302,7 +302,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
           </div>
         </div>
         <div class="screenshot-container viewer-body has-grid">
-          <div class="viewer-empty">
+          <div class="viewer-empty" data-testid="viewer-empty">
             <div class="viewer-empty-icon">
               {state === 'running'
                 ? <LoaderCircle size={20} style={{ animation: 'spin 1.1s linear infinite' }} />
@@ -541,7 +541,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
             )}
           </div>
         ) : (
-          <div class="screenshot-empty">No screenshot available for this action</div>
+          <div class="screenshot-empty" data-testid="screenshot-empty">No screenshot available for this action</div>
         )}
       </div>
     </div>

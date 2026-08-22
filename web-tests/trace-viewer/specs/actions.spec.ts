@@ -53,8 +53,8 @@ test.describe("Action list", () => {
     })
 
     await actions.items.nth(1).click()
-    await expect(actions.items.nth(1)).toHaveAttribute("aria-selected", "true")
-    await expect(actions.items.nth(0)).toHaveAttribute("aria-selected", "false")
+    await expect(actions.items.nth(1)).toHaveAttribute("data-selected", "true")
+    await expect(actions.items.nth(0)).toHaveAttribute("data-selected", "false")
   })
 
   test("distinguishes a failed action", async ({ viewer, actions }) => {
@@ -163,9 +163,9 @@ test.describe("Screenshot panel", () => {
     await expect(screenshotPanel.image).not.toHaveAttribute("src", first!)
   })
 
-  test("says so when no screenshots were captured", async ({ viewer, page }) => {
+  test("says so when no screenshots were captured", async ({ viewer, screenshotPanel }) => {
     await viewer.open({ events: [actionEvent({ actionIndex: 0, action: "tap" })] })
     // Without screenshots the panel has nothing to show but must not look broken.
-    await expect(page.locator(".viewer-empty, .screenshot-empty").first()).toBeVisible()
+    await expect(screenshotPanel.emptyState.or(screenshotPanel.viewerEmpty).first()).toBeVisible()
   })
 })

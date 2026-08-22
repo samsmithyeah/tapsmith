@@ -118,10 +118,10 @@ test.describe("Theme", () => {
 test.describe("Layout", () => {
   test("remembers a resized pane across a reload", async ({ app, page, explorer }) => {
     void app
-    const explorerPane = page.locator(".ui-explorer")
+    const explorerPane = page.getByTestId("explorer-pane")
     const before = (await explorerPane.boundingBox())!.width
 
-    const grip = page.locator(".ui-resize-col").first()
+    const grip = page.getByRole("separator", { name: "Resize test explorer" })
     const gripBox = (await grip.boundingBox())!
     await page.mouse.move(gripBox.x + gripBox.width / 2, gripBox.y + gripBox.height / 2)
     await page.mouse.down()

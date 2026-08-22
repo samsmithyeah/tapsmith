@@ -89,8 +89,10 @@ export function buildTrace(spec: TraceSpec = {}): Uint8Array {
     files["metadata.json"] = strToU8(JSON.stringify(metadata))
   }
 
-  if (events.length > 0) {
-    files["trace.json"] = strToU8(events.map((e) => JSON.stringify(e)).join("\n") + "\n")
+  // Written even when empty, so a spec can tell "an archive with no events"
+  // apart from "an archive missing trace.json".
+  if (spec.events) {
+    files["trace.json"] = strToU8(events.map((e) => JSON.stringify(e)).join("\n"))
   }
 
   for (const [name, bytes] of Object.entries(spec.screenshots ?? {})) {
@@ -240,16 +242,28 @@ export function networkEntry(o: {
   }
 }
 
+/** Escape a value for an XML double-quoted attribute. */
+function xmlAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+}
+
 /** A minimal UIAutomator-style hierarchy, which `parseHierarchyXml` accepts. */
 export function hierarchyXml(
   nodes: Array<{ class: string; text?: string; desc?: string; id?: string; bounds: string }>,
 ): string {
+  // Attribute values are escaped: an unescaped quote in fixture text (`Say "hi"`)
+  // silently produces malformed XML, and the spec would then exercise a tree
+  // other than the one it describes.
   const children = nodes
     .map(
       (n) =>
-        `<node index="0" text="${n.text ?? ""}" resource-id="${n.id ?? ""}" ` +
-        `class="${n.class}" package="dev.tapsmith.testapp" ` +
-        `content-desc="${n.desc ?? ""}" checkable="false" checked="false" ` +
+        `<node index="0" text="${xmlAttr(n.text ?? "")}" resource-id="${xmlAttr(n.id ?? "")}" ` +
+        `class="${xmlAttr(n.class)}" package="dev.tapsmith.testapp" ` +
+        `content-desc="${xmlAttr(n.desc ?? "")}" checkable="false" checked="false" ` +
         `clickable="true" enabled="true" focusable="true" focused="false" ` +
         `scrollable="false" long-clickable="false" password="false" ` +
         `selected="false" bounds="${n.bounds}" />`,

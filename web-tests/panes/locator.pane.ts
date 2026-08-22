@@ -10,12 +10,21 @@ export class LocatorPane {
     return this.page.getByRole("textbox", { name: "Selector" })
   }
 
+  /**
+   * Addressed by test id rather than a listbox role: the panel interleaves a
+   * section label and the WebView setup hint with the suggestions, and a listbox
+   * may not contain those.
+   */
   get suggestions() {
-    return this.page.getByRole("listbox", { name: "Suggested locators" })
+    return this.page.getByTestId("locator-suggestions")
   }
 
   get options() {
-    return this.suggestions.getByRole("option")
+    return this.page.getByTestId("locator-option")
+  }
+
+  get selectedOption() {
+    return this.options.and(this.page.locator('[data-selected="true"]'))
   }
 
   option(code: string) {
