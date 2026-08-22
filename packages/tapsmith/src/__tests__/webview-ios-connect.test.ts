@@ -221,7 +221,13 @@ describe('Device.webview() on iOS — bounded connection setup (PILOT-288)', () 
     });
     h.nextInspector = () => inspector;
 
-    const device = makeIosDevice(300);
+    // Unlike the hung-mock tests above, this one has to *survive* connecting and
+    // listing to reach the phase it asserts on — `listTargets` returns
+    // immediately, so the budget must outlast those phases by enough that
+    // scheduling delay cannot consume it. At 300ms a loaded CI runner spent the
+    // whole budget inside "listing WebView targets" and the error named that
+    // phase instead, failing the match.
+    const device = makeIosDevice(2_000);
     await expect(device.webview()).rejects.toThrow(
       /WebView connection setup timed out during waiting for an inspectable WebView page.*No inspectable WebView pages found/,
     );
