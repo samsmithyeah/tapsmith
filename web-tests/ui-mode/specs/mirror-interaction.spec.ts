@@ -106,8 +106,12 @@ test.describe("Device mirror interaction", () => {
     await device.canvas.press("h")
     await device.canvas.press("i")
 
-    const msg = await ui.waitForMessage("mirror-input-text")
-    expect(msg.text).toBe("h")
+    await ui.waitForMessage("mirror-input-text")
+    // One message per keystroke, in order — a dropped or coalesced key would
+    // type the wrong thing on a real device.
+    await expect
+      .poll(() => ui.messagesOfType("mirror-input-text").map((m) => m.text))
+      .toEqual(["h", "i"])
   })
 
   test("a named key is sent as a key press, not text", async ({ app, device }) => {

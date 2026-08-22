@@ -46,32 +46,12 @@ export function suiteNode(
 }
 
 /**
- * A file node containing the given tests, grouped into suite nodes by their
- * suite chain — the same shape `suiteToTreeNode` produces, where bare tests
- * come first and suites follow.
+ * A file node containing the given tests, grouped the way `suiteToTreeNode`
+ * groups them: bare tests first, then suites — and **nested** one level per
+ * segment of the suite chain, so `suites: ["A", "B"]` yields suite `A` holding
+ * suite `A > B`, not a single flattened node.
  */
 export function fileNode(filePath: string, tests: TestSpec[]): TestTreeNode {
-  const bare = tests.filter((t) => !t.suites?.length)
-  const grouped = new Map<string, TestSpec[]>()
-  for (const t of tests) {
-    if (!t.suites?.length) continue
-    const key = t.suites.join(" > ")
-    const list = grouped.get(key)
-    if (list) list.push(t)
-    else grouped.set(key, [t])
-  }
-
-  const children: TestTreeNode[] = [
-    ...bare.map((t) => testNode(filePath, t.name)),
-    ...[...grouped.entries()].map(([key, specs]) =>
-      suiteNode(
-        filePath,
-        key.split(" > "),
-        specs.map((t) => testNode(filePath, t.name, t.suites)),
-      ),
-    ),
-  ]
-
   return {
     id: filePath,
     type: "file",
@@ -79,8 +59,37 @@ export function fileNode(filePath: string, tests: TestSpec[]): TestTreeNode {
     filePath,
     fullName: basename(filePath),
     status: "idle",
-    children,
+    children: groupBySuite(filePath, tests, 0),
   }
+}
+
+/**
+ * Group tests by the suite segment at `depth`, recursing so each segment becomes
+ * its own node. Tests with no segment left at this depth come first, matching
+ * the runner's ordering.
+ */
+function groupBySuite(filePath: string, tests: TestSpec[], depth: number): TestTreeNode[] {
+  const bare = tests.filter((t) => (t.suites?.length ?? 0) <= depth)
+  const nested = tests.filter((t) => (t.suites?.length ?? 0) > depth)
+
+  const groups = new Map<string, TestSpec[]>()
+  for (const t of nested) {
+    const segment = t.suites![depth]
+    const list = groups.get(segment)
+    if (list) list.push(t)
+    else groups.set(segment, [t])
+  }
+
+  return [
+    ...bare.map((t) => testNode(filePath, t.name, t.suites ?? [])),
+    ...[...groups.entries()].map(([, specs]) =>
+      suiteNode(
+        filePath,
+        specs[0].suites!.slice(0, depth + 1),
+        groupBySuite(filePath, specs, depth + 1),
+      ),
+    ),
+  ]
 }
 
 /**

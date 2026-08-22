@@ -66,7 +66,7 @@ mis-shaped fixtures.
 
 ## Layout
 
-```
+```text
 web-tests/
   serve.mjs            static server for both built apps
   protocol.ts          UI mode's wire protocol, re-exported

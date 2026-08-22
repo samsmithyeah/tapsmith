@@ -1,5 +1,12 @@
 import { test, expect } from "../fixtures.js"
-import { GESTURES_FILE, idleSeed, singleFileTree, twoFileTree, twoProjectTree } from "../messages/scenarios.js"
+import {
+  GESTURES_FILE,
+  idleSeed,
+  nestedSuiteTree,
+  singleFileTree,
+  twoFileTree,
+  twoProjectTree,
+} from "../messages/scenarios.js"
 
 test.describe("Test explorer", () => {
   test("renders the tree from a test-tree message", async ({ app, explorer }) => {
@@ -48,6 +55,30 @@ test.describe("Test explorer", () => {
     await expect(file).toHaveAttribute("aria-selected", "false")
     await file.click()
     await expect(file).toHaveAttribute("aria-selected", "true")
+  })
+
+  test("nests a describe inside its parent describe", async ({ ui, explorer }) => {
+    ui.seed(idleSeed(nestedSuiteTree()))
+    await ui.open()
+    await explorer.expandAll()
+
+    // A two-segment chain is two nodes, not one flattened "Home screen > when
+    // empty" — that is how the runner reports it, and the SPA keys expansion
+    // and status off each node's own id.
+    await expect(explorer.node("Home screen")).toHaveAttribute("aria-level", "2")
+    await expect(explorer.node("when empty")).toHaveAttribute("aria-level", "3")
+    await expect(explorer.node("shows the count")).toHaveAttribute("aria-level", "4")
+    await expect(explorer.nodesOfType("suite")).toHaveCount(2)
+  })
+
+  test("collapsing an outer describe hides the inner one", async ({ ui, explorer }) => {
+    ui.seed(idleSeed(nestedSuiteTree()))
+    await ui.open()
+    await explorer.expandAll()
+    await expect(explorer.node("when empty")).toBeVisible()
+
+    await explorer.clickNode("Home screen")
+    await expect(explorer.node("when empty")).toHaveCount(0)
   })
 
   test("shows an empty state when there are no tests", async ({ ui, explorer }) => {

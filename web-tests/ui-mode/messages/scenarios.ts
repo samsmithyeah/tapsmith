@@ -21,6 +21,17 @@ export function singleFileTree(): TestTreeNode[] {
   ]
 }
 
+/** A file with a nested describe, so suite nesting is exercised. */
+export function nestedSuiteTree(): TestTreeNode[] {
+  return [
+    fileNode(HOME_FILE, [
+      { name: "displays navigation cards", suites: ["Home screen"] },
+      { name: "shows the count", suites: ["Home screen", "when empty"] },
+      { name: "offers a retry", suites: ["Home screen", "when empty"] },
+    ]),
+  ]
+}
+
 /** Two files, so file-level and cross-file behaviour can be exercised. */
 export function twoFileTree(): TestTreeNode[] {
   return [

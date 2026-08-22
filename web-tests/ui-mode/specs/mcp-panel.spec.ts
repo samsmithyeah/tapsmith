@@ -12,12 +12,13 @@ function toolCall(o: {
   resultSummary?: string
   error?: string
   durationMs?: number
+  args?: Record<string, unknown>
 }) {
   return {
     type: "mcp-tool-call" as const,
     id: o.id,
     tool: o.tool,
-    args: {},
+    args: o.args ?? {},
     status: o.status,
     resultSummary: o.resultSummary,
     error: o.error,
@@ -159,11 +160,17 @@ test.describe("MCP panel", () => {
         tool: "tapsmith_snapshot",
         status: "completed",
         resultSummary: "3 elements",
+        args: { deviceSerial: "emulator-5554" },
       }),
     )
 
     const entry = mcp.entry("snapshot")
+    await expect(entry).not.toContainText("deviceSerial")
+
     await entry.click()
     await expect(entry).toHaveClass(/expanded/)
+    // The point of expanding is the arguments and full result, so assert those
+    // rather than only the class that reveals them.
+    await expect(entry).toContainText("deviceSerial")
   })
 })

@@ -2,7 +2,8 @@
 // detail pane. Shared with UI mode.
 
 import { test, expect } from "../fixtures.js"
-import { actionEvent, networkEntry } from "../trace-builder.js"
+import { actionEvent, networkEntry, type TraceSpec } from "../trace-builder.js"
+import type { ViewerHarness } from "../fixtures.js"
 
 const RESPONSE_BODY = JSON.stringify(
   { items: [{ id: 1, title: "Buy milk" }], total: 1 },
@@ -34,10 +35,7 @@ const ENTRIES = [
   }),
 ]
 
-async function openWithNetwork(
-  viewer: { open: (spec: Record<string, unknown>) => Promise<void> },
-  extra: Record<string, unknown> = {},
-) {
+async function openWithNetwork(viewer: ViewerHarness, extra: TraceSpec = {}) {
   await viewer.open({
     events: [actionEvent({ actionIndex: 0, action: "tap" })],
     network: ENTRIES,
