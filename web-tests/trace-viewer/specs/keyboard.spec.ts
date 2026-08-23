@@ -156,6 +156,29 @@ test.describe("Screenshot stage keyboard", () => {
     await expect(screenshotPanel.image).toHaveAttribute("alt", "Screenshot before")
   })
 
+  test("no tab panel when there is only one screenshot", async ({
+    viewer,
+    screenshotPanel,
+    page,
+  }) => {
+    // Most traced actions capture only an "after" shot, so the strip does not
+    // render — and a tabpanel with no owning tablist would announce an unnamed
+    // panel with nothing to navigate.
+    await viewer.open({
+      events: [actionEvent({ actionIndex: 0, action: "tap", screenshots: { after: true } })],
+      screenshots: {
+        "screenshots/action-000-after.png": solidPng(SCREEN.width, SCREEN.height, [30, 200, 30]),
+      },
+    })
+
+    await expect(screenshotPanel.image).toBeVisible()
+    await expect(screenshotPanel.stages).toHaveCount(0)
+    // Asserted on the element, not by role and name: an orphaned panel has no
+    // accessible name at all, so a name-filtered query would not match it and
+    // this would pass with the bug present.
+    await expect(page.locator("#screenshot-tabpanel")).toHaveCount(0)
+  })
+
   test("each stage is wired to the image panel", async ({ viewer, screenshotPanel, page }) => {
     await viewer.open(WITH_SCREENSHOTS)
     await screenshotPanel.selectStage("Before")

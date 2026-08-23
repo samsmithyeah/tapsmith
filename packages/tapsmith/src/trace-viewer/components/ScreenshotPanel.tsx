@@ -111,8 +111,10 @@ function handleStageKeyDown(
   e.preventDefault();
   setTab(STAGE_TABS[next].value);
   // Follow focus, or the next arrow press would move from the old position.
+  // Selected by role rather than child index: `next` indexes STAGE_TABS, and the
+  // two would silently diverge if anything else were added to the strip.
   const strip = (e.currentTarget as HTMLElement).parentElement;
-  (strip?.children[next] as HTMLElement | undefined)?.focus();
+  (strip?.querySelectorAll('[role="tab"]')[next] as HTMLElement | undefined)?.focus();
 }
 
 export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, onDisplayedVariantChange, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
@@ -544,9 +546,12 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
         {currentUrl ? (
           <div
             ref={wrapperRef}
-            id="screenshot-tabpanel"
-            role="tabpanel"
-            aria-labelledby={`screenshot-stage-${tab}`}
+            // Gated on the same condition as the tablist above: with only one
+            // screenshot there are no stage tabs, so a tabpanel here would be
+            // orphaned and aria-labelledby would point at nothing.
+            id={hasBefore && hasAfter ? 'screenshot-tabpanel' : undefined}
+            role={hasBefore && hasAfter ? 'tabpanel' : undefined}
+            aria-labelledby={hasBefore && hasAfter ? `screenshot-stage-${tab}` : undefined}
             class="screenshot-image-wrapper"
             style={scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'center center' } : undefined}
           >

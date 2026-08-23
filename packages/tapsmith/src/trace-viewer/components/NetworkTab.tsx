@@ -13,6 +13,9 @@ const NETWORK_STYLES = `
   .net-search { flex: 1; min-width: 180px; padding: 4px 8px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 3px; color: var(--color-text-secondary); font-size: 12px; outline: none; font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
   .net-search:focus { border-color: var(--color-accent); }
   .net-pills { display: flex; gap: 2px; flex-wrap: wrap; }
+  /* The groups exist to name each set for assistive tech; they must not
+     introduce a layout box, so they lay out as the flex row they replace. */
+  .net-pill-group { display: flex; gap: 2px; flex-wrap: wrap; }
   .net-pill { padding: 2px 8px; background: transparent; border: 1px solid var(--color-border); border-radius: 10px; color: var(--color-text-muted); font-size: 10px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; }
   .net-pill:hover { color: var(--color-text-secondary); border-color: var(--color-text-faintest); }
   .net-pill.active { color: var(--color-text-primary); border-color: var(--color-accent); background: var(--color-highlight); }
@@ -395,6 +398,10 @@ export function NetworkTab({ entries, bodies }: Props) {
           onInput={(e) => setUrlFilter((e.target as HTMLInputElement).value)}
         />
         <div class="net-pills">
+          {/* Grouped and named, as the test explorer's status filters are: these
+              are mutually exclusive within each set, and ungrouped they read as
+              a dozen unrelated toggles with no cue that one releases another. */}
+          <div class="net-pill-group" role="group" aria-label="Filter by type">
           {TYPE_FILTERS.map(f => (
             <button
               key={f.value}
@@ -405,7 +412,9 @@ export function NetworkTab({ entries, bodies }: Props) {
               {f.label}
             </button>
           ))}
+          </div>
           <span class="net-pill-sep" />
+          <div class="net-pill-group" role="group" aria-label="Filter by status">
           <button
             class={`net-pill${statusFilter === 'all' ? ' active' : ''}`}
             aria-pressed={statusFilter === 'all'}
@@ -423,6 +432,7 @@ export function NetworkTab({ entries, bodies }: Props) {
               {f.label}
             </button>
           ))}
+          </div>
         </div>
       </div>
 

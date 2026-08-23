@@ -37,6 +37,11 @@ npm run typecheck
 Because the suites run against `dist/`, **rebuild after changing either app**:
 `cd ../packages/tapsmith && npm run build:ui-mode` (or `build:trace-viewer`).
 
+Changing `ui-protocol.ts` or `trace/types.ts` needs the full `npm run build`
+instead — `protocol.ts` and `trace-types.ts` here import the emitted `.d.ts`
+files, which come from the `tsc` step rather than either Vite build, so
+`npm run typecheck` would otherwise check against stale types.
+
 ## How it works
 
 Neither app's data comes from the server. `serve.mjs` serves only the two built

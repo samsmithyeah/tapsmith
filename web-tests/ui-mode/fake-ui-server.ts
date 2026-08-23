@@ -130,9 +130,14 @@ export class FakeUiServer {
   }
 
   /**
-   * Resolve once the SPA has sent a message of this type, returning the first
-   * such message. Polls rather than hooking a promise so it composes with
+   * Resolve once the SPA has sent a message of this type, returning the **most
+   * recent** one. Polls rather than hooking a promise so it composes with
    * Playwright's own timeout handling.
+   *
+   * Most recent rather than first: a spec that provokes a second message of a
+   * type it already saw would otherwise assert against the stale one and pass
+   * for the wrong reason. Use `clearReceived()` when a test needs a clean slate,
+   * or `messagesOfType()` to assert on the whole sequence.
    */
   async waitForMessage<T extends ClientMessage["type"]>(
     type: T,
@@ -141,7 +146,8 @@ export class FakeUiServer {
     const timeout = options.timeout ?? 5000
     const deadline = Date.now() + timeout
     for (;;) {
-      const found = this.messagesOfType(type)[0]
+      const seen = this.messagesOfType(type)
+      const found = seen[seen.length - 1]
       if (found) return found
       if (Date.now() > deadline) {
         const seen = this.received.map((m) => m.type).join(", ") || "none"

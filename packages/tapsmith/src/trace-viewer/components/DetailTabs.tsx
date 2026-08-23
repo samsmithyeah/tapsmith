@@ -113,6 +113,11 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
     },
   ];
 
+  // The persisted tab can name one that isn't currently rendered — `locatorTab`
+  // is optional, and the pick-mode effect selects 'locator'. Falling back keeps
+  // aria-labelledby pointing at a real tab and the panel from rendering blank.
+  const activeTab = visibleTabs.some((t) => t.value === tab) ? tab : 'call';
+
   const handleTabKeyDown = (e: KeyboardEvent, value: DetailTab) => {
     const index = visibleTabs.findIndex((t) => t.value === value);
     let next = -1;
@@ -130,8 +135,10 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
     e.preventDefault();
     setTab(visibleTabs[next].value);
     // Follow focus, or the next arrow press would move from the old position.
+    // Selected by role rather than child index: `next` indexes visibleTabs, and
+    // the two would silently diverge if anything else were added to the bar.
     const bar = (e.currentTarget as HTMLElement).parentElement;
-    const target = bar?.children[next] as HTMLElement | undefined;
+    const target = bar?.querySelectorAll('[role="tab"]')[next] as HTMLElement | undefined;
     target?.focus();
   };
 
@@ -142,9 +149,9 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
           <div
             key={value}
             id={`detail-tab-${value}`}
-            class={`detail-tab vtab${tab === value ? ' active' : ''}${extraClass ?? ''}`}
+            class={`detail-tab vtab${activeTab === value ? ' active' : ''}${extraClass ?? ''}`}
             role="tab"
-            aria-selected={tab === value}
+            aria-selected={activeTab === value}
             aria-controls="detail-tabpanel"
             tabIndex={0}
             onClick={() => setTab(value)}
@@ -163,17 +170,17 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
       <div
         id="detail-tabpanel"
         role="tabpanel"
-        aria-labelledby={`detail-tab-${tab}`}
-        class={`detail-content${tab === 'hierarchy' || tab === 'source' || tab === 'network' || tab === 'locator' || tab === 'console' ? ' detail-content-flush' : ''}`}
+        aria-labelledby={`detail-tab-${activeTab}`}
+        class={`detail-content${activeTab === 'hierarchy' || activeTab === 'source' || activeTab === 'network' || activeTab === 'locator' || activeTab === 'console' ? ' detail-content-flush' : ''}`}
       >
-        {tab === 'call' && <CallTab event={event} metadata={metadata} />}
-        {tab === 'log' && <LogTab event={event} />}
-        {tab === 'console' && <ConsoleTab event={event} events={consoleEvents} />}
-        {tab === 'source' && <SourceTab event={event} sources={sources} previewHighlight={previewHighlight} />}
-        {tab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} />}
-        {tab === 'locator' && locatorTab}
-        {tab === 'network' && <NetworkTab entries={networkEntries} bodies={networkBodies} />}
-        {tab === 'errors' && <ErrorsTab event={event} events={events} testError={testError} sources={sources} />}
+        {activeTab === 'call' && <CallTab event={event} metadata={metadata} />}
+        {activeTab === 'log' && <LogTab event={event} />}
+        {activeTab === 'console' && <ConsoleTab event={event} events={consoleEvents} />}
+        {activeTab === 'source' && <SourceTab event={event} sources={sources} previewHighlight={previewHighlight} />}
+        {activeTab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} />}
+        {activeTab === 'locator' && locatorTab}
+        {activeTab === 'network' && <NetworkTab entries={networkEntries} bodies={networkBodies} />}
+        {activeTab === 'errors' && <ErrorsTab event={event} events={events} testError={testError} sources={sources} />}
       </div>
     </div>
   );
