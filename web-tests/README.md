@@ -120,6 +120,7 @@ to give it the ARIA it should already have had:
 | Elapsed time | `role="timer"` |
 | Console output, MCP feed | `role="log"` |
 | Connection strip, mirror placeholder | `role="status"` |
+| Highlighted source line | `aria-current` — the line the selected action came from |
 | Notification banners | `role="alert"` (errors) / `role="status"` (notices) |
 | Mirror canvas | labelled, per worker in the grid |
 | Theme select, per-row run/watch buttons, close buttons | labelled |
@@ -145,7 +146,8 @@ own: `node-duration`, `filter-count`, `count-passed`/`-failed`/`-skipped`,
 `locator-code`, `selector-match-count`, `selector-strict-warning`, `film-frame`,
 `timeline-meta`, `viewer-title`, `screenshot-empty`, `viewer-empty`, `mcp-entry`,
 `mcp-agent`, `mcp-empty`, `actions-list`, `action-item`, `locator-suggestions`,
-`locator-option`, `explorer-pane`, `explorer-resize`.
+`locator-option`, `explorer-pane`, `explorer-resize`, `source-line` (which also
+carries `data-line`, its 1-based line number).
 
 Two exceptions worth knowing.
 

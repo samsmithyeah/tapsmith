@@ -617,12 +617,17 @@ function SourceTab({ event, sources, previewHighlight }: { event: ActionTraceEve
       <div class="source-main">
         <div class="source-filename" data-testid="source-filename">{filename}</div>
         <div class="source-code">
+          {/* aria-current marks the line the selected action came from: the
+              current item in the set of lines, which is what a screen reader
+              should hear rather than an unremarked colour change. */}
           {tokenizedLines.map((tokens, i) => (
             <div
               key={i}
               ref={highlightLine === i + 1 ? highlightRef : undefined}
               class={`source-line${highlightLine === i + 1 ? ' highlight' : ''}`}
+              aria-current={highlightLine === i + 1 ? 'true' : undefined}
               data-testid="source-line"
+              data-line={i + 1}
             >
               <span class="source-line-number">{i + 1}</span>
               <span class="source-line-content">

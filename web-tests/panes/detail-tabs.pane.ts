@@ -71,6 +71,30 @@ export class DetailTabsPane {
     return this.page.getByTestId("source-line")
   }
 
+  /**
+   * The line the selected action came from. Marked `aria-current` rather than
+   * only coloured, so it is addressable and audible.
+   */
+  get highlightedSourceLine() {
+    return this.sourceLines.and(this.page.locator('[aria-current="true"]'))
+  }
+
+  /** A source line by its 1-based number. */
+  sourceLine(number: number) {
+    return this.page.locator(`[data-testid="source-line"][data-line="${number}"]`)
+  }
+
+  /**
+   * A call-stack frame, shown when an event carries more than one. Matched on a
+   * pattern rather than a literal name: the filename and the line live in
+   * separate spans, so accessible-name computation joins them with a space the
+   * visible text does not have ("gestures.test.ts :5").
+   */
+  stackFrame(fileName: string, line: number) {
+    const escaped = fileName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    return this.page.getByRole("button", { name: new RegExp(`^${escaped}\\s*:${line}$`) })
+  }
+
   // ─── Errors ───
 
   get errorEntries() {
