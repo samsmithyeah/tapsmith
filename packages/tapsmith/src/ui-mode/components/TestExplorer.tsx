@@ -8,7 +8,6 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { ArrowLeft, Check, ChevronsDownUp, ChevronsUpDown, Circle, CircleSlash, Eye, Link, LoaderCircle, Play, Search, Square, X } from 'lucide-preact';
 import type { TestTreeNode, ClientMessage } from '../ui-protocol.js';
-import { nextTabIndex, focusSibling } from '../tabstrip.js';
 
 const ICON_SIZE = 13;
 const STATUS_SIZE = 12;
@@ -66,8 +65,8 @@ export function TestExplorer(props: TestExplorerProps) {
             onInput={(e) => onSetNameFilter((e.target as HTMLInputElement).value)}
           />
         </div>
-        <div class="te-status-filters filter-tabs" role="tablist" aria-label="Filter by status">
-          {STATUS_FILTERS.map(({ label, value }, i) => (
+        <div class="te-status-filters filter-tabs" role="group" aria-label="Filter by status">
+          {STATUS_FILTERS.map(({ label, value }) => (
             <StatusButton
               key={value}
               label={label}
@@ -75,13 +74,6 @@ export function TestExplorer(props: TestExplorerProps) {
               count={countFor(value, counts)}
               active={statusFilter}
               onClick={onSetStatusFilter}
-              onKeyDown={(e) => {
-                const next = nextTabIndex(e.key, i, STATUS_FILTERS.length);
-                if (next === null) return;
-                e.preventDefault();
-                onSetStatusFilter(STATUS_FILTERS[next].value);
-                focusSibling(e, next);
-              }}
             />
           ))}
         </div>
@@ -181,18 +173,15 @@ interface StatusButtonProps {
   count: number
   active: string
   onClick: (value: StatusFilterValue) => void
-  onKeyDown: (e: KeyboardEvent) => void
 }
 
-function StatusButton({ label, value, count, active, onClick, onKeyDown }: StatusButtonProps) {
+function StatusButton({ label, value, count, active, onClick }: StatusButtonProps) {
   const isActive = active === value;
   return (
     <button
       class={`te-status-btn filter-tab ${isActive ? 'active' : ''} te-status-${value}`}
-      role="tab"
-      aria-selected={isActive}
+      aria-pressed={isActive}
       onClick={() => onClick(value)}
-      onKeyDown={onKeyDown}
     >
       {value !== 'all' && <span class={`ind ind-${value}`} />}
       {label} {count > 0 && <span class="te-count ct" data-testid="filter-count">{count}</span>}

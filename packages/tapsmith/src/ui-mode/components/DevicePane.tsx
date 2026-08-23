@@ -205,8 +205,10 @@ export function DevicePane({
         <div class="worker-tabs" role="tablist" aria-label="Device views">
           <button
             class={`worker-tab ${deviceViewMode === 'all' ? 'active' : ''}`}
+            id="device-view-all"
             role="tab"
             aria-selected={deviceViewMode === 'all'}
+            aria-controls="device-tabpanel"
             onClick={() => onSelectDeviceView('all')}
             onKeyDown={(e) => handleWorkerTabKey(e, 0)}
           >
@@ -216,8 +218,10 @@ export function DevicePane({
             <button
               key={w.workerId}
               class={`worker-tab ${deviceViewMode === w.workerId ? 'active' : ''}`}
+              id={`device-view-${w.workerId}`}
               role="tab"
               aria-selected={deviceViewMode === w.workerId}
+              aria-controls="device-tabpanel"
               onClick={() => onSelectDeviceView(w.workerId)}
               onKeyDown={(e) => handleWorkerTabKey(e, i + 1)}
               title={`${w.displayName} (${w.deviceSerial}) — ${w.status}`}
@@ -229,7 +233,12 @@ export function DevicePane({
         </div>
       )}
 
-      <div class="device-pane-body">
+      <div
+        id="device-tabpanel"
+        role={hasWorkers ? 'tabpanel' : undefined}
+        aria-labelledby={hasWorkers ? `device-view-${deviceViewMode}` : undefined}
+        class="device-pane-body"
+      >
         {deviceViewMode === 'all' && hasWorkers ? (
           <div class="device-pane-grid">
             {workers.map((w) => (

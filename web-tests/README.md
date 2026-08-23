@@ -113,9 +113,9 @@ to give it the ARIA it should already have had:
 | Surface | Now |
 |---|---|
 | Test tree, view hierarchy | `tree` of `treeitem`s with `aria-level`/`-expanded`/`-selected` |
-| Status filters, detail tabs, worker tabs, screenshot stages | `tablist`/`tab`, keyboard-operable (see below) |
+| Detail tabs, worker tabs, screenshot stages | `tablist`/`tab` wired to their panel with `aria-controls`/`tabpanel`, keyboard-operable |
+| Status filters, network filter pills | `aria-pressed` toggle groups — they filter in place rather than switching panels |
 | Network request list | already a real `<table>` — rows and cells by native role |
-| Network filter pills | `aria-pressed` |
 | Every filter and search box | `aria-label` (a placeholder is not a label) |
 | Elapsed time | `role="timer"` |
 | Console output, MCP feed | `role="log"` |
@@ -163,10 +163,14 @@ operated. Where the promise was new, the keyboard support went in with it:
 
 - **Tab strips** — the detail tabs and screenshot stages were clickable `div`s
   reachable only by mouse. They are now focusable, with Left/Right, Home/End and
-  Enter/Space. The status filters and worker tabs were already `<button>`s, so
-  Tab and Enter worked before the role; arrow keys were added for consistency.
-  `ui-mode/specs/keyboard.spec.ts` and `trace-viewer/specs/keyboard.spec.ts`
-  cover both.
+  Enter/Space, and each tab points at its panel via `aria-controls` with a
+  matching `role="tabpanel"`. The worker tabs were already `<button>`s, so Tab
+  and Enter worked before the role; they gained arrow keys and the same panel
+  wiring.
+- **Only things that switch panels are tabs.** The status filters narrow the same
+  tree in place, so they are an `aria-pressed` toggle group, not a tabset — the
+  model the network filter pills already used. Calling them tabs implied a panel
+  switch that never happens.
 - Tabs stay **individually tabbable** rather than adopting APG's roving-tabindex
   pattern. Several of these strips are plain buttons already in the tab order;
   switching to roving would make Tab skip the whole group, taking away behaviour

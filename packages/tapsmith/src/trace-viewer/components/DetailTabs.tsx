@@ -141,9 +141,11 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
         {visibleTabs.map(({ value, label, extra, extraClass }) => (
           <div
             key={value}
+            id={`detail-tab-${value}`}
             class={`detail-tab vtab${tab === value ? ' active' : ''}${extraClass ?? ''}`}
             role="tab"
             aria-selected={tab === value}
+            aria-controls="detail-tabpanel"
             tabIndex={0}
             onClick={() => setTab(value)}
             onKeyDown={(e) => handleTabKeyDown(e, value)}
@@ -158,7 +160,12 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
           <span class="test-error-banner-text">{testError}</span>
         </div>
       )}
-      <div class={`detail-content${tab === 'hierarchy' || tab === 'source' || tab === 'network' || tab === 'locator' || tab === 'console' ? ' detail-content-flush' : ''}`}>
+      <div
+        id="detail-tabpanel"
+        role="tabpanel"
+        aria-labelledby={`detail-tab-${tab}`}
+        class={`detail-content${tab === 'hierarchy' || tab === 'source' || tab === 'network' || tab === 'locator' || tab === 'console' ? ' detail-content-flush' : ''}`}
+      >
         {tab === 'call' && <CallTab event={event} metadata={metadata} />}
         {tab === 'log' && <LogTab event={event} />}
         {tab === 'console' && <ConsoleTab event={event} events={consoleEvents} />}

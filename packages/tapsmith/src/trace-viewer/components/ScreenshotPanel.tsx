@@ -527,9 +527,11 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
             {STAGE_TABS.map(({ value, label }, i) => (
               <div
                 key={value}
+                id={`screenshot-stage-${value}`}
                 class={`screenshot-tab${tab === value ? ' active' : ''}`}
                 role="tab"
                 aria-selected={tab === value}
+                aria-controls="screenshot-tabpanel"
                 tabIndex={0}
                 onClick={() => setTab(value)}
                 onKeyDown={(e) => handleStageKeyDown(e, i, setTab)}
@@ -540,7 +542,14 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
           </div>
         )}
         {currentUrl ? (
-          <div ref={wrapperRef} class="screenshot-image-wrapper" style={scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'center center' } : undefined}>
+          <div
+            ref={wrapperRef}
+            id="screenshot-tabpanel"
+            role="tabpanel"
+            aria-labelledby={`screenshot-stage-${tab}`}
+            class="screenshot-image-wrapper"
+            style={scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'center center' } : undefined}
+          >
             {framedScreenshot}
             {showOverlay && naturalSize && renderedSize && (
               <BoundsOverlay

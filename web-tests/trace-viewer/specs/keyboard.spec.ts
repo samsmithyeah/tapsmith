@@ -30,10 +30,16 @@ const WITH_SCREENSHOTS = {
 }
 
 test.describe("Detail tabs keyboard", () => {
-  test("each tab is reachable with Tab", async ({ viewer, detailTabs }) => {
+  test("the tabs are sequential tab stops", async ({ viewer, detailTabs, page }) => {
     await viewer.open({ events: [actionEvent({ actionIndex: 0, action: "tap" })] })
     await detailTabs.tab("Call").focus()
-    await expect(detailTabs.tab("Call")).toBeFocused()
+
+    // Pressing Tab rather than calling focus() on each: focus() bypasses
+    // sequential navigation, so it would pass even on unreachable tabs.
+    for (const label of ["Log", "Console", "Source"] as const) {
+      await page.keyboard.press("Tab")
+      await expect(detailTabs.tab(label)).toBeFocused()
+    }
   })
 
   test("Right and Left move between tabs and select as they go", async ({
@@ -90,15 +96,20 @@ test.describe("Detail tabs keyboard", () => {
     await expect(detailTabs.tab("Source")).toHaveAttribute("aria-selected", "true")
   })
 
-  test("skips the Locator tab when the viewer has none", async ({ viewer, detailTabs, page }) => {
+  test("every tab is wired to the detail panel", async ({ viewer, detailTabs, page }) => {
     await viewer.open({ events: [actionEvent({ actionIndex: 0, action: "tap" })] })
-    // The standalone viewer does render a Locator tab; assert navigation lands
-    // on whatever is actually adjacent rather than assuming a fixed count.
-    const count = await detailTabs.tabList.getByRole("tab").count()
-    await detailTabs.tab("Call").focus()
-    for (let i = 0; i < count; i++) await page.keyboard.press("ArrowRight")
-    // A full lap returns to the start.
-    await expect(detailTabs.tab("Call")).toBeFocused()
+
+    // A tab that does not point at its panel leaves assistive tech unable to
+    // associate the two.
+    const controls = await detailTabs.tabList
+      .getByRole("tab")
+      .evaluateAll((els) => els.map((e) => e.getAttribute("aria-controls")))
+    expect(new Set(controls)).toEqual(new Set(["detail-tabpanel"]))
+
+    await detailTabs.select("Network")
+    // Located by accessible name, which only resolves if aria-labelledby points
+    // at the right tab; the id then confirms it is the panel the tabs control.
+    await expect(page.getByRole("tabpanel", { name: /^Network/ })).toHaveId("detail-tabpanel")
   })
 })
 
@@ -128,10 +139,31 @@ test.describe("Screenshot stage keyboard", () => {
     await expect(screenshotPanel.stage("Action")).toBeFocused()
   })
 
-  test("Enter activates the focused stage", async ({ viewer, screenshotPanel, page }) => {
+  test("Enter and Space activate the focused stage", async ({
+    viewer,
+    screenshotPanel,
+    page,
+  }) => {
     await viewer.open(WITH_SCREENSHOTS)
+
     await screenshotPanel.stage("After").focus()
     await page.keyboard.press("Enter")
     await expect(screenshotPanel.stage("After")).toHaveAttribute("aria-selected", "true")
+
+    await screenshotPanel.stage("Before").focus()
+    await page.keyboard.press(" ")
+    await expect(screenshotPanel.stage("Before")).toHaveAttribute("aria-selected", "true")
+    await expect(screenshotPanel.image).toHaveAttribute("alt", "Screenshot before")
+  })
+
+  test("each stage is wired to the image panel", async ({ viewer, screenshotPanel, page }) => {
+    await viewer.open(WITH_SCREENSHOTS)
+    await screenshotPanel.selectStage("Before")
+
+    await expect(screenshotPanel.stage("Before")).toHaveAttribute(
+      "aria-controls",
+      "screenshot-tabpanel",
+    )
+    await expect(page.getByRole("tabpanel", { name: "Before" })).toHaveId("screenshot-tabpanel")
   })
 })

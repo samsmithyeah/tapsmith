@@ -19,17 +19,21 @@ const WORKERS: ServerMessage = {
 }
 
 test.describe("Status filter keyboard", () => {
-  test("each filter is reachable with Tab", async ({ app, explorer }) => {
+  // A toggle group, not a tab strip — so each filter is its own tab stop and
+  // Enter/Space activate it. There is no arrow-key navigation to test.
+  test("each filter is a tab stop, in order", async ({ app, explorer, page }) => {
     void app
     await explorer.statusFilter("All").focus()
-    await expect(explorer.statusFilter("All")).toBeFocused()
+
+    // Pressing Tab rather than calling focus(), so this actually exercises
+    // sequential navigation instead of asserting focus can be forced.
+    for (const label of ["Pass", "Fail", "Skip"] as const) {
+      await page.keyboard.press("Tab")
+      await expect(explorer.statusFilter(label)).toBeFocused()
+    }
   })
 
-  test("Right and Left move between filters and apply as they go", async ({
-    app,
-    explorer,
-    page,
-  }) => {
+  test("Enter and Space apply the focused filter", async ({ app, explorer, page }) => {
     const ui = app
     ui.send({
       type: "test-status",
@@ -40,38 +44,15 @@ test.describe("Status filter keyboard", () => {
     })
     await expect(explorer.statusFilterCount("Fail")).toHaveText("1")
 
-    await explorer.statusFilter("All").focus()
-    await page.keyboard.press("ArrowRight")
-    await expect(explorer.statusFilter("Pass")).toBeFocused()
-    await expect(explorer.statusFilter("Pass")).toHaveAttribute("aria-selected", "true")
-
-    await page.keyboard.press("ArrowRight")
-    await expect(explorer.statusFilter("Fail")).toBeFocused()
-    // Applying the filter is the point, not just moving focus.
+    await explorer.statusFilter("Fail").focus()
+    await page.keyboard.press("Enter")
+    await expect(explorer.statusFilter("Fail")).toHaveAttribute("aria-pressed", "true")
     await expect(explorer.node("double tap registers double tap gesture")).toBeVisible()
 
-    await page.keyboard.press("ArrowLeft")
-    await expect(explorer.statusFilter("Pass")).toBeFocused()
-  })
-
-  test("Home and End jump to the ends", async ({ app, explorer, page }) => {
-    void app
-    await explorer.statusFilter("Pass").focus()
-
-    await page.keyboard.press("End")
-    await expect(explorer.statusFilter("Skip")).toBeFocused()
-    await expect(explorer.statusFilter("Skip")).toHaveAttribute("aria-selected", "true")
-
-    await page.keyboard.press("Home")
-    await expect(explorer.statusFilter("All")).toBeFocused()
-    await expect(explorer.statusFilter("All")).toHaveAttribute("aria-selected", "true")
-  })
-
-  test("Enter still activates, as it did before the tab role", async ({ app, explorer, page }) => {
-    void app
-    await explorer.statusFilter("Skip").focus()
-    await page.keyboard.press("Enter")
-    await expect(explorer.statusFilter("Skip")).toHaveAttribute("aria-selected", "true")
+    await explorer.statusFilter("All").focus()
+    await page.keyboard.press(" ")
+    await expect(explorer.statusFilter("All")).toHaveAttribute("aria-pressed", "true")
+    await expect(explorer.statusFilter("Fail")).toHaveAttribute("aria-pressed", "false")
   })
 })
 

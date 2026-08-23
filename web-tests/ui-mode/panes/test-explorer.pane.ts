@@ -25,8 +25,13 @@ export class TestExplorerPane {
     return this.page.getByRole("textbox", { name: "Filter tests" })
   }
 
+  /**
+   * The filters are a toggle group, not a tab strip: they narrow the same tree
+   * in place rather than switching panels, and report state with `aria-pressed`
+   * — the same model as the network filter pills.
+   */
   get statusFilters() {
-    return this.page.getByRole("tablist", { name: "Filter by status" })
+    return this.page.getByRole("group", { name: "Filter by status" })
   }
 
   /**
@@ -34,7 +39,7 @@ export class TestExplorerPane {
    * because the accessible name also carries the count.
    */
   statusFilter(label: StatusFilter) {
-    return this.statusFilters.getByRole("tab", { name: new RegExp(`^${label}\\b`) })
+    return this.statusFilters.getByRole("button", { name: new RegExp(`^${label}\\b`) })
   }
 
   /** The count badge on a filter — a bare number, so read its value. */
