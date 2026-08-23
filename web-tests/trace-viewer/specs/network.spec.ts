@@ -64,12 +64,28 @@ test.describe("Network tab", () => {
     const row = network.row("items").nth(1)
     await expect(row).toContainText("POST")
     await expect(row).toContainText("201")
+    // The fixture sets 120ms on this entry; asserting it is the difference
+    // between checking the column exists and checking it carries the value.
+    await expect(row).toContainText("120 ms")
   })
 
-  test("offers sortable column headers", async ({ viewer, detailTabs, network }) => {
+  test("sorts when a column header is clicked", async ({ viewer, detailTabs, network }) => {
     await openWithNetwork(viewer)
     await detailTabs.select("Network")
     await expect(network.columnHeaders.first()).toHaveText(/Name/)
+
+    // Capture order, sort by status, and check it actually changed — the header
+    // rendering alone says nothing about whether clicking it does anything.
+    const before = await network.rows.evaluateAll((rows) =>
+      rows.map((r) => r.textContent ?? ""),
+    )
+    await network.columnHeaders.filter({ hasText: "Status" }).click()
+    const after = await network.rows.evaluateAll((rows) =>
+      rows.map((r) => r.textContent ?? ""),
+    )
+
+    expect(after).not.toEqual(before)
+    expect([...after].sort()).toEqual([...before].sort())
   })
 
   test.describe("filtering", () => {
@@ -189,7 +205,9 @@ test.describe("Network tab", () => {
       await network.selectRow("logo.png")
       await network.openDetailTab("Timing")
 
-      await expect(network.detailBody).toContainText(/ms/)
+      // The fixture's own duration, not a bare /ms/ — which nearly any content
+      // in this pane would satisfy.
+      await expect(network.detailBody).toContainText("35 ms")
     })
   })
 

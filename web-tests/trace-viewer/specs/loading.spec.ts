@@ -49,18 +49,28 @@ test.describe("Loading a trace", () => {
 
   test("shows the drop zone with no trace parameter", async ({ viewer, page }) => {
     await viewer.openEmpty()
-    // The viewer's landing state invites a file rather than erroring.
-    await expect(page.locator("body")).toContainText(/drop|drag|choose|select/i)
+    // Asserted on the drop zone itself, not on body text: the error state also
+    // offers "Choose a trace file", so a loose /drop|choose/ match passed there
+    // too — the two states were indistinguishable.
+    await expect(page.getByTestId("trace-drop-zone")).toBeVisible()
+    await expect(page.getByTestId("load-error")).toHaveCount(0)
   })
 
   test("surfaces a failed fetch rather than hanging", async ({ viewer, page }) => {
     await viewer.openWithFetchFailure(500)
-    await expect(page.locator("body")).toContainText(/HTTP 500|failed/i)
+
+    await expect(page.getByTestId("load-error")).toBeVisible()
+    // The status has to reach the message, or the viewer reports a failure
+    // without saying what failed.
+    await expect(page.getByTestId("load-error-detail")).toContainText("500")
+    await expect(page.getByTestId("trace-drop-zone")).toHaveCount(0)
   })
 
   test("surfaces an archive with no metadata.json", async ({ viewer, page }) => {
     await viewer.open({ omitMetadata: true })
-    await expect(page.locator("body")).toContainText(/metadata/i)
+
+    await expect(page.getByTestId("load-error")).toBeVisible()
+    await expect(page.getByTestId("load-error-detail")).toContainText("metadata.json")
   })
 
   test("loads an archive with no events at all", async ({ viewer, actions, filmstrip }) => {

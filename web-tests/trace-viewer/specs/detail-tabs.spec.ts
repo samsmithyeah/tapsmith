@@ -138,15 +138,20 @@ test.describe("Detail tabs", () => {
       await expect(detailTabs.consoleEntries).toContainText("network unreachable")
     })
 
-    test("marks the tab when there is output to see", async ({ viewer, detailTabs }) => {
+    test("marks the tab only when there is output to see", async ({ viewer, detailTabs, page }) => {
+      // A dot on the tab is the only cue that output exists without opening it,
+      // so it has to be absent when there is none — otherwise it says nothing.
+      await viewer.open({ events: [actionEvent({ actionIndex: 0, action: "tap" })] })
+      await expect(page.getByTestId("console-tab-dot")).toHaveCount(0)
+
       await viewer.open({
         events: [
           actionEvent({ actionIndex: 0, action: "tap" }),
           consoleEvent({ actionIndex: 0, level: "log", message: "hello" }),
         ],
       })
-      // A dot on the tab is the only cue that output exists without opening it.
-      await expect(detailTabs.tab("Console").locator(".detail-tab-dot")).toBeVisible()
+      await expect(page.getByTestId("console-tab-dot")).toBeVisible()
+      void detailTabs
     })
 
     test("says so when nothing was captured", async ({ viewer, detailTabs }) => {
@@ -226,6 +231,15 @@ test.describe("Detail tabs", () => {
     })
 
     test("shows no error entries for a passing test", async ({ viewer, detailTabs }) => {
+      // Asserted against a failing trace first: an empty list on its own also
+      // describes a broken locator.
+      await viewer.open({
+        metadata: { testStatus: "failed", error: "boom" },
+        events: [actionEvent({ actionIndex: 0, action: "tap" })],
+      })
+      await detailTabs.select("Errors")
+      await expect(detailTabs.errorEntries).toHaveCount(1)
+
       await viewer.open({ events: [actionEvent({ actionIndex: 0, action: "tap" })] })
       await detailTabs.select("Errors")
       await expect(detailTabs.errorEntries).toHaveCount(0)

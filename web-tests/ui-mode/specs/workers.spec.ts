@@ -49,10 +49,17 @@ test.describe("Multi-worker mode", () => {
     await expect(device.workerTab("emulator-5554")).toBeVisible()
   })
 
-  test("shows no worker tabs with a single device", async ({ app, device }) => {
-    void app
-    // The tab strip is noise when there's nothing to switch between.
+  test("shows no worker tabs with a single device", async ({ ui, device }) => {
+    // The tab strip is noise when there's nothing to switch between. Contrasted
+    // against the multi-device case in the same test, so the absence is not just
+    // a locator that matches nothing.
+    ui.seed(idleSeed(singleFileTree()))
+    await ui.open()
+    await expect(device.root).toBeVisible()
     await expect(device.workerTabs).toHaveCount(0)
+
+    ui.send(WORKERS)
+    await expect(device.workerTabs).toBeVisible()
   })
 
   test("selecting a device tab tells the server", async ({ ui, device }) => {

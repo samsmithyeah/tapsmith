@@ -158,9 +158,16 @@ test.describe("Screenshot panel", () => {
 
     await actions.items.nth(0).click()
     const first = await screenshotPanel.image.getAttribute("src")
+    expect(first).toBeTruthy()
 
     await actions.items.nth(1).click()
     await expect(screenshotPanel.image).not.toHaveAttribute("src", first!)
+    // "not the old src" is also satisfied by no src at all, so check the new
+    // one is a real image and that it renders.
+    const second = await screenshotPanel.image.getAttribute("src")
+    expect(second).toBeTruthy()
+    expect(second).not.toBe(first)
+    await expect(screenshotPanel.image).toBeVisible()
   })
 
   test("says so when no screenshots were captured", async ({ viewer, screenshotPanel }) => {

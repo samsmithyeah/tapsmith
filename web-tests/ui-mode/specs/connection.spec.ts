@@ -6,7 +6,7 @@
 // way, so these exercise the genuine rehydration path.
 
 import { test, expect } from "../fixtures.js"
-import { idleSeed, singleFileTree } from "../messages/scenarios.js"
+import { idleSeed, singleFileTree, twoFileTree } from "../messages/scenarios.js"
 
 test.describe("Connection", () => {
   test("reports the connected device in the top rail", async ({ app, runControls }) => {
@@ -20,22 +20,37 @@ test.describe("Connection", () => {
     await expect(runControls.connection).toHaveText("Disconnected")
   })
 
-  test("reconnects and rehydrates the tree", async ({ app, explorer, runControls }) => {
+  test("reconnects and comes back usable", async ({ app, explorer, runControls }) => {
     const ui = app
     expect(ui.connections).toBe(1)
 
     ui.drop()
     await expect(runControls.connection).toHaveText("Disconnected")
 
-    // The 1s reconnect timer fires and the replayed seed restores the view.
     await expect.poll(() => ui.connections, { timeout: 5000 }).toBe(2)
     await expect(runControls.connection).toHaveText("emulator-5554")
     await expect(explorer.node("gestures.test.ts")).toBeVisible()
   })
 
-  test("rehydrates results recorded before the drop", async ({ ui, explorer, runControls }) => {
-    // A reconnect replays whatever the server currently knows. Statuses that
-    // were already reported must come back with it, not reset to idle.
+  test("takes the tree the server pushes on reconnect", async ({ ui, explorer }) => {
+    // The seed changes between connections, so this can only pass if the replayed
+    // push actually drove the update — a tree that merely survived the drop would
+    // still show one file.
+    ui.seed(idleSeed(singleFileTree()))
+    await ui.open()
+    await expect(explorer.nodesOfType("file")).toHaveCount(1)
+
+    ui.seed(idleSeed(twoFileTree()))
+    ui.drop()
+
+    await expect.poll(() => ui.connections, { timeout: 5000 }).toBe(2)
+    await expect(explorer.nodesOfType("file")).toHaveCount(2)
+    await expect(explorer.node("home.test.ts")).toBeVisible()
+  })
+
+  test("keeps reported results across the drop", async ({ ui, explorer, runControls }) => {
+    // Whether they survive or are re-pushed, a reconnect must not silently reset
+    // finished tests to idle.
     const passed = singleFileTree()
     passed[0].children![1].children![0].status = "passed"
     ui.seed(idleSeed(passed))
@@ -52,15 +67,26 @@ test.describe("Connection", () => {
     await expect(explorer.nodesOfTypeWithStatus("test", "passed")).toHaveCount(1)
   })
 
-  test("does not issue any command of its own on reconnect", async ({ app, runControls }) => {
+  test("does not issue any command of its own on reconnect", async ({
+    app,
+    runControls,
+    explorer,
+    page,
+  }) => {
     const ui = app
     ui.clearReceived()
 
     ui.drop()
     await expect.poll(() => ui.connections, { timeout: 5000 }).toBe(2)
     await expect(runControls.connection).toHaveText("emulator-5554")
+    await page.waitForTimeout(300)
 
     expect(ui.received).toEqual([])
+
+    // And recording is working, so the empty array above means silence rather
+    // than a harness that stopped listening.
+    await explorer.runAllButton.click()
+    await ui.waitForMessage("run-all")
   })
 
   test("disables run controls while disconnected", async ({ app, explorer }) => {

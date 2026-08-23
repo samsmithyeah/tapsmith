@@ -95,7 +95,7 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
     {
       value: 'console',
       label: 'Console',
-      extra: consoleEvents.length > 0 ? <span class="detail-tab-dot" /> : undefined,
+      extra: consoleEvents.length > 0 ? <span class="detail-tab-dot" data-testid="console-tab-dot" /> : undefined,
     },
     { value: 'source', label: 'Source' },
     { value: 'hierarchy', label: 'Hierarchy' },

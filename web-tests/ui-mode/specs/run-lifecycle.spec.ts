@@ -23,6 +23,11 @@ test.describe("Run lifecycle", () => {
         await page.locator("body").press(chord)
         await page.waitForTimeout(300)
         expect(ui.received).toEqual([])
+
+        // The bare key does fire, so the silence above is the modifier guard
+        // working rather than shortcuts being broken (or unrecorded) entirely.
+        await page.locator("body").press("r")
+        await ui.waitForMessage("run-all")
       })
     }
 
@@ -32,6 +37,10 @@ test.describe("Run lifecycle", () => {
       await page.locator("body").press("Shift+Escape")
       await page.waitForTimeout(300)
       expect(ui.received).toEqual([])
+
+      // Bare Escape does stop, for the same reason.
+      await page.locator("body").press("Escape")
+      await ui.waitForMessage("stop-run")
     })
 
     test("sends no run command after a reload", async ({ app, explorer, page }) => {
