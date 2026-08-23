@@ -121,7 +121,7 @@ test.describe("Layout", () => {
     const explorerPane = page.getByTestId("explorer-pane")
     const before = (await explorerPane.boundingBox())!.width
 
-    const grip = page.getByRole("separator", { name: "Resize test explorer" })
+    const grip = page.getByTestId("explorer-resize")
     const gripBox = (await grip.boundingBox())!
     await page.mouse.move(gripBox.x + gripBox.width / 2, gripBox.y + gripBox.height / 2)
     await page.mouse.down()

@@ -152,7 +152,7 @@ export function Layout({ topBar, errorBanner, testExplorer, filmstrip, actionsPa
         <div class="ui-explorer" data-testid="explorer-pane" style={{ width: `${explorerWidth}px`, minWidth: `${explorerWidth}px` }}>
           {testExplorer}
         </div>
-        <div class="ui-resize-handle ui-resize-col" role="separator" aria-orientation="vertical" aria-label="Resize test explorer" onMouseDown={handleExplorerResize} />
+        <div class="ui-resize-handle ui-resize-col" data-testid="explorer-resize" onMouseDown={handleExplorerResize} />
 
         {/* Content area */}
         <div class="ui-content">

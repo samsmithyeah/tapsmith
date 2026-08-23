@@ -16,6 +16,7 @@ import type { Bounds } from '../../trace-viewer/components/hierarchy-utils.js';
 import { DeviceMirror } from './DeviceMirror.js';
 import { DeviceFrame } from './DeviceFrame.js';
 import { useDeviceInteraction } from '../hooks/use-device-interaction.js';
+import { nextTabIndex, focusSibling } from '../tabstrip.js';
 
 interface DevicePaneProps {
   canvasRef: RefObject<HTMLCanvasElement>
@@ -153,6 +154,18 @@ export function DevicePane({
     hints: selectedWorker ? [selectedWorker.displayName, selectedWorker.deviceSerial] : [],
   });
 
+  // Left/Right move between the All tab and the per-device tabs; Home/End jump
+  // to the ends. Additive: these are real buttons and stay individually
+  // tabbable (see tabstrip.ts).
+  const deviceViews: Array<'all' | number> = ['all', ...workers.map((w) => w.workerId)];
+  const handleWorkerTabKey = (e: KeyboardEvent, index: number) => {
+    const next = nextTabIndex(e.key, index, deviceViews.length);
+    if (next === null) return;
+    e.preventDefault();
+    onSelectDeviceView(deviceViews[next]);
+    focusSibling(e, next);
+  };
+
   return (
     <div class="device-col" role="region" aria-label="Live device mirror">
       <div class="device-head">
@@ -195,16 +208,18 @@ export function DevicePane({
             role="tab"
             aria-selected={deviceViewMode === 'all'}
             onClick={() => onSelectDeviceView('all')}
+            onKeyDown={(e) => handleWorkerTabKey(e, 0)}
           >
             All
           </button>
-          {workers.map((w) => (
+          {workers.map((w, i) => (
             <button
               key={w.workerId}
               class={`worker-tab ${deviceViewMode === w.workerId ? 'active' : ''}`}
               role="tab"
               aria-selected={deviceViewMode === w.workerId}
               onClick={() => onSelectDeviceView(w.workerId)}
+              onKeyDown={(e) => handleWorkerTabKey(e, i + 1)}
               title={`${w.displayName} (${w.deviceSerial}) — ${w.status}`}
             >
               <span class={`dot ${connected ? DOT_CLASS[w.status] : 'error'}`} />

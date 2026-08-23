@@ -76,23 +76,81 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
     return failedEventsForCount.length + (testError && !testErrorIsDuplicate ? 1 : 0);
   }, [failedEventsForCount, testError]);
 
+  // The tab strip is keyboard-operable: Left/Right move between tabs and
+  // Home/End jump to the ends, matching how a tab strip is expected to behave.
+  //
+  // Every tab stays in the tab order (tabIndex 0) rather than using APG's
+  // roving-tabindex pattern. The other tab strips in the app are plain buttons
+  // and so are already individually tabbable; adopting roving here would make
+  // Tab skip the whole group, changing behaviour that already works for
+  // keyboard users. Arrow keys are additive.
+  const visibleTabs: Array<{
+    value: DetailTab
+    label: string
+    extra?: ComponentChildren
+    extraClass?: string
+  }> = [
+    { value: 'call', label: 'Call' },
+    { value: 'log', label: 'Log' },
+    {
+      value: 'console',
+      label: 'Console',
+      extra: consoleEvents.length > 0 ? <span class="detail-tab-dot" /> : undefined,
+    },
+    { value: 'source', label: 'Source' },
+    { value: 'hierarchy', label: 'Hierarchy' },
+    ...(locatorTab ? [{ value: 'locator' as DetailTab, label: 'Locator' }] : []),
+    {
+      value: 'network',
+      label: 'Network',
+      extra: networkEntries.length > 0 ? <span class="ct">{networkEntries.length}</span> : undefined,
+    },
+    {
+      value: 'errors',
+      label: 'Errors',
+      extra: failedCount > 0 ? <span class="ct">{failedCount}</span> : undefined,
+      extraClass: hasError ? ' has-error' : undefined,
+    },
+  ];
+
+  const handleTabKeyDown = (e: KeyboardEvent, value: DetailTab) => {
+    const index = visibleTabs.findIndex((t) => t.value === value);
+    let next = -1;
+    if (e.key === 'ArrowRight') next = (index + 1) % visibleTabs.length;
+    else if (e.key === 'ArrowLeft') next = (index - 1 + visibleTabs.length) % visibleTabs.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = visibleTabs.length - 1;
+    else if (e.key === 'Enter' || e.key === ' ') {
+      // A div is not a button, so activation has to be wired up by hand.
+      e.preventDefault();
+      setTab(value);
+      return;
+    } else return;
+
+    e.preventDefault();
+    setTab(visibleTabs[next].value);
+    // Follow focus, or the next arrow press would move from the old position.
+    const bar = (e.currentTarget as HTMLElement).parentElement;
+    const target = bar?.children[next] as HTMLElement | undefined;
+    target?.focus();
+  };
+
   return (
     <div class="detail-panel">
       <div class="detail-tabs-bar" role="tablist" aria-label="Trace details">
-        <div class={`detail-tab vtab${tab === 'call' ? ' active' : ''}`} role="tab" aria-selected={tab === 'call'} onClick={() => setTab('call')}>Call</div>
-        <div class={`detail-tab vtab${tab === 'log' ? ' active' : ''}`} role="tab" aria-selected={tab === 'log'} onClick={() => setTab('log')}>Log</div>
-        <div class={`detail-tab vtab${tab === 'console' ? ' active' : ''}`} role="tab" aria-selected={tab === 'console'} onClick={() => setTab('console')}>
-          Console{consoleEvents.length > 0 && <span class="detail-tab-dot" />}
-        </div>
-        <div class={`detail-tab vtab${tab === 'source' ? ' active' : ''}`} role="tab" aria-selected={tab === 'source'} onClick={() => setTab('source')}>Source</div>
-        <div class={`detail-tab vtab${tab === 'hierarchy' ? ' active' : ''}`} role="tab" aria-selected={tab === 'hierarchy'} onClick={() => setTab('hierarchy')}>Hierarchy</div>
-        {locatorTab && <div class={`detail-tab vtab${tab === 'locator' ? ' active' : ''}`} role="tab" aria-selected={tab === 'locator'} onClick={() => setTab('locator')}>Locator</div>}
-        <div class={`detail-tab vtab${tab === 'network' ? ' active' : ''}`} role="tab" aria-selected={tab === 'network'} onClick={() => setTab('network')}>
-          Network{networkEntries.length > 0 && <span class="ct">{networkEntries.length}</span>}
-        </div>
-        <div class={`detail-tab vtab${tab === 'errors' ? ' active' : ''}${hasError ? ' has-error' : ''}`} role="tab" aria-selected={tab === 'errors'} onClick={() => setTab('errors')}>
-          Errors{failedCount > 0 && <span class="ct">{failedCount}</span>}
-        </div>
+        {visibleTabs.map(({ value, label, extra, extraClass }) => (
+          <div
+            key={value}
+            class={`detail-tab vtab${tab === value ? ' active' : ''}${extraClass ?? ''}`}
+            role="tab"
+            aria-selected={tab === value}
+            tabIndex={0}
+            onClick={() => setTab(value)}
+            onKeyDown={(e) => handleTabKeyDown(e, value)}
+          >
+            {label}{extra}
+          </div>
+        ))}
       </div>
       {testError && tab !== 'errors' && (
         <div class="test-error-banner" onClick={() => setTab('errors')}>

@@ -113,8 +113,7 @@ to give it the ARIA it should already have had:
 | Surface | Now |
 |---|---|
 | Test tree, view hierarchy | `tree` of `treeitem`s with `aria-level`/`-expanded`/`-selected` |
-| Status filters, detail tabs, worker tabs, screenshot stages | `tablist`/`tab` instead of clickable `div`s |
-| Pane resize grips | `separator` with an orientation and a name |
+| Status filters, detail tabs, worker tabs, screenshot stages | `tablist`/`tab`, keyboard-operable (see below) |
 | Network request list | already a real `<table>` — rows and cells by native role |
 | Network filter pills | `aria-pressed` |
 | Every filter and search box | `aria-label` (a placeholder is not a label) |
@@ -146,7 +145,7 @@ own: `node-duration`, `filter-count`, `count-passed`/`-failed`/`-skipped`,
 `locator-code`, `selector-match-count`, `selector-strict-warning`, `film-frame`,
 `timeline-meta`, `viewer-title`, `screenshot-empty`, `viewer-empty`, `mcp-entry`,
 `mcp-agent`, `mcp-empty`, `actions-list`, `action-item`, `locator-suggestions`,
-`locator-option`, `explorer-pane`.
+`locator-option`, `explorer-pane`, `explorer-resize`.
 
 Two exceptions worth knowing.
 
@@ -154,6 +153,36 @@ A tree row's `data-type` and `data-status` carry type and status, because ARIA h
 no role or state meaning "this test failed" and those are pre-existing product
 attributes rather than styling hooks. Both are applied via `.and()` on top of the
 role, so the accessible locator stays primary.
+
+### Roles and keyboard operability
+
+A role that describes an interactive widget is a promise the widget can be
+operated. Where the promise was new, the keyboard support went in with it:
+
+- **Tab strips** — the detail tabs and screenshot stages were clickable `div`s
+  reachable only by mouse. They are now focusable, with Left/Right, Home/End and
+  Enter/Space. The status filters and worker tabs were already `<button>`s, so
+  Tab and Enter worked before the role; arrow keys were added for consistency.
+  `ui-mode/specs/keyboard.spec.ts` and `trace-viewer/specs/keyboard.spec.ts`
+  cover both.
+- Tabs stay **individually tabbable** rather than adopting APG's roving-tabindex
+  pattern. Several of these strips are plain buttons already in the tab order;
+  switching to roving would make Tab skip the whole group, taking away behaviour
+  keyboard users have today. Arrow keys are additive. The trade is more tab stops.
+- **The pane resize grips deliberately carry no `separator` role.** Arrow-key
+  resizing is not implemented, only one of the six grips would have been
+  labelled, and a separator with no `aria-valuenow` describes a control that
+  cannot be adjusted. They are addressed by test id instead.
+- **The trees keep `treeitem` without arrow-key navigation** — a knowing gap.
+  Row selection and expansion have always been mouse-only, so this is not a
+  regression, and the roles earn their place in a screen reader's browse mode,
+  where `aria-level` and `aria-expanded` convey a shape that plain `div`s cannot.
+  In focus mode the gap is real. Implementing it means a flattened visible-node
+  list and roving focus across two components with separate expansion state —
+  and it has to reckon with `resolveShortcut`, which only bails for
+  `INPUT`/`TEXTAREA`/`SELECT`/contenteditable, so newly focusable rows would sit
+  in the same keydown space as the bare `r`/`f`/`w` shortcuts. That is the shape
+  of the #103 bug, so it belongs in its own change.
 
 The **action list and the locator suggestions are deliberately not listboxes**,
 even though they look like single-select lists. Both interleave non-option content

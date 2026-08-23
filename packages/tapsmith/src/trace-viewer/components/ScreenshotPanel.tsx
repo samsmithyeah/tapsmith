@@ -77,6 +77,44 @@ interface RenderedSize {
   top: number
 }
 
+// Before / Action / After stages of a captured screenshot.
+const STAGE_TABS: Array<{ value: 'action' | 'before' | 'after'; label: string }> = [
+  { value: 'action', label: 'Action' },
+  { value: 'before', label: 'Before' },
+  { value: 'after', label: 'After' },
+];
+
+/**
+ * Keyboard operation for the stage strip: Left/Right move between stages,
+ * Home/End jump to the ends, Enter/Space activate.
+ *
+ * Every tab stays in the tab order rather than using APG's roving tabindex —
+ * see the note in DetailTabs.tsx for why.
+ */
+function handleStageKeyDown(
+  e: KeyboardEvent,
+  index: number,
+  setTab: (v: 'action' | 'before' | 'after') => void,
+): void {
+  let next = -1;
+  if (e.key === 'ArrowRight') next = (index + 1) % STAGE_TABS.length;
+  else if (e.key === 'ArrowLeft') next = (index - 1 + STAGE_TABS.length) % STAGE_TABS.length;
+  else if (e.key === 'Home') next = 0;
+  else if (e.key === 'End') next = STAGE_TABS.length - 1;
+  else if (e.key === 'Enter' || e.key === ' ') {
+    // A div is not a button, so activation has to be wired up by hand.
+    e.preventDefault();
+    setTab(STAGE_TABS[index].value);
+    return;
+  } else return;
+
+  e.preventDefault();
+  setTab(STAGE_TABS[next].value);
+  // Follow focus, or the next arrow press would move from the old position.
+  const strip = (e.currentTarget as HTMLElement).parentElement;
+  (strip?.children[next] as HTMLElement | undefined)?.focus();
+}
+
 export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, onDisplayedVariantChange, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
   injectStyles();
 
@@ -486,9 +524,19 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
       <div ref={containerRef} class="screenshot-container viewer-body has-grid" style={{ position: 'relative' }}>
         {(hasBefore && hasAfter) && (
           <div class="screenshot-tab-float" role="tablist" aria-label="Screenshot stage">
-            <div class={`screenshot-tab${tab === 'action' ? ' active' : ''}`} role="tab" aria-selected={tab === 'action'} onClick={() => setTab('action')}>Action</div>
-            <div class={`screenshot-tab${tab === 'before' ? ' active' : ''}`} role="tab" aria-selected={tab === 'before'} onClick={() => setTab('before')}>Before</div>
-            <div class={`screenshot-tab${tab === 'after' ? ' active' : ''}`} role="tab" aria-selected={tab === 'after'} onClick={() => setTab('after')}>After</div>
+            {STAGE_TABS.map(({ value, label }, i) => (
+              <div
+                key={value}
+                class={`screenshot-tab${tab === value ? ' active' : ''}`}
+                role="tab"
+                aria-selected={tab === value}
+                tabIndex={0}
+                onClick={() => setTab(value)}
+                onKeyDown={(e) => handleStageKeyDown(e, i, setTab)}
+              >
+                {label}
+              </div>
+            ))}
           </div>
         )}
         {currentUrl ? (

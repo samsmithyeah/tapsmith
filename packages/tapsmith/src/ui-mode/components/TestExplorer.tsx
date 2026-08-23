@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { ArrowLeft, Check, ChevronsDownUp, ChevronsUpDown, Circle, CircleSlash, Eye, Link, LoaderCircle, Play, Search, Square, X } from 'lucide-preact';
 import type { TestTreeNode, ClientMessage } from '../ui-protocol.js';
+import { nextTabIndex, focusSibling } from '../tabstrip.js';
 
 const ICON_SIZE = 13;
 const STATUS_SIZE = 12;
@@ -66,10 +67,23 @@ export function TestExplorer(props: TestExplorerProps) {
           />
         </div>
         <div class="te-status-filters filter-tabs" role="tablist" aria-label="Filter by status">
-          <StatusButton label="All" value="all" count={counts.total} active={statusFilter} onClick={onSetStatusFilter} />
-          <StatusButton label="Pass" value="passed" count={counts.passed} active={statusFilter} onClick={onSetStatusFilter} />
-          <StatusButton label="Fail" value="failed" count={counts.failed} active={statusFilter} onClick={onSetStatusFilter} />
-          <StatusButton label="Skip" value="skipped" count={counts.skipped} active={statusFilter} onClick={onSetStatusFilter} />
+          {STATUS_FILTERS.map(({ label, value }, i) => (
+            <StatusButton
+              key={value}
+              label={label}
+              value={value}
+              count={countFor(value, counts)}
+              active={statusFilter}
+              onClick={onSetStatusFilter}
+              onKeyDown={(e) => {
+                const next = nextTabIndex(e.key, i, STATUS_FILTERS.length);
+                if (next === null) return;
+                e.preventDefault();
+                onSetStatusFilter(STATUS_FILTERS[next].value);
+                focusSibling(e, next);
+              }}
+            />
+          ))}
         </div>
       </div>
       <div class="te-toolbar explorer-toolbar">
@@ -145,15 +159,32 @@ export function TestExplorer(props: TestExplorerProps) {
 
 // ─── Status filter button ───
 
-interface StatusButtonProps {
-  label: string
-  value: 'all' | 'passed' | 'failed' | 'skipped'
-  count: number
-  active: string
-  onClick: (value: 'all' | 'passed' | 'failed' | 'skipped') => void
+type StatusFilterValue = 'all' | 'passed' | 'failed' | 'skipped'
+
+const STATUS_FILTERS: Array<{ label: string; value: StatusFilterValue }> = [
+  { label: 'All', value: 'all' },
+  { label: 'Pass', value: 'passed' },
+  { label: 'Fail', value: 'failed' },
+  { label: 'Skip', value: 'skipped' },
+];
+
+function countFor(
+  value: StatusFilterValue,
+  counts: { passed: number; failed: number; skipped: number; total: number },
+): number {
+  return value === 'all' ? counts.total : counts[value];
 }
 
-function StatusButton({ label, value, count, active, onClick }: StatusButtonProps) {
+interface StatusButtonProps {
+  label: string
+  value: StatusFilterValue
+  count: number
+  active: string
+  onClick: (value: StatusFilterValue) => void
+  onKeyDown: (e: KeyboardEvent) => void
+}
+
+function StatusButton({ label, value, count, active, onClick, onKeyDown }: StatusButtonProps) {
   const isActive = active === value;
   return (
     <button
@@ -161,6 +192,7 @@ function StatusButton({ label, value, count, active, onClick }: StatusButtonProp
       role="tab"
       aria-selected={isActive}
       onClick={() => onClick(value)}
+      onKeyDown={onKeyDown}
     >
       {value !== 'all' && <span class={`ind ind-${value}`} />}
       {label} {count > 0 && <span class="te-count ct" data-testid="filter-count">{count}</span>}
