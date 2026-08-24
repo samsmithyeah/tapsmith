@@ -3,6 +3,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { zipSync } from 'fflate';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createMcpServer } from '../mcp/index.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { TestDispatcher, TestResultEntry } from '../mcp/test-dispatcher.js';
@@ -52,15 +54,16 @@ async function listResults(
   args: Record<string, unknown> = {},
 ): Promise<string> {
   const server = createMcpServer({ dispatcher });
+  const client = new Client({ name: 'list-results-probe', version: '1.0.0' }, { capabilities: {} });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
   try {
-    const handlers = (server.server as unknown as {
-      _requestHandlers: Map<string, (request: unknown, extra: unknown) => Promise<CallToolResult>>
-    })._requestHandlers;
-    const callTool = handlers.get('tools/call')!;
-    const res = await callTool({ method: 'tools/call', params: { name: 'tapsmith_list_results', arguments: args } }, {});
+    await client.connect(clientTransport);
+    const res = await client.callTool({ name: 'tapsmith_list_results', arguments: args }) as CallToolResult;
     return res.content.filter((c) => c.type === 'text').map((c) => (c as { text: string }).text).join('\n');
   } finally {
-    server.close();
+    await client.close();
+    await server.close();
   }
 }
 

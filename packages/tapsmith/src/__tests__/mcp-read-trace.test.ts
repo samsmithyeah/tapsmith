@@ -3,6 +3,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { zipSync } from 'fflate';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createMcpServer } from '../mcp/index.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
@@ -45,14 +47,15 @@ function writeTrace(options: {
 
 async function readTrace(args: Record<string, unknown>): Promise<CallToolResult> {
   const server = createMcpServer();
+  const client = new Client({ name: 'read-trace-probe', version: '1.0.0' }, { capabilities: {} });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
   try {
-    const handlers = (server.server as unknown as {
-      _requestHandlers: Map<string, (request: unknown, extra: unknown) => Promise<CallToolResult>>
-    })._requestHandlers;
-    const callTool = handlers.get('tools/call')!;
-    return await callTool({ method: 'tools/call', params: { name: 'tapsmith_read_trace', arguments: args } }, {});
+    await client.connect(clientTransport);
+    return await client.callTool({ name: 'tapsmith_read_trace', arguments: args }) as CallToolResult;
   } finally {
-    server.close();
+    await client.close();
+    await server.close();
   }
 }
 
@@ -80,16 +83,15 @@ describe('tapsmith_read_trace path handling', () => {
   });
 
   it('resolves a relative path against the working directory', async () => {
-    writeTrace({ events: [{ type: 'action', action: 'tap' }] });
-    const cwd = process.cwd();
-    process.chdir(tmpDir);
-    try {
-      const res = await readTrace({ path: './trace.zip' });
-      expect(res.isError).toBeFalsy();
-      expect(text(res)).toContain('tap');
-    } finally {
-      process.chdir(cwd);
-    }
+    // Relative to the runner's cwd rather than chdir'ing into the fixture:
+    // `process.chdir` is worker-global, and throws outright under vitest's
+    // threads pool.
+    const trace = writeTrace({ events: [{ type: 'action', action: 'tap' }] });
+    const relative = path.relative(process.cwd(), trace);
+    expect(path.isAbsolute(relative)).toBe(false);
+    const res = await readTrace({ path: relative });
+    expect(res.isError).toBeFalsy();
+    expect(text(res)).toContain('tap');
   });
 
   it('reports a corrupt archive rather than throwing out of the tool', async () => {

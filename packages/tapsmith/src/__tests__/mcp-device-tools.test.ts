@@ -311,9 +311,10 @@ describe('tapsmith_tap', () => {
     expect(text(res)).toBe('Error: element not clickable');
   });
 
-  it('requires a selector', async () => {
+  it('requires a selector, and says which argument is missing', async () => {
     const res = await callTool('tapsmith_tap', {});
     expect(res.isError).toBe(true);
+    expect(text(res)).toContain('selector');
   });
 });
 
@@ -449,9 +450,10 @@ describe('tapsmith_launch_app', () => {
     expect(text(res)).toBe('Error: package not installed');
   });
 
-  it('requires a package name', async () => {
+  it('requires a package name, and says which argument is missing', async () => {
     const res = await callTool('tapsmith_launch_app', {});
     expect(res.isError).toBe(true);
+    expect(text(res)).toContain('package');
   });
 });
 
@@ -622,6 +624,29 @@ describe('the device tools the server advertises', () => {
       const { tools } = await client.listTools();
       const byName = new Map(tools.map((t) => [t.name, t]));
 
+      // The whole inventory a session with a dispatcher offers. Adding a tool
+      // is meant to fail here — this is the one place that says what the
+      // surface is.
+      expect([...byName.keys()].sort()).toEqual([
+        'tapsmith_launch_app',
+        'tapsmith_list_devices',
+        'tapsmith_list_results',
+        'tapsmith_list_tests',
+        'tapsmith_press_key',
+        'tapsmith_read_trace',
+        'tapsmith_run_tests',
+        'tapsmith_screenshot',
+        'tapsmith_session_info',
+        'tapsmith_snapshot',
+        'tapsmith_stop_tests',
+        'tapsmith_suite_status',
+        'tapsmith_swipe',
+        'tapsmith_tap',
+        'tapsmith_test_selector',
+        'tapsmith_type',
+        'tapsmith_watch',
+      ]);
+
       for (const name of [
         'tapsmith_snapshot', 'tapsmith_screenshot', 'tapsmith_test_selector',
         'tapsmith_tap', 'tapsmith_type', 'tapsmith_swipe', 'tapsmith_press_key',
@@ -649,7 +674,7 @@ describe('the device tools the server advertises', () => {
     }
   });
 
-  it('offers no device tools that need a dispatcher when there is none', async () => {
+  it('keeps the device tools, and drops only the dispatcher-backed ones, without a dispatcher', async () => {
     // The UI transport builds a server without a dispatcher for probing; the
     // device tools still have to be there, since they do not need one.
     const server = createMcpServer();
