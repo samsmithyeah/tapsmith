@@ -10,6 +10,7 @@ import { selectDeviceFrame, screenWindowStyle, screenMaskStyle } from '../../ui-
 
 const SCREENSHOT_STYLES = `
   .screenshot-zoom-label { margin-left: auto; padding: 6px 12px; color: var(--color-text-muted); font-size: 11px; }
+  .viewer-pick-note { color: var(--color-text-muted); font-size: 11px; font-style: italic; white-space: nowrap; }
   .screenshot-image-wrapper { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
   .screenshot-image-wrapper > img,
   .screenshot-image-wrapper .dm-frame:not(.dm-skin-ios):not(.dm-skin-android):not(.dm-frame-img) > img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
@@ -43,6 +44,15 @@ interface Props {
   onScreenshotHover?: (point: { x: number; y: number } | null) => void
   pickMode?: boolean
   onPickModeToggle?: () => void
+  /** Set when the selector playground is hit-testing a hierarchy borrowed
+   * from an earlier step because this action captured none (network-family
+   * actions). Value is the source step's actionIndex; rendered as an honest
+   * note while picking. */
+  hierarchyBorrowedFromStep?: number
+  /** When set, the Pick button is disabled and this text becomes its tooltip
+   * — picking cannot work because no hierarchy is available even after
+   * falling back to earlier steps. */
+  pickUnavailableReason?: string
   /** Reports whether the displayed screenshot is the before- or after-state of
    * the action, so the host can bind the selector playground to the hierarchy
    * captured at the same moment (picking on a before-screenshot must not
@@ -117,7 +127,7 @@ function handleStageKeyDown(
   (strip?.querySelectorAll('[role="tab"]')[next] as HTMLElement | undefined)?.focus();
 }
 
-export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, onDisplayedVariantChange, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
+export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, hierarchyBorrowedFromStep, pickUnavailableReason, onDisplayedVariantChange, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
   injectStyles();
 
   const [tab, setTab] = useState<ScreenshotTab>('action');
@@ -503,8 +513,24 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
           {testName && <span class="viewer-head-title" data-testid="viewer-title">{testName}</span>}
         </div>
         <div class="viewer-head-actions">
+          {pickMode && hierarchyBorrowedFromStep !== undefined && (
+            <span
+              class="viewer-pick-note"
+              data-testid="pick-note"
+              title="This step captured no view hierarchy — picking uses the most recent captured snapshot."
+            >
+              {event && hierarchyBorrowedFromStep === event.actionIndex - 1
+                ? 'Hierarchy from the previous step'
+                : 'Hierarchy from an earlier step'}
+            </span>
+          )}
           {onPickModeToggle && (
-            <button class={`viewer-pick-btn ${pickMode ? 'active' : ''}`} onClick={onPickModeToggle} title={pickMode ? 'Exit pick mode' : 'Pick element'}>
+            <button
+              class={`viewer-pick-btn ${pickMode ? 'active' : ''}`}
+              onClick={onPickModeToggle}
+              disabled={!!pickUnavailableReason}
+              title={pickUnavailableReason ?? (pickMode ? 'Exit pick mode' : 'Pick element')}
+            >
               <Focus size={12} /> {pickMode ? 'Picking…' : 'Pick'}
             </button>
           )}

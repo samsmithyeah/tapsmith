@@ -90,6 +90,28 @@ export function findNearestScreenshot(
   return undefined;
 }
 
+/**
+ * Walk backwards from `actionIndex` to find the nearest available hierarchy
+ * snapshot, and report which step it came from so the UI can be honest about
+ * the borrowing. Mirrors findNearestScreenshot (backwards, after-then-before)
+ * so a borrowed pick hit-tests the same moment the borrowed frame depicts.
+ * Only called when the selected action captured no hierarchy at all (network
+ * actions never touch the device), so no variant parameter: the nearest
+ * step's latest snapshot is the true screen state either side of the action.
+ */
+export function findNearestHierarchy(
+  hierarchies: Map<string, string>,
+  actionIndex: number,
+): { xml: string; sourceActionIndex: number } | undefined {
+  for (let i = actionIndex - 1; i >= 0; i--) {
+    const pad = String(i).padStart(3, '0');
+    const xml = hierarchies.get(`hierarchy/action-${pad}-after.xml`)
+      ?? hierarchies.get(`hierarchy/action-${pad}-before.xml`);
+    if (xml) return { xml, sourceActionIndex: i };
+  }
+  return undefined;
+}
+
 /** Revoke all blob URLs in a trace's screenshot map to free memory. */
 export function revokeTraceScreenshots(data: TestTraceData): void {
   for (const blobUrl of data.screenshots.values()) {

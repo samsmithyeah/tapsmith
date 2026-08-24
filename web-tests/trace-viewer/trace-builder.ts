@@ -119,6 +119,7 @@ export function buildTrace(spec: TraceSpec = {}): Uint8Array {
 interface ActionOptions {
   actionIndex: number
   action: string
+  category?: ActionTraceEvent["category"]
   selector?: string
   duration?: number
   success?: boolean
@@ -138,7 +139,7 @@ interface ActionOptions {
 export function actionEvent(o: ActionOptions): ActionTraceEvent {
   return {
     type: "action",
-    category: "tap",
+    category: o.category ?? "tap",
     action: o.action,
     selector: o.selector,
     actionIndex: o.actionIndex,

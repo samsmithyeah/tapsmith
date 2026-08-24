@@ -13,6 +13,7 @@ import {
   revokeTraceScreenshots,
   reconcileTraceWallDuration,
   emptyTraceData,
+  findNearestHierarchy,
   getOrCreateTrace,
   EMPTY_MAP,
   EMPTY_EVENTS,
@@ -510,19 +511,30 @@ function App() {
   // picks on a before-screenshot would hit-test the after-hierarchy.
   const [screenshotVariant, setScreenshotVariant] = useState<'before' | 'after'>('before');
 
-  // Hierarchy XML for the current action (used by selector playground)
-  const currentHierarchyXml = useMemo(() => {
+  // Hierarchy for the current action (used by selector playground). Actions
+  // that capture no hierarchy (network family) borrow the nearest preceding
+  // snapshot — the displayed screenshot is borrowed the same way — so pick
+  // still works on them; sourceActionIndex lets the UI say so. PILOT-302.
+  const currentHierarchy = useMemo(() => {
     if (!selectedEvent || hierarchies.size === 0) return undefined;
     const pad = String(selectedEvent.actionIndex).padStart(3, '0');
     const afterXml = hierarchies.get(`hierarchy/action-${pad}-after.xml`);
     const beforeXml = hierarchies.get(`hierarchy/action-${pad}-before.xml`);
-    return screenshotVariant === 'before' ? (beforeXml ?? afterXml) : (afterXml ?? beforeXml);
+    const own = screenshotVariant === 'before' ? (beforeXml ?? afterXml) : (afterXml ?? beforeXml);
+    if (own) return { xml: own, sourceActionIndex: selectedEvent.actionIndex };
+    return findNearestHierarchy(hierarchies, selectedEvent.actionIndex);
   }, [selectedEvent, hierarchies, screenshotVariant]);
 
   const currentRoots = useMemo(
-    () => currentHierarchyXml ? parseHierarchyXml(currentHierarchyXml) : [],
-    [currentHierarchyXml],
+    () => currentHierarchy ? parseHierarchyXml(currentHierarchy.xml) : [],
+    [currentHierarchy],
   );
+
+  const hierarchyBorrowedFrom = currentHierarchy !== undefined
+    && selectedEvent !== undefined
+    && currentHierarchy.sourceActionIndex !== selectedEvent.actionIndex
+    ? currentHierarchy.sourceActionIndex
+    : undefined;
 
   const dpr = viewedTestDpr ?? 1;
 
@@ -1630,6 +1642,10 @@ function App() {
               onRunContainer={handleRunContainer}
               pickMode={pickTarget === 'screenshot'}
               onPickModeToggle={handlePickToggle}
+              hierarchyBorrowedFromStep={hierarchyBorrowedFrom}
+              pickUnavailableReason={selectedEvent && currentRoots.length === 0
+                ? 'No view hierarchy captured yet — pick from a device action instead'
+                : undefined}
               onDisplayedVariantChange={setScreenshotVariant}
               devicePixelRatio={viewedTestDpr}
               testName={metadata.testName}
@@ -1695,7 +1711,7 @@ function App() {
           previewHighlight={previewHighlight}
           locatorTab={
             <SelectorTab
-              hierarchyXml={selectorSource === 'live' ? (liveHierarchyXml ?? undefined) : currentHierarchyXml}
+              hierarchyXml={selectorSource === 'live' ? (liveHierarchyXml ?? undefined) : currentHierarchy?.xml}
               pickedNode={pickedNode}
               selector={selectorText}
               onSelectorChange={setSelectorText}

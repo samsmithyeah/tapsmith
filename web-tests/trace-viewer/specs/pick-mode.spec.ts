@@ -143,3 +143,78 @@ test.describe("Pick mode", () => {
     await expect(locator.matchCount).toHaveText("1 match")
   })
 })
+
+// Network-family actions (route/unroute/unrouteAll) never touch the device, so
+// they capture no hierarchy — but the panel still shows a borrowed screenshot,
+// so picking must work against a borrowed hierarchy too, not silently no-op.
+// PILOT-302.
+const SPEC_WITH_NETWORK_ACTION = {
+  ...SPEC,
+  events: [
+    ...SPEC.events,
+    actionEvent({ actionIndex: 1, action: "unrouteAll", category: "network" }),
+  ],
+}
+
+test.describe("Pick mode on actions with no captured hierarchy", () => {
+  test("picking works on a network action via the borrowed hierarchy", async ({
+    viewer,
+    page,
+    actions,
+    screenshotPanel,
+    detailTabs,
+    locator,
+  }) => {
+    await viewer.open(SPEC_WITH_NETWORK_ACTION)
+    await actions.item("unrouteAll").click()
+
+    await page.getByRole("button", { name: "Pick", exact: true }).click()
+    await clickBounds(screenshotPanel.image, TAP_AREA)
+
+    // Before the borrowed-hierarchy fallback this pick silently did nothing.
+    await detailTabs.select("Locator")
+    await expect(locator.options.first()).toBeVisible()
+    await expect(locator.suggestions).toContainText("tap-area")
+  })
+
+  test("says the hierarchy is borrowed while picking", async ({
+    viewer,
+    page,
+    actions,
+  }) => {
+    await viewer.open(SPEC_WITH_NETWORK_ACTION)
+    await actions.item("unrouteAll").click()
+    await page.getByRole("button", { name: "Pick", exact: true }).click()
+
+    await expect(page.getByTestId("pick-note")).toHaveText("Hierarchy from the previous step")
+  })
+
+  test("does not show the borrowed note on actions with their own hierarchy", async ({
+    viewer,
+    page,
+    actions,
+  }) => {
+    await viewer.open(SPEC_WITH_NETWORK_ACTION)
+    await actions.item("doubleTap").click()
+    await page.getByRole("button", { name: "Pick", exact: true }).click()
+
+    await expect(page.getByRole("button", { name: "Picking…", exact: true })).toBeVisible()
+    await expect(page.getByTestId("pick-note")).toHaveCount(0)
+  })
+
+  test("disables picking when no hierarchy was ever captured", async ({ viewer, page }) => {
+    // A test whose only action is a network one: nothing earlier to borrow.
+    await viewer.open({
+      metadata: SPEC.metadata,
+      events: [actionEvent({ actionIndex: 0, action: "unrouteAll", category: "network" })],
+    })
+
+    const pick = page.getByRole("button", { name: "Pick", exact: true })
+    await expect(pick).toBeDisabled()
+    // The tooltip explains why, rather than leaving a dead control.
+    await expect(pick).toHaveAttribute(
+      "title",
+      "No view hierarchy captured yet — pick from a device action instead",
+    )
+  })
+})
