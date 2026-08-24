@@ -492,7 +492,7 @@ function App() {
     const beforeXml = trace.hierarchies.get(`hierarchy/action-${pad}-before.xml`);
     const own = screenshotVariant === 'before' ? (beforeXml ?? afterXml) : (afterXml ?? beforeXml);
     if (own) return { xml: own, sourceActionIndex: selectedEvent.actionIndex };
-    return findNearestHierarchy(trace.hierarchies, selectedEvent.actionIndex);
+    return findNearestHierarchy(trace.hierarchies, selectedEvent.actionIndex, screenshotVariant);
   }, [trace, selectedEvent, screenshotVariant]);
 
   const currentRoots = useMemo(

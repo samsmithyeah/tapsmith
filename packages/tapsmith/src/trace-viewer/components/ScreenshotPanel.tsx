@@ -517,19 +517,24 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
             <span
               class="viewer-pick-note"
               data-testid="pick-note"
-              title="This step captured no view hierarchy — picking uses the most recent captured snapshot."
+              title="This step captured no view hierarchy — picking uses the captured snapshot nearest to the displayed screenshot."
             >
-              {event && hierarchyBorrowedFromStep === event.actionIndex - 1
-                ? 'Hierarchy from the previous step'
-                : 'Hierarchy from an earlier step'}
+              {event && hierarchyBorrowedFromStep === event.actionIndex + 1
+                ? 'Hierarchy from the next step'
+                : event && hierarchyBorrowedFromStep === event.actionIndex - 1
+                  ? 'Hierarchy from the previous step'
+                  : 'Hierarchy from an earlier step'}
             </span>
           )}
           {onPickModeToggle && (
             <button
               class={`viewer-pick-btn ${pickMode ? 'active' : ''}`}
               onClick={onPickModeToggle}
-              disabled={!!pickUnavailableReason}
-              title={pickUnavailableReason ?? (pickMode ? 'Exit pick mode' : 'Pick element')}
+              // Disabled only when inactive: an active Pick button must stay
+              // clickable as the exit, or selecting a no-hierarchy action
+              // mid-pick would strand the user in pick mode.
+              disabled={!!pickUnavailableReason && !pickMode}
+              title={pickMode ? 'Exit pick mode' : (pickUnavailableReason ?? 'Pick element')}
             >
               <Focus size={12} /> {pickMode ? 'Picking…' : 'Pick'}
             </button>

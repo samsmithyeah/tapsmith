@@ -91,18 +91,28 @@ export function findNearestScreenshot(
 }
 
 /**
- * Walk backwards from `actionIndex` to find the nearest available hierarchy
- * snapshot, and report which step it came from so the UI can be honest about
- * the borrowing. Mirrors findNearestScreenshot (backwards, after-then-before)
- * so a borrowed pick hit-tests the same moment the borrowed frame depicts.
- * Only called when the selected action captured no hierarchy at all (network
- * actions never touch the device), so no variant parameter: the nearest
- * step's latest snapshot is the true screen state either side of the action.
+ * Find the nearest hierarchy snapshot for an action that captured none
+ * (network actions never touch the device), and report which step it came
+ * from so the UI can be honest about the borrowing. The result must depict
+ * the same moment as the screenshot the panel displays, or a pick would
+ * hit-test one screen over a picture of another:
+ *
+ * - the "after" display is the next action's before-screenshot (see
+ *   ScreenshotPanel), so its matching tree is the next action's
+ *   before-hierarchy when one exists;
+ * - the "before" display borrows backwards via findNearestScreenshot, so the
+ *   tree walks backwards the same way (after-then-before at each step).
  */
 export function findNearestHierarchy(
   hierarchies: Map<string, string>,
   actionIndex: number,
+  variant: 'before' | 'after',
 ): { xml: string; sourceActionIndex: number } | undefined {
+  if (variant === 'after') {
+    const nextPad = String(actionIndex + 1).padStart(3, '0');
+    const nextBefore = hierarchies.get(`hierarchy/action-${nextPad}-before.xml`);
+    if (nextBefore) return { xml: nextBefore, sourceActionIndex: actionIndex + 1 };
+  }
   for (let i = actionIndex - 1; i >= 0; i--) {
     const pad = String(i).padStart(3, '0');
     const xml = hierarchies.get(`hierarchy/action-${pad}-after.xml`)

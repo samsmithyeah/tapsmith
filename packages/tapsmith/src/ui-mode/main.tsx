@@ -522,7 +522,7 @@ function App() {
     const beforeXml = hierarchies.get(`hierarchy/action-${pad}-before.xml`);
     const own = screenshotVariant === 'before' ? (beforeXml ?? afterXml) : (afterXml ?? beforeXml);
     if (own) return { xml: own, sourceActionIndex: selectedEvent.actionIndex };
-    return findNearestHierarchy(hierarchies, selectedEvent.actionIndex);
+    return findNearestHierarchy(hierarchies, selectedEvent.actionIndex, screenshotVariant);
   }, [selectedEvent, hierarchies, screenshotVariant]);
 
   const currentRoots = useMemo(
