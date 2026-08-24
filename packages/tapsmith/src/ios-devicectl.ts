@@ -50,6 +50,13 @@ export interface PhysicalDeviceInfo {
  * Synchronous to match the cadence of `ios-simulator.ts::listSimulators` —
  * which the CLI calls during setup. Returns an empty array if devicectl
  * is not available (older Xcode, no Core Device services).
+ *
+ * Deliberately uncached. A TTL cache here saves a couple of subprocess
+ * spawns per init, but every failure mode of devicectl also yields an empty
+ * list — so a single transient failure would be cached as "no physical
+ * devices" and make the following guards treat a real iPhone as a
+ * simulator. Re-probing is the cheap, safe option; if the spawn cost ever
+ * matters, resolve `isPhysicalDevice` once per init and thread the boolean.
  */
 export function listPhysicalDevices(): PhysicalDeviceInfo[] {
   const scratch = scratchJsonPath('list-devices');

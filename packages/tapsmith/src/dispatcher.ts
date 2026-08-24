@@ -22,7 +22,8 @@ import type {
   MainToWorkerMessage,
   SerializedConfig,
 } from './worker-protocol.js';
-import { deserializeTestResult, deserializeSuiteResult, serializeRegExpArray } from './worker-protocol.js';
+import { deserializeTestResult, deserializeSuiteResult, serializeConfig, serializeRegExpArray } from './worker-protocol.js';
+import { devicePoolKey } from './project.js';
 import {
   clearOfflineEmulatorTransports,
   provisionEmulators,
@@ -501,6 +502,42 @@ export function planMultiBucket(
 }
 
 /**
+ * Split bucket plans into execution rounds so that no two buckets sharing a
+ * device pool ever run at the same time.
+ *
+ * Buckets exist because projects differ in `deviceSignature`, which includes
+ * session-shaping fields (package, app/apk, notification policy). Differing
+ * there does not mean the buckets get *different hardware* — with a single
+ * AVD or simulator they all resolve to the same device, and running them
+ * concurrently lets two workers install over each other and apply opposing
+ * permission state to the same package.
+ *
+ * Buckets in different pools (the common case: Android alongside iOS) still
+ * run fully concurrently — they land in the same round. Buckets in the same
+ * pool are spread across successive rounds, so round count equals the
+ * largest number of buckets contending for one pool.
+ *
+ * Pure and order-preserving, so the scheduling decision is unit-testable
+ * without provisioning a device.
+ */
+export function planBucketRounds(plans: BucketPlan[]): BucketPlan[][] {
+  const byPool = new Map<string, BucketPlan[]>();
+  for (const plan of plans) {
+    const key = devicePoolKey(plan.bucketOpts.config);
+    const arr = byPool.get(key) ?? [];
+    arr.push(plan);
+    byPool.set(key, arr);
+  }
+  const roundCount = Math.max(0, ...[...byPool.values()].map((g) => g.length));
+  const rounds: BucketPlan[][] = [];
+  for (let i = 0; i < roundCount; i++) {
+    const round = [...byPool.values()].map((g) => g[i]).filter((p): p is BucketPlan => !!p);
+    if (round.length > 0) rounds.push(round);
+  }
+  return rounds;
+}
+
+/**
  * Merge FullResults from concurrent bucket runs into a single aggregated
  * result. Wall-time uses max() because buckets ran in parallel; tests and
  * suites are flat-concatenated in bucket order.
@@ -544,108 +581,166 @@ async function runMultiBucket(opts: DispatcherOptions): Promise<FullResult> {
     .map((b, i) => `${b[0].deviceSignature.split('|').slice(0, 2).join(' ')} (${bucketWorkers[i]}w)`)
     .join(', ');
 
-  const readyCounter = { count: 0 };
-  const phaseCounters = createLaunchPhaseCounters();
-  let barrierArrived = 0;
-  let barrierFailed = false;
-  let firstLaunchError: unknown;
-  let launchFailureRendered = false;
-  let releaseBarrier!: () => void;
-  const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
-  const renderLaunchFailure = (err: unknown) => {
-    if (!opts.launchProgress || launchFailureRendered) return;
-    launchFailureRendered = true;
-    const failureSummary = messageFromUnknown(err).split('\n')[0];
-    opts.launchProgress.fail(
-      'worker-devices',
-      `${readyCounter.count}/${totalWorkersAcrossBuckets} worker device(s) ready; launch failed`,
-    );
-    for (const phase of launchPhaseIds) {
-      if (phaseCounters[phase].count >= totalWorkersAcrossBuckets) continue;
-      opts.launchProgress.update(phase, {
-        state: 'failed',
-        detail: failureSummary,
-        progress: { done: phaseCounters[phase].count, total: totalWorkersAcrossBuckets },
-      });
-    }
-    opts.launchProgress.fail('ui-workers', failureSummary);
-    opts.launchProgress.finish();
-  };
+  const rounds = planBucketRounds(plans);
+  const workersInRound = (roundPlans: BucketPlan[]): number =>
+    roundPlans.reduce((sum, p) => sum + (p.bucketOpts.workers ?? 0), 0);
 
-  const beforeDispatch = async () => {
-    barrierArrived++;
-    if (barrierArrived === plans.length) {
-      opts.launchProgress?.complete(
+  // `onRunStart` describes the whole run, not a round — fire it once even
+  // when buckets are spread across several rounds.
+  let runStartFired = false;
+
+  /**
+   * Run one round of buckets concurrently. All barrier/progress state is
+   * per-round: with contended device pools a later round's buckets have not
+   * been created yet, so a run-wide barrier would wait for arrivals that
+   * cannot happen until the current round has already finished.
+   */
+  const runRound = async (
+    roundPlans: BucketPlan[],
+    roundProgress: DispatcherOptions['launchProgress'],
+  ): Promise<FullResult> => {
+    const roundWorkers = workersInRound(roundPlans);
+    const readyCounter = { count: 0 };
+    const phaseCounters = createLaunchPhaseCounters();
+    let barrierArrived = 0;
+    let barrierFailed = false;
+    let firstLaunchError: unknown;
+    let launchFailureRendered = false;
+    let releaseBarrier!: () => void;
+    const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+    const renderLaunchFailure = (err: unknown) => {
+      if (!roundProgress || launchFailureRendered) return;
+      launchFailureRendered = true;
+      const failureSummary = messageFromUnknown(err).split('\n')[0];
+      roundProgress.fail(
         'worker-devices',
-        `${readyCounter.count}/${totalWorkersAcrossBuckets} worker device(s) ready across ${buckets.length} bucket(s)`,
+        `${readyCounter.count}/${roundWorkers} worker device(s) ready; launch failed`,
       );
-      if (readyCounter.count < totalWorkersAcrossBuckets) {
-        opts.launchProgress?.update('ui-workers', {
-          state: 'warning',
-          detail: `${readyCounter.count}/${totalWorkersAcrossBuckets} worker(s) ready; ${totalWorkersAcrossBuckets - readyCounter.count} failed`,
-          progress: { done: readyCounter.count, total: totalWorkersAcrossBuckets },
+      for (const phase of launchPhaseIds) {
+        if (phaseCounters[phase].count >= roundWorkers) continue;
+        roundProgress.update(phase, {
+          state: 'failed',
+          detail: failureSummary,
+          progress: { done: phaseCounters[phase].count, total: roundWorkers },
         });
-        for (const phase of launchPhaseIds) {
-          if (phaseCounters[phase].count >= totalWorkersAcrossBuckets) continue;
-          opts.launchProgress?.update(phase, {
-            state: 'warning',
-            detail: `${phaseCounters[phase].count}/${totalWorkersAcrossBuckets} completed; ${totalWorkersAcrossBuckets - phaseCounters[phase].count} worker(s) did not finish`,
-            progress: { done: phaseCounters[phase].count, total: totalWorkersAcrossBuckets },
-          });
-        }
-      } else {
-        opts.launchProgress?.complete('ui-workers', `${totalWorkersAcrossBuckets} worker(s) ready`);
       }
-      opts.launchProgress?.finish();
-      opts.reporter.onRunStart?.(opts.config, opts.testFiles.length);
-      releaseBarrier();
+      roundProgress.fail('ui-workers', failureSummary);
+      roundProgress.finish();
+    };
+
+    const beforeDispatch = async () => {
+      barrierArrived++;
+      if (barrierArrived === roundPlans.length) {
+        roundProgress?.complete(
+          'worker-devices',
+          `${readyCounter.count}/${roundWorkers} worker device(s) ready across ${roundPlans.length} bucket(s)`,
+        );
+        if (readyCounter.count < roundWorkers) {
+          roundProgress?.update('ui-workers', {
+            state: 'warning',
+            detail: `${readyCounter.count}/${roundWorkers} worker(s) ready; ${roundWorkers - readyCounter.count} failed`,
+            progress: { done: readyCounter.count, total: roundWorkers },
+          });
+          for (const phase of launchPhaseIds) {
+            if (phaseCounters[phase].count >= roundWorkers) continue;
+            roundProgress?.update(phase, {
+              state: 'warning',
+              detail: `${phaseCounters[phase].count}/${roundWorkers} completed; ${roundWorkers - phaseCounters[phase].count} worker(s) did not finish`,
+              progress: { done: phaseCounters[phase].count, total: roundWorkers },
+            });
+          }
+        } else {
+          roundProgress?.complete('ui-workers', `${roundWorkers} worker(s) ready`);
+        }
+        roundProgress?.finish();
+        if (!runStartFired) {
+          runStartFired = true;
+          opts.reporter.onRunStart?.(opts.config, opts.testFiles.length);
+        }
+        releaseBarrier();
+      }
+      await barrier;
+      if (barrierFailed) {
+        throw firstLaunchError instanceof Error
+          ? firstLaunchError
+          : new LaunchSetupError('A device bucket failed to initialize');
+      }
+    };
+
+    const roundSummary = roundPlans
+      .map((p) => `${p.bucketOpts.bucketLabel} (${p.bucketOpts.workers ?? 0}w)`)
+      .join(', ');
+    if (roundProgress) {
+      roundProgress.start('daemon', `starting ${roundWorkers} worker daemon(s)`);
+      roundProgress.start(
+        'worker-devices',
+        `preparing ${roundWorkers} worker device(s) in ${roundPlans.length} device bucket(s)`,
+      );
+      roundProgress.start('ui-workers', `starting ${roundWorkers} worker(s)`);
+      roundProgress.update('ui-workers', {
+        state: 'running',
+        detail: roundSummary,
+        progress: { done: 0, total: roundWorkers },
+      });
+    } else {
+      process.stderr.write(
+        `${DIM}Running ${roundWorkers} worker(s) across ${roundPlans.length} device bucket(s): ${roundSummary}${RESET}\n`,
+      );
     }
-    await barrier;
-    if (barrierFailed) {
-      throw firstLaunchError instanceof Error
-        ? firstLaunchError
-        : new LaunchSetupError('A device bucket failed to initialize');
-    }
+
+    const roundResults = await Promise.all(
+      roundPlans.map((plan) => runParallel({
+        ...plan.bucketOpts,
+        launchProgress: roundProgress,
+        beforeDispatch,
+        launchProgressReadyCounter: readyCounter,
+        launchProgressWorkerTotal: roundWorkers,
+        launchProgressPhaseCounters: phaseCounters,
+      }, plan.portOffset).catch((err) => {
+        barrierFailed = true;
+        firstLaunchError ??= err;
+        renderLaunchFailure(err);
+        releaseBarrier();
+        throw err;
+      })),
+    );
+    return mergeBucketResults(roundResults);
   };
 
-  if (opts.launchProgress) {
-    opts.launchProgress.start(
-      'daemon',
-      `starting ${totalWorkersAcrossBuckets} worker daemon(s)`,
-    );
-    opts.launchProgress.start(
-      'worker-devices',
-      `preparing ${totalWorkersAcrossBuckets} worker device(s) in ${buckets.length} device bucket(s)`,
-    );
-    opts.launchProgress.start('ui-workers', `starting ${totalWorkersAcrossBuckets} worker(s)`);
-    opts.launchProgress.update('ui-workers', {
-      state: 'running',
-      detail: bucketSummary,
-      progress: { done: 0, total: totalWorkersAcrossBuckets },
-    });
-  } else {
-    process.stderr.write(
-      `${DIM}Running ${opts.testFiles.length} test file(s) across ${totalWorkersAcrossBuckets} worker(s) in ${buckets.length} device bucket(s): ${bucketSummary}${RESET}\n`,
-    );
+  if (rounds.length === 1) {
+    if (!opts.launchProgress) {
+      process.stderr.write(
+        `${DIM}Running ${opts.testFiles.length} test file(s) across ${totalWorkersAcrossBuckets} worker(s) in ${buckets.length} device bucket(s): ${bucketSummary}${RESET}\n`,
+      );
+    }
+    return runRound(rounds[0], opts.launchProgress);
   }
 
-  const results = await Promise.all(
-    plans.map((plan) => runParallel({
-      ...plan.bucketOpts,
-      launchProgress: opts.launchProgress,
-      beforeDispatch,
-      launchProgressReadyCounter: readyCounter,
-      launchProgressWorkerTotal: totalWorkersAcrossBuckets,
-      launchProgressPhaseCounters: phaseCounters,
-    }, plan.portOffset).catch((err) => {
-      barrierFailed = true;
-      firstLaunchError ??= err;
-      renderLaunchFailure(err);
-      releaseBarrier();
-      throw err;
-    })),
+  // Contended device pools: at least two buckets resolve to the same
+  // emulator/simulator, so they are run one round after another. Only the
+  // first round drives the launch-progress widget — its phases complete and
+  // `finish()` once, and restarting them mid-run would misreport the run as
+  // launching twice.
+  process.stderr.write(
+    `${DIM}${buckets.length} device bucket(s) share ${rounds[0].length} device pool(s); `
+    + `running in ${rounds.length} sequential round(s) so they don't contend for the same device.${RESET}\n`,
   );
-  return mergeBucketResults(results);
+  const roundResults: FullResult[] = [];
+  for (const [i, roundPlans] of rounds.entries()) {
+    if (i > 0) {
+      process.stderr.write(
+        `${DIM}Round ${i + 1}/${rounds.length}: ${roundPlans.map((p) => p.bucketOpts.bucketLabel).join(', ')}${RESET}\n`,
+      );
+    }
+    roundResults.push(await runRound(roundPlans, i === 0 ? opts.launchProgress : undefined));
+  }
+  // Rounds ran back-to-back, so wall time adds up across them (unlike
+  // buckets within a round, which overlap and are merged with max()).
+  return {
+    ...mergeBucketResults(roundResults),
+    duration: roundResults.reduce((sum, r) => sum + r.duration, 0),
+    setupDuration: roundResults.reduce((sum, r) => sum + (r.setupDuration ?? 0), 0),
+  };
 }
 
 /**
@@ -1200,32 +1295,16 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       notifyLegacySudoersIfPresent();
     }
 
-    // Serialize config for workers
-    const serializedConfig: SerializedConfig = {
-      timeout: config.timeout,
-      retries: config.retries,
-      screenshot: config.screenshot,
-      rootDir: config.rootDir,
-      outputDir: config.outputDir,
-      apk: config.apk,
-      activity: config.activity,
-      package: config.package,
-      agentApk: config.agentApk,
-      agentTestApk: config.agentTestApk,
-      trace: typeof config.trace === 'string' || typeof config.trace === 'object'
-        ? config.trace
-        : undefined,
-      platform: config.platform,
-      app: config.app,
-      iosXctestrun: config.iosXctestrun,
-      simulator: config.simulator,
-      resetAppDeepLink: config.resetAppDeepLink,
-      resetAppWaitMs: config.resetAppWaitMs,
-      baseURL: config.baseURL,
-      extraHTTPHeaders: config.extraHTTPHeaders,
-      grep: serializeRegExpArray(normalizeGrep(config.grep)),
-      grepInvert: serializeRegExpArray(normalizeGrep(config.grepInvert)),
-    };
+    // Serialize config for workers.
+    //
+    // `video` is deliberately cleared: this path has never forwarded it, so
+    // parallel runs have never recorded video. Adopting the shared
+    // serializer would switch per-test screen recording on for every worker
+    // of every user with `video` configured — a real behavior change (extra
+    // load on contended CI devices, an MP4 per test attempt) that belongs in
+    // its own PR rather than riding along with a permissions change. Watch
+    // and UI mode already serialize video and are unaffected.
+    const serializedConfig: SerializedConfig = { ...serializeConfig(config), video: undefined };
 
     const launchedSerials = new Set(launchedEmulators.map((emu) => emu.serial));
 

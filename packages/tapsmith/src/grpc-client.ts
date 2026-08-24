@@ -13,6 +13,7 @@ import * as crypto from 'node:crypto';
 import { type Selector, selectorToProto } from './selectors.js';
 import { TestAbortedError } from './abort.js';
 import { isCurrentAttemptClosed, fencedRejection } from './attempt-fence.js';
+import type { NotificationPermissionState } from './config.js';
 
 // ─── Types mirroring proto messages ───
 
@@ -603,6 +604,7 @@ export class TapsmithGrpcClient {
     iosXctestrunPath?: string,
     iosAppPath?: string,
     networkTracingEnabled = false,
+    notificationPermission?: NotificationPermissionState,
   ): Promise<ActionResponse> {
     return this.call<ActionResponse>('startAgent', {
       requestId: requestId(),
@@ -612,11 +614,23 @@ export class TapsmithGrpcClient {
       iosXctestrunPath: iosXctestrunPath ?? '',
       iosAppPath: iosAppPath ?? '',
       networkTracingEnabled,
+      notificationPermission: notificationPermission ?? '',
       // Must comfortably exceed the daemon's internal agent-launch wait (150s
       // in agent_launch.rs) plus simulator configuration around it, so the
       // daemon's clean, retryable failure text reaches us instead of a bare
       // DEADLINE_EXCEEDED.
     }, 240_000);
+  }
+
+  async setNotificationPermission(
+    packageName: string,
+    state: NotificationPermissionState,
+  ): Promise<ActionResponse> {
+    return this.call<ActionResponse>('setNotificationPermission', {
+      requestId: requestId(),
+      packageName,
+      state,
+    });
   }
 
   async ping(): Promise<PingResponse> {

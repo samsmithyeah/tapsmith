@@ -13,16 +13,16 @@ import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
 import { runTestFile, collectResults, markFileRetryFlakes } from './runner.js';
-import type { TapsmithConfig } from './config.js';
+import type { TapsmithConfig, NotificationPermissionState } from './config.js';
 import { isPackageInstalled, waitForPackageIndexed } from './emulator.js';
 import { installApp, installedAppMatches, isAppInstalled, probeSimulatorHealth, rebootSimulator } from './ios-simulator.js';
 import type {
   MainToWorkerMessage,
   WorkerToMainMessage,
   InitMessage,
-  SerializedConfig,
 } from './worker-protocol.js';
 import {
+  configFromSerialized,
   serializeTestResult,
   serializeSuiteResult,
   isRecoverableInfrastructureError,
@@ -32,6 +32,7 @@ import {
   AGENT_START_RETRY_DELAY_MS,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
+import { applyAndroidNotificationPermission, applySimulatorNotificationPermissionSetup, notificationPermissionForAgent } from './permission-setup.js';
 import { createActionProgressMessenger } from './action-progress-renderer.js';
 import type { TapsmithReporter } from './reporter.js';
 
@@ -45,6 +46,7 @@ let resolvedXctestrunPath: string | undefined;
 let resolvedAppPath: string | undefined;
 let rootGrep: RegExp[] | undefined;
 let rootGrepInvert: RegExp[] | undefined;
+let sessionNotificationPermission: NotificationPermissionState | undefined;
 
 function send(msg: WorkerToMainMessage): void {
   if (process.send) {
@@ -56,36 +58,11 @@ function sendProgress(message: string): void {
   send({ type: 'progress', workerId, message });
 }
 
-function configFromSerialized(s: SerializedConfig, daemonAddress: string): TapsmithConfig {
-  return {
-    timeout: s.timeout,
-    retries: s.retries,
-    screenshot: s.screenshot,
-    testMatch: [],
-    daemonAddress,
-    rootDir: s.rootDir,
-    outputDir: s.outputDir,
-    apk: s.apk,
-    activity: s.activity,
-    package: s.package,
-    agentApk: s.agentApk,
-    agentTestApk: s.agentTestApk,
-    workers: 1,
-    launchEmulators: false,
-    trace: s.trace as TapsmithConfig['trace'],
-    video: s.video as TapsmithConfig['video'],
-    platform: s.platform,
-    app: s.app,
-    iosXctestrun: s.iosXctestrun,
-    simulator: s.simulator,
-    resetAppDeepLink: s.resetAppDeepLink,
-    resetAppWaitMs: s.resetAppWaitMs,
-    baseURL: s.baseURL,
-    extraHTTPHeaders: s.extraHTTPHeaders,
-    grep: deserializeRegExpArray(s.grep),
-    grepInvert: deserializeRegExpArray(s.grepInvert),
-  };
-}
+const permissionSetupLog = {
+  info: (m: string) => sendProgress(m),
+  warn: (m: string) => sendProgress(`warning: ${m}`),
+};
+
 
 async function handleInit(msg: InitMessage): Promise<void> {
   workerId = msg.workerId;
@@ -180,6 +157,10 @@ async function handleInit(msg: InitMessage): Promise<void> {
         sendProgress('app install complete');
       }
     } else {
+      // PILOT-291: reset the recorded notification state on conflict before
+      // the install below. Worker simulators (clones, reused CI sets) carry
+      // their own BulletinBoard state, so this runs per worker.
+      await applySimulatorNotificationPermissionSetup(msg.deviceSerial, config, permissionSetupLog);
       // Skip only when the installed bundle is byte-identical — simulator
       // state can outlive a run (reused CI runner device sets, local app
       // rebuilds), and a presence-only skip silently tests a stale build.
@@ -197,7 +178,17 @@ async function handleInit(msg: InitMessage): Promise<void> {
     }
   } else {
     sendProgress('app install skipped');
+    if (config.platform === 'ios' && msg.deviceSerial) {
+      // No app to (re)install, but a configured permission that conflicts
+      // with the recorded state must still be surfaced (the helper warns;
+      // it also owns the physical-device guard).
+      await applySimulatorNotificationPermissionSetup(msg.deviceSerial, config, permissionSetupLog);
+    }
   }
+
+  // PILOT-291: deterministic notification permission state before tests
+  // (Android only — no-op on iOS).
+  await applyAndroidNotificationPermission(device, config, permissionSetupLog);
 
   // Start agent
   const resolvedAgentApk = config.agentApk
@@ -237,6 +228,13 @@ async function handleInit(msg: InitMessage): Promise<void> {
     : undefined;
   resolvedXctestrunPath = resolvedIosXctestrun;
   resolvedAppPath = resolvedIosAppPath;
+  // iOS simulator only: the agent answers the notification prompt per this
+  // policy. Android applies it via setNotificationPermission above; physical
+  // iOS is unsupported (the helper warns).
+  const agentNotificationPermission = await notificationPermissionForAgent(
+    config, msg.deviceSerial, permissionSetupLog,
+  );
+  sessionNotificationPermission = agentNotificationPermission;
   sendProgress('starting Tapsmith agent');
   try {
     await device.startAgent(
@@ -246,6 +244,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
       resolvedIosXctestrun,
       resolvedIosAppPath,
       isNetworkTracingEnabled(config.trace),
+      agentNotificationPermission,
     );
   } catch (err) {
     const msg1 = err instanceof Error ? err.message : String(err);
@@ -263,6 +262,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
         resolvedIosXctestrun,
         resolvedIosAppPath,
         isNetworkTracingEnabled(config.trace),
+        agentNotificationPermission,
       );
     } else {
       throw err;
@@ -521,6 +521,7 @@ function sessionContext(
     iosAppPath: iosAppPath ?? resolvedAppPath,
     deviceSerial: serial,
     networkTracingEnabled: isNetworkTracingEnabled(config.trace),
+    notificationPermission: sessionNotificationPermission,
   };
 }
 

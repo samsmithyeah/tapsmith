@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, deviceSignature, allocateBucketWorkers, bucketizeProjects, type ResolvedProject } from '../project.js';
+import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, deviceSignature, devicePoolKey, peakConcurrentWorkers, allocateBucketWorkers, bucketizeProjects, type ResolvedProject } from '../project.js';
 import { effectiveConfigForProject, type TapsmithConfig } from '../config.js';
 
 function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
@@ -377,6 +377,19 @@ describe('deviceSignature()', () => {
     expect(a).not.toBe(i);
   });
 
+  it('projects differing only in permissions.notifications do not share a device session', () => {
+    for (const platform of ['android', 'ios'] as const) {
+      const base = platform === 'ios'
+        ? { platform, simulator: 'iPhone 17' }
+        : { platform, avd: 'Pixel_6' };
+      const granted = deviceSignature(makeConfig({ ...base, permissions: { notifications: 'granted' as const } }));
+      const denied = deviceSignature(makeConfig({ ...base, permissions: { notifications: 'denied' as const } }));
+      const unset = deviceSignature(makeConfig({ ...base }));
+      expect(granted).not.toBe(denied);
+      expect(granted).not.toBe(unset);
+    }
+  });
+
   it('two android configs targeting different AVDs differ', () => {
     const a = deviceSignature(makeConfig({ platform: 'android', avd: 'Pixel_6' }));
     const b = deviceSignature(makeConfig({ platform: 'android', avd: 'Pixel_7' }));
@@ -632,5 +645,89 @@ describe('allocateBucketWorkers()', () => {
     const alloc = allocateBucketWorkers(2, buckets, 3);
     expect(alloc.get('explicit')).toBe(2);
     expect(alloc.get('implicit')).toBe(1);
+  });
+});
+
+// ─── devicePoolKey ───
+//
+// PILOT-291. `deviceSignature` answers "can these share a device session?";
+// `devicePoolKey` answers "do these draw from the same physical device?".
+// Conflating the two put two workers on one emulator applying opposing
+// notification policies to the same package.
+
+describe('devicePoolKey', () => {
+  it('ignores session-shaping fields that do not change which device you get', () => {
+    // The exact case that broke CI: same emulator, opposite policies.
+    const granted = devicePoolKey({ platform: 'android', avd: 'Pixel_6', permissions: { notifications: 'granted' } } as never);
+    const denied = devicePoolKey({ platform: 'android', avd: 'Pixel_6', permissions: { notifications: 'denied' } } as never);
+    expect(granted).toBe(denied);
+    // ...while deviceSignature still separates them, so they keep distinct
+    // sessions rather than being folded into one worker.
+    expect(deviceSignature({ platform: 'android', avd: 'Pixel_6', permissions: { notifications: 'granted' } } as never))
+      .not.toBe(deviceSignature({ platform: 'android', avd: 'Pixel_6', permissions: { notifications: 'denied' } } as never));
+  });
+
+  it('separates distinct AVDs, simulators and explicit serials', () => {
+    expect(devicePoolKey({ platform: 'android', avd: 'Pixel_6' } as never))
+      .not.toBe(devicePoolKey({ platform: 'android', avd: 'Pixel_7' } as never));
+    expect(devicePoolKey({ platform: 'ios', simulator: 'iPhone 17' } as never))
+      .not.toBe(devicePoolKey({ platform: 'ios', simulator: 'iPhone 16' } as never));
+    expect(devicePoolKey({ platform: 'android', device: 'emulator-5554' } as never))
+      .not.toBe(devicePoolKey({ platform: 'android', device: 'emulator-5556' } as never));
+  });
+
+  it('separates platforms', () => {
+    expect(devicePoolKey({ platform: 'android' } as never))
+      .not.toBe(devicePoolKey({ platform: 'ios' } as never));
+  });
+
+  it('ignores provisioning strategy, which shapes how a device is obtained, not which', () => {
+    expect(devicePoolKey({ platform: 'android', avd: 'Pixel_6', launchEmulators: true, deviceStrategy: 'all' } as never))
+      .toBe(devicePoolKey({ platform: 'android', avd: 'Pixel_6', launchEmulators: false } as never));
+  });
+
+  it('defaults to android when platform is unset', () => {
+    expect(devicePoolKey({ avd: 'Pixel_6' } as never))
+      .toBe(devicePoolKey({ platform: 'android', avd: 'Pixel_6' } as never));
+  });
+});
+
+// ─── peakConcurrentWorkers ───
+
+describe('peakConcurrentWorkers', () => {
+  it('sums workers across distinct pools — they really do run at once', () => {
+    expect(peakConcurrentWorkers([
+      { poolKey: 'android|Pixel_6|', workers: 2 },
+      { poolKey: 'ios|iPhone 17|', workers: 3 },
+    ])).toBe(5);
+  });
+
+  it('does not sum buckets queued behind each other on one device', () => {
+    // The reporting bug this fixes: `--workers 1` with a granted and a denied
+    // bucket on one AVD reported "running 2" when only one runs at a time.
+    expect(peakConcurrentWorkers([
+      { poolKey: 'android|Pixel_6|', workers: 1 },
+      { poolKey: 'android|Pixel_6|', workers: 1 },
+    ])).toBe(1);
+  });
+
+  it('takes the largest round when pools are unevenly sized', () => {
+    // round 1 = 2 (android) + 3 (ios) = 5; round 2 = 4 (android alone).
+    expect(peakConcurrentWorkers([
+      { poolKey: 'android|Pixel_6|', workers: 2 },
+      { poolKey: 'android|Pixel_6|', workers: 4 },
+      { poolKey: 'ios|iPhone 17|', workers: 3 },
+    ])).toBe(5);
+  });
+
+  it('ignores buckets with no workers', () => {
+    expect(peakConcurrentWorkers([
+      { poolKey: 'android|Pixel_6|', workers: 0 },
+      { poolKey: 'android|Pixel_6|', workers: 2 },
+    ])).toBe(2);
+  });
+
+  it('is zero for no buckets', () => {
+    expect(peakConcurrentWorkers([])).toBe(0);
   });
 });

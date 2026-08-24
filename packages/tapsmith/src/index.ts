@@ -61,7 +61,7 @@ export {
 } from './network.js';
 
 // Config
-export { defineConfig, loadConfig, type TapsmithConfig, type ProjectConfig, type ScreenshotMode, type TraceMode, type TraceConfig } from './config.js';
+export { defineConfig, loadConfig, type TapsmithConfig, type ProjectConfig, type ScreenshotMode, type TraceMode, type TraceConfig, type PermissionsConfig, type NotificationPermissionState } from './config.js';
 
 // Reporters
 export {

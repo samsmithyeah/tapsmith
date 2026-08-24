@@ -11,6 +11,19 @@ import {
 } from '../config.js';
 
 describe('defineConfig()', () => {
+  it('accepts valid permissions.notifications values', () => {
+    for (const value of ['granted', 'denied', 'prompt'] as const) {
+      expect(defineConfig({ permissions: { notifications: value } }).permissions?.notifications)
+        .toBe(value);
+    }
+  });
+
+  it('rejects an invalid permissions.notifications value at load time', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- deliberately invalid input
+    expect(() => defineConfig({ permissions: { notifications: 'allow' as any } }))
+      .toThrow(/permissions\.notifications.*'granted', 'denied', or 'prompt'/);
+  });
+
   it('returns defaults when called with no arguments', () => {
     const config = defineConfig();
     expect(config.timeout).toBe(30_000);
@@ -218,6 +231,39 @@ describe('isExplicitWorkers() / loadConfig()', () => {
       const config = await loadConfig(dir);
       expect(config.timeout).toBe(5000);
       expect(isExplicitWorkers(config)).toBe(false);
+    });
+  });
+
+  it('loadConfig aborts on an invalid permissions value instead of falling back', async () => {
+    const contents = 'export default { permissions: { notifications: "allow" } };\n';
+    await withTempConfig(contents, 'tapsmith.config.mjs', async (dir) => {
+      await expect(loadConfig(dir))
+        .rejects.toThrow(/permissions\.notifications.*'granted', 'denied', or 'prompt'/);
+    });
+  });
+
+  it('loadConfig aborts even when the error came from another copy of the package', async () => {
+    // A user's config resolves `defineConfig` through its own node_modules,
+    // which can be a different installed copy than the running CLI. Its
+    // ConfigValidationError is a different class, so an `instanceof` check
+    // would miss it and swallow the failure into the fall-back-to-defaults
+    // path — running the whole suite against DEFAULT config.
+    const contents = [
+      'class ConfigValidationError extends Error {',
+      '  isTapsmithConfigValidationError = true;',
+      '}',
+      'throw new ConfigValidationError("Invalid permissions.notifications value from another realm");',
+    ].join('\n');
+    await withTempConfig(contents, 'tapsmith.config.mjs', async (dir) => {
+      await expect(loadConfig(dir)).rejects.toThrow(/from another realm/);
+    });
+  });
+
+  it('loadConfig still falls back for ordinary load failures', async () => {
+    const contents = 'throw new Error("boom, not a validation error");\n';
+    await withTempConfig(contents, 'tapsmith.config.mjs', async (dir) => {
+      const config = await loadConfig(dir);
+      expect(config.timeout).toBe(30_000);
     });
   });
 

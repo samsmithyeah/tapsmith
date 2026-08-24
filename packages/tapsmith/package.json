@@ -62,6 +62,7 @@
     "glob": "^11.0.0",
     "minimatch": "^10.2.4",
     "open": "^10.2.0",
+    "plist": "^5.0.0",
     "proper-lockfile": "^4.1.2",
     "tsx": "^4.21.0",
     "ws": "^8.20.0",
@@ -83,13 +84,13 @@
     "vitest": "^3.0.0"
   },
   "optionalDependencies": {
+    "@tapsmith/agent-android": "*",
+    "@tapsmith/agent-ios-simulator-arm64": "*",
+    "@tapsmith/agent-ios-simulator-x64": "*",
     "@tapsmith/core-darwin-arm64": "*",
     "@tapsmith/core-darwin-x64": "*",
     "@tapsmith/core-linux-arm64": "*",
-    "@tapsmith/core-linux-x64": "*",
-    "@tapsmith/agent-android": "*",
-    "@tapsmith/agent-ios-simulator-arm64": "*",
-    "@tapsmith/agent-ios-simulator-x64": "*"
+    "@tapsmith/core-linux-x64": "*"
   },
   "engines": {
     "node": ">=22"

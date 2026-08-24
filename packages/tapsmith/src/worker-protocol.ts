@@ -259,12 +259,58 @@ export interface SerializedConfig {
   resetAppWaitMs?: number
   baseURL?: string
   extraHTTPHeaders?: Record<string, string>
+  permissions?: { notifications?: 'granted' | 'denied' | 'prompt' }
   /** RegExp filters for test fullNames. Source/flags are serialized for IPC. */
   grep?: SerializedRegExp[]
   grepInvert?: SerializedRegExp[]
 }
 
-/** Convert a TapsmithConfig into the IPC-safe subset needed by worker child processes. */
+/**
+ * Reconstruct a worker-side TapsmithConfig from the IPC-serialized subset.
+ * The single implementation for every child-process entry point
+ * (worker-runner, ui-worker, ui-run, watch-run) — a new config field added
+ * here reaches all of them, instead of being silently dropped by whichever
+ * local copy wasn't updated (the bug class that disabled `permissions` on
+ * three of the five former copies).
+ */
+export function configFromSerialized(s: SerializedConfig, daemonAddress: string): TapsmithConfig {
+  return {
+    timeout: s.timeout,
+    retries: s.retries,
+    screenshot: s.screenshot,
+    testMatch: [],
+    daemonAddress,
+    rootDir: s.rootDir,
+    outputDir: s.outputDir,
+    apk: s.apk,
+    activity: s.activity,
+    package: s.package,
+    agentApk: s.agentApk,
+    agentTestApk: s.agentTestApk,
+    workers: 1,
+    launchEmulators: false,
+    trace: s.trace as TapsmithConfig['trace'],
+    video: s.video as TapsmithConfig['video'],
+    platform: s.platform,
+    app: s.app,
+    iosXctestrun: s.iosXctestrun,
+    simulator: s.simulator,
+    resetAppDeepLink: s.resetAppDeepLink,
+    resetAppWaitMs: s.resetAppWaitMs,
+    baseURL: s.baseURL,
+    extraHTTPHeaders: s.extraHTTPHeaders,
+    permissions: s.permissions,
+    grep: deserializeRegExpArray(s.grep),
+    grepInvert: deserializeRegExpArray(s.grepInvert),
+  };
+}
+
+/**
+ * Convert a TapsmithConfig into the IPC-safe subset needed by worker child
+ * processes. The single sending-side implementation (cli, dispatcher, watch,
+ * ui-server) — the counterpart of `configFromSerialized` above, and subject
+ * to the same rule: never hand-roll this literal at a call site.
+ */
 export function serializeConfig(config: TapsmithConfig): SerializedConfig {
   return {
     timeout: config.timeout,
@@ -291,6 +337,7 @@ export function serializeConfig(config: TapsmithConfig): SerializedConfig {
     resetAppWaitMs: config.resetAppWaitMs,
     baseURL: config.baseURL,
     extraHTTPHeaders: config.extraHTTPHeaders,
+    permissions: config.permissions,
     grep: serializeRegExpArray(normalizeGrep(config.grep)),
     grepInvert: serializeRegExpArray(normalizeGrep(config.grepInvert)),
   };

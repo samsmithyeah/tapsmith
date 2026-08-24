@@ -60,6 +60,30 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `resetAppDeepLink` | `string` | `undefined` | Deep link URI to navigate to between test files for a soft app reset. When set, Tapsmith opens this deep link instead of force-stopping and relaunching the app between files. Faster than a full restart when the app has a reset route that clears state and navigates to the desired start screen. Do not expose this route in production builds. |
 | `resetAppWaitMs` | `number` | `750` | Time in milliseconds to wait after navigating the `resetAppDeepLink` before starting the next test file. Gives the app time to finish resetting. |
 | `testIgnore` | `string[]` | `[]` | Glob patterns for excluding test files from discovery. Files matching any pattern are skipped even if they match `testMatch`. |
+| `permissions` | `{ notifications?: "granted" \| "denied" \| "prompt" }` | `undefined` | Permission states applied to the app under test during session setup, before any test runs. See [Permissions](#permissions) below. |
+
+### Permissions
+
+```typescript
+export default defineConfig({
+  package: "com.example.myapp",
+  permissions: { notifications: "granted" },
+});
+```
+
+Sets the app's notification permission to a deterministic state at the start of every run, so tests never depend on whatever the device happened to be left in. Three states are supported:
+
+- `"granted"` -- the app starts the run able to post notifications. On Android this is granted silently (`pm grant` + the notifications toggle). iOS has no silent grant for notifications: Tapsmith ensures the one-shot permission prompt is still available (reinstalling the app if a previous run denied it) and the agent automatically accepts the prompt when the app requests authorization.
+- `"denied"` -- the app starts the run with notifications denied, for deliberately testing denied-state UI. On Android the permission is revoked with "don't ask again" set, so no system dialog interrupts the test. On the iOS simulator the agent automatically declines the prompt when the app requests authorization (reinstalling first if a previous run granted it).
+- `"prompt"` -- reset to the never-asked state, so a test can exercise the permission request flow from scratch. Note that on iOS the agent still auto-accepts the prompt when it would otherwise block an interaction.
+
+Platform notes:
+
+- **Android** requires API 33+ (`POST_NOTIFICATIONS` became a runtime permission in Android 13) and the permission must be declared in the app's manifest.
+- **iOS simulator**: notification state cannot be changed while iOS is running (`simctl privacy` has no `notifications` service), so when the recorded state conflicts with the requested one, Tapsmith reinstalls the app -- which also clears app data. No reinstall happens when the states already agree.
+- **iOS physical devices** are not supported; Tapsmith prints a warning and skips the setting.
+- `permissions` works at the config root and in a project's `use` block. It has no effect from file-level `test.use()` (which warns): the state is applied once at session setup, before any test file runs.
+- Other permissions (camera, location, ...) can be controlled imperatively via [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid-android-only) and `device.revokePermission()`, which on iOS map to `simctl privacy` services.
 
 ### `ScreenshotMode`
 

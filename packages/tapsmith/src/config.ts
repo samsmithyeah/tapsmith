@@ -17,6 +17,14 @@ export type ScreenshotMode = 'always' | 'only-on-failure' | 'never';
 export type DeviceStrategy = 'prefer-connected' | 'avd-only';
 export type Platform = 'android' | 'ios';
 
+/** Desired permission state for the app under test at session start. */
+export type NotificationPermissionState = 'granted' | 'denied' | 'prompt';
+
+/** Permission states applied at session setup. See `TapsmithConfig.permissions`. */
+export interface PermissionsConfig {
+  notifications?: NotificationPermissionState;
+}
+
 export type { TraceMode, TraceConfig, VideoMode, VideoConfig };
 
 export interface TapsmithConfig {
@@ -220,6 +228,34 @@ export interface TapsmithConfig {
   extraHTTPHeaders?: Record<string, string>;
 
   /**
+   * Permission states applied to the app under test during session setup,
+   * before any test runs (PILOT-291). Mirrors Maestro's `permissions` map.
+   *
+   * `notifications`:
+   * - `'granted'` — the app starts the run able to post notifications.
+   *   Android: granted silently via `pm grant`. iOS simulator: iOS has no
+   *   silent grant for notifications, so Tapsmith ensures the one-shot
+   *   permission prompt is available (reinstalling the app if a previous
+   *   run denied it) and the agent accepts the prompt when the app asks.
+   * - `'denied'` — the app starts the run with notifications denied, for
+   *   testing denied-state UI. Android: revoked with "don't ask again" so
+   *   no dialog interrupts the test. iOS simulator: the agent declines the
+   *   prompt when the app asks (reinstalling first if a previous run
+   *   granted it).
+   * - `'prompt'` — reset to the never-asked state so the permission flow
+   *   can be exercised from scratch.
+   *
+   * On iOS a reset means an app reinstall, which clears app data — this
+   * only happens when the recorded state conflicts with the requested one.
+   * Not supported on physical iOS devices (a warning is printed and the
+   * setting is skipped).
+   *
+   * @example
+   * permissions: { notifications: 'granted' }
+   */
+  permissions?: PermissionsConfig;
+
+  /**
    * Run only tests whose fullName (`describe > test`) matches at least one of
    * these regular expressions. Mirrors Playwright's `grep` /  `--grep` CLI flag.
    * Combined with `grepInvert` via logical AND.
@@ -242,6 +278,8 @@ export interface TapsmithConfig {
  * Device-shaping fields (`platform`, `avd`, `simulator`, `app`, `apk`, etc.)
  * may only be overridden at the project level — they have no effect from
  * `test.use()` since the device is bound to the worker before any test runs.
+ * The same applies to `permissions`: it is applied once at session setup, so
+ * `test.use({ permissions })` warns and has no effect.
  */
 export type UseOptions = Partial<Pick<TapsmithConfig,
   | 'timeout'
@@ -267,6 +305,7 @@ export type UseOptions = Partial<Pick<TapsmithConfig,
   | 'doubleTapInterval'
   | 'baseURL'
   | 'extraHTTPHeaders'
+  | 'permissions'
 >> & {
   /**
    * Path to a saved app state archive (created by `device.saveAppState()`).
@@ -367,12 +406,48 @@ export function defineConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithC
   return withExplicitWorkers(merged, clean.workers !== undefined);
 }
 
+const VALID_NOTIFICATION_PERMISSION_STATES: readonly string[] = ['granted', 'denied', 'prompt'];
+
+/** A config value failed validation — must abort the run, never be swallowed
+ * into loadConfig's "failed to load, falling back" warning path. */
+export class ConfigValidationError extends Error {
+  /** Brand for {@link isConfigValidationError}. */
+  readonly isTapsmithConfigValidationError = true;
+}
+
+/**
+ * `instanceof` is not enough here: the user's config file imports
+ * `defineConfig` through its own module resolution, which can land on a
+ * different installed copy of this package than the running CLI (nested
+ * node_modules, a globally-installed CLI, a symlinked monorepo SDK). Each
+ * copy defines its own class, so a validation error thrown by one is not an
+ * `instanceof` the other's — and would be swallowed into the
+ * "failed to load, falling back to defaults" path. Match the brand too.
+ */
+export function isConfigValidationError(err: unknown): err is ConfigValidationError {
+  if (err instanceof ConfigValidationError) return true;
+  return typeof err === 'object'
+    && err !== null
+    && (err as { isTapsmithConfigValidationError?: unknown }).isTapsmithConfigValidationError === true;
+}
+
 function applyConfigDefaults(
   config: TapsmithConfig,
   raw: Partial<TapsmithConfig>,
 ): TapsmithConfig {
   if (raw.launchEmulators === undefined && raw.avd) {
     config.launchEmulators = true;
+  }
+  // Validate at load time so a typo surfaces as a config error, not as a
+  // misattributed failure from whichever setup step first consumes the
+  // value (e.g. "Failed to install iOS app: ..."). Covers project-level
+  // `use` overrides too — effectiveConfigForProject routes through here.
+  const notifications = config.permissions?.notifications;
+  if (notifications !== undefined && !VALID_NOTIFICATION_PERMISSION_STATES.includes(notifications)) {
+    throw new ConfigValidationError(
+      `Invalid permissions.notifications value: ${JSON.stringify(notifications)} — `
+      + `expected 'granted', 'denied', or 'prompt'.`,
+    );
   }
   return config;
 }
@@ -485,6 +560,9 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
         );
         return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
       } catch (err) {
+        // Validation failures are the user's config being wrong, not the file
+        // failing to load — surface them instead of falling back to defaults.
+        if (isConfigValidationError(err)) throw err;
         console.warn(`Warning: failed to load ${configPath}: ${err}`);
       }
     }

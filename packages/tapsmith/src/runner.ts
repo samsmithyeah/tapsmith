@@ -28,6 +28,7 @@ import { appendEventsToTrace, packageTrace, readTraceActionCount } from './trace
 import { TraceCollector, screenshotFileName, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
 import type { AnyTraceEvent } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
+import { reapplyAndroidNotificationPermissionAfterClear } from './permission-setup.js';
 import type { TraceDeviceInfo } from './trace/types.js';
 import { TestAbortedError, isAbortError } from './abort.js';
 import { onActionProgress } from './action-progress.js';
@@ -379,6 +380,13 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
         }
         if (options.retries !== undefined && options.retries < 0) {
           throw new Error('test.use() retries must be a non-negative number');
+        }
+        if (options.permissions !== undefined) {
+          process.stderr.write(
+            '[tapsmith] Warning: test.use({ permissions }) has no effect — permission state '
+            + 'is applied once at session setup. Set `permissions` in the config file or a '
+            + "project's `use` block instead.\n",
+          );
         }
         const ctx = currentContext();
         ctx.useOptions = { ...ctx.useOptions, ...options };
@@ -759,7 +767,17 @@ async function runSuiteContext(
   // `timeout` is handled separately via the device — it should only affect
   // assertion/action auto-wait, not the test-level safety timeout.
   // `appState` is handled below (restore before hooks).
-  const { timeout: scopeTimeout, appState: scopeAppState, ...configOverrides } = ctx.useOptions ?? {};
+  // `permissions` is dropped: the state is established once at session
+  // setup, so a scope-level override cannot take effect coherently. Letting
+  // it reach the scope config would make it *partially* apply anyway (the
+  // appState-clear branch below re-applies from config), contradicting the
+  // warning test.use() already prints.
+  const {
+    timeout: scopeTimeout,
+    appState: scopeAppState,
+    permissions: _scopePermissions,
+    ...configOverrides
+  } = ctx.useOptions ?? {};
   const opts: RunOptions = Object.keys(configOverrides).length > 0
     ? { ...parentOpts, config: { ...parentOpts.config, ...configOverrides } }
     : parentOpts;
@@ -793,6 +811,13 @@ async function runSuiteContext(
       await opts.device.restoreAppState(opts.config.package, resolvedPath);
     } else {
       await opts.device.clearAppData(opts.config.package);
+      // On Android, `pm clear` also resets runtime permission grants and
+      // user-set flags — re-apply the configured notification permission
+      // (no-op on iOS or when permissions is unset).
+      await reapplyAndroidNotificationPermissionAfterClear(opts.device, opts.config, {
+        info: () => {},
+        warn: (m) => process.stderr.write(`[tapsmith] ${m}\n`),
+      });
     }
     await opts.device.restartApp(opts.config.package);
   }

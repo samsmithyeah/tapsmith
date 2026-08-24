@@ -33,7 +33,7 @@ import {
 import * as nodePath from 'node:path';
 import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
 import { withActionProgress } from './action-progress.js';
-import type { TapsmithConfig } from './config.js';
+import type { TapsmithConfig, NotificationPermissionState } from './config.js';
 import { Tracing } from './trace/tracing.js';
 import { type TraceCollector, getActiveTraceCollector, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory, ConsoleLevel } from './trace/types.js';
@@ -532,6 +532,7 @@ export class Device {
     iosXctestrunPath?: string,
     iosAppPath?: string,
     networkTracingEnabled = false,
+    notificationPermission?: NotificationPermissionState,
   ): Promise<void> {
     return withActionProgress('startAgent', targetPackage || undefined, async () => {
       const res = await this._client.startAgent(
@@ -541,11 +542,31 @@ export class Device {
         iosXctestrunPath,
         iosAppPath,
         networkTracingEnabled,
+        notificationPermission,
       );
       if (!res.success) {
         throw new Error(res.errorMessage || 'Start agent failed');
       }
     });
+  }
+
+  /**
+   * Apply the configured notification permission state (Android only —
+   * `pm`/`appops` under the hood). Called by session setup when
+   * `permissions.notifications` is set in the config; on iOS the SDK
+   * resets state at install time and the agent handles the prompt instead.
+   *
+   * @internal Not part of the public API — set
+   * `permissions: { notifications: ... }` in your Tapsmith config.
+   */
+  async setNotificationPermission(packageName: string, state: NotificationPermissionState): Promise<void> {
+    const res = await this._client.setNotificationPermission(packageName, state);
+    if (!res.success) {
+      throw new Error(
+        `Failed to set notification permission to '${state}' for ${packageName}: `
+        + (res.errorMessage || res.errorType || 'unknown error'),
+      );
+    }
   }
 
   // ── Device Management (PILOT-10) ──

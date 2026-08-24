@@ -50,6 +50,11 @@ async fn clear_prior_xcresults(derived_data_path: &Path) -> Result<()> {
 /// For simulators (and for the fast-path case where an existing agent is
 /// already responding) returns `None` and the caller keeps any existing
 /// tracking state unchanged.
+/// `force_fresh` skips the ping-based "already running" fast path and
+/// relaunches unconditionally. Pass true whenever the running agent may have
+/// been launched with a different configuration (the caller's reuse check
+/// failed) — its environment (notably TAPSMITH_NOTIFICATION_PERMISSION) is
+/// baked in at launch and cannot serve a session with a different policy.
 #[instrument(skip(xctestrun_path, target_bundle_id))]
 pub async fn start_agent(
     udid: &str,
@@ -57,15 +62,18 @@ pub async fn start_agent(
     target_bundle_id: &str,
     agent_port: u16,
     is_physical: bool,
+    notification_permission: &str,
+    force_fresh: bool,
 ) -> Result<Option<IproxyHandle>> {
     start_agent_impl(
         udid,
         xctestrun_path,
         target_bundle_id,
-        false,
+        force_fresh,
         false,
         agent_port,
         is_physical,
+        notification_permission,
     )
     .await
 }
@@ -79,6 +87,7 @@ pub async fn start_agent_fresh(
     target_bundle_id: &str,
     agent_port: u16,
     is_physical: bool,
+    notification_permission: &str,
 ) -> Result<Option<IproxyHandle>> {
     start_agent_impl(
         udid,
@@ -88,10 +97,12 @@ pub async fn start_agent_fresh(
         true,
         agent_port,
         is_physical,
+        notification_permission,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_agent_impl(
     udid: &str,
     xctestrun_path: &str,
@@ -100,19 +111,36 @@ async fn start_agent_impl(
     attach_to_running_app: bool,
     agent_port: u16,
     is_physical: bool,
+    notification_permission: &str,
 ) -> Result<Option<IproxyHandle>> {
     let boot_start = std::time::Instant::now();
-    // Check if agent is already running by trying to connect
-    if !force && ping_agent(agent_port).await.is_ok() {
-        info!("iOS agent is already running");
-        crate::timing::timing_log!(
-            "kind=boot name=agent dur_ms={} reused=true udid={udid}",
-            boot_start.elapsed().as_millis()
-        );
-        // For physical devices, pingable-on-localhost means the caller's
-        // iproxy tunnel is still up; no new handle is returned and the
-        // caller's existing stored state remains authoritative.
-        return Ok(None);
+    // Check if agent is already running by trying to connect. Reuse is only
+    // safe when the running agent's baked-in notification policy matches the
+    // requested one — the agent reports its own policy in the ping response,
+    // which is authoritative (the live process answering about its own
+    // environment). This closes the daemon-restart hole in both directions:
+    // with no in-memory record of the previous launch, a surviving agent
+    // with a different policy would otherwise silently serve this session.
+    // See `policy_matches` for how agents predating the field are treated.
+    if !force {
+        if let Ok(reported_policy) = ping_agent(agent_port).await {
+            if policy_matches(reported_policy.as_deref(), notification_permission) {
+                info!("iOS agent is already running");
+                crate::timing::timing_log!(
+                    "kind=boot name=agent dur_ms={} reused=true udid={udid}",
+                    boot_start.elapsed().as_millis()
+                );
+                // For physical devices, pingable-on-localhost means the caller's
+                // iproxy tunnel is still up; no new handle is returned and the
+                // caller's existing stored state remains authoritative.
+                return Ok(None);
+            }
+            info!(
+                reported = ?reported_policy,
+                requested = notification_permission,
+                "Running agent's notification policy does not match this session; relaunching"
+            );
+        }
     }
 
     // Kill any stale xcodebuild processes targeting this device/simulator before
@@ -149,6 +177,7 @@ async fn start_agent_impl(
         target_bundle_id,
         attach_to_running_app,
         agent_port,
+        notification_permission,
     )
     .await
     .context("Failed to patch xctestrun file")?;
@@ -290,7 +319,32 @@ async fn start_agent_impl(
         }
 
         match ping_agent(agent_port).await {
-            Ok(_) => {
+            Ok(reported_policy) => {
+                // A pingable agent is not enough: verify it actually honors
+                // the policy this launch injected. A stale agent build that
+                // predates TAPSMITH_NOTIFICATION_PERMISSION would otherwise
+                // pass readiness and answer the one-shot notification prompt
+                // with its allow-first default — permanently recording a
+                // grant the config forbids (the PILOT-290 failure mode).
+                if !policy_matches(reported_policy.as_deref(), notification_permission) {
+                    let _ = child.kill().await;
+                    drop(iproxy_handle);
+                    let detail = match reported_policy.as_deref() {
+                        None => "the agent did not report a notification policy, so its build \
+                             predates notification permission support. Rebuild the iOS agent \
+                             (simulator: `xcodebuild build-for-testing`; physical device: \
+                             `npx tapsmith build-ios-agent`) and re-run."
+                            .to_string(),
+                        Some(reported) => format!(
+                            "the agent reported policy '{reported}', so the injected \
+                             TAPSMITH_NOTIFICATION_PERMISSION did not reach the XCUITest runner."
+                        ),
+                    };
+                    bail!(
+                        "iOS agent started but cannot enforce the configured \
+                         permissions.notifications value '{notification_permission}': {detail}"
+                    );
+                }
                 info!(udid, "iOS agent is ready");
                 crate::timing::timing_log!(
                     "kind=boot name=agent dur_ms={} reused=false udid={udid}",
@@ -432,6 +486,7 @@ async fn patch_xctestrun(
     target_bundle_id: &str,
     attach_to_running_app: bool,
     agent_port: u16,
+    notification_permission: &str,
 ) -> Result<String> {
     let mode = if attach_to_running_app {
         "attach"
@@ -495,6 +550,16 @@ async fn patch_xctestrun(
                 "string 1".to_string(),
             ));
         }
+        if !notification_permission.is_empty() {
+            k.push((
+                format!(":{base}:EnvironmentVariables:TAPSMITH_NOTIFICATION_PERMISSION"),
+                format!("string {notification_permission}"),
+            ));
+            k.push((
+                format!(":{base}:TestingEnvironmentVariables:TAPSMITH_NOTIFICATION_PERMISSION"),
+                format!("string {notification_permission}"),
+            ));
+        }
         k
     };
 
@@ -502,6 +567,17 @@ async fn patch_xctestrun(
     let mut del_cmd = tokio::process::Command::new(plist_buddy);
     for (key, _) in &keys {
         del_cmd.arg("-c").arg(format!("Delete {key}"));
+    }
+    // The notification-permission keys are only in `keys` when a policy is
+    // set, but they must ALWAYS be deleted: the source may itself be a
+    // previously patched file (see strip_patched_suffixes), and a session
+    // with no policy must not inherit the previous session's value.
+    if notification_permission.is_empty() {
+        for dict in ["EnvironmentVariables", "TestingEnvironmentVariables"] {
+            del_cmd.arg("-c").arg(format!(
+                "Delete :{base}:{dict}:TAPSMITH_NOTIFICATION_PERMISSION"
+            ));
+        }
     }
     del_cmd.arg(&patched_path);
     let _ = del_cmd.output().await;
@@ -615,8 +691,12 @@ fn strip_patched_suffixes(path: &str) -> String {
     }
 }
 
-/// Ping the iOS agent to check if it's running.
-async fn ping_agent(port: u16) -> Result<()> {
+/// Ping the iOS agent to check if it's running. On success, returns the
+/// notification-permission policy the agent reports for itself: `Some("")`
+/// for a policy-free agent, `Some(value)` when one is configured, `None`
+/// when the agent predates the field (treated as unverifiable by callers
+/// deciding on reuse).
+async fn ping_agent(port: u16) -> Result<Option<String>> {
     let addr = format!("127.0.0.1:{port}");
     let stream = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(&addr))
         .await
@@ -637,11 +717,36 @@ async fn ping_agent(port: u16) -> Result<()> {
         .await
         .map_err(|_| anyhow::anyhow!("Ping response timeout"))??;
 
-    if response.contains("pong") {
-        Ok(())
-    } else {
+    if !response.contains("pong") {
         bail!("Unexpected ping response: {response}")
     }
+    Ok(parse_ping_notification_permission(&response))
+}
+
+/// Whether a running agent's self-reported notification policy satisfies the
+/// requested one. Agents built before the policy field existed report nothing
+/// (`None`): when no policy is requested they behave identically to a current
+/// build (same allow-first default), so they stay reusable — relaunching them
+/// would needlessly kill warm app state on every daemon restart. When a
+/// policy IS requested, an unreported policy cannot be verified and does not
+/// match.
+fn policy_matches(reported: Option<&str>, requested: &str) -> bool {
+    match reported {
+        Some(reported) => reported == requested,
+        None => requested.is_empty(),
+    }
+}
+
+/// Extract the agent-reported notification policy from a ping response
+/// (`{"id":"ping","result":{"pong":true,"notificationPermission":"..."}}`).
+/// Absent field (older agent) → None.
+fn parse_ping_notification_permission(response: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(response.trim()).ok()?;
+    value
+        .get("result")?
+        .get("notificationPermission")?
+        .as_str()
+        .map(String::from)
 }
 
 #[cfg(test)]
@@ -721,9 +826,10 @@ mod tests {
     async fn patch_xctestrun_launch_mode_injects_bundle_id_and_port() {
         let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
 
-        let patched_path = patch_xctestrun(path.to_str().unwrap(), "com.example.app", false, 18800)
-            .await
-            .expect("patch should succeed");
+        let patched_path =
+            patch_xctestrun(path.to_str().unwrap(), "com.example.app", false, 18800, "")
+                .await
+                .expect("patch should succeed");
 
         assert!(
             patched_path.ends_with(".launch.port18800.patched.xctestrun"),
@@ -737,15 +843,103 @@ mod tests {
         assert!(contents.contains("UITargetAppBundleIdentifier"));
         // Launch mode must NOT inject the attach flag.
         assert!(!contents.contains("TAPSMITH_ATTACH_TO_RUNNING_APP"));
+        // No notification policy configured — the env var must be absent.
+        assert!(!contents.contains("TAPSMITH_NOTIFICATION_PERMISSION"));
+    }
+
+    #[tokio::test]
+    async fn patch_xctestrun_injects_notification_permission_when_set() {
+        let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
+
+        let patched_path = patch_xctestrun(
+            path.to_str().unwrap(),
+            "com.example.app",
+            false,
+            18800,
+            "denied",
+        )
+        .await
+        .expect("patch should succeed");
+
+        let contents = tokio::fs::read_to_string(&patched_path).await.unwrap();
+        assert!(contents.contains("TAPSMITH_NOTIFICATION_PERMISSION"));
+        assert!(contents.contains("denied"));
+    }
+
+    #[tokio::test]
+    async fn patch_xctestrun_clears_stale_notification_permission() {
+        // The source can itself be a previously patched file (that's why
+        // strip_patched_suffixes exists). A session with no policy must not
+        // inherit the previous session's TAPSMITH_NOTIFICATION_PERMISSION.
+        let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
+
+        let patched_with_policy = patch_xctestrun(
+            path.to_str().unwrap(),
+            "com.example.app",
+            false,
+            18800,
+            "denied",
+        )
+        .await
+        .expect("first patch should succeed");
+
+        let repatched = patch_xctestrun(&patched_with_policy, "com.example.app", false, 18801, "")
+            .await
+            .expect("re-patch should succeed");
+
+        let contents = tokio::fs::read_to_string(&repatched).await.unwrap();
+        assert!(
+            !contents.contains("TAPSMITH_NOTIFICATION_PERMISSION"),
+            "stale notification policy leaked into re-patched plist:\n{contents}"
+        );
+    }
+
+    #[test]
+    fn ping_response_notification_permission_parsing() {
+        // New agent, policy configured.
+        assert_eq!(
+            parse_ping_notification_permission(
+                r#"{"id":"ping","result":{"pong":true,"notificationPermission":"denied"}}"#
+            ),
+            Some("denied".to_string())
+        );
+        // New agent, no policy.
+        assert_eq!(
+            parse_ping_notification_permission(
+                r#"{"id":"ping","result":{"pong":true,"notificationPermission":""}}"#
+            ),
+            Some(String::new())
+        );
+        // Old agent without the field — unverifiable.
+        assert_eq!(
+            parse_ping_notification_permission(r#"{"id":"ping","result":{"pong":true}}"#),
+            None
+        );
+        // Garbage — unverifiable rather than a panic.
+        assert_eq!(parse_ping_notification_permission("pong"), None);
+    }
+
+    #[test]
+    fn policy_matching_rules() {
+        // Exact matches, including the no-policy default.
+        assert!(policy_matches(Some("denied"), "denied"));
+        assert!(policy_matches(Some(""), ""));
+        // Old agent (no field): reusable only when no policy is requested.
+        assert!(policy_matches(None, ""));
+        assert!(!policy_matches(None, "denied"));
+        // Live policy differs from the requested one.
+        assert!(!policy_matches(Some("granted"), "denied"));
+        assert!(!policy_matches(Some(""), "granted"));
     }
 
     #[tokio::test]
     async fn patch_xctestrun_attach_mode_sets_attach_flag() {
         let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
 
-        let patched_path = patch_xctestrun(path.to_str().unwrap(), "com.example.app", true, 19000)
-            .await
-            .expect("patch should succeed");
+        let patched_path =
+            patch_xctestrun(path.to_str().unwrap(), "com.example.app", true, 19000, "")
+                .await
+                .expect("patch should succeed");
 
         assert!(
             patched_path.ends_with(".attach.port19000.patched.xctestrun"),
@@ -764,7 +958,7 @@ mod tests {
         let (_dir, path) = write_fixture(FIXTURE_WITH_STALE).await;
 
         let patched_path =
-            patch_xctestrun(path.to_str().unwrap(), "com.fresh.bundle", false, 18800)
+            patch_xctestrun(path.to_str().unwrap(), "com.fresh.bundle", false, 18800, "")
                 .await
                 .expect("patch should succeed");
 
@@ -789,13 +983,13 @@ mod tests {
         let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
         let src = path.to_str().unwrap();
 
-        let p1 = patch_xctestrun(src, "com.example.app", false, 18800)
+        let p1 = patch_xctestrun(src, "com.example.app", false, 18800, "")
             .await
             .unwrap();
-        let p2 = patch_xctestrun(src, "com.example.app", false, 18801)
+        let p2 = patch_xctestrun(src, "com.example.app", false, 18801, "")
             .await
             .unwrap();
-        let p3 = patch_xctestrun(src, "com.example.app", true, 18800)
+        let p3 = patch_xctestrun(src, "com.example.app", true, 18800, "")
             .await
             .unwrap();
         assert_ne!(p1, p2);
@@ -809,7 +1003,7 @@ mod tests {
         let bogus = dir.path().join("does-not-exist.xctestrun");
 
         let result =
-            patch_xctestrun(bogus.to_str().unwrap(), "com.example.app", false, 18800).await;
+            patch_xctestrun(bogus.to_str().unwrap(), "com.example.app", false, 18800, "").await;
         assert!(result.is_err(), "expected error for missing source file");
     }
 

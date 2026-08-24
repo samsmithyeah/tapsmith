@@ -1,15 +1,16 @@
-import type { TapsmithConfig } from './config.js';
+import type { TapsmithConfig, NotificationPermissionState } from './config.js';
 import type { Device } from './device.js';
 import type { LaunchAppOptions, TapsmithGrpcClient } from './grpc-client.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
+import { reapplyAndroidNotificationPermissionAfterClear } from './permission-setup.js';
 import { withActionProgress } from './action-progress.js';
 
-type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'openDeepLink' | 'getAppState'>
+type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'openDeepLink' | 'getAppState' | 'setNotificationPermission'>
 type SessionClient = Pick<TapsmithGrpcClient, 'ping' | 'getUiHierarchy'>
 
 export interface SessionPreflightContext {
   label: string
-  config: Pick<TapsmithConfig, 'package' | 'activity' | 'platform' | 'resetAppDeepLink' | 'resetAppWaitMs' | 'device'>
+  config: Pick<TapsmithConfig, 'package' | 'activity' | 'platform' | 'resetAppDeepLink' | 'resetAppWaitMs' | 'device' | 'permissions'>
   device: SessionDevice
   client: SessionClient
   agentApkPath?: string
@@ -30,6 +31,15 @@ export interface SessionPreflightContext {
    * no-op. Callers should compute this once via `isNetworkTracingEnabled`.
    */
   networkTracingEnabled?: boolean
+  /**
+   * The session's notification permission policy (PILOT-291). Threaded
+   * through to `startAgent` so recovery-path agent relaunches keep the
+   * configured policy — omitting it would relaunch the agent with the
+   * default allow-first behavior and silently grant a permission the
+   * session was configured to deny. Callers should compute this once via
+   * `notificationPermissionForAgent`.
+   */
+  notificationPermission?: NotificationPermissionState
 }
 
 export interface EnsureSessionReadyOptions {
@@ -221,6 +231,14 @@ export async function launchConfiguredApp(
   // state use test.use({ appState }) which restores after this reset.
   await ctx.device.clearAppData(ctx.config.package);
 
+  // `pm clear` also resets runtime permission grants and user-set flags, so
+  // the notification permission applied at session setup must be re-applied
+  // for every file after the first.
+  await reapplyAndroidNotificationPermissionAfterClear(ctx.device, ctx.config, {
+    info: () => {},
+    warn: (m) => process.stderr.write(`[tapsmith] ${m}\n`),
+  });
+
   // Restart the agent BEFORE launching the app. The terminate + clearAppData
   // sequence above kills the agent process. If we launch the app first and
   // then let ensureSessionReady discover the dead agent, its recoverSession
@@ -232,6 +250,7 @@ export async function launchConfiguredApp(
     await ctx.device.startAgent(
       ctx.config.package, ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath, ctx.iosAppPath,
       ctx.networkTracingEnabled ?? false,
+      ctx.notificationPermission,
     );
   } catch {
     // Will be recovered by ensureSessionReady below
@@ -454,7 +473,7 @@ async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
 
   // Then try agent-level dismissal if the agent is reachable
   await dismissBlockingSystemUi(ctx);
-  await ctx.device.startAgent(ctx.config.package ?? '', ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath, ctx.iosAppPath, ctx.networkTracingEnabled ?? false);
+  await ctx.device.startAgent(ctx.config.package ?? '', ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath, ctx.iosAppPath, ctx.networkTracingEnabled ?? false, ctx.notificationPermission);
   if (!ctx.config.package) return;
 
   try {

@@ -47,8 +47,9 @@ import {
   waitForDeviceStability,
   ensureAdbRoot,
 } from './emulator.js';
-import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeRegExpArray } from './worker-protocol.js';
+import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeConfig } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort } from './port-utils.js';
+import { applyAndroidNotificationPermission, applySimulatorNotificationPermissionSetup, notificationPermissionForAgent } from './permission-setup.js';
 import { findDaemonBin } from './daemon-bin.js';
 import {
   createUiLaunchSteps,
@@ -507,6 +508,9 @@ interface SequentialDeviceState {
   resolvedAgentTestApk?: string
   resolvedIosXctestrun?: string
   resolvedIosAppPath?: string
+  /** Agent-side notification policy computed at setup (PILOT-291); reused by
+   * recovery contexts so relaunches keep the session's configured policy. */
+  notificationPermission?: import('./config.js').NotificationPermissionState
   signature: string
 }
 
@@ -592,6 +596,21 @@ async function setupSequentialDevice(
 
   // Physical-iOS fast-fail checks. Fire BEFORE the 8-second installAppOnDevice
   // so the user gets an immediate, actionable error instead of a mid-test hang.
+  // PILOT-291: one message sink + one computed agent policy shared by every
+  // permission-setup step below, so the sequential path can't drift from the
+  // worker paths (they use the same permission-setup helpers).
+  const permissionSetupLog = {
+    info: (m: string) => {
+      if (progress) progress.note(m);
+      else console.log(dim(m));
+    },
+    warn: (m: string) => {
+      if (progress) progress.note(m);
+      else console.log(`Warning: ${m}`);
+    },
+  };
+  const agentNotificationPermission = await notificationPermissionForAgent(cfg, cfg.device, permissionSetupLog);
+
   if (cfg.platform === 'ios' && targetIsPhysical && cfg.device) {
     // Cert-trust probe. The devicectl launch is ~1s and pattern-matches
     // cleanly on "cert not trusted". Only helpful when the runner is
@@ -645,6 +664,19 @@ async function setupSequentialDevice(
 
   if (cfg.platform === 'ios') {
     progress?.complete('primary-device', `${cfg.device} selected`);
+    if (cfg.device) {
+      // Reset the recorded notification state before any install decision:
+      // the reset works by uninstalling, so it has to precede the "already
+      // installed?" check that decides whether to install at all.
+      //
+      // Deliberately outside the app-install try/catch below. Its failures
+      // are about the simulator's permission record, not the bundle, and
+      // that catch rewrites everything as "Failed to install iOS app" —
+      // sending operators after a codesign or bundle problem that isn't
+      // there. The helper owns the physical-device guard and no-ops when
+      // permissions.notifications is unset, so it is safe on every path.
+      await applySimulatorNotificationPermissionSetup(cfg.device, cfg, permissionSetupLog);
+    }
     if (cfg.app && cfg.device) {
       progress?.start('app-install', `checking ${path.basename(cfg.app)}`);
       try {
@@ -768,6 +800,8 @@ async function setupSequentialDevice(
     } else {
       progress?.skip('app-install', 'no Android APK configured');
     }
+
+    await applyAndroidNotificationPermission(device, cfg, permissionSetupLog);
   }
 
   const traceConfig = resolveTraceConfig(cfg.trace);
@@ -895,6 +929,10 @@ async function setupSequentialDevice(
       resolvedIosXctestrun,
       cfg.platform === 'ios' ? resolvedIosAppPath : undefined,
       networkTracingEnabled,
+      // iOS simulator only: the agent answers the notification prompt per
+      // this policy. Android is handled via setNotificationPermission above;
+      // physical iOS is unsupported (warned when the policy was computed).
+      agentNotificationPermission,
     );
     try {
       await startAgent();
@@ -930,6 +968,7 @@ async function setupSequentialDevice(
         iosXctestrunPath: resolvedIosXctestrun,
         deviceSerial: cfg.device,
         networkTracingEnabled,
+        notificationPermission: agentNotificationPermission,
       }, 'startup');
     }
     if (progress) progress.complete('agent', 'agent connected');
@@ -953,6 +992,7 @@ async function setupSequentialDevice(
         iosAppPath: resolvedIosAppPath,
         deviceSerial: cfg.device,
         networkTracingEnabled,
+        notificationPermission: agentNotificationPermission,
       }, 'startup', { allowSoftReset: false, readinessAttempts: 3, skipAppReset });
       if (progress) progress.complete('app-launch', `launched ${cfg.package}`);
       else console.log(dim(`Launched ${cfg.package}`));
@@ -974,6 +1014,7 @@ async function setupSequentialDevice(
     resolvedAgentTestApk,
     resolvedIosXctestrun,
     resolvedIosAppPath,
+    notificationPermission: agentNotificationPermission,
     signature,
   };
 }
@@ -1454,40 +1495,6 @@ interface PerProjectProvisionResult {
 }
 
 /**
- * Build a SerializedConfig from a TapsmithConfig (a per-bucket effective config).
- */
-function buildSerializedConfig(cfg: TapsmithConfig): import('./worker-protocol.js').SerializedConfig {
-  return {
-    timeout: cfg.timeout,
-    retries: cfg.retries,
-    screenshot: cfg.screenshot,
-    rootDir: cfg.rootDir,
-    outputDir: cfg.outputDir,
-    apk: cfg.apk,
-    activity: cfg.activity,
-    package: cfg.package,
-    agentApk: cfg.agentApk,
-    agentTestApk: cfg.agentTestApk,
-    trace: typeof cfg.trace === 'string' || typeof cfg.trace === 'object'
-      ? cfg.trace
-      : undefined,
-    video: typeof cfg.video === 'string' || typeof cfg.video === 'object'
-      ? cfg.video
-      : undefined,
-    platform: cfg.platform,
-    app: cfg.app,
-    iosXctestrun: cfg.iosXctestrun,
-    simulator: cfg.simulator,
-    resetAppDeepLink: cfg.resetAppDeepLink,
-    resetAppWaitMs: cfg.resetAppWaitMs,
-    baseURL: cfg.baseURL,
-    extraHTTPHeaders: cfg.extraHTTPHeaders,
-    grep: serializeRegExpArray(normalizeGrep(cfg.grep)),
-    grepInvert: serializeRegExpArray(normalizeGrep(cfg.grepInvert)),
-  };
-}
-
-/**
  * Provision devices for a single bucket using its effective config and a
  * fixed worker count. Returns the device serials successfully provisioned
  * (may be fewer than requested if hardware constraints prevent it).
@@ -1670,7 +1677,7 @@ async function provisionPerProjectDevices(
     const { signature, bucketEffective, provisioned } = outcome;
     result.launched.push(...provisioned.launched);
     result.reusedSimulatorCount += provisioned.reusedSimulatorCount;
-    const bucketSerialized = buildSerializedConfig(bucketEffective);
+    const bucketSerialized = serializeConfig(bucketEffective);
     for (const serial of provisioned.serials) {
       result.deviceSerials.push(serial);
       result.configByDevice.set(serial, bucketSerialized);
@@ -2186,23 +2193,38 @@ async function main(): Promise<void> {
   // so reporters can correctly suppress file headings / show project tags
   // when buckets or per-project `workers:` push the actual concurrency above
   // the global `config.workers` value.
-  const { allocateBucketWorkers, bucketizeProjects } = await import('./project.js');
+  const {
+    allocateBucketWorkers, bucketizeProjects, devicePoolKey, peakConcurrentWorkers,
+  } = await import('./project.js');
   const budgetCap = isExplicitWorkers(config) ? config.workers : undefined;
-  const allocation = allocateBucketWorkers(config.workers, bucketizeProjects(projects), budgetCap);
-  const totalWorkers = [...allocation.values()].reduce((s, n) => s + n, 0);
+  const buckets = bucketizeProjects(projects);
+  const allocation = allocateBucketWorkers(config.workers, buckets, budgetCap);
+
+  // Peak concurrency, not the sum of the allocation. Buckets sharing a device
+  // pool run in sequential rounds, so their workers never coexist — this is
+  // what "how parallel is this run" actually means, and what an explicit
+  // --workers should be measured against.
+  const totalWorkers = peakConcurrentWorkers(buckets.map((b) => ({
+    poolKey: devicePoolKey(b.projects[0].effectiveConfig),
+    workers: allocation.get(b.signature) ?? 0,
+  })));
   const maxFilesInAnyWave = Math.max(...projectWaves.map((wave) =>
     wave.reduce((sum, p) => sum + p.testFiles.length, 0),
   ));
   const effectiveWorkers = Math.min(totalWorkers, maxFilesInAnyWave);
 
-  // Warn only when the irreducible minimum (one worker per active bucket)
-  // exceeds the user's explicit --workers value. Per-project `workers:`
-  // inflation is now capped by the budget, so this only fires when there
-  // are genuinely more device buckets than workers.
+  // Warn only when the irreducible minimum (one worker per active bucket that
+  // has a device to itself) exceeds the user's explicit --workers value.
+  // Buckets queued behind another on the same device don't inflate this:
+  // they cost wall-clock, not parallelism.
   let workerPlanWarning: string | undefined;
   if (isExplicitWorkers(config) && totalWorkers > config.workers) {
-    const activeBuckets = [...allocation.values()].filter((n) => n > 0).length;
-    workerPlanWarning = `requested ${countLabel(config.workers, 'worker')}; running ${totalWorkers} because ${countLabel(activeBuckets, 'device target')} ${activeBuckets === 1 ? 'needs a worker' : 'need one each'}`;
+    const concurrentPools = new Set(
+      buckets
+        .filter((b) => (allocation.get(b.signature) ?? 0) > 0)
+        .map((b) => devicePoolKey(b.projects[0].effectiveConfig)),
+    ).size;
+    workerPlanWarning = `requested ${countLabel(config.workers, 'worker')}; running ${totalWorkers} because ${countLabel(concurrentPools, 'device target')} ${concurrentPools === 1 ? 'needs a worker' : 'need one each'}`;
   }
 
   // Reflect the effective parallelism on the config so reporters see the
@@ -2288,6 +2310,7 @@ async function main(): Promise<void> {
   let resolvedAgentTestApk: string | undefined;
   let resolvedIosXctestrun: string | undefined;
   let resolvedIosAppPath: string | undefined;
+  let sessionNotificationPermission: import('./config.js').NotificationPermissionState | undefined;
   let sequentialExitCode = 1;
   let sequentialErrorEscaping = false;
   const sequentialStart = Date.now();
@@ -2343,6 +2366,7 @@ async function main(): Promise<void> {
     resolvedAgentTestApk = currentSequentialState.resolvedAgentTestApk;
     resolvedIosXctestrun = currentSequentialState.resolvedIosXctestrun;
     resolvedIosAppPath = currentSequentialState.resolvedIosAppPath;
+    sessionNotificationPermission = currentSequentialState.notificationPermission;
     // Mirror the chosen device serial onto the root config so any code path
     // still reading from `config.device` (UI/watch handoff) sees it.
     config.device = currentSequentialState.deviceSerial;
@@ -2555,6 +2579,7 @@ async function main(): Promise<void> {
           resolvedAgentTestApk = currentSequentialState.resolvedAgentTestApk;
           resolvedIosXctestrun = currentSequentialState.resolvedIosXctestrun;
           resolvedIosAppPath = currentSequentialState.resolvedIosAppPath;
+          sessionNotificationPermission = currentSequentialState.notificationPermission;
           // After switching, the launchConfiguredApp on first file is not
           // needed because setupSequentialDevice already launched the app.
           fileIndex = 0;
@@ -2587,6 +2612,7 @@ async function main(): Promise<void> {
               iosAppPath: resolvedIosAppPath,
               deviceSerial: projectConfig.device,
               networkTracingEnabled: isNetworkTracingEnabled(projectConfig.trace),
+              notificationPermission: sessionNotificationPermission,
             };
             let resetOk = false;
             try {
@@ -2659,6 +2685,7 @@ async function main(): Promise<void> {
               iosXctestrunPath: resolvedIosXctestrun,
               iosAppPath: resolvedIosAppPath,
               deviceSerial: projectConfig.device,
+              notificationPermission: sessionNotificationPermission,
             },
           });
 

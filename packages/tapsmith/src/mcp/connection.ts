@@ -122,7 +122,16 @@ export async function listAllDevices(): Promise<DeviceInfoProto[]> {
 // ─── Discovery ───
 
 async function discover(): Promise<void> {
-  const config = await loadMcpConfig(_configFile).then((result) => result.config).catch(() => null);
+  const config = await loadMcpConfig(_configFile)
+    .then((result) => result.config)
+    .catch((err: unknown) => {
+      // A validation failure (e.g. a bad permissions.notifications value)
+      // must be visible — the CLI aborts on it, and silently proceeding
+      // here would drop the config's daemon address AND its permission
+      // policy with no explanation.
+      log(`Warning: failed to load tapsmith config: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
 
   // Collect candidate addresses from all sources
   const candidates = new Set<string>();
@@ -351,15 +360,38 @@ async function setDeviceAndAgent(
 
   await client.setDevice(serial);
   log(`Using device: ${serial}`);
-  await startAgentFromConfig(client, config);
+  await startAgentFromConfig(client, config, serial);
 }
 
+/**
+ * `deviceSerial` is the device the daemon is actually using when the caller
+ * selected it (setDeviceAndAgent); discovery-path callers attaching to an
+ * existing daemon don't know it, so it is resolved from the daemon's own
+ * device list (the `Active` entry) — never from config.device, which may
+ * name a different device than the daemon is driving and would aim the
+ * data-wiping iOS reset at the wrong simulator. The shared helper warns and
+ * skips the notification policy when the device cannot be identified.
+ */
 async function startAgentFromConfig(
   client: TapsmithGrpcClient,
   config: TapsmithConfig | null,
+  deviceSerial?: string,
 ): Promise<void> {
   const { agentConnected } = await client.ping();
-  if (agentConnected) return;
+  if (agentConnected) {
+    // Attaching to a live agent must be non-mutating: the session that
+    // started this agent already applied its own permission state, and a
+    // test run may since have deliberately changed it (e.g. accepting the
+    // prompt under 'prompt'). Re-applying this config's policy here would
+    // yank that state out from under the in-flight session.
+    if (config?.permissions?.notifications) {
+      log(
+        'Attached to a running agent; permissions.notifications is applied at session '
+        + 'start and was not re-applied.',
+      );
+    }
+    return;
+  }
 
   const rootDir = config?.rootDir ?? process.cwd();
   const agentApk = config?.agentApk ? path.resolve(rootDir, config.agentApk) : undefined;
@@ -378,6 +410,47 @@ async function startAgentFromConfig(
     }
   }
 
+  // PILOT-291: keep the session's notification policy across MCP-triggered
+  // agent starts — omitting it would relaunch the agent with the default
+  // allow-first behavior and silently grant a permission the config denies.
+  // The shared helper performs the physical-device check (and warns + skips
+  // when the target device is unknown or physical).
+  const { notificationPermissionForAgent, applySimulatorNotificationPermissionSetup } =
+    await import('../permission-setup.js');
+  const permissionSetupLog = mcpPermissionSetupLog();
+  let resolvedSerial = deviceSerial;
+  if (!resolvedSerial) {
+    try {
+      const { devices } = await client.listDevices();
+      resolvedSerial = devices.find((d) => d.state === 'Active')?.serial;
+    } catch {
+      // Leave undefined — the shared helper warns and skips the policy.
+    }
+  }
+  const notificationPermission = await notificationPermissionForAgent(
+    config ?? {}, resolvedSerial, permissionSetupLog,
+  );
+
+  // iOS simulator: a recorded state that conflicts with the target must be
+  // reset BEFORE the agent launches the app, or the policy is dead code
+  // (an already-authorized/denied app never prompts again). The helper
+  // uninstalls on conflict; MCP has no later install step, so reinstall
+  // here.
+  if (notificationPermission && config && resolvedSerial) {
+    try {
+      if ((await applySimulatorNotificationPermissionSetup(resolvedSerial, config, permissionSetupLog))
+          && config.app) {
+        const { installApp } = await import('../ios-simulator.js');
+        const appPath = path.resolve(config.rootDir ?? process.cwd(), config.app);
+        log(`Reinstalling ${path.basename(appPath)} after notification permission reset`);
+        installApp(resolvedSerial, appPath);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`Warning: notification permission reset failed (${msg}).`);
+    }
+  }
+
   try {
     log('Starting agent on device...');
     await client.startAgent(
@@ -385,11 +458,47 @@ async function startAgentFromConfig(
       agentApk,
       agentTestApk,
       iosXctestrun,
+      undefined,
+      false,
+      notificationPermission,
     );
     log('Agent started');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`Warning: agent start failed (${msg}). Device tools may not work.`);
+    return;
+  }
+
+  await applyAndroidPermissionFromConfig(client, config);
+}
+
+function mcpPermissionSetupLog() {
+  return {
+    info: (m: string) => log(m),
+    warn: (m: string) => log(`Warning: ${m}`),
+  };
+}
+
+/** PILOT-291: Android applies the state via the daemon RPC — without this
+ * an MCP-started session silently ignores permissions.notifications. */
+async function applyAndroidPermissionFromConfig(
+  client: TapsmithGrpcClient,
+  config: TapsmithConfig | null,
+): Promise<void> {
+  if (!config || config.platform === 'ios' || !config.permissions?.notifications) return;
+  try {
+    const { applyAndroidNotificationPermission } = await import('../permission-setup.js');
+    await applyAndroidNotificationPermission({
+      setNotificationPermission: async (pkg, state) => {
+        const res = await client.setNotificationPermission(pkg, state);
+        if (!res.success) {
+          throw new Error(res.errorMessage || res.errorType || 'setNotificationPermission failed');
+        }
+      },
+    }, config, mcpPermissionSetupLog());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`Warning: failed to apply permissions.notifications (${msg}).`);
   }
 }
 

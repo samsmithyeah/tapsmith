@@ -50,6 +50,7 @@ service TapsmithService {
   rpc ClearAppData(ClearAppDataRequest) returns (ActionResponse);
   rpc GrantPermission(GrantPermissionRequest) returns (ActionResponse);
   rpc RevokePermission(RevokePermissionRequest) returns (ActionResponse);
+  rpc SetNotificationPermission(SetNotificationPermissionRequest) returns (ActionResponse);
   rpc SetClipboard(SetClipboardRequest) returns (ActionResponse);
   rpc GetClipboard(GetClipboardRequest) returns (GetClipboardResponse);
   rpc SetOrientation(SetOrientationRequest) returns (ActionResponse);
@@ -419,6 +420,13 @@ message StartAgentRequest {
   // Same semantics as SetDeviceRequest.network_tracing_enabled — gates
   // `ensure_ios_physical_proxy` pre-arming on the start_agent path.
   bool network_tracing_enabled = 7;
+  // Desired notification permission state for the target app: "granted",
+  // "denied", "prompt", or empty for the default behavior (prompts are
+  // auto-accepted). iOS only: injected into the agent's environment so the
+  // XCUITest interruption monitor answers the one-shot notification prompt
+  // according to the configured policy. Android uses the
+  // SetNotificationPermission RPC instead.
+  string notification_permission = 8;
 }
 
 message PingRequest {}
@@ -569,6 +577,19 @@ message RevokePermissionRequest {
   string request_id = 1;
   string package_name = 2;
   string permission = 3;
+}
+
+// Sets the app's notification permission to a deterministic state before
+// tests run. Android only: maps to `pm grant`/`pm revoke` of
+// POST_NOTIFICATIONS plus the matching `appops` notification toggle. On iOS
+// notification state is not scriptable while the simulator is booted — the
+// SDK resets it by reinstalling the app and the agent answers the resulting
+// prompt per StartAgentRequest.notification_permission.
+message SetNotificationPermissionRequest {
+  string request_id = 1;
+  string package_name = 2;
+  // "granted", "denied", or "prompt" (reset so the app can ask again).
+  string state = 3;
 }
 
 message SetClipboardRequest {

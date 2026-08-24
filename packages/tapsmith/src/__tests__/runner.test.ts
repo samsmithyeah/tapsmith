@@ -946,6 +946,42 @@ describe('test.use()', () => {
     expect(ctx.useOptions).toEqual({ timeout: 10000 });
   });
 
+  it('does not apply a scope-level permissions override', async () => {
+    // test.use() warns that `permissions` has no effect (the state is
+    // established once at session setup). It must therefore not reach the
+    // scope config either: the appState-clear branch re-applies the
+    // permission from config after pm clear, which would make the override
+    // *partially* real — pm revoke mid-session — contradicting the warning.
+    const setNotificationPermission = vi.fn(async () => {});
+    const mockDevice = {
+      waitForIdle: vi.fn(async () => {}),
+      clearAppData: vi.fn(async () => {}),
+      restartApp: vi.fn(async () => {}),
+      setNotificationPermission,
+    };
+
+    pushContext();
+    tapsmithTest.use({ appState: '', permissions: { notifications: 'denied' } });
+    tapsmithTest('runs under the session policy', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({
+        platform: 'android',
+        package: 'com.example.app',
+        permissions: { notifications: 'granted' },
+      }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused device mock
+      device: mockDevice as any,
+    }));
+
+    expect(result.tests[0].status).toBe('passed');
+    expect(mockDevice.clearAppData).toHaveBeenCalledWith('com.example.app');
+    // The session policy is re-applied after pm clear; the scope override is not.
+    expect(setNotificationPermission).toHaveBeenCalledWith('com.example.app', 'granted');
+    expect(setNotificationPermission).not.toHaveBeenCalledWith('com.example.app', 'denied');
+  });
+
   it('stores appState in useOptions', () => {
     pushContext();
     tapsmithTest.use({ appState: './auth-state.tar.gz' });

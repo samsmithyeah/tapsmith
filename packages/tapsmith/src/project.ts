@@ -45,6 +45,11 @@ export interface ResolvedProject {
  */
 export function deviceSignature(config: TapsmithConfig): string {
   const platform = config.platform ?? 'android';
+  // permissions.notifications is device-shaping: it is applied to the
+  // device/agent at session setup, so projects that differ in it cannot
+  // share a device session — folding them together would silently run the
+  // second project against the first project's permission state.
+  const notifications = config.permissions?.notifications ?? '';
   if (platform === 'ios') {
     return [
       'ios',
@@ -53,6 +58,7 @@ export function deviceSignature(config: TapsmithConfig): string {
       config.package ?? '',
       config.app ?? '',
       config.iosXctestrun ?? '',
+      notifications,
     ].join('|');
   }
   return [
@@ -63,7 +69,36 @@ export function deviceSignature(config: TapsmithConfig): string {
     config.apk ?? '',
     config.deviceStrategy ?? '',
     config.launchEmulators ? '1' : '0',
+    notifications,
   ].join('|');
+}
+
+/**
+ * Which pool of physical devices a config draws from.
+ *
+ * `deviceSignature` answers "can these projects share a device *session*?"
+ * and includes session-shaping fields (package, app/apk, notification
+ * policy). Two projects can differ there — and so get separate buckets —
+ * while still resolving to the *same emulator or simulator*, because only
+ * the fields below decide which hardware you actually get.
+ *
+ * That distinction matters: buckets in the same pool must not run
+ * concurrently. Handing two workers the same device lets them install over
+ * each other, `pm clear` each other's app, and apply opposing permission
+ * state to the same package (PILOT-291).
+ *
+ * Deliberately narrower than `deviceSignature`: it omits `deviceStrategy`
+ * and `launchEmulators`, which shape *how* a device is provisioned but not
+ * *which* one. Fewer distinct keys means more serialization, and
+ * serializing when we did not have to only costs time — running
+ * concurrently when we should not have costs correctness.
+ */
+export function devicePoolKey(config: TapsmithConfig): string {
+  const platform = config.platform ?? 'android';
+  if (platform === 'ios') {
+    return ['ios', config.simulator ?? '', config.device ?? ''].join('|');
+  }
+  return ['android', config.avd ?? '', config.device ?? ''].join('|');
 }
 
 // ─── Worker allocation ───
@@ -233,6 +268,39 @@ export function bucketizeProjects(
     m.set(p.deviceSignature, arr);
   }
   return [...m.entries()].map(([signature, projects]) => ({ signature, projects }));
+}
+
+/**
+ * Peak number of workers running at the same moment.
+ *
+ * Not the same as the sum of the allocation. Buckets that draw from the same
+ * device pool are executed in sequential rounds by the dispatcher (see
+ * `planBucketRounds`), so their workers never coexist — a run allocating one
+ * worker to each of two same-pool buckets peaks at one, not two.
+ *
+ * Round `i` takes the i-th bucket of every pool, so peak concurrency is the
+ * largest per-round total. This is the number users mean by "how parallel is
+ * this run", and the one that should be checked against an explicit
+ * `--workers`.
+ */
+export function peakConcurrentWorkers(
+  buckets: Array<{ poolKey: string; workers: number }>,
+): number {
+  const byPool = new Map<string, number[]>();
+  for (const b of buckets) {
+    if (b.workers <= 0) continue;
+    const arr = byPool.get(b.poolKey) ?? [];
+    arr.push(b.workers);
+    byPool.set(b.poolKey, arr);
+  }
+  const roundCount = Math.max(0, ...[...byPool.values()].map((g) => g.length));
+  let peak = 0;
+  for (let i = 0; i < roundCount; i++) {
+    let inRound = 0;
+    for (const g of byPool.values()) inRound += g[i] ?? 0;
+    peak = Math.max(peak, inRound);
+  }
+  return peak;
 }
 
 // ─── Per-project use validation ───

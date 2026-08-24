@@ -46,7 +46,14 @@ export default defineConfig({
     {
       name: "default",
       testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts", "**/*.android.test.ts"],
+      // notification-permission tests are excluded: permissions.notifications
+      // is unsupported on physical iOS devices (no BulletinBoard access).
+      testIgnore: [
+        "**/app-state.test.ts",
+        "**/auth-gate.test.ts",
+        "**/notification-permission*.test.ts",
+        "**/*.android.test.ts",
+      ],
     },
     {
       name: "authenticated",
