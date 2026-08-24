@@ -1,13 +1,139 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// `defineConfig` merges DEFAULT_CONFIG, whose `rootDir` is the *loading*
+// process's cwd, so `raw.rootDir ?? root` always kept cwd and silently
+// overrode the root the caller asked for — an MCP server started in a repo
+// root swept the whole repo through a config describing one subdirectory.
+// The root must follow the caller's argument; re-anchoring to the config
+// file's own directory instead would break `tapsmith test -c sub/config.ts`,
+// which has always discovered tests relative to the working directory.
+describe('loadConfig rootDir anchoring', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-root-')));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function writeConfig(dir: string, body: string): string {
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'tapsmith.config.mjs');
+    fs.writeFileSync(file, body, 'utf-8');
+    return file;
+  }
+
+  it('uses the directory it was asked to load from', async () => {
+    const projectDir = path.join(root, 'e2e');
+    writeConfig(projectDir, 'export default { platform: "ios" }\n');
+    expect((await loadConfig(projectDir)).rootDir).toBe(projectDir);
+  });
+
+  it("keeps the caller's directory for `-c <subdir>/config` (regression guard)", async () => {
+    // `tapsmith test -c configs/ci.config.ts` from the repo root must keep
+    // discovering tests relative to the repo root, not to configs/.
+    const projectDir = path.join(root, 'configs');
+    const file = writeConfig(projectDir, 'export default { platform: "ios" }\n');
+    expect((await loadConfig(root, path.relative(root, file))).rootDir).toBe(root);
+  });
+
+  it('does not mistake defineConfig\'s default rootDir for a user-pinned one', async () => {
+    const projectDir = path.join(root, 'e2e');
+    // What defineConfig produces: a concrete rootDir from the *loading*
+    // process's cwd, plus the symbol saying the author did not ask for it.
+    // Stamped by hand rather than imported — a config in an OS temp dir cannot
+    // resolve the bare specifier "tapsmith", so `import { defineConfig } from
+    // "tapsmith"` throws ERR_MODULE_NOT_FOUND, loadConfig swallows it and
+    // returns defaults, and the assertion below would pass without ever
+    // reaching the symbol branch this test exists to cover.
+    writeConfig(
+      projectDir,
+      'const config = { platform: "ios", rootDir: process.cwd() }\n'
+      + 'Object.defineProperty(config, Symbol.for("tapsmith.explicitRootDir"), '
+      + '{ value: false, enumerable: false })\n'
+      + 'export default config\n',
+    );
+    const loaded = await loadConfig(projectDir);
+    // Proves the file was read: falling back to defaults would leave this unset
+    // and make the rootDir assertion pass for the wrong reason.
+    expect(loaded.platform).toBe('ios');
+    expect(loaded.rootDir).toBe(projectDir);
+  });
+
+  it('keeps a rootDir the config itself pins, resolved against the root', async () => {
+    const projectDir = path.join(root, 'e2e');
+    writeConfig(projectDir, 'export default { rootDir: "../suites" }\n');
+    expect((await loadConfig(projectDir)).rootDir).toBe(path.join(root, 'suites'));
+  });
+
+  it('falls back to the given directory when no config file exists', async () => {
+    expect((await loadConfig(root)).rootDir).toBe(root);
+  });
+
+  // A config loaded here has a concrete rootDir but, without the symbol, no
+  // record of whether the file pinned it. Re-resolving such an object would
+  // fall back to "rootDir is set" and re-pin the previous caller's root — the
+  // ambiguity the symbol exists to remove. Every result carries it.
+  it('records whether the file pinned rootDir, not merely that one is set', async () => {
+    const pinned = path.join(root, 'pinned');
+    writeConfig(pinned, 'export default { rootDir: "../suites" }\n');
+    const inherited = path.join(root, 'inherited');
+    writeConfig(inherited, 'export default { platform: "ios" }\n');
+
+    const explicit = (config: object): unknown =>
+      (config as Record<symbol, unknown>)[EXPLICIT_ROOT_DIR];
+
+    expect(explicit(await loadConfig(pinned))).toBe(true);
+    expect(explicit(await loadConfig(inherited))).toBe(false);
+    expect(explicit(await loadConfig(root))).toBe(false);
+  });
+
+  // `loadConfig` returns the merged config and nothing about where it came
+  // from, so UI mode reported "Config: none — using built-in defaults" over
+  // MCP even when launched with `-c`. Naming the file is the whole point of
+  // that line, so it has to be resolved the same way loadConfig resolves it.
+  describe('configPathOf', () => {
+    it('names the explicitly requested config file', async () => {
+      const file = writeConfig(path.join(root, 'configs'), 'export default {}\n');
+      expect(configPathOf(await loadConfig(root, path.relative(root, file)))).toBe(file);
+    });
+
+    it('names the config it discovers in the directory', async () => {
+      const file = writeConfig(root, 'export default {}\n');
+      expect(configPathOf(await loadConfig(root))).toBe(file);
+    });
+
+    it('reports no config when there is none to read', async () => {
+      expect(configPathOf(await loadConfig(root))).toBeUndefined();
+    });
+
+    // Existence is not the same as being in effect: loadConfig warns and moves
+    // on when a candidate throws, and naming the file anyway would tell the
+    // caller the session is backed by a config it never read.
+    it('names no config when the one that exists could not be loaded', async () => {
+      writeConfig(root, 'throw new Error("boom")\n');
+      const config = await loadConfig(root);
+      expect(configPathOf(config)).toBeUndefined();
+      expect(config.rootDir).toBe(root);
+    });
+  });
+});
 import {
   defineConfig,
   resolveDeviceStrategy,
   isExplicitWorkers,
   loadConfig,
+  configPathOf,
   normalizeGrep,
+  EXPLICIT_ROOT_DIR,
 } from '../config.js';
 
 describe('defineConfig()', () => {

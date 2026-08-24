@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult, ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
-import type { TestDispatcher, TestResultEntry, TestTreeEntry } from '../test-dispatcher.js';
+import type { ProjectInfo, TestDispatcher, TestResultEntry, TestTreeEntry } from '../test-dispatcher.js';
 import { readTraceSummary } from './trace-utils.js';
 import { getAllDaemonAddresses } from '../connection.js';
 import { matchesTestFilter } from '../../test-filter.js';
@@ -27,7 +27,7 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
     {
       files: z.array(z.string()).describe('Absolute file paths or glob patterns (e.g. ["/Users/me/project/e2e/tests/login.test.ts"]). Use tapsmith_list_tests to find available files.'),
       test: z.string().optional().describe('Run only tests whose full name contains this text (case-insensitive substring of "Describe > test name", e.g. "submits form"). May match more than one test, and applies across all the given files. If it matches nothing, the run returns an error listing the available tests — it never silently passes. Use tapsmith_list_tests to see exact names.'),
-      project: z.string().optional().describe('Project name to target a specific platform/device (e.g. "android", "ios"). Use tapsmith_list_tests to see available projects. Required when the same test file runs on multiple platforms.'),
+      project: z.string().optional().describe('Project name to target a specific platform/device (e.g. "android", "ios"). Use tapsmith_list_tests to see available projects. Required when a requested file runs under more than one project — such a run is refused rather than sent to whichever project comes first. An unknown name is refused too, never ignored.'),
       device: z.string().optional().describe('Device serial (optional, ignored in UI mode — use project instead to target a platform)'),
     },
     async ({ files, test: testFilter, project, device }, extra) => {
@@ -40,6 +40,15 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
             content: [{ type: 'text' as const, text: 'A test run is already in progress. Wait for it to finish or use tapsmith_stop_tests to abort.' }],
             isError: true,
           };
+        }
+        // Before the run, not inside it: a `project` that names nothing, or a
+        // file that runs under several projects, decides *which device the
+        // tests execute on*. Both dispatchers resolve those by falling back to
+        // the first project holding the file, so the run passed on a platform
+        // the caller never chose and the summary said nothing about it.
+        const projectError = await validateProjectChoice(dispatcher, files, project);
+        if (projectError) {
+          return { content: [{ type: 'text' as const, text: projectError }], isError: true };
         }
         // Capture results of any run this tool didn't start (e.g. triggered
         // from the UI) into the session board before runFiles() resets them.
@@ -132,9 +141,16 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
           const lines: string[] = [
             result.failed > 0
               ? `Tests failed: ${result.passed} passed, ${result.failed} failed, ${result.skipped} skipped (${result.duration}ms)`
-              : `Test run failed — no tests executed (${result.passed} passed, ${result.skipped} skipped, ${result.duration}ms). Check that the requested file path(s) exist and were discovered (use tapsmith_list_tests).`,
+              : buildNoTestsExecutedMessage(dispatcher, files, result.passed, result.skipped, result.duration),
           ];
           appendFailureDetails(lines);
+          // A session with no config has no app to launch, so every run here
+          // fails for a reason that has nothing to do with the tests.
+          const configWarning = dispatcher.getSessionInfo().configWarning;
+          if (configWarning) {
+            lines.push('');
+            lines.push(`NOTE: ${configWarning}`);
+          }
           content.push({ type: 'text' as const, text: lines.join('\n') });
           pushScreenshots();
           return { content, isError: true };
@@ -207,6 +223,58 @@ function makeProgressSender(
   };
 }
 
+/**
+ * Why the `project` argument cannot stand as given, or null when it can.
+ *
+ * Both dispatchers pick a project for a file by name first and by "the first
+ * project whose files include it" second, and neither step can fail: an
+ * unknown name silently falls through to the file match, and a file belonging
+ * to several projects silently takes the first. In a multi-platform config
+ * both mean the run lands on a device the caller did not choose — and reports
+ * "All tests passed" without naming it. The check lives here so both
+ * transports answer the same way, next to the other argument validation.
+ *
+ * @internal — exported for unit testing.
+ */
+export async function validateProjectChoice(
+  dispatcher: TestDispatcher,
+  files: string[],
+  project?: string,
+): Promise<string | null> {
+  // A project's `testFiles` are only populated once discovery has run; without
+  // this the check reads an empty project list and passes everything.
+  await dispatcher.ensureInitialized?.();
+  const projects = dispatcher.getSessionInfo().projects;
+
+  if (project !== undefined) {
+    if (projects.some((p) => p.name === project)) return null;
+    const known = projects.map((p) => p.name).join(', ');
+    return `Unknown project "${project}". `
+      + (known
+        ? `This config declares: ${known}. Use tapsmith_list_tests to see which files each one runs.`
+        : 'This config declares no projects, so `project` cannot select anything — omit it.');
+  }
+
+  // No project named: only a file that runs under more than one is ambiguous.
+  const resolve = dispatcher.resolveRequestedFiles;
+  const requested = resolve ? resolve.call(dispatcher, files) : files;
+  const ambiguous = requested
+    .map((file) => ({ file, owners: projects.filter((p) => p.testFiles.includes(file)) }))
+    .filter((entry) => entry.owners.length > 1);
+  if (ambiguous.length === 0) return null;
+
+  const lines = ambiguous.map(
+    (entry) => `  ${entry.file}\n    runs under: ${entry.owners.map(describeProjectOwner).join(', ')}`,
+  );
+  return 'This run needs a `project`: the requested file(s) run under more than one.\n'
+    + `${lines.join('\n')}\n\n`
+    + 'Pass `project` with one of the names above to say which device the tests should run on.';
+}
+
+function describeProjectOwner(project: ProjectInfo): string {
+  return project.platform ? `${project.name} (${project.platform})` : project.name;
+}
+
 /** One-line live summary of an in-flight run for progress notifications. */
 function formatRunProgress(results: TestResultEntry[], elapsedMs: number): string {
   const passed = results.filter((r) => r.status === 'passed').length;
@@ -234,8 +302,47 @@ function flattenTestNodes(nodes: TestTreeEntry[], out: TestTreeEntry[] = []): Te
  * distinguishes an unknown/empty file, a typo'd filter (lists candidates), and
  * a filter that matched only `.skip()`'d tests.
  */
+/**
+ * Explain a run that executed nothing. "No tests executed" alone is ambiguous:
+ * it reads the same whether the paths matched nothing or matched files with no
+ * tests. Name the arguments that matched nothing so the caller can fix them.
+ */
+function buildNoTestsExecutedMessage(
+  dispatcher: TestDispatcher,
+  files: string[],
+  passed: number,
+  skipped: number,
+  duration: number,
+): string {
+  const summary = `Test run failed — no tests executed (${passed} passed, ${skipped} skipped, ${duration}ms).`;
+  // A whole-suite run supplied no paths, so there is nothing to blame on the
+  // arguments — saying "the file(s) were found but contained no tests" invents
+  // files the caller never named.
+  if (files.length === 0) {
+    return `${summary} The session discovered no runnable tests — use tapsmith_list_tests to see what it found, `
+      + 'including any file that failed to load.';
+  }
+  const resolve = dispatcher.resolveRequestedFiles;
+  if (!resolve) {
+    return `${summary} Check that the requested file path(s) exist and were discovered (use tapsmith_list_tests).`;
+  }
+
+  const unmatched = files.filter((f) => resolve.call(dispatcher, [f]).length === 0);
+  if (unmatched.length === 0) {
+    return `${summary} The file(s) were found but contained no runnable tests — use tapsmith_list_tests to see what they hold.`;
+  }
+  return `${summary} These argument(s) matched no discovered test file:\n`
+    + unmatched.map((f) => `  - ${f}`).join('\n')
+    + '\n\nPaths may be absolute, relative to the project root, or globs. '
+    + 'Use tapsmith_list_tests for the exact paths — and note that a file which failed to load is reported there as a warning rather than listed.';
+}
+
 function buildZeroMatchMessage(dispatcher: TestDispatcher, files: string[], testFilter: string): string {
-  const inFiles = flattenTestNodes(dispatcher.getTestTree()).filter((t) => files.includes(t.filePath));
+  // Resolve first: `files` may hold relative paths or globs, and comparing
+  // those to absolute discovered paths finds nothing — so a run whose *filter*
+  // matched no test would blame the path instead of listing the test names.
+  const resolved = dispatcher.resolveRequestedFiles?.(files) ?? files;
+  const inFiles = flattenTestNodes(dispatcher.getTestTree()).filter((t) => resolved.includes(t.filePath));
   if (inFiles.length === 0) {
     return `No tests were found in the requested file(s): ${files.join(', ')}. Check the path(s) are correct and were discovered — run tapsmith_list_tests to see available files and tests.`;
   }

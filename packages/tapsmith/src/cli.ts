@@ -11,7 +11,7 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { loadConfig, normalizeGrep, resolveDeviceStrategy, EXPLICIT_WORKERS, isExplicitWorkers, type TapsmithConfig } from './config.js';
+import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, EXPLICIT_WORKERS, isExplicitWorkers, type TapsmithConfig } from './config.js';
 import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
@@ -1934,6 +1934,7 @@ async function main(): Promise<void> {
 
   // Load config
   const config = await loadConfig(undefined, args.config);
+  const configPath = configPathOf(config);
   if (args.device) {
     config.device = args.device;
   }
@@ -1990,7 +1991,7 @@ async function main(): Promise<void> {
   }
 
   // ─── Project resolution & test file discovery ───
-  const { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames } = await import('./project.js');
+  const { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, projectLabel } = await import('./project.js');
   const hasProjects = config.projects && config.projects.length > 0;
   const hasExplicitFiles = args.files && args.files.length > 0;
   const selectedProjects = args.project && args.project.length > 0 ? args.project : undefined;
@@ -2078,6 +2079,9 @@ async function main(): Promise<void> {
     const { deviceSignature: makeDeviceSignature } = await import('./project.js');
     const defaultProject: import('./project.js').ResolvedProject = {
       name: 'default',
+      // Invented because the config declares no projects — the flag is what
+      // stops the UI and MCP from presenting it as one the user can name.
+      synthesized: true,
       testMatch: config.testMatch,
       testIgnore: [],
       dependencies: [],
@@ -2389,6 +2393,7 @@ async function main(): Promise<void> {
 
       const uiServer = await startUIServer({
         config,
+        configPath,
         device,
         client,
         deviceSerial: config.device!,
@@ -2646,7 +2651,7 @@ async function main(): Promise<void> {
             screenshotDir,
             reporter,
             projectUseOptions: project.use,
-            projectName: project.name !== 'default' ? project.name : undefined,
+            projectName: projectLabel(project),
             projectGrep: projectGrepRe.length > 0 ? projectGrepRe : undefined,
             projectGrepInvert: projectGrepInvertRe.length > 0 ? projectGrepInvertRe : undefined,
             sessionContext: {

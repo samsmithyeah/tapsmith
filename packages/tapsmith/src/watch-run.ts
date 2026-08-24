@@ -16,6 +16,7 @@ import { runTestFile, collectResults } from './runner.js';
 import type { TapsmithConfig } from './config.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
+import { isAbortError } from './abort.js';
 import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
 import {
   serializeTestResult,
@@ -26,6 +27,21 @@ import {
 } from './worker-protocol.js';
 
 // ─── IPC protocol ───
+
+/**
+ * Ask the in-flight run to stop and report what it has.
+ *
+ * The parent used to SIGTERM this child instead. That destroyed the run's own
+ * account of itself: the `file-done` message never arrived, so every test that
+ * had already finished was missing from the parent's summary even though it had
+ * streamed a `test-end` for each one. A cooperative abort lets the run end
+ * itself and report, exactly as watch mode's UI-worker counterpart does.
+ */
+export interface WatchRunAbortMessage {
+  type: 'abort'
+}
+
+export type WatchRunIncomingMessage = WatchRunMessage | WatchRunAbortMessage;
 
 export interface WatchRunMessage {
   type: 'run'
@@ -38,6 +54,14 @@ export interface WatchRunMessage {
   projectName?: string
   /** Run only tests whose fullName matches this (case-insensitive substring). */
   testFilter?: string
+  /**
+   * What to call this run in preflight errors, e.g. "Watch" or "Run".
+   *
+   * The MCP dispatcher runs its files through this same child, so the default
+   * put "Watch (<serial>): … during watch reset" in front of failures from a
+   * plain `tapsmith_run_tests` — naming a mode the caller was not using.
+   */
+  label?: string
 }
 
 export interface WatchRunTestEndMessage {
@@ -115,9 +139,10 @@ function buildSessionContext(
   device: Device,
   client: TapsmithGrpcClient,
   deviceSerial: string,
+  label = 'Watch',
 ): SessionPreflightContext {
   return {
-    label: `Watch (${deviceSerial})`,
+    label: `${label} (${deviceSerial})`,
     config,
     device,
     client,
@@ -127,6 +152,24 @@ function buildSessionContext(
 }
 
 // ─── Main handler ───
+
+/**
+ * Aborts the in-flight run when the parent asks. Set for the duration of a
+ * run and cleared after, so a stop arriving while the child sits idle between
+ * runs cannot abort the next one.
+ */
+let currentAbortController: AbortController | undefined;
+
+/** Report a run that produced nothing, so the parent still hears an ending. */
+function sendEmptyFileDone(filePath: string): void {
+  const emptySuite: import('./runner.js').SuiteResult = { name: '', tests: [], suites: [], durationMs: 0 };
+  send({
+    type: 'file-done',
+    filePath,
+    results: [],
+    suite: serializeSuiteResult(emptySuite, 0),
+  });
+}
 
 async function handleRun(msg: WatchRunMessage): Promise<void> {
   const config = configFromSerialized(msg.config, msg.daemonAddress);
@@ -151,7 +194,15 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
   await device.wake();
   await device.unlock();
 
-  const ctx = buildSessionContext(config, device, client, msg.deviceSerial);
+  const label = msg.label ?? 'Watch';
+  const ctx = buildSessionContext(config, device, client, msg.deviceSerial, label);
+  const phase = label.toLowerCase();
+
+  // Created BEFORE preflight so a stop that lands during wake/unlock/app-reset
+  // is honoured rather than being a no-op that runs the whole file anyway.
+  const abortController = new AbortController();
+  currentAbortController = abortController;
+  client._setAbortSignal(abortController.signal);
 
   // Live progress lines for slow device actions (preflight reset, app-state
   // save/restore, …) — the child's stdout reaches the terminal directly (PILOT-232).
@@ -159,10 +210,25 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
 
   try {
     // Reset app for clean state
-    if (config.package) {
-      await launchConfiguredApp(ctx, `watch reset for ${path.basename(msg.filePath)}`);
-    } else {
-      await ensureSessionReady(ctx, `watch preflight for ${path.basename(msg.filePath)}`);
+    try {
+      if (config.package) {
+        await launchConfiguredApp(ctx, `${phase} reset for ${path.basename(msg.filePath)}`);
+      } else {
+        await ensureSessionReady(ctx, `${phase} preflight for ${path.basename(msg.filePath)}`);
+      }
+    } catch (err) {
+      // A stop during preflight is not a preflight failure. Report an ending
+      // either way — an unreported abort is what left the parent counting zero.
+      if (abortController.signal.aborted || isAbortError(err)) {
+        sendEmptyFileDone(msg.filePath);
+        return;
+      }
+      throw err;
+    }
+    if (abortController.signal.aborted) {
+      // Stop landed during preflight without failing a device call.
+      sendEmptyFileDone(msg.filePath);
+      return;
     }
 
     const screenshotDir = msg.screenshotDir;
@@ -187,6 +253,7 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
       testFilter: msg.testFilter,
       grep: deserializeRegExpArray(msg.config.grep),
       grepInvert: deserializeRegExpArray(msg.config.grepInvert),
+      abortSignal: abortController.signal,
     });
 
     const results = collectResults(suiteResult);
@@ -199,6 +266,8 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
     });
   } finally {
     disposeActionProgressPrinter();
+    client._setAbortSignal(undefined);
+    if (currentAbortController === abortController) currentAbortController = undefined;
   }
 
   client.close();
@@ -206,8 +275,14 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
 
 // ─── IPC message handler ───
 
-process.on('message', async (msg: WatchRunMessage) => {
+process.on('message', async (msg: WatchRunIncomingMessage) => {
   try {
+    if (msg.type === 'abort') {
+      // No run in flight: nothing to abort, and aborting the *next* one would
+      // be wrong. The parent escalates to a signal if this goes unanswered.
+      currentAbortController?.abort();
+      return;
+    }
     if (msg.type === 'run') {
       await handleRun(msg);
       process.exit(0);

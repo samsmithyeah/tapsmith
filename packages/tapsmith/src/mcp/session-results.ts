@@ -11,19 +11,47 @@ import type { TestDispatcher, TestResultEntry } from './test-dispatcher.js';
  * project/file/test, so `tapsmith_suite_status` can join them with the
  * discovered test tree into a whole-suite board.
  */
+/** Statuses that represent an outcome, as opposed to a test still in flight. */
+const SETTLED_STATUSES = new Set<TestResultEntry['status']>([
+  'passed', 'failed', 'skipped', 'interrupted',
+]);
+
 export class SessionResultsStore {
   private readonly _results = new Map<string, TestResultEntry>();
 
-  /** Merge final (passed/failed/skipped) results; a later result for the same test wins. */
+  /** Merge settled results; a later result for the same test wins. */
   merge(results: TestResultEntry[]): void {
     for (const r of results) {
-      if (r.status !== 'passed' && r.status !== 'failed' && r.status !== 'skipped') continue;
+      // Settled statuses only — 'idle' and 'running' say nothing yet. A stopped
+      // test belongs here: it did not reach a verdict, but the board saying
+      // "not run" would conflate the test we cut short with the ones we never
+      // attempted, and disagree with `list_results` about the same run.
+      if (!SETTLED_STATUSES.has(r.status)) continue;
+      // A real result proves the file ran, which retires the synthetic "failed
+      // to run" entry for it. That entry is keyed on a name no real test has,
+      // so nothing would ever overwrite it: fix the import error, re-run green,
+      // and the board would still report the original failure for the rest of
+      // the session.
+      if (!r.fileLevelFailure) this._dropFileLevelFailure(r.projectName, r.filePath);
       this._results.set(this._key(r.projectName, r.filePath, r.fullName), r);
+    }
+  }
+
+  private _dropFileLevelFailure(projectName: string | undefined, filePath: string): void {
+    for (const [key, entry] of this._results) {
+      if (entry.fileLevelFailure && entry.filePath === filePath && entry.projectName === projectName) {
+        this._results.delete(key);
+      }
     }
   }
 
   get(projectName: string | undefined, filePath: string, fullName: string): TestResultEntry | undefined {
     return this._results.get(this._key(projectName, filePath, fullName));
+  }
+
+  /** Every result held, for callers that need what the test tree cannot show. */
+  all(): TestResultEntry[] {
+    return [...this._results.values()];
   }
 
   private _key(projectName: string | undefined, filePath: string, fullName: string): string {

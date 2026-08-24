@@ -1,3 +1,5 @@
+import { STOPPED_BY_USER } from '../abort.js';
+
 export interface TestRunResult {
   status: 'passed' | 'failed' | 'stopped'
   passed: number
@@ -17,15 +19,48 @@ export interface TestFailureDetail {
   projectName?: string
 }
 
+/**
+ * The status an MCP client should see for a test, given what the runner said.
+ *
+ * A test the user's stop cut short arrives as a failure carrying
+ * {@link STOPPED_BY_USER}, because that is how the runner ends it. Passing that
+ * on made `list_results` render the user's own stop as a red `[FAIL]` while the
+ * summary for that very run called it interrupted — the two halves of one
+ * answer disagreeing. Applied where each transport hands entries to the MCP
+ * tools, so the tree the UI renders keeps the runner's own vocabulary.
+ */
+export function classifyEntryStatus(entry: TestResultEntry): TestResultEntry {
+  return isInterruptedEntry(entry) ? { ...entry, status: 'interrupted' } : entry;
+}
+
+/** True for an entry the user's stop ended, which is not a failure. */
+export function isInterruptedEntry(entry: { status: string; error?: string }): boolean {
+  return entry.status === 'interrupted'
+    || (entry.status === 'failed' && entry.error === STOPPED_BY_USER);
+}
+
 export interface TestResultEntry {
   fullName: string
   filePath: string
-  status: 'passed' | 'failed' | 'skipped' | 'idle' | 'running'
+  status: 'passed' | 'failed' | 'skipped' | 'idle' | 'running' | 'interrupted'
   duration?: number
   error?: string
   tracePath?: string
   videoPath?: string
   projectName?: string
+  /**
+   * True for the synthetic entry standing in for a whole file that could not
+   * run. It has no counterpart in the test tree, so consumers that join on the
+   * tree have to handle it specially — and it must be dropped as soon as the
+   * file runs for real, or a fixed file keeps reporting the old failure.
+   */
+  fileLevelFailure?: boolean
+}
+
+/** A test file that could not be loaded, so it holds no entry in the test tree. */
+export interface DiscoveryError {
+  filePath: string
+  error: string
 }
 
 export interface TestTreeEntry {
@@ -45,6 +80,13 @@ export interface ProjectInfo {
   dependencies: string[]
 }
 
+/** A platform's device, or why it has none. */
+export interface DeviceTarget {
+  platform?: string
+  device?: string
+  error?: string
+}
+
 export interface SessionInfo {
   platform?: string
   package?: string
@@ -52,10 +94,27 @@ export interface SessionInfo {
   timeout: number
   retries: number
   projects: ProjectInfo[]
+  /**
+   * The device each platform runs on. A multi-platform session has one per
+   * platform, and an entry carries `error` instead of `device` when that
+   * platform could not be provisioned.
+   */
+  deviceTargets?: DeviceTarget[]
+  /** Config file backing the session. Absent when none was found. */
+  configPath?: string
+  /** Why the session has no config file, and what it means for the caller. */
+  configWarning?: string
 }
 
 export interface TestDispatcher {
   ensureInitialized?(): Promise<void>
+  /**
+   * Settle only what a device tool needs — config, projects, and a device per
+   * platform — skipping the test-tree discovery `ensureInitialized` also waits
+   * for. Optional: a dispatcher that is ready by the time it is handed over
+   * (UI mode's) need not implement it.
+   */
+  ensureDevicesReady?(): Promise<void>
   runFiles(files: string[], options?: { testFilter?: string; project?: string }): Promise<TestRunResult>
   runAll(): Promise<TestRunResult>
   stop(): void
@@ -70,6 +129,17 @@ export interface TestDispatcher {
   getTestFiles(): string[]
   getProjects(): string[]
   getTestTree(): TestTreeEntry[]
+  /**
+   * Files that failed to load during discovery. They are absent from the test
+   * tree, so a caller that only reads the tree sees a silently short list.
+   */
+  getDiscoveryErrors?(): DiscoveryError[]
+  /**
+   * The discovered test files a caller's `files` argument maps onto —
+   * absolute paths, project-relative paths and globs alike. Empty means
+   * nothing matched, which is a different answer from "ran and found nothing".
+   */
+  resolveRequestedFiles?(files: string[]): string[]
   getSessionInfo(): SessionInfo
   toggleWatch(filePath: string, options?: { testFilter?: string; project?: string }): { enabled: boolean }
 }

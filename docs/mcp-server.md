@@ -42,7 +42,14 @@ The MCP panel in the UI shows the connection status and a live activity feed of 
 
 ### Stdio mode
 
-Configure your MCP client to launch `tapsmith mcp-server` over stdio. You normally do not run this command directly; Codex, Claude Code, or another MCP client starts it as a subprocess when needed. The agent gets its own headless test session, daemon, and device, fully independent from any UI session. Test files and projects are discovered lazily on the first test-management tool call.
+Configure your MCP client to launch `tapsmith mcp-server` over stdio. You normally do not run this command directly; Codex, Claude Code, or another MCP client starts it as a subprocess when needed. The agent gets its own headless test session, daemon, and device, fully independent from any UI session — a headless server never attaches to the worker daemons of a running `tapsmith test --ui`, so what it drives does not change when that run starts, scales, or ends. Test files and projects are discovered lazily on the first test-management tool call.
+
+A multi-platform config gets one device and agent **per platform**, taken from
+each project's own settings, and runs are routed to the device matching the
+project's platform. `tapsmith_session_info` lists them. A platform that cannot
+be provisioned — no emulator running, say — does not stop the session: it is
+reported there, and a run targeting it fails with that reason while the other
+platform keeps working.
 
 Codex CLI:
 
@@ -80,6 +87,28 @@ If a UI server is already running, stdio mode will detect it and suggest connect
 
 ## Tool Reference
 
+### Choosing a device
+
+Every device tool takes an optional `device` and `project`. You rarely need
+either:
+
+- **One platform** — including a `workers: 2` UI session driving several
+  simulator clones — the tool acts on the session's **primary device**: worker
+  0 in UI mode, the first device prepared in a headless session. Pass `device`
+  only to single out one worker of a parallel run.
+- **More than one platform** (a multi-platform config) — there is no single
+  default, so pass `project`. It selects that project's platform, and its
+  primary device. `device` still works for a specific serial.
+
+`tapsmith_session_info` lists the devices a session drives. A device the
+session merely *sees* — another simulator, a peer session's device — cannot be
+acted on: its daemon is pointed elsewhere.
+
+The same rule governs `tapsmith_run_tests`, with one addition: if a requested
+file runs under more than one project, the run is **refused** until you pass
+`project`, rather than being sent to whichever project comes first. An unknown
+project name is refused too, never ignored.
+
 ### Device interaction tools (both modes)
 
 #### `tapsmith_snapshot`
@@ -88,7 +117,7 @@ Get the current screen's accessibility tree with copy-paste-ready Tapsmith selec
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `device` | string | No | Device serial from `tapsmith_list_devices`. Uses the default device when omitted. |
+| `device` | string | No | Device serial from `tapsmith_list_devices`. Defaults to the session's primary device — see [Choosing a device](#choosing-a-device). |
 
 Returns a text representation of the accessibility tree with suggested selectors like `device.getByRole("button", { name: "Login" })` for each interactive element.
 
@@ -98,7 +127,7 @@ Capture a PNG screenshot of the device screen. Use when you need to visually ver
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `device` | string | No | Device serial. Uses the default device when omitted. |
+| `device` | string | No | Device serial. Defaults to the session's primary device — see [Choosing a device](#choosing-a-device). |
 
 Returns a base64-encoded PNG image.
 
@@ -109,7 +138,7 @@ Test a Tapsmith selector against the current screen. Returns whether it matches,
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `selector` | string | Yes | Tapsmith selector string, e.g. `device.getByRole("button", { name: "Login" })` |
-| `device` | string | No | Device serial. Uses the default device when omitted. |
+| `device` | string | No | Device serial. Defaults to the session's primary device — see [Choosing a device](#choosing-a-device). |
 
 Returns a JSON object with `matched` (boolean), `count` (number), and `elements` (array of matched elements with role, text, and bounds).
 
@@ -120,7 +149,7 @@ Tap a UI element matching the given Tapsmith selector.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `selector` | string | Yes | Tapsmith selector, e.g. `device.getByRole("button", { name: "Login" })` |
-| `device` | string | No | Device serial. Uses the default device when omitted. |
+| `device` | string | No | Device serial. Defaults to the session's primary device — see [Choosing a device](#choosing-a-device). |
 
 #### `tapsmith_type`
 
@@ -131,7 +160,7 @@ Type text into an element matching the selector.
 | `selector` | string | Yes | Tapsmith selector for the text field |
 | `text` | string | Yes | Text to type |
 | `clear` | boolean | No | Clear existing text before typing (default: false) |
-| `device` | string | No | Device serial. Uses the default device when omitted. |
+| `device` | string | No | Device serial. Defaults to the session's primary device — see [Choosing a device](#choosing-a-device). |
 
 #### `tapsmith_swipe`
 
@@ -140,7 +169,7 @@ Swipe on the device screen in the given direction. Use to scroll or navigate bet
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `direction` | string | Yes | One of: `up`, `down`, `left`, `right` |
-| `device` | string | No | Device serial. Uses the default device when omitted. |
+| `device` | string | No | Device serial. Defaults to the session's primary device — see [Choosing a device](#choosing-a-device). |
 
 #### `tapsmith_press_key`
 
@@ -149,7 +178,7 @@ Press a device key.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `key` | string | Yes | Key name: `back`, `home`, `enter`, `tab`, `delete`, etc. |
-| `device` | string | No | Device serial. Uses the default device when omitted. |
+| `device` | string | No | Device serial. Defaults to the session's primary device — see [Choosing a device](#choosing-a-device). |
 
 #### `tapsmith_launch_app`
 
@@ -159,7 +188,7 @@ Launch an app on the device.
 |---|---|---|---|
 | `package` | string | Yes | Android package name or iOS bundle ID |
 | `clear_data` | boolean | No | Clear app data before launching (default: false) |
-| `device` | string | No | Device serial. Uses the default device when omitted. |
+| `device` | string | No | Device serial. Defaults to the session's primary device — see [Choosing a device](#choosing-a-device). |
 
 #### `tapsmith_list_devices`
 
@@ -177,7 +206,7 @@ Run Tapsmith test files and return structured results. Only one test run can exe
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `files` | string[] | Yes | Absolute file paths or glob patterns. Use `tapsmith_list_tests` to find available files. |
+| `files` | string[] | Yes | File paths — absolute, relative to the project root, or globs. Use `tapsmith_list_tests` to find available files. An argument that matches no discovered file is named in the error rather than reported as an empty run. |
 | `test` | string | No | Run a specific test by its full name (e.g. `"Login screen > submits form"`). Only works with a single file. |
 | `project` | string | No | Project name to target a specific platform/device (e.g. `"android"`, `"ios"`). Required when the same test file runs on multiple platforms. |
 | `device` | string | No | Device serial (ignored in HTTP mode — use `project` instead). |
@@ -190,6 +219,11 @@ Run Tapsmith test files and return structured results. Only one test run can exe
 - Device logs around the failure time
 - Trace file path for further debugging with `tapsmith_read_trace`
 - A screenshot at the moment of failure
+
+A file that dies before any test reports — a failed import, a crashed or
+timed-out worker — is reported as a single failure named
+`<file> — file failed to run`, carrying the underlying error. It appears in
+`tapsmith_list_results` and `tapsmith_suite_status` like any other failure.
 
 **Progress notifications:** when the MCP client supplies a `progressToken` with the request, the tool emits `notifications/progress` every 10 seconds while the run executes, reporting live pass/fail counts. This keeps long suites alive past client-side idle timeouts (for example, Claude Code aborts a tool call after 300 seconds without output or progress), so a full suite can run in a single `tapsmith_run_tests` call instead of being sharded into small batches.
 
@@ -220,6 +254,11 @@ Returns a hierarchical tree showing:
 - Test files with absolute paths
 - Describe blocks (suites)
 - Individual test names with their full names (for use with `tapsmith_run_tests`)
+
+A file that fails to load (a missing import, a syntax error) has no tests to
+list, so it is reported separately at the end of the tree as a warning with the
+reason. Those files cannot be run until the error is fixed — the tree is only
+complete when no warning is shown.
 
 #### `tapsmith_list_results`
 
@@ -260,7 +299,17 @@ Get configuration and environment info for the current test session. Useful for 
 
 No parameters.
 
-Returns session details: device serial, platform, app package, timeout, retries, and per-project settings (name, platform, package, test file count, dependencies).
+Returns session details: the config file backing the session, device serial, platform, app package, timeout, retries, and per-project settings (name, platform, package, test file count, dependencies).
+
+Check the `Config:` line first — everything else is derived from it. A headless
+session started outside a project directory may pick up a config you did not
+intend, or find none at all and fall back to defaults; in the latter case it has
+no app to launch, so a warning is returned here and on every failed run. A
+UI-mode session reports the config `tapsmith test --ui` was launched with, which
+is always a real one.
+
+Paths inside a config are resolved relative to the config file's own directory,
+so it does not matter which directory the MCP server was started in.
 
 #### `tapsmith_watch`
 

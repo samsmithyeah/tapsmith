@@ -43,7 +43,7 @@ const ACTIVITY_MONITOR_MAX_READ_BYTES = 1024 * 1024;
 
 export type {
   TestDispatcher, TestRunResult, TestResultEntry, TestFailureDetail,
-  TestTreeEntry, ProjectInfo, SessionInfo,
+  TestTreeEntry, ProjectInfo, SessionInfo, DiscoveryError, DeviceTarget,
 } from './test-dispatcher.js';
 
 export interface McpServerOptions {
@@ -57,8 +57,12 @@ export interface RunMcpServerOptions {
 }
 
 export interface RunMcpServerRuntimeOptions {
+  /** Exit the process after cleanup when a shutdown signal arrives (default true). */
   exitOnSigint?: boolean
 }
+
+/** Signals that must run session cleanup before the process goes away. */
+const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 
 export function createMcpServer(options?: McpServerOptions): McpServer {
   const { name = 'tapsmith', events, dispatcher } = options ?? {};
@@ -72,11 +76,14 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
     wrapToolRegistrationsWithEvents(server, events);
   }
 
-  registerSnapshotTool(server);
-  registerScreenshotTool(server);
-  registerTestSelectorTool(server);
-  registerDeviceActionTools(server);
-  registerAppControlTools(server);
+  // The dispatcher is what turns a project name into a platform, and so into a
+  // device. Both transports build the server here, so both route device tools
+  // the same way runs are routed.
+  registerSnapshotTool(server, dispatcher);
+  registerScreenshotTool(server, dispatcher);
+  registerTestSelectorTool(server, dispatcher);
+  registerDeviceActionTools(server, dispatcher);
+  registerAppControlTools(server, dispatcher);
   registerListDevicesTool(server);
   registerRunTestsTool(server, dispatcher);
   registerReadTraceTool(server);
@@ -313,19 +320,23 @@ export async function runMcpServer(
   configureMcpConnection({ configFile: options.configFile });
   const dispatcher = new HeadlessTestDispatcher({ configFile: options.configFile });
   let cleanedUp = false;
-  const sigintHandler = (): void => {
+  const signalHandler = (): void => {
     cleanup();
     if (runtimeOptions.exitOnSigint ?? true) process.exit(0);
   };
   function cleanup(): void {
     if (cleanedUp) return;
     cleanedUp = true;
-    process.off('SIGINT', sigintHandler);
+    for (const signal of SHUTDOWN_SIGNALS) process.off(signal, signalHandler);
     stopActivityMonitor();
     dispatcher.dispose();
     closeAllClients();
   }
-  process.once('SIGINT', sigintHandler);
+  // SIGTERM matters as much as SIGINT here: the MCP SDK's stdio client kills
+  // its server with SIGTERM on shutdown, and node's default handling for it
+  // terminates the process without running any of this — orphaning the daemon
+  // (and its device agent) that the session started.
+  for (const signal of SHUTDOWN_SIGNALS) process.once(signal, signalHandler);
 
   const server = createMcpServer({ events, dispatcher });
   attachMcpClientEventReporting(server, events, cleanup);

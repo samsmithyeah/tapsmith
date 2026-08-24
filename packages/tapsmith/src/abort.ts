@@ -12,11 +12,21 @@ export const ABORT_ERROR_BRAND = Symbol.for('tapsmith.AbortError');
  * abandoned after an unrecoverable error). Distinguishable from ordinary
  * failures so callers can skip retries, recovery, and failure screenshots.
  */
+/**
+ * The message a user-requested stop leaves on the test it ended.
+ *
+ * Both transports classify a stopped test by this string, so it lives here
+ * rather than being spelled out at each site: a stop that reads as a failure
+ * in one transport and as interrupted in the other is exactly the divergence
+ * this constant exists to prevent.
+ */
+export const STOPPED_BY_USER = 'Stopped by user';
+
 export class TestAbortedError extends Error {
   /** @internal */
   readonly [ABORT_ERROR_BRAND] = true;
 
-  constructor(message = 'Stopped by user') {
+  constructor(message: string = STOPPED_BY_USER) {
     super(message);
     this.name = 'AbortError';
   }

@@ -1,19 +1,20 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { ensureConnected } from '../connection.js';
+import { deviceClientFor, DEVICE_ARG_DESCRIPTION, PROJECT_ARG_DESCRIPTION } from './device-target.js';
+import type { TestDispatcher } from '../test-dispatcher.js';
 import { parseHierarchyXml } from '../../trace-viewer/components/hierarchy-utils.js';
 import { formatHierarchy } from '../hierarchy-formatter.js';
 
-export function registerSnapshotTool(server: McpServer): void {
+export function registerSnapshotTool(server: McpServer, dispatcher?: TestDispatcher): void {
   server.tool(
     'tapsmith_snapshot',
     'Get the current screen\'s accessibility tree with copy-paste-ready Tapsmith selectors for each interactive element. Suggested selectors are validated to resolve to exactly one element under runtime matching (getByText is substring by default; ambiguous selectors throw a strict mode violation when acted on). Use this first when writing tests to see what\'s on screen. Then validate selectors with tapsmith_test_selector before putting them in test code.',
     {
-      device: z.string().optional().describe('Device serial from tapsmith_list_devices (optional, uses default device)'),
+      device: z.string().optional().describe(DEVICE_ARG_DESCRIPTION),
+      project: z.string().optional().describe(PROJECT_ARG_DESCRIPTION),
     },
-    async ({ device }) => {
-      const client = await ensureConnected(device);
-      if (device) await client.setDevice(device);
+    async ({ device, project }) => {
+      const client = await deviceClientFor({ device, project }, dispatcher);
 
       const { hierarchyXml, errorMessage } = await client.getUiHierarchy();
       if (errorMessage) {

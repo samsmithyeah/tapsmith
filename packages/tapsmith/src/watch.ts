@@ -24,6 +24,7 @@ import { TapsmithGrpcClient } from './grpc-client.js';
 import { createReporters, ReporterDispatcher, type FullResult, type TapsmithReporter } from './reporter.js';
 import type { TestResult, SuiteResult } from './runner.js';
 import type { ResolvedProject } from './project.js';
+import { projectLabel } from './project.js';
 import {
   deserializeTestResult,
   deserializeSuiteResult,
@@ -531,7 +532,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
                 file,
                 reporter,
                 project.use as RunFileUseOptions | undefined,
-                project.name !== 'default' ? project.name : undefined,
+                projectLabel(project),
               );
               allResults.push(...results);
               allSuites.push(suite);
@@ -627,7 +628,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
             waveFiles.push({
               filePath: file,
               projectUseOptions: project.use as RunFileUseOptions | undefined,
-              projectName: project.name !== 'default' ? project.name : undefined,
+              projectName: projectLabel(project),
             });
           }
         }
@@ -688,7 +689,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
           tagged.push({
             filePath: f,
             projectUseOptions: project.use as RunFileUseOptions | undefined,
-            projectName: project.name !== 'default' ? project.name : undefined,
+            projectName: projectLabel(project),
           });
         }
       } else {

@@ -1,5 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { TestDispatcher, TestTreeEntry } from '../test-dispatcher.js';
+import type { DiscoveryError, TestDispatcher, TestTreeEntry } from '../test-dispatcher.js';
+
+/** Errors listed in full before collapsing to a count. */
+const MAX_LISTED_DISCOVERY_ERRORS = 10;
 
 export function registerListTestsTool(server: McpServer, dispatcher: TestDispatcher): void {
   server.tool(
@@ -10,7 +13,8 @@ export function registerListTestsTool(server: McpServer, dispatcher: TestDispatc
       await dispatcher.ensureInitialized?.();
       const tree = dispatcher.getTestTree();
       const projects = dispatcher.getProjects();
-      if (tree.length === 0) {
+      const failures = dispatcher.getDiscoveryErrors?.() ?? [];
+      if (tree.length === 0 && failures.length === 0) {
         return { content: [{ type: 'text' as const, text: 'No test files discovered.' }] };
       }
 
@@ -21,10 +25,31 @@ export function registerListTestsTool(server: McpServer, dispatcher: TestDispatc
       }
 
       formatTree(tree, lines, 0);
+      appendDiscoveryErrors(failures, lines);
 
       return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
     },
   );
+}
+
+/**
+ * Report files that failed to load. Without this the list simply comes up
+ * short, and a caller has no way to tell "this file has no tests" from "this
+ * file could not be imported" — so it reasons about a suite it cannot see.
+ */
+function appendDiscoveryErrors(failures: DiscoveryError[], lines: string[]): void {
+  if (failures.length === 0) return;
+
+  if (lines.length > 0) lines.push('');
+  lines.push(
+    `WARNING: ${failures.length} test file(s) failed to load and are missing from the list above. `
+    + 'They cannot be run until the error is fixed.',
+  );
+  for (const failure of failures.slice(0, MAX_LISTED_DISCOVERY_ERRORS)) {
+    lines.push(`  ${failure.filePath}: ${failure.error}`);
+  }
+  const remaining = failures.length - MAX_LISTED_DISCOVERY_ERRORS;
+  if (remaining > 0) lines.push(`  … and ${remaining} more`);
 }
 
 function formatTree(nodes: TestTreeEntry[], lines: string[], depth: number): void {

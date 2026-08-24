@@ -27,6 +27,12 @@ export interface ResolvedProject {
    */
   deviceSignature: string
   /**
+   * True for the project invented when a config declares none. Callers that
+   * present projects to a user hide it — but they must not do that by name,
+   * because a config may legitimately call one of its own projects "default".
+   */
+  synthesized?: boolean
+  /**
    * Explicit per-project worker count. When set, this project's bucket
    * gets exactly this many devices and bypasses the proportional split.
    */
@@ -269,6 +275,20 @@ function validateProjectUse(name: string, use: UseOptions | undefined): void {
   }
 }
 
+/**
+ * The name to attribute a project's results to, or `undefined` when the
+ * project is one Tapsmith invented rather than one the user declared.
+ *
+ * The single place that decision is made. Every consumer used to test the name
+ * against "default", which silently dropped attribution for a project a config
+ * genuinely named that — and any half-migration is worse than either
+ * consistent state, because the side that lists projects and the side that
+ * records their results then disagree and joins come up empty.
+ */
+export function projectLabel(project: Pick<ResolvedProject, 'name' | 'synthesized'> | undefined): string | undefined {
+  return project && !project.synthesized ? project.name : undefined;
+}
+
 // ─── Resolution ───
 
 /**
@@ -281,6 +301,7 @@ export function resolveProjects(config: TapsmithConfig): ResolvedProject[] {
   if (!config.projects || config.projects.length === 0) {
     return [{
       name: 'default',
+      synthesized: true,
       testMatch: config.testMatch,
       testIgnore: [],
       dependencies: [],

@@ -20,15 +20,20 @@ import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { McpEventEmitter } from '../mcp/events.js';
 import { McpSessionRouter } from '../mcp/http-session-router.js';
-import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo } from '../mcp/index.js';
+import { configureMcpConnection } from '../mcp/connection.js';
+import { matchRequestedFiles, fileFailureEntry } from '../mcp/headless-dispatcher.js';
+import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
 import type { TapsmithConfig } from '../config.js';
 import { findDaemonBin } from '../daemon-bin.js';
+import { resolveChildLoader } from '../child-scripts.js';
 import { TapsmithGrpcClient } from '../grpc-client.js';
 import type { Device } from '../device.js';
 import type { ResolvedProject } from '../project.js';
-import { collectTransitiveDeps } from '../project.js';
+import { collectTransitiveDeps, projectLabel } from '../project.js';
 import { matchesTestFilter } from '../test-filter.js';
 import { LaunchSetupError } from '../dispatcher.js';
+import { STOPPED_BY_USER } from '../abort.js';
+import { classifyEntryStatus, isInterruptedEntry } from '../mcp/test-dispatcher.js';
 import type { LaunchedEmulator } from '../emulator.js';
 import { preserveEmulatorsForReuse, getRunningAvdName } from '../emulator.js';
 import { listSimulators, getSimulatorScreenScale } from '../ios-simulator.js';
@@ -55,7 +60,7 @@ import type {
   UIWorkerChildMessage,
   UIWorkerMessage,
 } from './ui-protocol.js';
-import { encodeScreenFrame } from './ui-protocol.js';
+import { encodeScreenFrame, type TestNodeStatus } from './ui-protocol.js';
 import { RunQueue } from '../watch-queue.js';
 import {
   forkStdioForLaunchProgress,
@@ -129,6 +134,12 @@ function isEmulatorOrSimulator(serial: string, platform?: 'android' | 'ios'): bo
 
 export interface UIServerContext {
   config: TapsmithConfig
+  /**
+   * The config file backing this session, reported over MCP. Absent means the
+   * session really is running on built-in defaults — so it must not be left
+   * unset when a config was loaded, or `session_info` says the opposite.
+   */
+  configPath?: string
   /** Single-worker mode device/client (required when workers <= 1). */
   device?: Device
   client?: TapsmithGrpcClient
@@ -382,10 +393,12 @@ export async function startUIServer(
   /** Callers (MCP stop_tests) waiting for the in-flight run to end. */
   const runEndWaiters: Array<(r: TestRunResult) => void> = [];
 
-  // Detect whether meaningful projects are configured (not just a synthetic 'default')
+  // Detect whether meaningful projects are configured (not just a synthesized
+  // one). Keyed on the flag rather than the name for the same reason as
+  // `projectLabel`: a config may genuinely name its only project "default".
   const hasRealProjects = ctx.projects != null
     && ctx.projects.length > 0
-    && !(ctx.projects.length === 1 && ctx.projects[0].name === 'default');
+    && !(ctx.projects.length === 1 && ctx.projects[0].synthesized);
 
   // Build file → project lookup. Note: when the same file matches multiple
   // projects (e.g. an Android and an iOS project both using `**\/*.test.ts`),
@@ -472,13 +485,45 @@ export async function startUIServer(
     ? tsDiscoverScript
     : jsDiscoverScript;
 
-  let tsxBin: string | undefined;
-  if (useTypeScript || resolvedDiscoverScript.endsWith('.ts') || resolvedWorkerScript.endsWith('.ts')) {
-    // import.meta.dirname is packages/tapsmith/{src,dist}/ui-mode — the package root
-    // (where node_modules lives) is two levels up in both cases.
-    const tapsmithPkgDir = path.resolve(import.meta.dirname, '..', '..');
-    const localTsx = path.join(tapsmithPkgDir, 'node_modules', '.bin', 'tsx');
-    tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
+  // The loader has to follow the *test files*: these children import them, and
+  // a compiled install runs .js scripts against a TypeScript suite. Deciding
+  // from our own scripts alone only works while something upstream (the CLI's
+  // tsx re-exec, via NODE_OPTIONS) happens to have set a loader for us.
+  // import.meta.dirname is packages/tapsmith/{src,dist}/ui-mode — the package
+  // root (where node_modules lives) is two levels up in both cases.
+  const childScripts = [resolvedRunScript, resolvedDiscoverScript, resolvedWorkerScript];
+  const tapsmithPkgDir = path.resolve(import.meta.dirname, '..', '..');
+  let tsxBin = resolveChildLoader(
+    childScripts,
+    ctx.testFiles,
+    tapsmithPkgDir,
+    (message) => console.error(`Warning: ${message}`),
+  );
+
+  /**
+   * The loader for a fork, resolved lazily.
+   *
+   * A UI session started with no TypeScript tests needs no loader — until the
+   * user writes one, which the watcher adds to `ctx.testFiles` at runtime. A
+   * loader decided once at startup would fork that file under bare node, so it
+   * silently drops out of the test tree until the server is restarted.
+   */
+  let warnedAboutMissingTsx = false;
+  function childLoader(files: string[] = ctx.testFiles): string | undefined {
+    if (tsxBin) return tsxBin;
+    tsxBin = resolveChildLoader(
+      childScripts,
+      files,
+      tapsmithPkgDir,
+      (message) => {
+        // Only the first time: this runs per fork, so an unresolvable tsx
+        // would otherwise print once per test file during discovery.
+        if (warnedAboutMissingTsx) return;
+        warnedAboutMissingTsx = true;
+        console.error(`Warning: ${message}`);
+      },
+    );
+    return tsxBin;
   }
 
   // ─── Broadcast ───
@@ -548,7 +593,8 @@ export async function startUIServer(
 
   function collectFailures(): import('../mcp/test-dispatcher.js').TestFailureDetail[] {
     return [...testResults.values()]
-      .filter((r) => r.status === 'failed' && r.error)
+      // A stop is not a failure — same rule the headless dispatcher applies.
+      .filter((r) => r.status === 'failed' && r.error && !isInterruptedEntry(r))
       .map((r) => ({
         fullName: r.fullName,
         filePath: r.filePath,
@@ -562,6 +608,18 @@ export async function startUIServer(
     if (result.failed > 0) result.failures = collectFailures();
     return result;
   }
+
+/**
+ * The status the UI client's tree understands.
+ *
+ * That tree has no 'interrupted' node state — a stopped test has always shown
+ * there as failed, and its interrupted *count* is reported separately. This
+ * store holds raw runner statuses anyway, so the mapping is a formality; it
+ * exists to keep the wire type honest rather than casting the difference away.
+ */
+function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
+  return status === 'interrupted' ? 'failed' : status;
+}
 
   function toTreeEntry(node: TestTreeNode): TestTreeEntry {
     const entry: TestTreeEntry = {
@@ -577,11 +635,31 @@ export async function startUIServer(
     return entry;
   }
 
+  /**
+   * Projects a caller can actually name. A config that declares none gets one
+   * synthesized for it called "default", which is an implementation detail —
+   * but a config that genuinely names a project "default" must still be listed,
+   * or its files look project-less and cannot be targeted by name.
+   */
+  function realProjects(): ResolvedProject[] {
+    return (ctx.projects ?? []).filter((p) => !p.synthesized);
+  }
+
+  /**
+   * Map a caller's file arguments onto discovered test files. MCP callers pass
+   * project-relative paths and globs as readily as absolute ones; matching on
+   * exact absolute paths alone silently ran nothing.
+   */
+  function resolveRequested(files: string[]): string[] {
+    const roots = [ctx.config.rootDir, process.cwd()].filter((r): r is string => Boolean(r));
+    return matchRequestedFiles(files, ctx.testFiles, roots);
+  }
+
   const testDispatcher: TestDispatcher = {
     async runFiles(files, options) {
       if (multiWorker) await ensureWorkersReady();
       const { testFilter, project } = options ?? {};
-      const validFiles = files.filter((f) => ctx.testFiles.includes(f));
+      const validFiles = resolveRequested(files);
       if (validFiles.length === 0) {
         return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
       }
@@ -640,23 +718,30 @@ export async function startUIServer(
       });
     },
     isRunning: () => isRunning,
-    getResults: () => [...testResults.values()],
+    getResults: () => [...testResults.values()].map(classifyEntryStatus),
     getTestFiles: () => ctx.testFiles,
-    getProjects: () => {
-      if (!ctx.projects) return [];
-      return ctx.projects.filter((p) => p.name !== 'default').map((p) => p.name);
-    },
+    resolveRequestedFiles: (files) => resolveRequested(files),
+    getProjects: () => realProjects().map((p) => p.name),
     getTestTree: () => testTree.map(toTreeEntry),
+    getDiscoveryErrors: (): DiscoveryError[] =>
+      [...discoveryErrors].map(([filePath, error]) => ({ filePath, error })),
     getSessionInfo: (): SessionInfo => {
-      const projects = (ctx.projects ?? [])
-        .filter((p) => p.name !== 'default')
-        .map((p) => ({
-          name: p.name,
-          platform: p.effectiveConfig.platform,
-          package: p.effectiveConfig.package,
-          testFiles: p.testFiles,
-          dependencies: p.dependencies,
-        }));
+      const projects = realProjects().map((p) => ({
+        name: p.name,
+        platform: p.effectiveConfig.platform,
+        package: p.effectiveConfig.package,
+        testFiles: p.testFiles,
+        dependencies: p.dependencies,
+      }));
+      // The same per-platform view the headless dispatcher reports. Workers
+      // spawn on the first run, so before then this is the primary device —
+      // which is genuinely all the session is driving at that point.
+      const live = uiWorkers.filter((w) => !w.retired);
+      const deviceTargets: DeviceTarget[] = live.length > 0
+        ? live.map((w) => ({ platform: resolveWorkerPlatform(ctx, w), device: w.deviceSerial }))
+        : ctx.deviceSerial
+          ? [{ platform: singleWorkerPlatform ?? ctx.config.platform, device: ctx.deviceSerial }]
+          : [];
       return {
         platform: singleWorkerPlatform ?? ctx.config.platform,
         package: ctx.config.package,
@@ -664,6 +749,8 @@ export async function startUIServer(
         timeout: ctx.config.timeout,
         retries: ctx.config.retries,
         projects,
+        deviceTargets,
+        configPath: ctx.configPath,
       };
     },
     toggleWatch(filePath, options) {
@@ -680,6 +767,16 @@ export async function startUIServer(
 
   const mcpEvents = new McpEventEmitter();
   let mcpPort = 0;
+
+  // This process *is* the UI server, so the worker daemons its MCP sessions
+  // discover are its own. Only a UI-mode server may adopt them; a headless one
+  // gets its own daemon and device (see `configureMcpConnection`).
+  // With the config this server was launched with: `configureMcpConnection`
+  // states a whole configuration, so omitting it left `discover()` re-finding
+  // one from the cwd. A daemon started for the MCP endpoint of
+  // `tapsmith test --ui -c configs/ci.config.ts` would then get its device and
+  // agent artifacts from whatever config the working directory happened to hold.
+  configureMcpConnection({ uiMode: true, configFile: ctx.configPath });
 
   // PILOT-221: route MCP over per-session transports so dropped clients can
   // reconnect and multiple agents can attach to this one device session. The
@@ -712,11 +809,17 @@ export async function startUIServer(
 
   // ─── Test Discovery ───
 
+  /** Files that failed to load, so a caller is not left with a silently short list. */
+  const discoveryErrors = new Map<string, string>();
+
   async function discoverFile(filePath: string): Promise<TestTreeNode | null> {
+    // Resolved once: a miss re-runs the filesystem and PATH probes, and this
+    // is called for every discovered file.
+    const fileLoader = childLoader([filePath]);
     return new Promise((resolve) => {
       const child = fork(resolvedDiscoverScript, [], {
         stdio: forkStdioForLaunchProgress(launchProgress),
-        ...(tsxBin ? { execPath: tsxBin } : {}),
+        ...(fileLoader ? { execPath: fileLoader } : {}),
         env: {
           ...process.env,
           NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
@@ -731,23 +834,34 @@ export async function startUIServer(
         settled = true;
 
         if (response.type === 'discover-result') {
+          discoveryErrors.delete(filePath);
           resolve(response.tree);
         } else {
           console.error(`Discovery error for ${filePath}: ${response.error.message}`);
+          discoveryErrors.set(filePath, response.error.message);
           resolve(null);
         }
       });
 
-      child.on('exit', () => {
+      // A child that dies without messaging — a crash, an OOM, or an
+      // `execPath` loader that cannot run — leaves the file with no tests and
+      // no reason. Record why, or the file simply vanishes from the tree and
+      // looks like one that genuinely holds none.
+      child.on('exit', (code, signal) => {
         if (!settled) {
           settled = true;
+          discoveryErrors.set(
+            filePath,
+            `Discovery process exited without a result (code ${code ?? 'null'}, signal ${signal ?? 'none'})`,
+          );
           resolve(null);
         }
       });
 
-      child.on('error', () => {
+      child.on('error', (err) => {
         if (!settled) {
           settled = true;
+          discoveryErrors.set(filePath, `Discovery process failed to start: ${err.message}`);
           resolve(null);
         }
       });
@@ -865,6 +979,22 @@ export async function startUIServer(
     });
   }
 
+  /**
+   * Record a file that failed before any test in it could report.
+   *
+   * The browser learns about this from an `error` broadcast, but nothing was
+   * written to `testResults` — so `getResults()` came back empty and an MCP
+   * client saw "No test results yet" moments after the run reported a failure,
+   * with `suite_status` showing nothing at all. The headless dispatcher has
+   * always recorded a synthetic entry here; this is the same one, so the same
+   * board renders it and the same retirement drops it when the file runs.
+   */
+  function recordFileFailure(filePath: string, projectName: string | undefined, err: unknown): void {
+    const entry = fileFailureEntry(filePath, projectName, err);
+    failedFiles.add(filePath);
+    testResults.set(resultEntryKey(entry), entry);
+  }
+
   /** Broadcast a file-status update, optionally scoped to a project so the
    * client only updates that project's copy of the file node (multi-device
    * configs share the same file across projects). */
@@ -908,7 +1038,7 @@ export async function startUIServer(
     clearRunBuffers();
     const project = projectForFile(filePath, explicitProjectName);
     const useOptions = project?.use as RunFileUseOptions | undefined;
-    const projectName = project && project.name !== 'default' ? project.name : undefined;
+    const projectName = projectLabel(project);
 
     broadcastFileStatus(filePath, 'running', projectName);
     broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter, projectName });
@@ -930,6 +1060,7 @@ export async function startUIServer(
       if (!stopRequested) {
         const msg = err instanceof Error ? err.message : String(err);
         broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${msg}` });
+        recordFileFailure(filePath, projectName, err);
       }
       broadcastFileStatus(filePath, 'done', projectName);
       return endRun({ status: 'failed', passed: 0, failed: stopRequested ? 0 : 1, skipped: 0, duration: 0 });
@@ -981,7 +1112,7 @@ export async function startUIServer(
           if (stopRequested) break;
           const project = fileToProject.get(file);
           const useOptions = project?.use as RunFileUseOptions | undefined;
-          const projectName = project && project.name !== 'default' ? project.name : undefined;
+          const projectName = projectLabel(project);
 
           broadcastFileStatus(file, 'running', projectName);
 
@@ -1021,7 +1152,7 @@ export async function startUIServer(
   }> {
     let passed = 0, failed = 0, skipped = 0, duration = 0, anyFailed = false;
     const useOptions = project.use as RunFileUseOptions | undefined;
-    const projectName = project.name !== 'default' ? project.name : undefined;
+    const projectName = projectLabel(project);
 
     for (const file of project.testFiles) {
       if (stopRequested) break;
@@ -1123,7 +1254,7 @@ export async function startUIServer(
       const files: TaggedFile[] = target.testFiles.map((f) => ({
         filePath: f,
         projectUseOptions: target.use as RunFileUseOptions | undefined,
-        projectName: target.name !== 'default' ? target.name : undefined,
+        projectName: projectLabel(target),
       }));
 
       broadcast({ type: 'run-start', fileCount: files.length });
@@ -1176,10 +1307,14 @@ export async function startUIServer(
     results: import('../runner.js').TestResult[]
     suite: import('../runner.js').SuiteResult
   }> {
+    // Once per fork: `childLoader` memoizes only on success, so in the miss
+    // case — the expensive one, which re-runs the filesystem and PATH probes —
+    // calling it twice per fork paid for the whole scan twice.
+    const loader = childLoader();
     return new Promise((resolve, reject) => {
       const child = fork(resolvedRunScript, [], {
         stdio: forkStdioForLaunchProgress(launchProgress),
-        ...(tsxBin ? { execPath: tsxBin } : {}),
+        ...(loader ? { execPath: loader } : {}),
         env: {
           ...process.env,
           NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
@@ -1366,7 +1501,7 @@ export async function startUIServer(
       fileCount: depFileCount + 1,
       filePath,
       testFilter,
-      projectName: project.name !== 'default' ? project.name : undefined,
+      projectName: projectLabel(project),
     });
 
     let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
@@ -1394,7 +1529,7 @@ export async function startUIServer(
         }
       }
 
-      const pName = project.name !== 'default' ? project.name : undefined;
+      const pName = projectLabel(project);
       const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
       if (stopRequested) {
         broadcastFileStatus(filePath, 'done', pName);
@@ -1416,6 +1551,7 @@ export async function startUIServer(
           if (!stopRequested) {
             const errMsg = err instanceof Error ? err.message : String(err);
             broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
+            recordFileFailure(filePath, pName, err);
             totalFailed++;
           }
         }
@@ -1704,9 +1840,10 @@ export async function startUIServer(
     daemonProcess.unref();
 
     // Fork ui-worker.ts
+    const workerLoader = childLoader();
     const child = fork(resolvedWorkerScript, [], {
       stdio: forkStdioForLaunchProgress(launchProgress),
-      ...(tsxBin ? { execPath: tsxBin } : {}),
+      ...(workerLoader ? { execPath: workerLoader } : {}),
       env: {
         ...process.env,
         NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
@@ -1990,6 +2127,12 @@ export async function startUIServer(
         const orphaned = drainUnservableFiles(remaining);
         for (const f of orphaned) {
           broadcastFileStatus(f.filePath, 'done', f.projectName);
+          // Counted *and* recorded. Incrementing `failed` alone reported "1
+          // failed" from the run while `list_results` said there were no
+          // results and the status board showed nothing — the failure existed
+          // only in the number. It carries the reason the worker gave, which
+          // is the actual cause (an import error, say) rather than the drain.
+          recordFileFailure(f.filePath, f.projectName, new Error(`No worker could run this file: ${reason}`));
           failed++;
           anyFailed = true;
         }
@@ -2102,7 +2245,7 @@ export async function startUIServer(
               // — keeps graceful-abort accounting consistent with the
               // kill-path accounting (single-worker stop / SIGKILL escalation).
               const interruptedHere = results.filter(
-                (r) => r.status === 'failed' && r.error?.message === 'Stopped by user',
+                (r) => r.status === 'failed' && r.error?.message === STOPPED_BY_USER,
               ).length;
               interruptedCount += interruptedHere;
 
@@ -2207,7 +2350,7 @@ export async function startUIServer(
               waveFiles.push({
                 filePath: file,
                 projectUseOptions: project.use as RunFileUseOptions | undefined,
-                projectName: project.name !== 'default' ? project.name : undefined,
+                projectName: projectLabel(project),
               });
             }
           }
@@ -2236,7 +2379,7 @@ export async function startUIServer(
           return {
             filePath: f,
             projectUseOptions: project?.use as RunFileUseOptions | undefined,
-            projectName: project && project.name !== 'default' ? project.name : undefined,
+            projectName: projectLabel(project),
           };
         });
 
@@ -2283,7 +2426,7 @@ export async function startUIServer(
     parallelRunAborted = false;
 
     const project = projectForFile(filePath, explicitProjectName);
-    const projectName = project && project.name !== 'default' ? project.name : undefined;
+    const projectName = projectLabel(project);
     broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter, projectName });
 
     const file: TaggedFile = {
@@ -2300,6 +2443,7 @@ export async function startUIServer(
       if (!parallelRunAborted) {
         const errMsg = err instanceof Error ? err.message : String(err);
         broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
+        recordFileFailure(filePath, file.projectName, err);
       }
       broadcastFileStatus(filePath, 'done', file.projectName);
       return endRun({ status: 'failed', passed: 0, failed: parallelRunAborted ? 0 : 1, skipped: 0, duration: 0 });
@@ -2328,7 +2472,7 @@ export async function startUIServer(
       // the child's exit handler nulls singleWorkerRunningTest.
       if (singleWorkerRunningTest) {
         const { fullName, filePath, projectName } = singleWorkerRunningTest;
-        updateTestStatus(fullName, filePath, 'failed', undefined, 'Stopped by user', undefined, undefined, undefined, projectName);
+        updateTestStatus(fullName, filePath, 'failed', undefined, STOPPED_BY_USER, undefined, undefined, undefined, projectName);
         interruptedCount++;
       }
       if (activeChild) { try { activeChild.kill(); } catch { /* already dead */ } }
@@ -2570,7 +2714,7 @@ export async function startUIServer(
               waveFiles.push({
                 filePath: file,
                 projectUseOptions: project.use as RunFileUseOptions | undefined,
-                projectName: project.name !== 'default' ? project.name : undefined,
+                projectName: projectLabel(project),
               });
             }
           }
@@ -2634,7 +2778,7 @@ export async function startUIServer(
         fileCount: depFileCount + 1,
         filePath,
         testFilter,
-        projectName: project.name !== 'default' ? project.name : undefined,
+        projectName: projectLabel(project),
       });
 
       let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
@@ -2656,7 +2800,7 @@ export async function startUIServer(
               waveFiles.push({
                 filePath: f,
                 projectUseOptions: depProject.use as RunFileUseOptions | undefined,
-                projectName: depProject.name !== 'default' ? depProject.name : undefined,
+                projectName: projectLabel(depProject),
               });
             }
           }
@@ -2673,7 +2817,7 @@ export async function startUIServer(
         }
 
         const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
-        const projectNameForBroadcast = project.name !== 'default' ? project.name : undefined;
+        const projectNameForBroadcast = projectLabel(project);
         if (blockedBy) {
           broadcast({ type: 'error', message: `Skipping "${path.basename(filePath)}" — dependency "${blockedBy}" failed` });
           broadcastFileStatus(filePath, 'done', projectNameForBroadcast);
@@ -2681,7 +2825,7 @@ export async function startUIServer(
           const targetFile: TaggedFile = {
             filePath,
             projectUseOptions: project.use as RunFileUseOptions | undefined,
-            projectName: project.name !== 'default' ? project.name : undefined,
+            projectName: projectLabel(project),
             testFilter,
           };
           const r = await dispatchFilesParallel([targetFile]);
@@ -2883,7 +3027,7 @@ export async function startUIServer(
         type: 'test-status',
         fullName: r.fullName,
         filePath: r.filePath,
-        status: r.status,
+        status: wireStatus(r.status),
         duration: r.duration,
         error: r.error,
         tracePath: r.tracePath,
@@ -2932,6 +3076,9 @@ export async function startUIServer(
     removeFile(ctx.testFiles, resolved);
     discoveredFileNodes.delete(resolved);
     failedFiles.delete(resolved);
+    // Or a file deleted while failing to import goes on being reported as a
+    // load failure, by path, for the life of the server.
+    discoveryErrors.delete(resolved);
     for (const [key, value] of runningFiles) {
       if (value.filePath === resolved) runningFiles.delete(key);
     }
@@ -3190,7 +3337,7 @@ export async function startUIServer(
           return {
             filePath: file,
             projectUseOptions: project?.use as RunFileUseOptions | undefined,
-            projectName: project && project.name !== 'default' ? project.name : undefined,
+            projectName: projectLabel(project),
             testFilter: r.testFilter,
           };
         });
@@ -3345,7 +3492,7 @@ export async function startUIServer(
                 return {
                   filePath: f,
                   projectUseOptions: project?.use as RunFileUseOptions | undefined,
-                  projectName: project && project.name !== 'default' ? project.name : undefined,
+                  projectName: projectLabel(project),
                 };
               });
 
@@ -3710,7 +3857,7 @@ export async function startUIServer(
         type: 'test-status',
         fullName: r.fullName,
         filePath: r.filePath,
-        status: r.status,
+        status: wireStatus(r.status),
         duration: r.duration,
         error: r.error,
         tracePath: r.tracePath,
@@ -3917,10 +4064,24 @@ export async function startUIServer(
         .map(w => ({
           address: `127.0.0.1:${w.daemonPort}`,
           deviceSerial: w.deviceSerial,
-          platform: w.platform,
+          // Resolved, like every other consumer of a worker's platform: the raw
+          // field comes from the bucket config and is unset when that config
+          // declares no platform. An MCP session tags its connection from this,
+          // and an untagged one matches no project — so `tap({project: 'ios'})`
+          // would report no ios device with the worker sitting right there.
+          platform: resolveWorkerPlatform(ctx, w),
         }));
+      // Every daemon this session drives, workers *and* the primary one. A
+      // headless MCP server has to be able to tell that the daemon at the
+      // default address belongs to a UI run: it reaches that address through
+      // its own `daemonAddress`, where the `ui` and `peer` guards never apply,
+      // and would claim it, repoint it and start its own agent on it.
+      const owned = [
+        ...daemons.map((d) => d.address),
+        ctx.daemonAddress ?? ctx.config.daemonAddress,
+      ].filter(Boolean);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ daemons }));
+      res.end(JSON.stringify({ daemons, owned }));
       return;
     }
 
@@ -3983,12 +4144,17 @@ export async function startUIServer(
   console.log(`\x1b[2mMCP ready at http://127.0.0.1:${mcpPort}/mcp\x1b[0m`);
 
   // Write port file for standalone MCP server discovery
-  const { uiPortFilePath } = await import('../mcp/port-file.js');
+  const { uiPortFilePath, ensureDaemonStateDir } = await import('../mcp/port-file.js');
   const portFilePath = uiPortFilePath();
   try {
+    // The directory is ours to create: a UI server writes nothing else there,
+    // and without this the first run on a machine publishes no port at all.
+    ensureDaemonStateDir();
     fs.writeFileSync(portFilePath, String(mcpPort));
-  } catch {
-    // Non-fatal
+  } catch (err) {
+    // Non-fatal, but not silent: headless sessions use this file to tell which
+    // daemons belong to this run, and without it they may claim one of them.
+    console.error(`${YELLOW}Could not publish the MCP port to ${portFilePath}: ${err instanceof Error ? err.message : err}.${RESET}`);
   }
 
   // Send device info (single-worker)

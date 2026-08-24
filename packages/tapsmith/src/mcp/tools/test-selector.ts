@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { ensureConnected } from '../connection.js';
+import { deviceClientFor, DEVICE_ARG_DESCRIPTION, PROJECT_ARG_DESCRIPTION } from './device-target.js';
+import type { TestDispatcher } from '../test-dispatcher.js';
 import { parseHierarchyXml } from '../../trace-viewer/components/hierarchy-utils.js';
 import { parseSelectorString, findMatchingNodes, applyPositionalIndex } from '../../trace-viewer/components/selector-matching.js';
 import { getNodeRole } from '../../trace-viewer/components/hierarchy-utils.js';
@@ -16,17 +17,17 @@ const STRICT_HINT =
   'Actions and assertions on this selector will throw a strict mode violation at runtime. ' +
   'Disambiguate with { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last().';
 
-export function registerTestSelectorTool(server: McpServer): void {
+export function registerTestSelectorTool(server: McpServer, dispatcher?: TestDispatcher): void {
   server.tool(
     'tapsmith_test_selector',
     'Test a Tapsmith selector against the current screen using the same matching the test runner uses at runtime. Returns whether it matches, how many elements match, and details about each match. Warns when a selector is ambiguous (multiple matches), which makes runtime actions throw a strict mode violation. Use to validate selectors before putting them in test code.',
     {
       selector: z.string().describe('Tapsmith selector string, e.g. device.getByRole("button", { name: "Login" })'),
-      device: z.string().optional().describe('Device serial from tapsmith_list_devices (optional, uses default device)'),
+      device: z.string().optional().describe(DEVICE_ARG_DESCRIPTION),
+      project: z.string().optional().describe(PROJECT_ARG_DESCRIPTION),
     },
-    async ({ selector, device }) => {
-      const client = await ensureConnected(device);
-      if (device) await client.setDevice(device);
+    async ({ selector, device, project }) => {
+      const client = await deviceClientFor({ device, project }, dispatcher);
 
       const parsed = parseSelectorString(selector);
       if (!parsed) {

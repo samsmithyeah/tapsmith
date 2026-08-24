@@ -29,10 +29,17 @@ export function registerListResultsTool(server: McpServer, dispatcher: TestDispa
       const passed = results.filter((r) => r.status === 'passed').length;
       const failed = results.filter((r) => r.status === 'failed').length;
       const skipped = results.filter((r) => r.status === 'skipped').length;
-      lines.push(`Results: ${passed} passed, ${failed} failed, ${skipped} skipped (${results.length} total)\n`);
+      const interrupted = results.filter((r) => r.status === 'interrupted').length;
+      // Named only when it happened, so an ordinary run reads as it always has.
+      const stopped = interrupted > 0 ? `, ${interrupted} interrupted` : '';
+      lines.push(`Results: ${passed} passed, ${failed} failed, ${skipped} skipped${stopped} (${results.length} total)\n`);
 
       for (const r of results) {
-        const icon = r.status === 'passed' ? 'PASS' : r.status === 'failed' ? 'FAIL' : 'SKIP';
+        const icon = r.status === 'passed'
+          ? 'PASS'
+          : r.status === 'failed'
+            ? 'FAIL'
+            : r.status === 'interrupted' ? 'STOP' : 'SKIP';
         const dur = r.duration != null ? ` (${r.duration}ms)` : '';
         const proj = r.projectName ? ` [${r.projectName}]` : '';
         lines.push(`[${icon}] ${r.fullName}${dur}${proj}`);

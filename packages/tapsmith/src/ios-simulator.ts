@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import lockfile from 'proper-lockfile';
+import { withFileLockSync } from './file-lock.js';
 
 export interface SimulatorInfo {
   udid: string
@@ -449,39 +449,69 @@ function atomicWriteManifest(file: string, entries: SimulatorManifestEntry[]): v
   fs.renameSync(tmp, file);
 }
 
+/**
+ * How long a held manifest lock stays valid before another process may break
+ * it.
+ *
+ * One value for every acquirer, deliberately. `proper-lockfile` judges
+ * staleness against the *acquirer's* window, not the holder's, so a caller
+ * declaring a longer window protects nothing: any other caller using the
+ * default would break the lock on its own schedule and both would proceed —
+ * and the original holder's `release()` then removes the new holder's lock
+ * directory, because the removal is unconditional.
+ *
+ * Short, because the sweep heartbeats. Sizing it to cover the whole sweep
+ * instead — it runs synchronous `simctl` calls per entry, which block the
+ * event loop and stop proper-lockfile's own refresh timer — meant a run killed
+ * mid-sweep left a lock nobody could break for minutes, and every run in that
+ * window stalled and then skipped its cleanup entirely.
+ */
+const MANIFEST_STALE_MS = 60_000;
+
 // Run a read-modify-write operation under an exclusive file lock so concurrent
 // Tapsmith runs can't corrupt the manifest. proper-lockfile uses a `.lock` dir
 // next to the target file with retry/backoff and stale-lock detection.
 function withManifestLock<T>(
-  fn: (entries: SimulatorManifestEntry[]) => { result: T; updated?: SimulatorManifestEntry[] },
+  fn: (entries: SimulatorManifestEntry[], heartbeat: () => void) => { result: T; updated?: SimulatorManifestEntry[] },
+  options?: { onContended?: () => T; waitBudget?: 'brief' | 'sweep' },
 ): T {
   const file = ensureManifestFile();
-  let release: (() => void) | undefined;
-  try {
-    release = lockfile.lockSync(file, {
-      retries: { retries: 10, minTimeout: 50, maxTimeout: 500 },
-      stale: 10_000,
-    });
-  } catch {
-    // Couldn't acquire the lock — fall back to a best-effort unlocked operation.
-    // Worst case is a stale entry cleaned up next run, same as the prior behavior.
+  // withFileLockSync, not lockfile.lockSync directly: the sync API rejects a
+  // `retries` option ("Cannot use retries with the sync api"), so passing one
+  // threw every time and this always ran unlocked.
+  const outcome = withFileLockSync(file, (heartbeat) => {
     const entries = readManifestUnlocked(file);
-    const { result, updated } = fn(entries);
+    const { result, updated } = fn(entries, heartbeat);
+    // Best effort inside the lock too. While the lock never worked, every call
+    // took the fallback below, where a failed write is swallowed; letting it
+    // throw here would turn bookkeeping nobody waits on into a failed run.
     if (updated !== undefined) {
-      try { atomicWriteManifest(file, updated); } catch { /* best effort */ }
+      try { atomicWriteManifest(file, updated); } catch { /* stale entry cleaned up next run */ }
     }
-    return result;
+    return { result };
+  // A bookkeeping write waits briefly and then proceeds unlocked; the sweep
+  // waits longer, because giving up means cloning every simulator fresh. Every
+  // millisecond here is spent in `Atomics.wait` on the main thread, so the
+  // budget is a few seconds, not the length of a sweep — a holder that dies is
+  // reclaimed by the stale window, not by us out-waiting it.
+  }, options?.waitBudget === 'sweep'
+    ? { attempts: 20, waitMs: 250, staleMs: MANIFEST_STALE_MS }
+    : { attempts: 10, waitMs: 50, staleMs: MANIFEST_STALE_MS });
+  if (outcome.locked) return outcome.value.result;
+
+  // Couldn't acquire the lock. For bookkeeping the unlocked fallback below is
+  // fine — worst case is a stale entry cleaned up next run, same as the prior
+  // behavior. Callers whose work *deletes* simulators pass `onContended` to opt
+  // out instead: running unlocked there means two sweeps deleting each other's
+  // simulators, which is the whole reason for the lock.
+  if (options?.onContended) return options.onContended();
+
+  const entries = readManifestUnlocked(file);
+  const { result, updated } = fn(entries, () => {});
+  if (updated !== undefined) {
+    try { atomicWriteManifest(file, updated); } catch { /* best effort */ }
   }
-  try {
-    const entries = readManifestUnlocked(file);
-    const { result, updated } = fn(entries);
-    if (updated !== undefined) {
-      atomicWriteManifest(file, updated);
-    }
-    return result;
-  } finally {
-    release();
-  }
+  return result;
 }
 
 function readManifestUnlocked(file: string): SimulatorManifestEntry[] {
@@ -513,6 +543,44 @@ export function recordClonedSimulators(
       }));
     return { result: undefined, updated: [...existing, ...newEntries] };
   });
+}
+
+/**
+ * A sweep's surviving entries, plus any that appeared while it was sweeping.
+ *
+ * Phase 1 holds the lock across a `simctl` call per entry, which is long enough
+ * that a concurrent run recording a fresh clone gives up waiting and writes
+ * unlocked — that is the documented fallback for bookkeeping. Writing the
+ * sweep's own list wholesale would then erase the clone's entry, and the *next*
+ * run's phase 2 deletes any `Tapsmith Worker` simulator the manifest does not
+ * know about: a live simulator, deleted out from under the run using it.
+ *
+ * Re-reading here rather than trusting the entry list the sweep started with
+ * shrinks the window from the length of a sweep to the moment before the write,
+ * and the rule is exact — the sweep only ever means to drop what it handled.
+ *
+ * Adds the udids it finds to `handledUdids`, so phase 2 spares them too.
+ */
+function withConcurrentAdditions(
+  surviving: SimulatorManifestEntry[],
+  handledUdids: Set<string>,
+): SimulatorManifestEntry[] {
+  const known = new Set(surviving.map((e) => e.udid));
+  const appeared = readManifestUnlocked(ensureManifestFile())
+    .filter((e) => !known.has(e.udid) && !handledUdids.has(e.udid));
+  if (appeared.length === 0) return surviving;
+  // Marked handled, not just kept. Phase 2 runs after this, outside the lock,
+  // and deletes any `Tapsmith Worker N` simulator that phase 1 did not record —
+  // so keeping the manifest entry while leaving the udid unhandled deletes the
+  // very simulator the entry describes, and leaves the record pointing at
+  // nothing. The entry and the simulator have to survive together.
+  for (const entry of appeared) handledUdids.add(entry.udid);
+  return [...surviving, ...appeared];
+}
+
+/** Whether the manifest names this simulator *now*, not when the sweep began. */
+function isRecordedInManifest(udid: string): boolean {
+  return readManifestUnlocked(ensureManifestFile()).some((e) => e.udid === udid);
 }
 
 /**
@@ -656,10 +724,15 @@ export function cleanupStaleSimulators(
   // entire read-modify-write so two concurrent Tapsmith runs don't both try to
   // reclaim the same simulator. The lock is released before phase 2/3, which
   // operate on simulators outside the manifest.
-  withManifestLock((manifest) => {
+  const swept = withManifestLock<boolean>((manifest, heartbeat) => {
     const surviving: SimulatorManifestEntry[] = [];
 
     for (const entry of manifest) {
+      // Each iteration blocks the event loop on `simctl`, so the lock's own
+      // refresh timer never runs — say we are alive by hand, or a slow sweep
+      // looks abandoned and a concurrent run breaks the lock underneath it.
+      heartbeat();
+
       // Only reclaim clones matching the current simulator name
       if (entry.sourceName !== simulatorName) {
         surviving.push(entry);
@@ -683,8 +756,27 @@ export function cleanupStaleSimulators(
       }
     }
 
-    return { result: undefined, updated: surviving };
-  });
+    return { result: true, updated: withConcurrentAdditions(surviving, handledUdids) };
+  }, { waitBudget: 'sweep', onContended: () => false });
+
+  if (!swept) {
+    // Another run is sweeping right now. Don't fall through: phase 2 deletes by
+    // name pattern alone and spares only what phase 1 recorded in
+    // `handledUdids`, so continuing with an empty set would delete the very
+    // clones that run is reclaiming. Skipping costs this run its reusable
+    // clones — it clones fresh instead — and the next sweep cleans up.
+    //
+    // Said out loud because the symptom otherwise reads as "reuse is broken":
+    // a process killed with SIGKILL mid-sweep leaves its lock behind, and
+    // every run for the next MANIFEST_STALE_MS clones fresh with no clue why.
+    // (An ordinary Ctrl-C is fine — proper-lockfile removes held locks from
+    // its own exit hook.)
+    console.error(
+      'Skipping simulator cleanup: another Tapsmith run holds the simulator manifest lock. '
+      + 'This run will clone fresh simulators instead of reusing any.',
+    );
+    return { reusable, killed };
+  }
 
   // Phase 2: heuristic cleanup — delete orphaned "Tapsmith Worker" sims
   const allSims = listSimulators();
@@ -693,6 +785,11 @@ export function cleanupStaleSimulators(
   for (const sim of allSims) {
     if (handledUdids.has(sim.udid)) continue;
     if (!tapsmithWorkerPattern.test(sim.name)) continue;
+    // Read again, immediately before deleting. Phase 1's view of the manifest
+    // is as old as the sweep, and the lock is released by now — a run that
+    // recorded a clone in between would otherwise have it deleted here on the
+    // strength of a snapshot taken before it existed.
+    if (isRecordedInManifest(sim.udid)) continue;
 
     deleteSimulator(sim.udid);
     killed.push(sim.udid);
@@ -881,6 +978,13 @@ export function provisionSimulators(opts: {
         const createName = `${simulatorName} (Tapsmith Worker ${createIndex})`;
         try {
           const newUdid = createSimulator(createName, primarySim.deviceType, primarySim.runtime);
+          // Recorded before it is booted, and one at a time. A concurrent run's
+          // phase 2 deletes any `Tapsmith Worker N` the manifest does not know,
+          // so every second between creating one and recording it is a second
+          // it can be deleted from under us — and recording the whole batch at
+          // the end left each one exposed for the boot and app install of every
+          // simulator after it.
+          recordClonedSimulators([{ udid: newUdid, name: createName, cloned: true }], simulatorName);
           bootSimulator(newUdid);
           if (opts.appPath) {
             try { installApp(newUdid, opts.appPath); } catch { /* worker will retry */ }
@@ -901,6 +1005,8 @@ export function provisionSimulators(opts: {
         const cloneName = `${simulatorName} (Tapsmith Worker ${cloneIndex})`;
         try {
           const newUdid = cloneSimulator(source.udid, cloneName);
+          // Recorded immediately — see the create path above for why.
+          recordClonedSimulators([{ udid: newUdid, name: cloneName, cloned: true }], simulatorName);
           bootSimulator(newUdid);
           if (opts.appPath) {
             try { installApp(newUdid, opts.appPath); } catch { /* worker will retry */ }
@@ -924,11 +1030,9 @@ export function provisionSimulators(opts: {
     }
   }
 
-  // Record newly cloned sims in the manifest for reuse by future runs
-  const newlyCloned = clonedSimulators.filter((c) => freshUdids.has(c.udid));
-  if (newlyCloned.length > 0) {
-    recordClonedSimulators(newlyCloned, simulatorName);
-  }
+  // Nothing to record here any more: each simulator is written to the manifest
+  // as it is created, which is the only way it is not deletable by another run
+  // in the meantime.
 
   return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids, reusedUdids };
 }
