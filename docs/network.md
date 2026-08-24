@@ -755,7 +755,8 @@ For any other HTTP/2-capable host that rejects the certificate — including Fir
 
 A few HTTP/2 specifics to be aware of:
 
-- **Streaming / long-lived calls** (e.g. Firestore `Listen`) are forwarded incrementally and only appear in the trace once the stream closes -- a never-ending server stream stays open and is recorded at teardown.
+- **Long-lived channels are opened once per app process.** gRPC clients (Firestore included) multiplex every call over a single h2 connection. If the app was already running when your test started, that connection already exists and nothing new crosses the proxy, so `waitForRequest`/`waitForResponse` never fire and `route()` handlers never match -- capture looks broken while working correctly. Relaunch the app inside the test (`device.launchApp(...)`) so the channel is opened during the window you are waiting on.
+- **Streaming / long-lived calls** (e.g. Firestore `Listen`) are forwarded incrementally and only appear in the trace once the stream closes -- a never-ending server stream stays open and is recorded at teardown. Assert on the *request* event, which fires when the stream opens; a `waitForResponse` on a stream that never ends will time out.
 - Captured HTTP/2 header names are lowercase (that's how HTTP/2 sends them on the wire).
 - Request/response **bodies in the trace are capped** (~1 MB), but the full stream is always forwarded to the app.
 
