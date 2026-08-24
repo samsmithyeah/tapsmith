@@ -205,7 +205,7 @@ trace: {
 }
 ```
 
-Tunneled connections appear in the trace as a single `CONNECT` entry marked `passthrough`, and `device.route()` cannot match them. Tapsmith can also tunnel a host dynamically when an HTTP/2-capable client rejects the generated MITM certificate, which is common for Firestore-style SDKs that use embedded root certificates. See [network.md](network.md#http2-grpc-and-passthrough-connections).
+Tunneled connections appear in the trace as a single `CONNECT` entry marked `passthrough`, and `device.route()` cannot match them. Tapsmith can also tunnel a host dynamically when an HTTP/2-capable client rejects the generated MITM certificate, which is common for SDKs that use embedded root certificates. On iOS, `firestore.googleapis.com` is tunneled by default for that reason; on Android, where Firestore honours the platform trust store, it is captured. See [network.md](network.md#http2-grpc-and-passthrough-connections).
 
 Example:
 

@@ -389,9 +389,10 @@ export interface TraceConfig {
    *     }
    *
    * HTTP/2 traffic (including gRPC) is intercepted and captured when the
-   * client trusts Tapsmith's MITM CA. HTTP/2-capable clients that reject the
-   * generated certificate, such as some Firestore SDKs with embedded roots,
-   * may be tunneled dynamically and appear as `passthrough`.
+   * client trusts Tapsmith's MITM CA — Firestore on Android does. HTTP/2-capable
+   * clients that reject the generated certificate, such as Firestore's iOS SDK
+   * with its embedded roots, may be tunneled dynamically and appear as
+   * `passthrough`; `firestore.googleapis.com` is tunneled by default on iOS.
    *
    * Patterns match against the TLS SNI hostname with the same glob
    * syntax as `networkHosts`.

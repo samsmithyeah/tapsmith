@@ -14,10 +14,13 @@
 //!
 //! For HTTPS, performs MITM interception using per-host certificates signed by
 //! the Tapsmith CA to decrypt and capture request/response content. The MITM
-//! engine speaks HTTP/1.1 only; TLS connections that cannot be downgraded —
-//! HTTP/2-only ALPN offers (gRPC, Firestore) or hosts listed in
-//! `trace.networkPassthroughHosts` (certificate pinning) — are tunneled
-//! end-to-end without interception instead of being dropped (PILOT-231).
+//! engine speaks both HTTP/1.1 and HTTP/2, so h2-only clients (gRPC, Firestore)
+//! are intercepted per-stream rather than tunneled (PILOT-245). TLS connections
+//! we still cannot decrypt are tunneled end-to-end instead of being dropped
+//! (PILOT-231): ALPN offers with no protocol we speak, hosts listed in
+//! `trace.networkPassthroughHosts` (certificate pinning), and hosts that reject
+//! our certificate at handshake time (embedded-root stacks — see
+//! [`EmbeddedRootDefaults`]).
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -249,9 +252,17 @@ pub(crate) struct ProxyState {
     /// Matched against the ClientHello SNI. Empty = no host-based passthrough
     /// (ALPN-based passthrough for unsupported protocols still applies).
     passthrough_hosts: Vec<regex::Regex>,
+    /// Compiled [`DEFAULT_PASSTHROUGH_HOSTS`], kept separate from the user's
+    /// `passthrough_hosts` so the two can be set independently: the user's
+    /// list comes from config, this one is a per-platform decision. Populated
+    /// only where the built-in hosts genuinely cannot trust our MITM CA — see
+    /// [`EmbeddedRootDefaults`] and [`NetworkProxy::set_passthrough_hosts`].
+    /// Matched against the ClientHello SNI exactly like `passthrough_hosts`.
+    default_passthrough_hosts: Vec<regex::Regex>,
     /// Hosts whose clients rejected our generated MITM certificate during TLS
-    /// setup. Embedded-root gRPC clients (notably Firestore) cannot be made to
-    /// trust an external CA, so after the first reject we tunnel retries.
+    /// setup. Embedded-root gRPC clients (notably Firestore on iOS) cannot be
+    /// made to trust an external CA, so after the first reject we tunnel
+    /// retries.
     mitm_rejected_hosts: HashSet<String>,
     /// Per-host tally of MITM handshakes the client *aborted* abruptly (TCP
     /// reset / broken pipe) rather than failing with a decodable cert alert.
@@ -325,7 +336,11 @@ impl NetworkProxy {
             h2_client_config,
             handler: None,
             network_hosts: Vec::new(),
-            passthrough_hosts: default_passthrough_regexes(),
+            passthrough_hosts: Vec::new(),
+            // Applied until a caller says otherwise: a proxy that starts
+            // before its platform is known (physical-iOS OCSP pre-start) is
+            // better off tunneling embedded-root hosts than breaking them.
+            default_passthrough_hosts: default_passthrough_regexes(),
             mitm_rejected_hosts: HashSet::new(),
             mitm_handshake_aborts: HashMap::new(),
         }));
@@ -400,8 +415,13 @@ impl NetworkProxy {
     /// once, so per-connection matching stays cheap. Safe to call while the
     /// proxy is serving traffic; applies to connections accepted after the
     /// call.
-    pub async fn set_passthrough_hosts(&self, hosts: Vec<String>) {
-        let mut compiled: Vec<regex::Regex> = hosts
+    ///
+    /// `defaults` decides whether [`DEFAULT_PASSTHROUGH_HOSTS`] is tunneled on
+    /// top of the user's list — see [`EmbeddedRootDefaults`]. It is a parameter
+    /// rather than a separate setter so a caller cannot update one list and
+    /// forget the other.
+    pub async fn set_passthrough_hosts(&self, hosts: Vec<String>, defaults: EmbeddedRootDefaults) {
+        let compiled: Vec<regex::Regex> = hosts
             .iter()
             .filter_map(|pattern| {
                 let re = compile_host_glob(pattern);
@@ -411,12 +431,13 @@ impl NetworkProxy {
                 re
             })
             .collect();
-        // Always tunnel the built-in embedded-root hosts (Firestore) on top of
-        // the user's list — they can never trust our MITM cert, so MITM'ing
-        // them only breaks the app under test (see DEFAULT_PASSTHROUGH_HOSTS).
-        compiled.extend(default_passthrough_regexes());
+        let defaults = match defaults {
+            EmbeddedRootDefaults::Apply => default_passthrough_regexes(),
+            EmbeddedRootDefaults::Skip => Vec::new(),
+        };
         let mut state = self.state.lock().await;
         state.passthrough_hosts = compiled;
+        state.default_passthrough_hosts = defaults;
     }
 
     /// Set a [`NetworkHandler`] implementation on the proxy. Requests
@@ -3438,10 +3459,42 @@ fn is_likely_handshake_abort(error: &impl std::fmt::Display) -> bool {
 /// This list only spares the *first* connection to the overwhelmingly common
 /// embedded-root host (Firestore's gRPC-C++/BoringSSL stack, PILOT-245) the
 /// one-or-two failed handshakes it would otherwise take for that fallback to
-/// arm. Matched against the ClientHello SNI as host globs and merged with the
-/// user's `trace.networkPassthroughHosts`; users with their own pinned
+/// arm. Matched against the ClientHello SNI as host globs and applied on top
+/// of the user's `trace.networkPassthroughHosts`; users with their own pinned
 /// backends use that config knob.
+///
+/// Only applied where those hosts really do embed their roots — see
+/// [`EmbeddedRootDefaults`], which gates it per platform (PILOT-279).
 const DEFAULT_PASSTHROUGH_HOSTS: &[&str] = &["firestore.googleapis.com"];
+
+/// Whether [`DEFAULT_PASSTHROUGH_HOSTS`] applies to a capture session.
+///
+/// The built-in list exists because gRPC-C++/BoringSSL (Firestore's iOS
+/// stack) compiles its CA roots into the app binary and passes them
+/// explicitly, so it can never trust the MITM CA no matter what the device
+/// trust store says. That is an **iOS** property, not a Firestore one:
+/// Android's Firestore runs on gRPC-Java, which validates against the
+/// platform trust store via Conscrypt, so once our CA is installed there
+/// (`adb::install_ca_cert`) Firestore is MITM-able like any other h2 host
+/// and the default would only hide capturable traffic (PILOT-279).
+///
+/// Skipping the default is safe even when the Android CA install lands
+/// somewhere the app does not trust (a user-store-only fallback on a
+/// non-rootable image): the client then rejects our certificate and the
+/// dynamic fallback tunnels the host after
+/// [`MITM_ABORT_PASSTHROUGH_THRESHOLD`] handshakes. Cost is a couple of
+/// failed handshakes at session start; the upside is never silently hiding
+/// traffic we could have captured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddedRootDefaults {
+    /// Tunnel [`DEFAULT_PASSTHROUGH_HOSTS`] without attempting MITM. For
+    /// platforms whose gRPC stack embeds its own roots (iOS).
+    Apply,
+    /// Treat those hosts like any other — MITM and capture them, relying on
+    /// the dynamic cert-reject fallback if the client turns out not to trust
+    /// our CA. For platforms that honour the system trust store (Android).
+    Skip,
+}
 
 /// Compile [`DEFAULT_PASSTHROUGH_HOSTS`] into matchers. The patterns are
 /// constant and known-valid, so any that somehow fail to compile are dropped.
@@ -3623,7 +3676,11 @@ async fn handle_transparent_tls<S>(
     let (host_passthrough, mitm_rejected_passthrough) = {
         let state = state.lock().await;
         (
-            state.passthrough_hosts.iter().any(|re| re.is_match(&sni)),
+            state
+                .passthrough_hosts
+                .iter()
+                .chain(state.default_passthrough_hosts.iter())
+                .any(|re| re.is_match(&sni)),
             state.mitm_rejected_hosts.contains(&sni_key),
         )
     };
@@ -4711,6 +4768,7 @@ mod tests {
             handler: Some(Arc::new(SyntheticHttpsHandler { seen_tx })),
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
+            default_passthrough_hosts: Vec::new(),
             mitm_rejected_hosts: HashSet::new(),
             mitm_handshake_aborts: HashMap::new(),
         }));
@@ -5213,6 +5271,7 @@ mod tests {
                 .iter()
                 .map(|p| compile_host_glob(p).unwrap())
                 .collect(),
+            default_passthrough_hosts: Vec::new(),
             mitm_rejected_hosts: HashSet::new(),
             mitm_handshake_aborts: HashMap::new(),
         }))
@@ -5538,6 +5597,7 @@ mod tests {
             handler: Some(Arc::new(SyntheticHttpsHandler { seen_tx })),
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
+            default_passthrough_hosts: Vec::new(),
             mitm_rejected_hosts: HashSet::new(),
             mitm_handshake_aborts: HashMap::new(),
         }));
@@ -5775,6 +5835,7 @@ mod tests {
             handler,
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
+            default_passthrough_hosts: Vec::new(),
             mitm_rejected_hosts: HashSet::new(),
             mitm_handshake_aborts: HashMap::new(),
         }))
@@ -5855,6 +5916,180 @@ mod tests {
         drop(proxy_task);
     }
 
+    // ─── Embedded-root passthrough defaults (PILOT-279) ───
+
+    /// Android: gRPC-Java validates against the platform trust store, so once
+    /// our CA is installed there Firestore completes the MITM handshake like
+    /// any other h2 client. With `EmbeddedRootDefaults::Skip` the built-in
+    /// default must not stand in the way — the call has to be captured as an
+    /// inspectable request/response pair, not a `passthrough` CONNECT marker.
+    #[tokio::test]
+    async fn firestore_is_captured_when_embedded_root_defaults_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+
+        let (server_config, origin_cert) =
+            origin_server_config("firestore.googleapis.com", &[b"h2"]);
+        let origin_port =
+            spawn_h2_origin(server_config, b"doc", 1, Some(("grpc-status", "0"))).await;
+
+        // `default_passthrough_hosts` empty == EmbeddedRootDefaults::Skip.
+        let state = proxy_state_trusting(&origin_cert, None);
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let proxy_state = state.clone();
+        let proxy_ca = ca.clone();
+        let proxy_task = tokio::spawn(async move {
+            handle_transparent_tls(
+                server_side,
+                "127.0.0.1".to_string(),
+                origin_port,
+                proxy_state,
+                proxy_ca,
+            )
+            .await;
+        });
+
+        // Stands in for Android's gRPC-Java: h2-only, but trusts the CA that
+        // `adb::install_ca_cert` put in the platform trust store.
+        let client_config = client_config_trusting_ca(&ca, &[b"h2"]);
+        let (status, body, trailers) = run_h2_client(
+            client_config,
+            client_side,
+            "firestore.googleapis.com",
+            "firestore.googleapis.com",
+            "/google.firestore.v1.Firestore/Listen",
+        )
+        .await;
+
+        assert_eq!(status, http::StatusCode::OK);
+        assert_eq!(body, b"doc");
+        assert_eq!(
+            trailers
+                .expect("grpc trailers must survive the MITM")
+                .get("grpc-status")
+                .map(|v| v.as_bytes()),
+            Some(b"0".as_slice())
+        );
+
+        let entries = wait_for_entries(&state, 1).await;
+        assert_eq!(entries.len(), 1);
+        assert_ne!(
+            entries[0].route_action, "passthrough",
+            "Firestore must be captured, not tunneled, when the client trusts our CA"
+        );
+        assert_eq!(entries[0].method, "POST");
+        assert_eq!(
+            entries[0].url,
+            "https://firestore.googleapis.com/google.firestore.v1.Firestore/Listen"
+        );
+        assert_eq!(entries[0].status_code, 200);
+        assert_eq!(entries[0].request_body, b"ping");
+        assert_eq!(entries[0].response_body, b"doc");
+
+        drop(proxy_task);
+    }
+
+    /// iOS: the same host must still be tunneled up front, even though this
+    /// client would have trusted our CA — that is the whole point of the
+    /// default, and it must not regress while Android opts out of it.
+    #[tokio::test]
+    async fn firestore_is_tunneled_when_embedded_root_defaults_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+
+        let (server_config, origin_cert) =
+            origin_server_config("firestore.googleapis.com", &[b"h2"]);
+        let origin_port = spawn_tls_origin(server_config, b"firestore-origin").await;
+
+        let state = proxy_state_trusting(&origin_cert, None);
+        state.lock().await.default_passthrough_hosts = default_passthrough_regexes();
+
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let proxy_state = state.clone();
+        let proxy_task = tokio::spawn(async move {
+            handle_transparent_tls(
+                server_side,
+                "127.0.0.1".to_string(),
+                origin_port,
+                proxy_state,
+                ca,
+            )
+            .await;
+        });
+
+        // Trusts only the origin: reaching the banner proves the bytes were
+        // tunneled end-to-end rather than terminated by the proxy.
+        let client_config = client_config_trusting(&origin_cert, &[b"h2"]);
+        let (negotiated, received) =
+            run_passthrough_client(client_config, client_side, "firestore.googleapis.com").await;
+        assert_eq!(negotiated.as_deref(), Some(b"h2".as_slice()));
+        assert_eq!(received, b"firestore-origin");
+
+        proxy_task.await.unwrap();
+        let entries = state.lock().await.entries.clone();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].route_action, "passthrough");
+    }
+
+    #[tokio::test]
+    async fn set_passthrough_hosts_gates_only_the_built_in_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+        let proxy = NetworkProxy::start(ca).await.unwrap();
+
+        // Skip: the user's own globs still apply, the built-ins do not.
+        proxy
+            .set_passthrough_hosts(
+                vec!["*.pinned.example.com".to_string()],
+                EmbeddedRootDefaults::Skip,
+            )
+            .await;
+        {
+            let state = proxy.state.lock().await;
+            assert_eq!(state.passthrough_hosts.len(), 1);
+            assert!(state.passthrough_hosts[0].is_match("api.pinned.example.com"));
+            assert!(
+                state.default_passthrough_hosts.is_empty(),
+                "Skip must drop the built-in embedded-root defaults"
+            );
+        }
+
+        // Apply: built-ins come back without disturbing the user's list.
+        proxy
+            .set_passthrough_hosts(
+                vec!["*.pinned.example.com".to_string()],
+                EmbeddedRootDefaults::Apply,
+            )
+            .await;
+        {
+            let state = proxy.state.lock().await;
+            assert_eq!(state.passthrough_hosts.len(), 1);
+            assert!(state
+                .default_passthrough_hosts
+                .iter()
+                .any(|re| re.is_match("firestore.googleapis.com")));
+        }
+
+        // An empty user list must not resurrect the defaults either.
+        proxy
+            .set_passthrough_hosts(Vec::new(), EmbeddedRootDefaults::Skip)
+            .await;
+        {
+            let state = proxy.state.lock().await;
+            assert!(state.passthrough_hosts.is_empty());
+            assert!(state.default_passthrough_hosts.is_empty());
+        }
+    }
+
     #[tokio::test]
     async fn h2_streaming_response_does_not_buffer() {
         let dir = tempfile::tempdir().unwrap();
@@ -5927,6 +6162,7 @@ mod tests {
             handler: Some(handler),
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
+            default_passthrough_hosts: Vec::new(),
             mitm_rejected_hosts: HashSet::new(),
             mitm_handshake_aborts: HashMap::new(),
         }))
