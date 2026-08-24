@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emptyTraceData, findNearestHierarchy, reconcileTraceWallDuration } from '../ui-mode/hooks/use-trace-data.js';
+import { emptyTraceData, resolveActionHierarchy, reconcileTraceWallDuration } from '../ui-mode/hooks/use-trace-data.js';
 import type { ActionTraceEvent } from '../trace/types.js';
 
 function action(actionIndex: number, duration: number, wallDuration = duration): ActionTraceEvent {
@@ -47,76 +47,62 @@ describe('reconcileTraceWallDuration', () => {
   });
 });
 
-describe('findNearestHierarchy', () => {
-  const hierarchyMap = (entries: Record<string, string>) => new Map(Object.entries(entries));
+describe('resolveActionHierarchy', () => {
+  const hier = (i: number, variant: 'before' | 'after', xml: string) =>
+    [`hierarchy/action-${String(i).padStart(3, '0')}-${variant}.xml`, xml] as const;
+  const shot = (i: number, variant: 'before' | 'after') =>
+    [`screenshots/action-${String(i).padStart(3, '0')}-${variant}.png`, 'blob:x'] as const;
 
-  it('returns the nearest preceding snapshot and says which step it came from', () => {
-    const hierarchies = hierarchyMap({
-      'hierarchy/action-000-after.xml': '<node text="step0" />',
-    });
+  it("uses the action's own before-hierarchy for the before display, with no borrow flag", () => {
+    const hierarchies = new Map([hier(2, 'before', '<own />')]);
+    const screenshots = new Map([shot(2, 'before')]);
 
-    expect(findNearestHierarchy(hierarchies, 3, 'before')).toEqual({
-      xml: '<node text="step0" />',
-      sourceActionIndex: 0,
+    expect(resolveActionHierarchy(hierarchies, screenshots, 2, 'before')).toEqual({ xml: '<own />' });
+  });
+
+  it('borrows from the same step the displayed screenshot is borrowed from', () => {
+    const hierarchies = new Map([hier(1, 'before', '<step1 />')]);
+    const screenshots = new Map([shot(1, 'before')]);
+
+    expect(resolveActionHierarchy(hierarchies, screenshots, 3, 'before')).toEqual({
+      xml: '<step1 />',
+      borrowedFromStep: 1,
     });
   });
 
-  it('prefers the after-snapshot over the before-snapshot at the same step', () => {
-    const hierarchies = hierarchyMap({
-      'hierarchy/action-001-before.xml': '<node text="before" />',
-      'hierarchy/action-001-after.xml': '<node text="after" />',
-    });
+  it("resolves nothing when the displayed frame's step lost its hierarchy, rather than mismatch", () => {
+    // Step 2 saved its screenshot but its hierarchy capture failed; step 1
+    // has a tree, but it depicts a different screen than the displayed frame.
+    const hierarchies = new Map([hier(1, 'before', '<step1 />')]);
+    const screenshots = new Map([shot(1, 'before'), shot(2, 'before')]);
 
-    expect(findNearestHierarchy(hierarchies, 2, 'before')).toEqual({
-      xml: '<node text="after" />',
-      sourceActionIndex: 1,
-    });
+    expect(resolveActionHierarchy(hierarchies, screenshots, 3, 'before')).toBeUndefined();
   });
 
-  it('falls back to the before-snapshot when a step has no after-snapshot', () => {
-    const hierarchies = hierarchyMap({
-      'hierarchy/action-001-before.xml': '<node text="before" />',
-    });
+  it("the after display uses the next step's before-capture — the same moment as its frame", () => {
+    const hierarchies = new Map([hier(0, 'before', '<step0 />'), hier(2, 'before', '<step2 />')]);
+    const screenshots = new Map([shot(0, 'before'), shot(2, 'before')]);
 
-    expect(findNearestHierarchy(hierarchies, 2, 'before')).toEqual({
-      xml: '<node text="before" />',
-      sourceActionIndex: 1,
-    });
+    // Not a borrow: the next step's before-capture IS this action's after state.
+    expect(resolveActionHierarchy(hierarchies, screenshots, 1, 'after')).toEqual({ xml: '<step2 />' });
   });
 
-  it('the before display never borrows forwards', () => {
-    const hierarchies = hierarchyMap({
-      'hierarchy/action-002-after.xml': '<node text="later" />',
-    });
+  it("the after display resolves nothing when the next step's frame exists but its tree was lost", () => {
+    const hierarchies = new Map([hier(0, 'before', '<step0 />')]);
+    const screenshots = new Map([shot(0, 'before'), shot(2, 'before')]);
 
-    expect(findNearestHierarchy(hierarchies, 1, 'before')).toBeUndefined();
+    expect(resolveActionHierarchy(hierarchies, screenshots, 1, 'after')).toBeUndefined();
   });
 
-  it("the after display borrows the next step's before-snapshot, which depicts the same moment", () => {
-    const hierarchies = hierarchyMap({
-      'hierarchy/action-000-after.xml': '<node text="step0" />',
-      'hierarchy/action-002-before.xml': '<node text="step2" />',
-    });
+  it('keeps the selector playground working on screenshot-less traces', () => {
+    const hierarchies = new Map([hier(1, 'before', '<own />')]);
 
-    expect(findNearestHierarchy(hierarchies, 1, 'after')).toEqual({
-      xml: '<node text="step2" />',
-      sourceActionIndex: 2,
-    });
+    expect(resolveActionHierarchy(hierarchies, new Map(), 1, 'after')).toEqual({ xml: '<own />' });
   });
 
-  it('the after display falls back to preceding steps when the next step captured nothing', () => {
-    const hierarchies = hierarchyMap({
-      'hierarchy/action-000-after.xml': '<node text="step0" />',
-    });
-
-    expect(findNearestHierarchy(hierarchies, 1, 'after')).toEqual({
-      xml: '<node text="step0" />',
-      sourceActionIndex: 0,
-    });
-  });
-
-  it('returns undefined for the first action and for an empty map', () => {
-    expect(findNearestHierarchy(hierarchyMap({}), 5, 'before')).toBeUndefined();
-    expect(findNearestHierarchy(hierarchyMap({ 'hierarchy/action-000-after.xml': '<node />' }), 0, 'before')).toBeUndefined();
+  it('resolves nothing for the first action and for empty traces', () => {
+    expect(resolveActionHierarchy(new Map(), new Map(), 0, 'before')).toBeUndefined();
+    const hierarchies = new Map([hier(1, 'before', '<later />')]);
+    expect(resolveActionHierarchy(hierarchies, new Map(), 0, 'before')).toBeUndefined();
   });
 });

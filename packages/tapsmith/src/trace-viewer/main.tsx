@@ -29,7 +29,7 @@ import {
   handleHoverFromScreenshot,
 } from "./components/SelectorPlayground.js";
 import { parseHierarchyXml } from "./components/hierarchy-utils.js";
-import { findNearestHierarchy } from "../ui-mode/hooks/use-trace-data.js";
+import { resolveActionHierarchy } from "../ui-mode/hooks/use-trace-data.js";
 import type { HierarchyNode, Bounds } from "./components/hierarchy-utils.js";
 import { traceViewerStyles } from "./styles/trace-viewer.css.js";
 
@@ -481,30 +481,23 @@ function App() {
   // picks on a before-screenshot would hit-test the after-hierarchy.
   const [screenshotVariant, setScreenshotVariant] = useState<'before' | 'after'>('before');
 
-  // Hierarchy for the current action (used by selector playground). Actions
-  // that capture no hierarchy (network family) borrow the nearest preceding
-  // snapshot — the displayed screenshot is borrowed the same way — so pick
-  // still works on them; sourceActionIndex lets the UI say so. PILOT-302.
-  const currentHierarchy = useMemo(() => {
-    if (!trace || !selectedEvent) return undefined;
-    const pad = String(selectedEvent.actionIndex).padStart(3, "0");
-    const afterXml = trace.hierarchies.get(`hierarchy/action-${pad}-after.xml`);
-    const beforeXml = trace.hierarchies.get(`hierarchy/action-${pad}-before.xml`);
-    const own = screenshotVariant === 'before' ? (beforeXml ?? afterXml) : (afterXml ?? beforeXml);
-    if (own) return { xml: own, sourceActionIndex: selectedEvent.actionIndex };
-    return findNearestHierarchy(trace.hierarchies, selectedEvent.actionIndex, screenshotVariant);
-  }, [trace, selectedEvent, screenshotVariant]);
-
-  const currentRoots = useMemo(
-    () => (currentHierarchy ? parseHierarchyXml(currentHierarchy.xml) : []),
-    [currentHierarchy],
+  // Hierarchy for the current action (used by selector playground) — resolved
+  // to depict the same moment as the displayed screenshot, borrowing for
+  // actions that capture none (network family). PILOT-302.
+  const currentHierarchy = useMemo(
+    () => trace && selectedEvent
+      ? resolveActionHierarchy(trace.hierarchies, trace.screenshots, selectedEvent.actionIndex, screenshotVariant)
+      : undefined,
+    [trace, selectedEvent, screenshotVariant],
   );
 
-  const hierarchyBorrowedFrom = currentHierarchy !== undefined
-    && selectedEvent !== undefined
-    && currentHierarchy.sourceActionIndex !== selectedEvent.actionIndex
-    ? currentHierarchy.sourceActionIndex
-    : undefined;
+  // Keyed on the xml string, not the wrapper object, so an unchanged tree is
+  // never re-parsed just because the wrapper was recomputed.
+  const currentHierarchyXml = currentHierarchy?.xml;
+  const currentRoots = useMemo(
+    () => (currentHierarchyXml ? parseHierarchyXml(currentHierarchyXml) : []),
+    [currentHierarchyXml],
+  );
 
   // Match overlay bounds, derived so they always reflect the hierarchy of the
   // displayed action/screenshot (never pushed through state, never stale).
@@ -604,10 +597,8 @@ function App() {
           onScreenshotHover={pickMode ? handleScreenshotHover : undefined}
           pickMode={pickMode}
           onPickModeToggle={handlePickToggle}
-          hierarchyBorrowedFromStep={hierarchyBorrowedFrom}
-          pickUnavailableReason={selectedEvent && currentRoots.length === 0
-            ? 'No view hierarchy captured yet — pick from a device action instead'
-            : undefined}
+          hierarchyBorrowedFromStep={currentHierarchy?.borrowedFromStep}
+          pickUnavailable={!!selectedEvent && currentRoots.length === 0}
           onDisplayedVariantChange={setScreenshotVariant}
           devicePixelRatio={trace.metadata.device?.devicePixelRatio}
           nodeType="test"
@@ -633,7 +624,7 @@ function App() {
             pickMode={pickMode}
             locatorTab={
               <SelectorTab
-                hierarchyXml={currentHierarchy?.xml}
+                hierarchyXml={currentHierarchyXml}
                 pickedNode={pickedNode}
                 selector={selectorText}
                 onSelectorChange={setSelectorText}

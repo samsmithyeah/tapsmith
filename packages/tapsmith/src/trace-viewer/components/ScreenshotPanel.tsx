@@ -47,12 +47,12 @@ interface Props {
   /** Set when the selector playground is hit-testing a hierarchy borrowed
    * from an earlier step because this action captured none (network-family
    * actions). Value is the source step's actionIndex; rendered as an honest
-   * note while picking. */
+   * note next to the pick controls. */
   hierarchyBorrowedFromStep?: number
-  /** When set, the Pick button is disabled and this text becomes its tooltip
-   * — picking cannot work because no hierarchy is available even after
+  /** Disables the Pick button (with an explanatory tooltip) — picking cannot
+   * work because no hierarchy matches the displayed screenshot, even after
    * falling back to earlier steps. */
-  pickUnavailableReason?: string
+  pickUnavailable?: boolean
   /** Reports whether the displayed screenshot is the before- or after-state of
    * the action, so the host can bind the selector playground to the hierarchy
    * captured at the same moment (picking on a before-screenshot must not
@@ -127,7 +127,7 @@ function handleStageKeyDown(
   (strip?.querySelectorAll('[role="tab"]')[next] as HTMLElement | undefined)?.focus();
 }
 
-export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, hierarchyBorrowedFromStep, pickUnavailableReason, onDisplayedVariantChange, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
+export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, hierarchyBorrowedFromStep, pickUnavailable, onDisplayedVariantChange, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
   injectStyles();
 
   const [tab, setTab] = useState<ScreenshotTab>('action');
@@ -513,17 +513,18 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
           {testName && <span class="viewer-head-title" data-testid="viewer-title">{testName}</span>}
         </div>
         <div class="viewer-head-actions">
-          {pickMode && hierarchyBorrowedFromStep !== undefined && (
+          {hierarchyBorrowedFromStep !== undefined && (
+            // Not gated on pickMode: the Locator tab evaluates selectors
+            // against the same borrowed tree, so the disclosure applies
+            // whenever this action is selected.
             <span
               class="viewer-pick-note"
               data-testid="pick-note"
-              title="This step captured no view hierarchy — picking uses the captured snapshot nearest to the displayed screenshot."
+              title="This step captured no view hierarchy — element data comes from the same step as the displayed screenshot."
             >
-              {event && hierarchyBorrowedFromStep === event.actionIndex + 1
-                ? 'Hierarchy from the next step'
-                : event && hierarchyBorrowedFromStep === event.actionIndex - 1
-                  ? 'Hierarchy from the previous step'
-                  : 'Hierarchy from an earlier step'}
+              {event && hierarchyBorrowedFromStep === event.actionIndex - 1
+                ? 'Hierarchy from the previous step'
+                : 'Hierarchy from an earlier step'}
             </span>
           )}
           {onPickModeToggle && (
@@ -533,8 +534,10 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
               // Disabled only when inactive: an active Pick button must stay
               // clickable as the exit, or selecting a no-hierarchy action
               // mid-pick would strand the user in pick mode.
-              disabled={!!pickUnavailableReason && !pickMode}
-              title={pickMode ? 'Exit pick mode' : (pickUnavailableReason ?? 'Pick element')}
+              disabled={!!pickUnavailable && !pickMode}
+              title={pickMode ? 'Exit pick mode'
+                : pickUnavailable ? 'No view hierarchy captured yet — pick from a device action instead'
+                : 'Pick element'}
             >
               <Focus size={12} /> {pickMode ? 'Picking…' : 'Pick'}
             </button>

@@ -177,15 +177,17 @@ test.describe("Pick mode on actions with no captured hierarchy", () => {
     await expect(locator.suggestions).toContainText("tap-area")
   })
 
-  test("says the hierarchy is borrowed while picking", async ({
+  test("says the hierarchy is borrowed, even before picking starts", async ({
     viewer,
     page,
     actions,
   }) => {
     await viewer.open(SPEC_WITH_NETWORK_ACTION)
     await actions.item("unrouteAll").click()
-    await page.getByRole("button", { name: "Pick", exact: true }).click()
 
+    // Not gated on pick mode: the Locator tab evaluates selectors against the
+    // same borrowed tree, so the disclosure applies whenever the action is
+    // selected.
     await expect(page.getByTestId("pick-note")).toHaveText("Hierarchy from the previous step")
   })
 
@@ -246,7 +248,10 @@ test.describe("Pick mode on actions with no captured hierarchy", () => {
     await screenshotPanel.selectStage("After")
     await page.getByRole("button", { name: "Pick", exact: true }).click()
 
-    await expect(page.getByTestId("pick-note")).toHaveText("Hierarchy from the next step")
+    // The next step's before-capture IS this action's after state — exact
+    // data for the displayed frame, so no borrowed-hierarchy note.
+    await expect(page.getByRole("button", { name: "Picking…", exact: true })).toBeVisible()
+    await expect(page.getByTestId("pick-note")).toHaveCount(0)
     await clickBounds(screenshotPanel.image, SUBMIT)
 
     await detailTabs.select("Locator")
