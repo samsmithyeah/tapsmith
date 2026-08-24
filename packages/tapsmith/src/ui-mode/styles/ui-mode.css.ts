@@ -1986,8 +1986,10 @@ html, body, #app {
   align-items: center;
   justify-content: center;
   height: 100%;
+  padding: 24px;
   gap: 8px;
   color: var(--fg-muted);
+  text-align: center;
   user-select: none;
 }
 .ui-empty-icon {
@@ -2003,6 +2005,9 @@ html, body, #app {
 }
 .ui-empty-hint {
   font-size: 12px;
+  max-width: 44ch;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 .ui-empty-shortcut {
   font-size: 11px;
