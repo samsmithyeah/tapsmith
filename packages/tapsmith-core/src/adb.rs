@@ -1071,6 +1071,43 @@ pub async fn forward_abstract_socket_with_timeout(
 
 const IPTABLES_CHAIN: &str = "TAPSMITH_REDIRECT";
 
+/// Whether the device can route IPv6 traffic off-device, i.e. whether it has an
+/// IPv6 default route.
+///
+/// [`setup_iptables_redirect`] only installs **IPv4** rules (`iptables`, not
+/// `ip6tables`), so when a device has working IPv6 egress an app that prefers
+/// IPv6 connects straight out and never reaches the proxy. That traffic is
+/// invisible rather than merely undecrypted: no capture entry, and not even the
+/// `CONNECT ... passthrough` marker a tunnelled connection leaves, so it looks
+/// to a user exactly like the app made no request at all.
+///
+/// An IPv6 `nat` table cannot be assumed — Android emulator kernels routinely
+/// ship without `ip6table_nat` (`ip6tables -t nat` fails outright there), so a
+/// matching `ip6tables ... REDIRECT` rule is not a portable fix. Detecting the
+/// exposure and telling the user is, which is what the caller does with this.
+///
+/// Best-effort: any failure to query reports `false` (assume no IPv6 egress)
+/// rather than emitting a warning we cannot substantiate.
+pub async fn has_ipv6_default_route(serial: &str) -> bool {
+    shell_lenient(serial, "ip -6 route show default")
+        .await
+        .map(|out| parse_has_default_route(&out))
+        .unwrap_or(false)
+}
+
+/// Pure half of [`has_ipv6_default_route`]: does `ip -6 route show default`
+/// output actually name a default route?
+///
+/// Matching on the `default` prefix rather than mere non-emptiness matters —
+/// `ip` writes errors ("Error: ipv6: Address family not supported") to stdout on
+/// some Android builds, and treating that as a route would warn every user on a
+/// device that has no IPv6 at all.
+fn parse_has_default_route(output: &str) -> bool {
+    output
+        .lines()
+        .any(|line| line.trim_start().starts_with("default"))
+}
+
 /// Set up iptables rules to transparently redirect HTTP (80) and HTTPS (443)
 /// traffic through the proxy port. Returns `true` on success.
 ///
@@ -1220,6 +1257,34 @@ mod tests {
             parse_keyguard_showing("WINDOW MANAGER POLICY STATE\n  mAwake=true\n"),
             None
         );
+    }
+
+    // ─── IPv6 default-route detection ───
+
+    #[test]
+    fn ipv6_default_route_detected_from_route_output() {
+        // Real `ip -6 route show default` output from a device with IPv6.
+        assert!(parse_has_default_route(
+            "default via fe80::1 dev wlan0 proto ra metric 1024 expires 1799sec"
+        ));
+        // Leading whitespace must not hide the route.
+        assert!(parse_has_default_route("  default dev wlan0 metric 1024"));
+    }
+
+    #[test]
+    fn ipv6_default_route_absent_for_empty_or_error_output() {
+        // Emulators typically have IPv6 addresses but no default route.
+        assert!(!parse_has_default_route(""));
+        assert!(!parse_has_default_route("\n  \n"));
+        // `ip` reports some failures on stdout; those must not read as a route,
+        // or every IPv6-less device would get the bypass warning.
+        assert!(!parse_has_default_route(
+            "Error: ipv6: Address family not supported by protocol."
+        ));
+        // A non-default route is not egress.
+        assert!(!parse_has_default_route(
+            "fec0::/64 dev eth0 proto kernel metric 256"
+        ));
     }
 
     // ─── Retryable ADB transport errors ───

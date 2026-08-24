@@ -5727,6 +5727,20 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // TCP level, so TLS is correctly detected from the ClientHello.
                 let iptables_ok = adb::setup_iptables_redirect(&serial, device_port).await;
                 *self.proxy_uses_iptables.write().await = iptables_ok;
+                // The redirect is IPv4-only. On a device with IPv6 egress, an
+                // app that prefers IPv6 bypasses it entirely and its traffic is
+                // *invisible* — no capture entry and no `passthrough` marker,
+                // which reads as "the app made no request". Say so rather than
+                // letting it look like a capture bug. (Emulators normally have
+                // no IPv6 default route, so this stays quiet there.)
+                if iptables_ok && adb::has_ipv6_default_route(&serial).await {
+                    let msg = "Device has IPv6 connectivity but the transparent redirect \
+                               is IPv4-only — traffic the app sends over IPv6 bypasses \
+                               capture entirely and will not appear in the trace"
+                        .to_string();
+                    warn!(%serial, "{msg}");
+                    warnings.push(msg);
+                }
                 if !iptables_ok {
                     // Fallback: set the system HTTP proxy for non-rooted devices
                     // or emulators where iptables is unavailable.
