@@ -191,6 +191,7 @@ export function SelectorTab({ hierarchyXml, pickedNode, selector, onSelectorChan
             ref={inputRef}
             class="st-input"
             type="text"
+            aria-label="Selector"
             placeholder='device.getByText("Login") · device.getByRole("button", { name: "Submit" })'
             value={selector}
             onInput={handleInput}
@@ -207,16 +208,16 @@ export function SelectorTab({ hierarchyXml, pickedNode, selector, onSelectorChan
             </button>
           )}
         </div>
-        <span class={countClass}>{countLabel}</span>
+        <span class={countClass} data-testid="selector-match-count">{countLabel}</span>
       </div>
       {strictWarning && (
-        <div class="st-strict-warning">
+        <div class="st-strict-warning" data-testid="selector-strict-warning">
           ⚠ {matchCount} matches — runtime actions/assertions will throw a strict
           mode violation. Refine the selector (<code>{'{ exact: true }'}</code>,{' '}
           <code>getByRole</code>) or add <code>.first()</code>.
         </div>
       )}
-      <div class="st-options">
+      <div class="st-options" data-testid="locator-suggestions">
         {generatedSelectors.length > 0 && (
           <>
             <div class="st-section-label">Suggested locators</div>
@@ -229,9 +230,11 @@ export function SelectorTab({ hierarchyXml, pickedNode, selector, onSelectorChan
               <div
                 key={i}
                 class={`st-option${selector === s.code ? ' selected' : ''}`}
+                data-testid="locator-option"
+                data-selected={selector === s.code}
                 onClick={() => handleSelectOption(s.code)}
               >
-                <span class="st-option-code">{s.code}</span>
+                <span class="st-option-code" data-testid="locator-code">{s.code}</span>
                 <span class="st-option-label">{s.label}</span>
                 <button
                   class="st-option-copy"

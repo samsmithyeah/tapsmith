@@ -59,16 +59,23 @@ export function TestExplorer(props: TestExplorerProps) {
           <input
             class="te-search"
             type="text"
+            aria-label="Filter tests"
             placeholder="Filter tests..."
             value={nameFilter}
             onInput={(e) => onSetNameFilter((e.target as HTMLInputElement).value)}
           />
         </div>
-        <div class="te-status-filters filter-tabs">
-          <StatusButton label="All" value="all" count={counts.total} active={statusFilter} onClick={onSetStatusFilter} />
-          <StatusButton label="Pass" value="passed" count={counts.passed} active={statusFilter} onClick={onSetStatusFilter} />
-          <StatusButton label="Fail" value="failed" count={counts.failed} active={statusFilter} onClick={onSetStatusFilter} />
-          <StatusButton label="Skip" value="skipped" count={counts.skipped} active={statusFilter} onClick={onSetStatusFilter} />
+        <div class="te-status-filters filter-tabs" role="group" aria-label="Filter by status">
+          {STATUS_FILTERS.map(({ label, value }) => (
+            <StatusButton
+              key={value}
+              label={label}
+              value={value}
+              count={countFor(value, counts)}
+              active={statusFilter}
+              onClick={onSetStatusFilter}
+            />
+          ))}
         </div>
       </div>
       <div class="te-toolbar explorer-toolbar">
@@ -118,7 +125,7 @@ export function TestExplorer(props: TestExplorerProps) {
           </button>
         </div>
       </div>
-      <div class="te-tree">
+      <div class="te-tree" role="tree" aria-label="Tests">
         {files.map((file) => (
           <TreeNode
             key={file.id}
@@ -135,7 +142,7 @@ export function TestExplorer(props: TestExplorerProps) {
           />
         ))}
         {files.length === 0 && (
-          <div class="te-empty">No tests found</div>
+          <div class="te-empty" data-testid="tests-empty">No tests found</div>
         )}
       </div>
     </div>
@@ -144,12 +151,28 @@ export function TestExplorer(props: TestExplorerProps) {
 
 // ─── Status filter button ───
 
+type StatusFilterValue = 'all' | 'passed' | 'failed' | 'skipped'
+
+const STATUS_FILTERS: Array<{ label: string; value: StatusFilterValue }> = [
+  { label: 'All', value: 'all' },
+  { label: 'Pass', value: 'passed' },
+  { label: 'Fail', value: 'failed' },
+  { label: 'Skip', value: 'skipped' },
+];
+
+function countFor(
+  value: StatusFilterValue,
+  counts: { passed: number; failed: number; skipped: number; total: number },
+): number {
+  return value === 'all' ? counts.total : counts[value];
+}
+
 interface StatusButtonProps {
   label: string
-  value: 'all' | 'passed' | 'failed' | 'skipped'
+  value: StatusFilterValue
   count: number
   active: string
-  onClick: (value: 'all' | 'passed' | 'failed' | 'skipped') => void
+  onClick: (value: StatusFilterValue) => void
 }
 
 function StatusButton({ label, value, count, active, onClick }: StatusButtonProps) {
@@ -157,10 +180,11 @@ function StatusButton({ label, value, count, active, onClick }: StatusButtonProp
   return (
     <button
       class={`te-status-btn filter-tab ${isActive ? 'active' : ''} te-status-${value}`}
+      aria-pressed={isActive}
       onClick={() => onClick(value)}
     >
       {value !== 'all' && <span class={`ind ind-${value}`} />}
-      {label} {count > 0 && <span class="te-count ct">{count}</span>}
+      {label} {count > 0 && <span class="te-count ct" data-testid="filter-count">{count}</span>}
     </button>
   );
 }
@@ -244,10 +268,19 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
 
   const runningClass = node.status === 'running' ? 'te-status-running' : '';
 
+  // Project nodes are displayed bracketed. Derived once so the visible label
+  // and the accessible names stay in step.
+  const label = node.type === 'project' ? `[${node.name}]` : node.name;
+
   return (
-    <div class="te-node-group">
+    <div class="te-node-group" role="presentation">
       <div
         class={`te-node node ${isSelected ? 'selected' : ''} te-node-${node.type} ${runningClass} ${flashClass}`}
+        role="treeitem"
+        aria-label={label}
+        aria-level={depth + 1}
+        aria-selected={isSelected}
+        aria-expanded={hasChildren ? isExpanded : undefined}
         data-status={node.status}
         data-depth={depth}
         data-type={node.type}
@@ -262,7 +295,7 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
         <StatusIcon status={node.status} pending={pending} />
 
         <span class="te-name" title={node.fullName}>
-          {node.type === 'project' ? `[${node.name}]` : node.name}
+          {label}
         </span>
 
         {node.type === 'project' && node.dependencies && node.dependencies.length > 0 && (
@@ -272,16 +305,18 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
         )}
 
         {node.duration !== undefined && node.duration > 0 && (
-          <span class="te-duration dur">{formatDuration(node.duration)}</span>
+          <span class="te-duration dur" data-testid="node-duration">{formatDuration(node.duration)}</span>
         )}
 
         <div class="te-actions">
-          <button class="te-action-btn te-run-btn" onClick={handleRun} disabled={isRunning} title="Run">
+          <button class="te-action-btn te-run-btn" onClick={handleRun} disabled={isRunning} title="Run" aria-label={`Run ${label}`}>
             <Play size={ICON_SIZE} />
           </button>
           <button
             class={`te-action-btn te-watch-btn ${node.watchEnabled ? 'active' : ''}`}
             onClick={handleWatch}
+            aria-label={`Watch ${label}`}
+            aria-pressed={!!node.watchEnabled}
             title={node.type === 'project'
               ? 'Watch all files in this project'
               : node.type === 'file'

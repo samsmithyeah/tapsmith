@@ -96,15 +96,15 @@ export function DeviceMirror({ canvasRef, connected, loading, platform, formFact
       <div class="dm-viewport">
         {(!connected || loading) && (
           <div class="dm-overlay">
-            <div class="dm-placeholder">
+            <div class="dm-placeholder" role="status">
               <svg class="dm-phone-icon" viewBox="0 0 56 96" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <rect x="2" y="2" width="52" height="92" rx="8" stroke="currentColor" stroke-width="2.5" />
                 <rect x="8" y="14" width="40" height="64" rx="2" fill="currentColor" opacity="0.08" />
                 <rect x="22" y="84" width="12" height="3" rx="1.5" fill="currentColor" opacity="0.3" />
                 <circle cx="28" cy="8" r="2" fill="currentColor" opacity="0.2" />
               </svg>
-              <div class="dm-placeholder-text">{connected ? 'Starting mirror…' : 'Waiting for device'}</div>
-              {!connected && <div class="dm-placeholder-hint">Connect a device or start a test run</div>}
+              <div class="dm-placeholder-text" data-testid="mirror-status">{connected ? 'Starting mirror…' : 'Waiting for device'}</div>
+              {!connected && <div class="dm-placeholder-hint" data-testid="mirror-status-hint">Connect a device or start a test run</div>}
               <div class="dm-placeholder-dots">
                 <span class="dm-dot" />
                 <span class="dm-dot" />
@@ -116,6 +116,7 @@ export function DeviceMirror({ canvasRef, connected, loading, platform, formFact
         <DeviceFrame platform={platform} formFactor={formFactor} heightBound>
           <canvas
             ref={canvasRef}
+            aria-label="Device screen mirror"
             class={`dm-canvas ${pickMode ? 'pick-mode' : interactive ? 'interactive' : 'locked'}`}
             tabIndex={gesturesEnabled ? 0 : -1}
             onPointerDown={gesturesEnabled ? interaction.onPointerDown : undefined}

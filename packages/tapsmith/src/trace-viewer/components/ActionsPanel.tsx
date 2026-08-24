@@ -234,12 +234,13 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
             <div class="actions-filter">
               <input
                 type="text"
+                aria-label="Filter actions"
                 placeholder="Filter actions..."
                 value={filter}
                 onInput={e => setFilter((e.target as HTMLInputElement).value)}
               />
             </div>
-            <div class="actions-list">
+            <div class="actions-list" data-testid="actions-list">
               {items.map((item, i) => {
                 if (item.kind === 'group-start') {
                   if (filterLower && !item.event.name.toLowerCase().includes(filterLower)) return null;
@@ -272,6 +273,8 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
                     key={`a-${item.actionIndex}`}
                     ref={isSelected ? selectedRef : undefined}
                     class={`action-item act${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}${isFailed ? ' failed' : ''}${isPassed ? ' passed' : ''}`}
+                    data-testid="action-item"
+                    data-selected={isSelected}
                     style={{ '--dur-pct': `${(shownDuration / maxDur * 100)}%` }}
                     onMouseEnter={() => onHover(item.actionIndex)}
                     onMouseLeave={() => onHover(null)}
@@ -302,6 +305,9 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
                     key={`a-inflight-${inFlightAction.actionIndex}`}
                     ref={isSelected ? selectedRef : undefined}
                     class={`action-item act in-progress${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}`}
+                    data-testid="action-item"
+                    data-selected={isSelected}
+                    aria-busy="true"
                     onMouseEnter={() => onHover(inFlightItemIndex)}
                     onMouseLeave={() => onHover(null)}
                     onClick={() => onPin(inFlightItemIndex)}
@@ -321,7 +327,7 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
           <div class="ui-empty-state preflight">
             <div class="action-spinner preflight-spinner" aria-label="running" />
             <div class="ui-empty-title">Running</div>
-            <div class="ui-empty-hint">{preflightMessage}</div>
+            <div class="ui-empty-hint" data-testid="preflight-message">{preflightMessage}</div>
           </div>
         ) : (
           <div class="ui-empty-state">

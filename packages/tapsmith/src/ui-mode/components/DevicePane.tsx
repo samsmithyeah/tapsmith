@@ -16,6 +16,7 @@ import type { Bounds } from '../../trace-viewer/components/hierarchy-utils.js';
 import { DeviceMirror } from './DeviceMirror.js';
 import { DeviceFrame } from './DeviceFrame.js';
 import { useDeviceInteraction } from '../hooks/use-device-interaction.js';
+import { nextTabIndex, focusSibling } from '../tabstrip.js';
 
 interface DevicePaneProps {
   canvasRef: RefObject<HTMLCanvasElement>
@@ -104,6 +105,7 @@ function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas
         <DeviceFrame platform={framePlatform} formFactor={frameFormFactor}>
           <canvas
             ref={ref}
+            aria-label={`Device screen mirror — ${label}`}
             class={`dm-canvas ${interactive ? 'interactive' : 'locked'}`}
             tabIndex={interactive ? 0 : -1}
             onPointerDown={interactive ? interaction.onPointerDown : undefined}
@@ -152,8 +154,20 @@ export function DevicePane({
     hints: selectedWorker ? [selectedWorker.displayName, selectedWorker.deviceSerial] : [],
   });
 
+  // Left/Right move between the All tab and the per-device tabs; Home/End jump
+  // to the ends. Additive: these are real buttons and stay individually
+  // tabbable (see tabstrip.ts).
+  const deviceViews: Array<'all' | number> = ['all', ...workers.map((w) => w.workerId)];
+  const handleWorkerTabKey = (e: KeyboardEvent, index: number) => {
+    const next = nextTabIndex(e.key, index, deviceViews.length);
+    if (next === null) return;
+    e.preventDefault();
+    onSelectDeviceView(deviceViews[next]);
+    focusSibling(e, next);
+  };
+
   return (
-    <div class="device-col">
+    <div class="device-col" role="region" aria-label="Live device mirror">
       <div class="device-head">
         <span class="device-head-title">Live device mirror</span>
         <span class="device-head-meta">
@@ -188,18 +202,28 @@ export function DevicePane({
       </div>
 
       {hasWorkers && (
-        <div class="worker-tabs">
+        <div class="worker-tabs" role="tablist" aria-label="Device views">
           <button
             class={`worker-tab ${deviceViewMode === 'all' ? 'active' : ''}`}
+            id="device-view-all"
+            role="tab"
+            aria-selected={deviceViewMode === 'all'}
+            aria-controls="device-tabpanel"
             onClick={() => onSelectDeviceView('all')}
+            onKeyDown={(e) => handleWorkerTabKey(e, 0)}
           >
             All
           </button>
-          {workers.map((w) => (
+          {workers.map((w, i) => (
             <button
               key={w.workerId}
               class={`worker-tab ${deviceViewMode === w.workerId ? 'active' : ''}`}
+              id={`device-view-${w.workerId}`}
+              role="tab"
+              aria-selected={deviceViewMode === w.workerId}
+              aria-controls="device-tabpanel"
               onClick={() => onSelectDeviceView(w.workerId)}
+              onKeyDown={(e) => handleWorkerTabKey(e, i + 1)}
               title={`${w.displayName} (${w.deviceSerial}) — ${w.status}`}
             >
               <span class={`dot ${connected ? DOT_CLASS[w.status] : 'error'}`} />
@@ -209,7 +233,12 @@ export function DevicePane({
         </div>
       )}
 
-      <div class="device-pane-body">
+      <div
+        id="device-tabpanel"
+        role={hasWorkers ? 'tabpanel' : undefined}
+        aria-labelledby={hasWorkers ? `device-view-${deviceViewMode}` : undefined}
+        class="device-pane-body"
+      >
         {deviceViewMode === 'all' && hasWorkers ? (
           <div class="device-pane-grid">
             {workers.map((w) => (

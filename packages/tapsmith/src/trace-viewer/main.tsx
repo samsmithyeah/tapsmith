@@ -400,9 +400,9 @@ function App() {
     return (
       <div class="full-layout">
         <TopBar metadata={null} theme={theme} onThemeChange={setTheme} />
-        <div class="empty-screen">
+        <div class="empty-screen" role="alert" data-testid="load-error">
           <h2 style={{ color: "var(--color-error)" }}>Failed to load trace</h2>
-          <p style={{ color: "var(--color-text-muted)" }}>{error}</p>
+          <p style={{ color: "var(--color-text-muted)" }} data-testid="load-error-detail">{error}</p>
           <label class="file-picker-btn">
             Choose a trace file
             <input type="file" accept=".zip" onChange={handleFileInput} />
@@ -421,7 +421,7 @@ function App() {
       >
         <TopBar metadata={null} theme={theme} onThemeChange={setTheme} />
         <div class="empty-screen">
-          <div class="drop-content">
+          <div class="drop-content" data-testid="trace-drop-zone">
             <div class="logo">Tapsmith</div>
             <h1>Trace Viewer</h1>
             <p>

@@ -156,17 +156,17 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
           </button>
         )}
         {isRunning && (
-          <span class="rc-elapsed mono">{formatElapsed(runElapsed)}</span>
+          <span class="rc-elapsed mono" role="timer" aria-label="Elapsed run time">{formatElapsed(runElapsed)}</span>
         )}
         {counts.total > 0 && (
           <div class="rc-counts">
-            {counts.passed > 0 && <span class="rc-count passed">{counts.passed} passed</span>}
-            {counts.failed > 0 && <span class="rc-count failed">{counts.failed} failed</span>}
-            {counts.skipped > 0 && <span class="rc-count skipped">{counts.skipped} skipped</span>}
+            {counts.passed > 0 && <span class="rc-count passed" data-testid="count-passed">{counts.passed} passed</span>}
+            {counts.failed > 0 && <span class="rc-count failed" data-testid="count-failed">{counts.failed} failed</span>}
+            {counts.skipped > 0 && <span class="rc-count skipped" data-testid="count-skipped">{counts.skipped} skipped</span>}
           </div>
         )}
         <span class="rc-divider" />
-        <div class="rc-connection">
+        <div class="rc-connection" role="status" aria-label="Device connection">
           {!connected
             ? (
               <span class="rc-device">
@@ -189,6 +189,8 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
         <button
           class={`rc-mcp-indicator ${mcpPanelOpen ? 'active' : ''}`}
           onClick={onToggleMcpPanel}
+          aria-label={mcpPanelOpen ? 'Hide MCP activity' : 'Show MCP activity'}
+          aria-expanded={mcpPanelOpen}
           title={mcpConnected ? `MCP agents:\n${agentsTooltip(mcpAgents)}\n(click to toggle panel)` : 'MCP: listening (click to toggle panel)'}
         >
           <span class={`mcp-dot ${mcpConnected ? 'connected' : 'listening'}`} />
@@ -198,6 +200,7 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
         <span class="rc-divider" />
         <select
           class="rc-theme-select"
+          aria-label="Theme"
           value={theme}
           onChange={(e) => onThemeChange((e.target as HTMLSelectElement).value as Theme)}
         >

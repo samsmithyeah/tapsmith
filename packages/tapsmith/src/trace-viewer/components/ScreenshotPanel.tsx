@@ -77,6 +77,46 @@ interface RenderedSize {
   top: number
 }
 
+// Before / Action / After stages of a captured screenshot.
+const STAGE_TABS: Array<{ value: 'action' | 'before' | 'after'; label: string }> = [
+  { value: 'action', label: 'Action' },
+  { value: 'before', label: 'Before' },
+  { value: 'after', label: 'After' },
+];
+
+/**
+ * Keyboard operation for the stage strip: Left/Right move between stages,
+ * Home/End jump to the ends, Enter/Space activate.
+ *
+ * Every tab stays in the tab order rather than using APG's roving tabindex —
+ * see the note in DetailTabs.tsx for why.
+ */
+function handleStageKeyDown(
+  e: KeyboardEvent,
+  index: number,
+  setTab: (v: 'action' | 'before' | 'after') => void,
+): void {
+  let next = -1;
+  if (e.key === 'ArrowRight') next = (index + 1) % STAGE_TABS.length;
+  else if (e.key === 'ArrowLeft') next = (index - 1 + STAGE_TABS.length) % STAGE_TABS.length;
+  else if (e.key === 'Home') next = 0;
+  else if (e.key === 'End') next = STAGE_TABS.length - 1;
+  else if (e.key === 'Enter' || e.key === ' ') {
+    // A div is not a button, so activation has to be wired up by hand.
+    e.preventDefault();
+    setTab(STAGE_TABS[index].value);
+    return;
+  } else return;
+
+  e.preventDefault();
+  setTab(STAGE_TABS[next].value);
+  // Follow focus, or the next arrow press would move from the old position.
+  // Selected by role rather than child index: `next` indexes STAGE_TABS, and the
+  // two would silently diverge if anything else were added to the strip.
+  const strip = (e.currentTarget as HTMLElement).parentElement;
+  (strip?.querySelectorAll('[role="tab"]')[next] as HTMLElement | undefined)?.focus();
+}
+
 export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, onDisplayedVariantChange, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
   injectStyles();
 
@@ -234,7 +274,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
     return (
       <div class="screenshot-panel">
         <div class="screenshot-container viewer-body has-grid">
-          <div class="viewer-empty">
+          <div class="viewer-empty" data-testid="viewer-empty">
             <div class="viewer-empty-icon"><ListTree size={20} /></div>
             <div class="viewer-empty-title">No test selected</div>
             <div class="viewer-empty-sub">Select a test from the sidebar to view its trace.</div>
@@ -258,7 +298,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
     return (
       <div class="screenshot-panel">
         <div class="screenshot-container viewer-body has-grid">
-          <div class="viewer-empty">
+          <div class="viewer-empty" data-testid="viewer-empty">
             <div class="viewer-empty-icon"><Layers size={20} /></div>
             <div class="viewer-empty-title">{containerSummary.name}</div>
             <div class="viewer-empty-sub">{totalTests} {totalTests === 1 ? 'test' : 'tests'} in this {nodeType === 'suite' ? 'suite' : nodeType}</div>
@@ -291,7 +331,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
                 {testStatus === 'passed' ? '✓' : testStatus === 'failed' ? '✗' : '○'}
               </span>
             )}
-            {testName && <span class="viewer-head-title">{testName}</span>}
+            {testName && <span class="viewer-head-title" data-testid="viewer-title">{testName}</span>}
           </div>
           <div class="viewer-head-actions">
             {onPickModeToggle && (
@@ -302,7 +342,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
           </div>
         </div>
         <div class="screenshot-container viewer-body has-grid">
-          <div class="viewer-empty">
+          <div class="viewer-empty" data-testid="viewer-empty">
             <div class="viewer-empty-icon">
               {state === 'running'
                 ? <LoaderCircle size={20} style={{ animation: 'spin 1.1s linear infinite' }} />
@@ -337,7 +377,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
     return (
       <div class="screenshot-panel">
         <div class="screenshot-container">
-          <div class="screenshot-empty">Select an action to view screenshots</div>
+          <div class="screenshot-empty" data-testid="screenshot-empty">Select an action to view screenshots</div>
         </div>
       </div>
     );
@@ -460,7 +500,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
               {testStatus === 'passed' ? '✓' : testStatus === 'failed' ? '✗' : '○'}
             </span>
           )}
-          {testName && <span class="viewer-head-title">{testName}</span>}
+          {testName && <span class="viewer-head-title" data-testid="viewer-title">{testName}</span>}
         </div>
         <div class="viewer-head-actions">
           {onPickModeToggle && (
@@ -485,14 +525,36 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
       </div>
       <div ref={containerRef} class="screenshot-container viewer-body has-grid" style={{ position: 'relative' }}>
         {(hasBefore && hasAfter) && (
-          <div class="screenshot-tab-float">
-            <div class={`screenshot-tab${tab === 'action' ? ' active' : ''}`} onClick={() => setTab('action')}>Action</div>
-            <div class={`screenshot-tab${tab === 'before' ? ' active' : ''}`} onClick={() => setTab('before')}>Before</div>
-            <div class={`screenshot-tab${tab === 'after' ? ' active' : ''}`} onClick={() => setTab('after')}>After</div>
+          <div class="screenshot-tab-float" role="tablist" aria-label="Screenshot stage">
+            {STAGE_TABS.map(({ value, label }, i) => (
+              <div
+                key={value}
+                id={`screenshot-stage-${value}`}
+                class={`screenshot-tab${tab === value ? ' active' : ''}`}
+                role="tab"
+                aria-selected={tab === value}
+                aria-controls="screenshot-tabpanel"
+                tabIndex={0}
+                onClick={() => setTab(value)}
+                onKeyDown={(e) => handleStageKeyDown(e, i, setTab)}
+              >
+                {label}
+              </div>
+            ))}
           </div>
         )}
         {currentUrl ? (
-          <div ref={wrapperRef} class="screenshot-image-wrapper" style={scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'center center' } : undefined}>
+          <div
+            ref={wrapperRef}
+            // Gated on the same condition as the tablist above: with only one
+            // screenshot there are no stage tabs, so a tabpanel here would be
+            // orphaned and aria-labelledby would point at nothing.
+            id={hasBefore && hasAfter ? 'screenshot-tabpanel' : undefined}
+            role={hasBefore && hasAfter ? 'tabpanel' : undefined}
+            aria-labelledby={hasBefore && hasAfter ? `screenshot-stage-${tab}` : undefined}
+            class="screenshot-image-wrapper"
+            style={scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'center center' } : undefined}
+          >
             {framedScreenshot}
             {showOverlay && naturalSize && renderedSize && (
               <BoundsOverlay
@@ -541,7 +603,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
             )}
           </div>
         ) : (
-          <div class="screenshot-empty">No screenshot available for this action</div>
+          <div class="screenshot-empty" data-testid="screenshot-empty">No screenshot available for this action</div>
         )}
       </div>
     </div>

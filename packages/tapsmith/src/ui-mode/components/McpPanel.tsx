@@ -38,7 +38,7 @@ export function McpPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls
   const single = grouped.length === 1 && grouped[0].count === 1;
 
   return (
-    <div class="mcp-panel">
+    <div class="mcp-panel" role="region" aria-label="MCP activity">
       <div class="mcp-header">
         <div class="mcp-header-top">
           <div class="mcp-header-left">
@@ -72,7 +72,7 @@ export function McpPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls
         {connected && !single && (
           <div class="mcp-agents-row" title={`${agents.length} agents connected:\n${agentsTooltip(agents)}`}>
             {grouped.map((g) => (
-              <span key={g.name} class="mcp-agent-pill" title={g.count > 1 ? `${g.name} ×${g.count}` : g.name}>
+              <span key={g.name} class="mcp-agent-pill" data-testid="mcp-agent" title={g.count > 1 ? `${g.name} ×${g.count}` : g.name}>
                 <span class="mcp-dot connected" />
                 {g.name}
                 {g.count > 1 && <span class="mcp-agent-count">×{g.count}</span>}
@@ -82,10 +82,10 @@ export function McpPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls
         )}
       </div>
 
-      <div class="mcp-feed" ref={feedRef}>
+      <div class="mcp-feed" ref={feedRef} role="log" aria-label="MCP activity feed">
         {mergedCalls.length === 0
           ? (
-            <div class="mcp-empty">
+            <div class="mcp-empty" data-testid="mcp-empty">
               {connected
                 ? 'Waiting for tool calls...'
                 : mcpUrl
@@ -100,6 +100,7 @@ export function McpPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls
               <div
                 key={tc.id}
                 class={`mcp-entry ${tc.status}${expandedId === tc.id ? ' expanded' : ''}`}
+                data-testid="mcp-entry"
                 onClick={() => setExpandedId(prev => prev === tc.id ? null : tc.id)}
               >
                 <div class="mcp-entry-header">
@@ -116,7 +117,10 @@ export function McpPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls
                     {formatToolArgs(tc.tool, tc.args)}
                   </div>
                 )}
-                {tc.resultSummary && (
+                {/* An errored call carries `error` and no `resultSummary`
+                    (mcp/index.ts), so gating on resultSummary alone left
+                    failures showing as a red row with no explanation. */}
+                {(tc.resultSummary || (tc.status === 'error' && tc.error)) && (
                   <div class="mcp-entry-summary">
                     {tc.status === 'error' ? tc.error ?? tc.resultSummary : tc.resultSummary}
                   </div>
