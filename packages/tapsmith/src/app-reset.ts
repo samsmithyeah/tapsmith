@@ -84,10 +84,20 @@ export interface AppResetReport {
  * `appReset` / `appResetScope` are ordinary config keys and arrive already
  * cascaded through `config` (root → project `use` → `test.use()`).
  */
+export interface ResolveAppResetHints {
+  /**
+   * The scope (or an enclosing one) has `beforeAll` hooks. Shared setup is
+   * exactly what a per-test reset would destroy, so `appResetScope: 'auto'`
+   * stays per-file there; an explicit `'test'` still forces per-test resets.
+   */
+  hasBeforeAll?: boolean;
+}
+
 export function resolveAppResetPolicy(
   scopeOptions: { appState?: string } | undefined,
   config: Pick<TapsmithConfig, 'appReset' | 'appResetScope' | 'resetAppDeepLink' | 'rootDir'>,
   caps: ResetCapabilities = {},
+  hints: ResolveAppResetHints = {},
 ): AppResetPolicy {
   const warmAvailable = !!caps.hooksDetected || !!config.resetAppDeepLink;
 
@@ -98,7 +108,7 @@ export function resolveAppResetPolicy(
 
   const requestedScope = config.appResetScope ?? 'auto';
   const scope: ResolvedAppResetScope = requestedScope === 'auto'
-    ? (caps.hooksDetected ? 'test' : 'file')
+    ? (caps.hooksDetected && !hints.hasBeforeAll ? 'test' : 'file')
     : requestedScope;
 
   const policy: AppResetPolicy = { mode, scope };

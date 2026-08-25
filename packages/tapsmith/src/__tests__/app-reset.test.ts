@@ -26,6 +26,19 @@ describe('resolveAppResetPolicy', () => {
       .toEqual({ mode: 'warm', scope: 'test' });
   });
 
+  it('a scope with beforeAll hooks keeps auto isolation per file even with hooks detected', () => {
+    // beforeAll shares setup between tests; a per-test reset would destroy it.
+    const p = resolveAppResetPolicy(undefined, base, { hooksDetected: true }, { hasBeforeAll: true });
+    expect(p).toEqual({ mode: 'warm', scope: 'file' });
+  });
+
+  it('an explicit per-test scope still wins in a scope with beforeAll hooks', () => {
+    const p = resolveAppResetPolicy(
+      undefined, { ...base, appResetScope: 'test' }, { hooksDetected: true }, { hasBeforeAll: true },
+    );
+    expect(p.scope).toBe('test');
+  });
+
   it('explicit mode and scope win over auto', () => {
     expect(resolveAppResetPolicy(undefined, { ...base, appReset: 'restart', appResetScope: 'test' }, { hooksDetected: true }))
       .toEqual({ mode: 'restart', scope: 'test' });

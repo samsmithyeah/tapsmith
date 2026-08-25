@@ -182,6 +182,38 @@ describe('runner app reset (declared isolation)', () => {
     expect(order).toEqual(['restart', 'beforeAll', 'restart', 'one']);
   });
 
+  it('auto isolation with in-app hooks: per test, except in scopes that share setup through beforeAll', async () => {
+    const d = makeDevice();
+    const order: string[] = [];
+    d.device._resetApp.mockImplementation(async (_pkg, opts) => {
+      order.push(`reset:${opts.mode}`);
+      return { modeRequested: opts.mode ?? 'warm', modeUsed: 'warm', fellBack: false, coldLaunch: false, durationMs: 5, hooksDetected: true, steps: [] };
+    });
+    pushContext();
+    tapsmithDescribe('shared setup', () => {
+      tapsmithBeforeAll(async () => { order.push('beforeAll'); });
+      tapsmithTest('one', async () => { order.push('one'); });
+      tapsmithTest('two', async () => { order.push('two'); });
+    });
+    tapsmithDescribe('independent', () => {
+      tapsmithTest('three', async () => { order.push('three'); });
+      tapsmithTest('four', async () => { order.push('four'); });
+    });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), {
+      resetCapabilities: { hooksDetected: true },
+    }));
+
+    expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed', 'passed', 'passed']);
+    // The beforeAll navigation in "shared setup" survives between its tests
+    // (one warm reset on entry); "independent" is reset before every test.
+    expect(order).toEqual([
+      'reset:warm', 'beforeAll', 'one', 'two',
+      'reset:warm', 'three', 'reset:warm', 'four',
+    ]);
+  });
+
   it('a nested describe with appState restores (never pm clear) and resolves the path against rootDir', async () => {
     const d = makeDevice();
     pushContext();

@@ -58,7 +58,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `extraHTTPHeaders` | `Record<string, string>` | `undefined` | Default headers sent with every `request` fixture call (e.g., `Authorization`). Per-request headers override these when names collide. |
 | `doubleTapInterval` | `number` | `100` | Default interval in milliseconds between the two taps in `doubleTap()`. Can be overridden per-call via `doubleTap({ intervalMs: 150 })`. |
 | `appReset` | `'auto' \| 'clear' \| 'restart' \| 'warm' \| 'none'` | `'auto'` | How the app is reset to a known state before tests (see [Test isolation](writing-tests.md#test-isolation)). `auto` = `warm` when `resetAppDeepLink` is set, otherwise `clear`. Overridable per project and per `test.use()` scope. |
-| `appResetScope` | `'auto' \| 'file' \| 'test'` | `'auto'` | Reset once per test file, or before every test. `auto` = `file`. |
+| `appResetScope` | `'auto' \| 'file' \| 'test'` | `'auto'` | Reset once per test file, or before every test. `auto` = `test` when an in-app warm reset hook is detected and the scope has no `beforeAll` hooks, otherwise `file`. |
 | `appResetColdEvery` | `number` | `10` | With `appReset: 'warm'`, deliver every Nth reset cold (terminate + relaunch) so long all-warm iOS simulator sessions can't drift from a fresh launch. `0` disables. |
 | `resetAppDeepLink` | `string` | `undefined` | Deep link the app handles by clearing its own state and navigating to the start screen. Setting it makes `appReset: 'auto'` resolve to `warm`. Do not expose this route in production builds. |
 | `resetAppWaitMs` | `number` | `750` | Time in milliseconds to wait after navigating the `resetAppDeepLink` before continuing. Gives the app time to finish resetting. |
@@ -536,7 +536,7 @@ npx tapsmith test --shard=1/4
 
 ### Warm App Reset
 
-The fastest reset is one the app performs itself. React Native / Expo apps get it by mounting `@tapsmith/react-native` once — Tapsmith detects the hooks automatically and `appReset: 'auto'` becomes `warm · per test`; see the [Warm app reset guide](warm-reset.md).
+The fastest reset is one the app performs itself. React Native / Expo apps get it by mounting `@tapsmith/react-native` once — Tapsmith detects the hooks automatically and `appReset: 'auto'` becomes `warm · per test` (per file in scopes that share setup through `beforeAll`); see the [Warm app reset guide](warm-reset.md).
 
 Apps without the module can expose a deep link that resets state (much faster than a full clear + relaunch). `appReset: 'auto'` then resolves to `warm · per file`:
 

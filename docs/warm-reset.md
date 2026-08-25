@@ -26,7 +26,7 @@ export default function RootLayout() {
 }
 ```
 
-That is the whole integration. **No Tapsmith config changes**: `appReset: 'auto'` detects the hooks in the app's accessibility tree and switches to `warm · per test`. Your existing `beforeEach` resets keep working (the lint rule `tapsmith/prefer-app-reset-option` will point out the ones that are now redundant).
+That is the whole integration. **No Tapsmith config changes**: `appReset: 'auto'` detects the hooks in the app's accessibility tree and switches to `warm · per test`. Scopes with `beforeAll` hooks are the exception: they share setup between tests, so they are reset once on entry (set `appResetScope: 'test'` to override). Your existing `beforeEach` resets keep working (the lint rule `tapsmith/prefer-app-reset-option` will point out the ones that are now redundant).
 
 | Prop | Purpose |
 |---|---|
