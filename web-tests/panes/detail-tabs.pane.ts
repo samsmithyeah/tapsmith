@@ -61,6 +61,19 @@ export class DetailTabsPane {
     return this.page.getByTestId("log-entry")
   }
 
+  get consoleTimestamps() {
+    return this.page.getByTestId("log-time")
+  }
+
+  /** A sortable column header; the active one reports `aria-pressed` and `data-sort-direction`. */
+  consoleColumnHeader(name: "Time" | "Level" | "Source" | "Message") {
+    return this.page.getByRole("group", { name: "Sort console output" }).getByRole("button", { name })
+  }
+
+  consoleTimeMode(mode: "relative" | "absolute") {
+    return this.page.getByRole("group", { name: "Timestamp format" }).getByRole("button", { name: mode })
+  }
+
   // ─── Source ───
 
   get sourceFilename() {

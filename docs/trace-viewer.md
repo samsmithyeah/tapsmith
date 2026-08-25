@@ -101,7 +101,7 @@ Shows before/after screenshots for the selected action:
 ### Detail Tabs (right)
 
 - **Call** — Action type, selector, bounds, wall time, raw action/assertion time, wait time, retry count
-- **Console** — Test code `console.log/warn/error` and device logcat output, color-coded by level
+- **Console** — Test code `console.log/warn/error` and device logcat output, color-coded by level. Each entry is timestamped — toggle between the offset from test start (`+1.234s`) and absolute wall-clock time with the `relative` / `absolute` pills; hovering shows the other format. Click a column header (Time, Level, Source, Message) to sort by it; click again to reverse
 - **Source** — The actual source file for the selected step — test, helper, page object, or fixture — with the relevant line highlighted. When a step has a multi-frame call stack, a clickable call-stack pane lets you walk up the stack and view each frame's file. Files are captured at run time, so the code shown matches what actually ran even if you edit afterwards.
 - **Hierarchy** — Android view hierarchy XML with searchable tree view
 - **Network** — HTTP requests captured during the test (see [Network Capture](#network-capture) below)

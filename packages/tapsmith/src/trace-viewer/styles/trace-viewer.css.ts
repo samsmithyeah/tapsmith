@@ -903,6 +903,7 @@ html, body, #app {
 
 /* Log / Console tab */
 .log-entry { font-family: var(--font-mono); font-size: 11px; padding: 1px 12px; display: flex; gap: 8px; line-height: 1.6; }
+.log-time { min-width: 84px; color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; cursor: default; }
 .log-level { min-width: 40px; font-weight: 600; text-transform: uppercase; font-size: 10px; }
 .log-level.error { color: var(--fail); }
 .log-level.warn { color: var(--color-warning); }
@@ -924,6 +925,15 @@ html, body, #app {
 .con-pill.level-warn.active { border-color: var(--color-warning); background: oklch(0.75 0.14 80 / 0.1); color: var(--color-warning); }
 .con-pill-sep { width: 1px; background: var(--border); margin: 2px 4px; align-self: stretch; }
 .con-list { flex: 1; overflow-y: auto; }
+.con-header { flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--bg); padding-top: 2px; padding-bottom: 2px; }
+.con-th { all: unset; box-sizing: border-box; cursor: pointer; user-select: none; color: var(--fg-muted); font-family: var(--font-mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
+/* all:unset above drops the column widths the row spans get from .log-*; restate them so the headings sit over their columns. */
+.con-th.log-time { min-width: 84px; flex-shrink: 0; }
+.con-th.log-level { min-width: 40px; }
+.con-th.log-source { min-width: 46px; }
+.con-th:hover, .con-th.active { color: var(--fg); }
+.con-th.log-message { flex: 1; }
+.con-sort-indicator { margin-left: 4px; font-size: 9px; }
 
 /* Source tab */
 .source-tab { display: flex; flex-direction: column; height: 100%; overflow: hidden; }

@@ -123,6 +123,75 @@ test.describe("Detail tabs", () => {
       await expect(detailTabs.consoleOutput).toContainText("network unreachable")
     })
 
+    test("stamps each entry with its offset from the test start", async ({ viewer, detailTabs }) => {
+      // Interleaving device logs with actions only helps if you can tell *when*
+      // a line was logged, so every entry carries its offset from test start
+      // and the absolute wall-clock time is a hover away.
+      await viewer.open({
+        events: [
+          actionEvent({ actionIndex: 0, action: "tap" }),
+          consoleEvent({ actionIndex: 0, level: "log", message: "app started", offsetMs: 0 }),
+          consoleEvent({ actionIndex: 0, level: "warn", message: "slow frame", offsetMs: 1_234 }),
+          consoleEvent({ actionIndex: 1, level: "error", message: "network unreachable", offsetMs: 62_050 }),
+        ],
+      })
+      await detailTabs.select("Console")
+
+      await expect(detailTabs.consoleTimestamps).toHaveText(["+0.000s", "+1.234s", "+62.050s"])
+      await expect(detailTabs.consoleTimestamps.first()).toHaveAttribute("title", /^\d{2}:\d{2}:\d{2}\.\d{3}$/)
+    })
+
+    test("can switch timestamps to wall-clock time, and remembers it", async ({ viewer, detailTabs, page }) => {
+      await viewer.open({
+        events: [
+          actionEvent({ actionIndex: 0, action: "tap" }),
+          consoleEvent({ actionIndex: 0, level: "log", message: "app started", offsetMs: 1_234 }),
+        ],
+      })
+      await detailTabs.select("Console")
+      await expect(detailTabs.consoleTimeMode("relative")).toHaveAttribute("aria-pressed", "true")
+
+      await detailTabs.consoleTimeMode("absolute").click()
+      // The two formats swap places: wall-clock inline, offset on hover.
+      await expect(detailTabs.consoleTimestamps.first()).toHaveText(/^\d{2}:\d{2}:\d{2}\.\d{3}$/)
+      await expect(detailTabs.consoleTimestamps.first()).toHaveAttribute("title", "+1.234s")
+
+      await page.reload()
+      await detailTabs.select("Console")
+      await expect(detailTabs.consoleTimeMode("absolute")).toHaveAttribute("aria-pressed", "true")
+      await expect(detailTabs.consoleTimestamps.first()).toHaveText(/^\d{2}:\d{2}:\d{2}\.\d{3}$/)
+    })
+
+    test("sorts by a column when its header is clicked, and flips on a second click", async ({ viewer, detailTabs }) => {
+      await viewer.open({
+        events: [
+          actionEvent({ actionIndex: 0, action: "tap" }),
+          consoleEvent({ actionIndex: 0, level: "log", message: "app started", offsetMs: 0 }),
+          consoleEvent({ actionIndex: 0, level: "error", message: "network unreachable", offsetMs: 100 }),
+          consoleEvent({ actionIndex: 0, level: "warn", message: "slow frame", offsetMs: 200 }),
+        ],
+      })
+      await detailTabs.select("Console")
+
+      // Chronological by default.
+      await expect(detailTabs.consoleColumnHeader("Time")).toHaveAttribute("data-sort-direction", "asc")
+      await expect(detailTabs.consoleEntries).toHaveText([/app started/, /network unreachable/, /slow frame/])
+
+      // Level sorts by severity, not alphabetically — error first.
+      await detailTabs.consoleColumnHeader("Level").click()
+      await expect(detailTabs.consoleColumnHeader("Level")).toHaveAttribute("data-sort-direction", "asc")
+      await expect(detailTabs.consoleEntries).toHaveText([/network unreachable/, /slow frame/, /app started/])
+
+      await detailTabs.consoleColumnHeader("Level").click()
+      await expect(detailTabs.consoleColumnHeader("Level")).toHaveAttribute("data-sort-direction", "desc")
+      await expect(detailTabs.consoleEntries).toHaveText([/app started/, /slow frame/, /network unreachable/])
+
+      // Time desc puts the newest entry first.
+      await detailTabs.consoleColumnHeader("Time").click()
+      await detailTabs.consoleColumnHeader("Time").click()
+      await expect(detailTabs.consoleEntries).toHaveText([/slow frame/, /network unreachable/, /app started/])
+    })
+
     test("filters by text", async ({ viewer, detailTabs }) => {
       await viewer.open({
         events: [
