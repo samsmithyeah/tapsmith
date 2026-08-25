@@ -54,6 +54,14 @@ function makeDevice() {
     clearAppData: record('clearAppData'),
     restoreAppState: record('restoreAppState'),
     openDeepLink: record('openDeepLink'),
+    _resetApp: vi.fn(async (_pkg: string, opts: { mode?: 'warm' | 'restart' | 'clear'; forceCold?: boolean }) => {
+      const mode = opts.mode ?? 'warm';
+      calls.push(`resetApp:${mode}`);
+      return {
+        modeRequested: mode, modeUsed: mode, fellBack: false, coldLaunch: mode !== 'warm',
+        durationMs: 5, hooksDetected: false, steps: [{ name: mode, durationMs: 5, ok: true }],
+      };
+    }),
     currentPackage: vi.fn(async () => 'com.example.app'),
     getByText: vi.fn(() => ({ tap: vi.fn(async () => undefined) })),
     pressBack: vi.fn(async () => {}),
@@ -100,7 +108,10 @@ describe('runner app reset (declared isolation)', () => {
   it('default policy: one clear reset per file, before beforeAll hooks, attributed to the first test', async () => {
     const d = makeDevice();
     const order: string[] = [];
-    d.device.clearAppData.mockImplementation(async () => { order.push('clear'); d.calls.push('clearAppData'); });
+    d.device._resetApp.mockImplementation(async (_pkg, opts) => {
+      order.push('clear'); d.calls.push(`resetApp:${opts.mode}`);
+      return { modeRequested: 'clear', modeUsed: 'clear', fellBack: false, coldLaunch: true, durationMs: 5, hooksDetected: false, steps: [] };
+    });
 
     pushContext();
     tapsmithBeforeAll(async () => { order.push('beforeAll'); });
@@ -112,8 +123,7 @@ describe('runner app reset (declared isolation)', () => {
 
     expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed']);
     expect(order).toEqual(['clear', 'beforeAll', 'one', 'two']);
-    // Android clear path: terminate → clear → launch (agent restart is best-effort noise)
-    expect(resetCalls(d)).toEqual(['terminateApp', 'clearAppData', 'launchApp']);
+    expect(resetCalls(d)).toEqual(['resetApp:clear']);
     const [first, second] = collectResults(result);
     expect(first.setupMs).toBeGreaterThanOrEqual(0);
     expect(first.durationMs).toBeGreaterThanOrEqual(first.setupMs ?? 0);
@@ -149,14 +159,19 @@ describe('runner app reset (declared isolation)', () => {
     expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed']);
     // flaky: attempt 0 + retry; stable: once. No file-level reset for a
     // test-scoped policy without beforeAll hooks.
-    expect(resetCalls(d)).toEqual(['restartApp', 'restartApp', 'restartApp']);
+    expect(resetCalls(d)).toEqual(['resetApp:restart', 'resetApp:restart', 'resetApp:restart']);
     expect(d.device._setForceColdDeepLinks).toHaveBeenCalledWith(true);
+    // The retry attempt asks for a cold delivery explicitly.
+    expect(d.device._resetApp.mock.calls.map((c) => c[1].forceCold)).toEqual([false, true, false]);
   });
 
   it('test-scoped policy still resets at file entry when the file has beforeAll hooks', async () => {
     const d = makeDevice();
     const order: string[] = [];
-    d.device.restartApp.mockImplementation(async () => { order.push('restart'); d.calls.push('restartApp'); });
+    d.device._resetApp.mockImplementation(async () => {
+      order.push('restart');
+      return { modeRequested: 'restart', modeUsed: 'restart', fellBack: false, coldLaunch: true, durationMs: 5, hooksDetected: false, steps: [] };
+    });
     pushContext();
     tapsmithBeforeAll(async () => { order.push('beforeAll'); });
     tapsmithTest('one', async () => { order.push('one'); });
@@ -181,8 +196,8 @@ describe('runner app reset (declared isolation)', () => {
 
     expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed']);
     expect(resetCalls(d)).toEqual([
-      'terminateApp', 'clearAppData', 'launchApp',   // root: clear
-      'restoreAppState', 'restartApp',               // nested: restore
+      'resetApp:clear',                  // root: clear (daemon ladder)
+      'restoreAppState', 'restartApp',   // nested: restore (never pm clear)
     ]);
     expect(d.device.restoreAppState).toHaveBeenCalledWith('com.example.app', path.resolve('/proj', './auth.tar.gz'));
   });
@@ -201,7 +216,7 @@ describe('runner app reset (declared isolation)', () => {
 
     await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig()));
 
-    expect(d.device.clearAppData).toHaveBeenCalledTimes(2);
+    expect(resetCalls(d)).toEqual(['resetApp:clear', 'resetApp:clear']);
   });
 
   it('a prepared device satisfying the policy skips the reset (first file after launch)', async () => {
@@ -249,7 +264,7 @@ describe('runner app reset (declared isolation)', () => {
 
   it('a failing reset fails every test in the scope with the reset error', async () => {
     const d = makeDevice();
-    d.device.clearAppData.mockRejectedValue(new Error('pm clear failed'));
+    d.device._resetApp.mockRejectedValue(new Error('pm clear failed'));
     pushContext();
     tapsmithTest('one', async () => {});
     tapsmithTest('two', async () => {});
@@ -275,16 +290,14 @@ describe('runner app reset (declared isolation)', () => {
     // The real Device records each lifecycle call as a traced action into the
     // active collector; mimic that so the group has children (empty groups
     // are dropped from traces by design).
-    const traced = (name: string) => async () => {
-      d.calls.push(name);
+    d.device._resetApp.mockImplementation(async (_pkg, opts) => {
+      d.calls.push(`resetApp:${opts.mode}`);
       getActiveTraceCollector()?.addActionEvent({
-        category: 'device', action: name, duration: 1, success: true,
+        category: 'device', action: 'resetApp', duration: 1, success: true, detail: 'cleared app data and relaunched, 0.0s',
         hasScreenshotBefore: false, hasScreenshotAfter: false, hasHierarchyBefore: false, hasHierarchyAfter: false,
       });
-    };
-    d.device.terminateApp.mockImplementation(traced('terminateApp'));
-    d.device.clearAppData.mockImplementation(traced('clearAppData'));
-    d.device.launchApp.mockImplementation(traced('launchApp'));
+      return { modeRequested: 'clear', modeUsed: 'clear', fellBack: false, coldLaunch: true, durationMs: 5, hooksDetected: false, steps: [] };
+    });
     try {
       pushContext();
       tapsmithTest('one', async () => {});
@@ -302,7 +315,7 @@ describe('runner app reset (declared isolation)', () => {
       const groups = events.filter((e) => e.type === 'group-start').map((e) => e.name);
       expect(groups.slice(0, 2)).toEqual(['beforeAll Hooks', 'App reset (clear)']);
       const actions = events.filter((e) => e.type === 'action').map((e) => e.action);
-      expect(actions.slice(0, 3)).toEqual(['terminateApp', 'clearAppData', 'launchApp']);
+      expect(actions[0]).toBe('resetApp');
       const metadata = JSON.parse(new TextDecoder().decode(zip['metadata.json']));
       expect(metadata).toMatchObject({ appReset: 'clear', appResetScope: 'file' });
     } finally {

@@ -31,6 +31,22 @@ export interface TraceContext {
 
 // ─── Shared helper ───
 
+export interface TracedActionExtra {
+  inputValue?: string
+  /**
+   * Free-text second line for the action row. A function is evaluated after
+   * the action completes so it can describe the result (e.g. which rung of
+   * the reset ladder actually ran).
+   */
+  detail?: string | (() => string | undefined)
+  origin?: 'inline' | 'prepared' | 'skipped'
+}
+
+function resolveDetail(extra: TracedActionExtra | undefined): string | undefined {
+  if (!extra?.detail) return undefined;
+  return typeof extra.detail === 'function' ? extra.detail() : extra.detail;
+}
+
 export async function tracedAction(
   ctx: TraceContext | undefined,
   action: string,
@@ -38,7 +54,7 @@ export async function tracedAction(
   selector: Selector | undefined,
   fn: () => Promise<ActionResponse>,
   fallbackMsg: string,
-  extra?: { inputValue?: string },
+  extra?: TracedActionExtra,
 ): Promise<void> {
   // No trace context — just run the action directly
   if (!ctx) {
@@ -218,6 +234,7 @@ export async function tracedAction(
   // This halves the screenshot overhead and avoids fire-and-forget reliability issues.
   ctx.collector.addActionEvent({
     category, action, selector: selectorStr, inputValue: extra?.inputValue,
+    detail: resolveDetail(extra), origin: extra?.origin,
     duration, success, error, errorStack,
     bounds, point, log,
     hasScreenshotBefore: !!beforeCaptures.screenshotBefore,

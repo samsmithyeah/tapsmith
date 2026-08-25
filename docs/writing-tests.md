@@ -189,6 +189,7 @@ describe("without auth", () => {
 
 ### Manual resets inside a test
 
+- `device.resetApp()` — the same ladder the runner uses (warm hook → restart → clear); returns what actually ran. See [API reference](api-reference.md#deviceresetappoptions-promiseappresetresult).
 - `device.restartApp()` — restart, keep persisted data.
 - `device.clearAppData(pkg)` then `device.launchApp(pkg)`, or `device.launchApp(pkg, { clearData: true })` — full wipe.
 - `device.openDeepLink(resetLink)` — trigger your app's own reset hook.

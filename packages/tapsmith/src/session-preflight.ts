@@ -1,16 +1,16 @@
-import type { TapsmithConfig } from './config.js';
+import { DEFAULT_APP_RESET_COLD_EVERY, type TapsmithConfig } from './config.js';
 import type { Device } from './device.js';
 import { appResetAction, satisfies, type AppResetPolicy, type AppResetReport, type AppResetStep, type PreparedState } from './app-reset.js';
 import type { LaunchAppOptions, TapsmithGrpcClient } from './grpc-client.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
 import { withActionProgress } from './action-progress.js';
 
-type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'restoreAppState' | 'openDeepLink' | 'getAppState'>
+type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'restoreAppState' | 'openDeepLink' | 'getAppState' | '_resetApp'>
 type SessionClient = Pick<TapsmithGrpcClient, 'ping' | 'getUiHierarchy'>
 
 export interface SessionPreflightContext {
   label: string
-  config: Pick<TapsmithConfig, 'package' | 'activity' | 'platform' | 'resetAppDeepLink' | 'resetAppWaitMs' | 'device'>
+  config: Pick<TapsmithConfig, 'package' | 'activity' | 'platform' | 'resetAppDeepLink' | 'resetAppWaitMs' | 'appResetColdEvery' | 'device'>
   device: SessionDevice
   client: SessionClient
   agentApkPath?: string
@@ -251,41 +251,46 @@ export async function executeAppReset(
   let fellBack = false;
   let reason: string | undefined;
 
-  switch (action.kind) {
-    case 'restore':
-      await step('restoreAppState', () => ctx.device.restoreAppState(pkg, (action as { archive: string }).archive));
-      await step('restartApp', () => ctx.device.restartApp(pkg));
-      break;
-    case 'restart':
-      await step('restartApp', () => ctx.device.restartApp(pkg));
-      break;
-    case 'warm': {
-      const link = ctx.config.resetAppDeepLink;
-      if (!link) {
-        // A warm reset needs a hook in the app. Without one the closest
-        // cheap equivalent is a restart; say so in the trace rather than
-        // silently degrading to a full wipe.
-        modeUsed = 'restart';
-        fellBack = true;
-        reason = 'appReset: warm requested but the app exposes no reset hook (resetAppDeepLink); restarted instead';
-        await step('restartApp', () => ctx.device.restartApp(pkg));
-        break;
+  if (action.kind === 'restore') {
+    await step('restoreAppState', () => ctx.device.restoreAppState(pkg, action.archive));
+    await step('restartApp', () => ctx.device.restartApp(pkg));
+  } else {
+    // warm / restart / clear run the daemon's ladder: it knows whether the app
+    // advertises in-app reset hooks, owns the warm-window cold policy, and
+    // reports exactly which rung ran so the trace stays honest.
+    let result: Awaited<ReturnType<SessionDevice['_resetApp']>> | undefined;
+    await step('resetApp', async () => {
+      result = await ctx.device._resetApp(pkg, {
+        mode: action.kind,
+        fallback: true,
+        resetDeepLink: ctx.config.resetAppDeepLink,
+        forceCold: options.forceCold,
+        coldEveryNResets: ctx.config.appResetColdEvery ?? DEFAULT_APP_RESET_COLD_EVERY,
+      });
+      for (const s of result.steps) {
+        steps.push({ name: s.name, durationMs: s.durationMs, ok: s.ok, ...(s.detail ? { detail: s.detail } : {}) });
       }
-      try {
-        await step('openDeepLink', () => softResetAppViaDeepLink(ctx, !!options.forceCold), link);
-      } catch (err) {
-        const message = formatError(err);
-        process.stderr.write(`[tapsmith] Soft reset failed, falling back to hard reset: ${message}\n`);
-        modeUsed = 'clear';
-        fellBack = true;
-        reason = `warm reset failed (${message}); fell back to clear`;
-        await hardClearAndLaunch(ctx, step);
+    });
+    if (result) {
+      modeUsed = result.modeUsed;
+      fellBack = result.fellBack;
+      reason = result.reason;
+      if (result.fellBack) {
+        process.stderr.write(`[tapsmith] App reset fell back to ${result.modeUsed}: ${result.reason ?? 'unknown reason'}\n`);
       }
-      break;
+      if (result.modeUsed === 'warm' && !result.hooksDetected) {
+        // Legacy deep-link hook: no acknowledgement, so give the app the
+        // configured settle time as before.
+        const waitMs = ctx.config.resetAppWaitMs ?? DEFAULT_SOFT_RESET_WAIT_MS;
+        await step('settle', async () => {
+          try {
+            await ctx.device.waitForIdle(waitMs);
+          } catch {
+            await delay(waitMs);
+          }
+        });
+      }
     }
-    case 'clear':
-      await hardClearAndLaunch(ctx, step);
-      break;
   }
 
   await step('ensureSessionReady', () => ensureSessionReady(ctx, options.phase));
@@ -594,26 +599,6 @@ async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
   }
 
   await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
-}
-
-async function softResetAppViaDeepLink(ctx: SessionPreflightContext, forceCold: boolean): Promise<void> {
-  const resetDeepLink = ctx.config.resetAppDeepLink!;
-  // forceCold: the file-boundary reset is what keeps warm in-process
-  // delivery safe on iOS simulators. Long all-warm sessions accumulate native
-  // navigation-stack state that diverges observably from a cold launch (a11y
-  // trees stop being flattened, element ids go stale); cold-relaunching at
-  // file boundaries bounds the warm window to a single test file and pins
-  // each file's starting state to a fresh process. Per-test resets and
-  // in-file resets stay warm. No effect on Android or physical iOS, which
-  // always deliver warm.
-  await ctx.device.openDeepLink(resetDeepLink, { forceColdLaunch: forceCold });
-
-  const waitMs = ctx.config.resetAppWaitMs ?? DEFAULT_SOFT_RESET_WAIT_MS;
-  try {
-    await ctx.device.waitForIdle(waitMs);
-  } catch {
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
-  }
 }
 
 async function dismissBlockingSystemUi(ctx: SessionPreflightContext): Promise<void> {

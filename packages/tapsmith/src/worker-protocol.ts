@@ -50,6 +50,7 @@ export interface RunFileUseOptions {
   appState?: string
   appReset?: AppResetMode
   appResetScope?: AppResetScope
+  appResetColdEvery?: number
   baseURL?: string
   extraHTTPHeaders?: Record<string, string>
 }
@@ -261,6 +262,7 @@ export interface SerializedConfig {
   resetAppWaitMs?: number
   appReset?: AppResetMode
   appResetScope?: AppResetScope
+  appResetColdEvery?: number
   baseURL?: string
   extraHTTPHeaders?: Record<string, string>
   /** RegExp filters for test fullNames. Source/flags are serialized for IPC. */
@@ -295,6 +297,7 @@ export function serializeConfig(config: TapsmithConfig): SerializedConfig {
     resetAppWaitMs: config.resetAppWaitMs,
     appReset: config.appReset,
     appResetScope: config.appResetScope,
+    appResetColdEvery: config.appResetColdEvery,
     baseURL: config.baseURL,
     extraHTTPHeaders: config.extraHTTPHeaders,
     grep: serializeRegExpArray(normalizeGrep(config.grep)),
@@ -334,6 +337,7 @@ export function configFromSerialized(s: SerializedConfig, daemonAddress: string)
     resetAppWaitMs: s.resetAppWaitMs,
     appReset: s.appReset,
     appResetScope: s.appResetScope,
+    appResetColdEvery: s.appResetColdEvery,
     baseURL: s.baseURL,
     extraHTTPHeaders: s.extraHTTPHeaders,
     grep: deserializeRegExpArray(s.grep),

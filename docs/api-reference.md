@@ -367,6 +367,41 @@ Bring a backgrounded app back to the foreground.
 await device.bringToForeground("com.example.myapp");
 ```
 
+### `device.resetApp(options?): Promise<AppResetResult>`
+
+Bring the app to a known state — the same reset the runner performs for the declared `appReset` policy, callable from inside a test. The daemon runs a ladder and reports which rung actually ran:
+
+1. **warm** — in-app reset through the app's reset hook (`@tapsmith/react-native` marker, or `resetAppDeepLink`), process kept;
+2. **restart** — terminate and relaunch, data kept;
+3. **clear** — wipe app data and relaunch.
+
+```typescript
+const result = await device.resetApp()                       // warm, falling back as needed
+await device.resetApp({ mode: "clear", fallback: false })     // exactly a clear, or throw
+await device.resetApp({ target: "/settings" })                 // warm reset landing on a route
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `mode` | `'warm' \| 'restart' \| 'clear'` | `'warm'` | How far to reset |
+| `fallback` | `boolean` | `true` | Escalate warm → restart → clear when a rung fails |
+| `target` | `string` | `'/'` | Route to land on after an in-app reset |
+
+**`AppResetResult`**
+
+| Field | Type | Description |
+|---|---|---|
+| `modeRequested` / `modeUsed` | `'warm' \| 'restart' \| 'clear'` | What was asked for and what actually ran |
+| `fellBack` | `boolean` | A lower rung ran because a higher one failed |
+| `coldLaunch` | `boolean` | The process was recreated |
+| `reason` | `string?` | Why a fallback or cold relaunch happened, e.g. `"cold relaunch: warm-window bound reached (10 resets)"` |
+| `durationMs` | `number` | Wall time of the whole ladder |
+| `hooksDetected` | `boolean` | `@tapsmith/react-native` hooks were found in the app |
+| `epochBefore` / `epochAfter` | `number?` | In-app reset counter (hooks only) |
+| `steps` | `{ name, durationMs, ok, detail? }[]` | Per-rung timings |
+
+The call is recorded in the trace as a `resetApp` action whose detail line names the rung and reason. Throws when the ladder is exhausted (or `fallback: false` and the requested rung failed).
+
 ### `device.restartApp(packageName: string, options?: { waitForIdle?: boolean }): Promise<void>`
 
 Force-stops and relaunches the app without clearing persistent storage. Resets all in-memory state (React component state, navigation stack) while preserving data on disk (AsyncStorage, SQLite, SharedPreferences).
@@ -1470,6 +1505,7 @@ describe("custom config", () => {
 | `appState`   | `string`                                    | Path to saved app state archive to restore; `""` means clear |
 | `appReset`   | `'auto' \| 'clear' \| 'restart' \| 'warm' \| 'none'` | How the app is reset before tests in this scope. See [Test isolation](./writing-tests.md#test-isolation). |
 | `appResetScope` | `'auto' \| 'file' \| 'test'`            | Reset once per file or before every test     |
+| `appResetColdEvery` | `number`                               | Cold-relaunch every N warm resets (default 10; 0 = off) |
 
 The following device-shaping fields may **only** be set on a project's
 `use` block (not via `test.use()`), since the device is bound to the

@@ -517,6 +517,11 @@ pub enum AgentCommand {
         /// already-running app, where "app has rendered content" is trivially
         /// true and would mask a dropped Linking event.
         require_ui_change: bool,
+        /// Acknowledge the delivery only once the `@tapsmith/react-native`
+        /// marker's epoch is strictly greater than this value (the in-app
+        /// reset completed). Replaces the hierarchy-change heuristic for
+        /// declared app resets; the agent reports `epochAfter` in its data.
+        ack_epoch_gt: Option<u64>,
     },
     AcceptOpenInAppDialog {
         timeout_ms: Option<u64>,
@@ -913,15 +918,19 @@ impl AgentCommand {
                 package,
                 deliver_in_process,
                 require_ui_change,
-            } => (
-                "openDeepLink",
-                json!({
+                ack_epoch_gt,
+            } => {
+                let mut p = json!({
                     "url": url,
                     "bundleId": package,
                     "deliverInProcess": deliver_in_process,
                     "requireUiChange": require_ui_change,
-                }),
-            ),
+                });
+                if let Some(epoch) = ack_epoch_gt {
+                    p["ackEpochGreaterThan"] = json!(epoch);
+                }
+                ("openDeepLink", p)
+            }
             AgentCommand::AcceptOpenInAppDialog { timeout_ms } => {
                 let mut p = json!({});
                 if let Some(t) = timeout_ms {
@@ -1873,6 +1882,7 @@ mod tests {
             package: "dev.tapsmith.testapp".into(),
             deliver_in_process: false,
             require_ui_change: false,
+            ack_epoch_gt: None,
         };
         let j = cmd.to_json("dl1");
         assert_eq!(j["method"], "openDeepLink");
@@ -1889,11 +1899,27 @@ mod tests {
             package: "dev.tapsmith.testapp".into(),
             deliver_in_process: true,
             require_ui_change: true,
+            ack_epoch_gt: None,
         };
         let j = cmd.to_json("dl2");
         assert_eq!(j["method"], "openDeepLink");
         assert_eq!(j["params"]["deliverInProcess"], true);
         assert_eq!(j["params"]["requireUiChange"], true);
+        assert!(j["params"].get("ackEpochGreaterThan").is_none());
+    }
+
+    #[test]
+    fn to_json_open_deep_link_with_ack_epoch() {
+        let cmd = AgentCommand::OpenDeepLink {
+            url: "myapp:///?__tapsmith_reset=1&nonce=abc".into(),
+            package: "dev.tapsmith.testapp".into(),
+            deliver_in_process: true,
+            require_ui_change: false,
+            ack_epoch_gt: Some(4),
+        };
+        let j = cmd.to_json("dl3");
+        assert_eq!(j["params"]["ackEpochGreaterThan"], 4);
+        assert_eq!(j["params"]["requireUiChange"], false);
     }
 
     #[test]

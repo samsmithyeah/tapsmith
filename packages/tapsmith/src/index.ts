@@ -5,7 +5,7 @@
  */
 
 // Device
-export { Device, type SwipeOptions } from './device.js';
+export { Device, type SwipeOptions, type AppResetOptions, type AppResetResult } from './device.js';
 
 // Device management types
 export type { LaunchAppOptions, OpenDeepLinkOptions, AppState, Orientation, ColorScheme } from './grpc-client.js';

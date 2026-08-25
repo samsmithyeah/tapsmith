@@ -215,6 +215,57 @@ export interface OpenDeepLinkOptions {
   forceColdLaunch?: boolean;
 }
 
+// ─── App reset (declared isolation) ───
+
+export type AppResetRequestMode = 'warm' | 'restart' | 'clear';
+
+export interface ResetAppRequestOptions {
+  mode: AppResetRequestMode;
+  /** Escalate warm → restart → clear when a rung fails. */
+  allowFallback: boolean;
+  /** Legacy explicit reset deep link (`resetAppDeepLink`). */
+  resetDeepLink?: string;
+  /** Deliver a warm reset cold (terminate + relaunch); set on retry attempts. */
+  forceCold?: boolean;
+  /** Force a cold relaunch after this many consecutive warm resets (0 = off). */
+  coldEveryNResets?: number;
+  waitForIdle?: boolean;
+  idleTimeoutMs?: number;
+  /** Route the reset should land on (default "/"). */
+  targetPath?: string;
+}
+
+export interface ResetAppStep {
+  name: string;
+  durationMs: number;
+  ok: boolean;
+  detail: string;
+}
+
+export interface ResetAppResponse extends ActionResponse {
+  modeRequested: string;
+  modeUsed: string;
+  fellBack: boolean;
+  coldLaunch: boolean;
+  reason: string;
+  durationMs: number;
+  hooksDetected: boolean;
+  epochBefore: number;
+  epochAfter: number;
+  steps: ResetAppStep[];
+}
+
+const APP_RESET_WIRE_MODE: Record<AppResetRequestMode, string> = {
+  warm: 'APP_RESET_MODE_WARM',
+  restart: 'APP_RESET_MODE_RESTART',
+  clear: 'APP_RESET_MODE_CLEAR',
+};
+
+export function appResetModeFromWire(value: string): AppResetRequestMode | undefined {
+  return (Object.keys(APP_RESET_WIRE_MODE) as AppResetRequestMode[])
+    .find((k) => APP_RESET_WIRE_MODE[k] === value);
+}
+
 // ─── Swipe / scroll options exposed to the SDK ───
 
 export interface SwipeOptions {
@@ -714,6 +765,24 @@ export class TapsmithGrpcClient {
   }
 
   // ── Device Management (PILOT-10) ──
+
+  async resetApp(packageName: string, options: ResetAppRequestOptions): Promise<ResetAppResponse> {
+    // The daemon may walk the whole ladder (warm deep link incl. its cold
+    // fallback and re-deliveries, then restart, then clear + relaunch); keep
+    // the deadline above that budget so the client gets a structured answer.
+    return this.call<ResetAppResponse>('resetApp', {
+      requestId: requestId(),
+      packageName,
+      mode: APP_RESET_WIRE_MODE[options.mode],
+      allowFallback: options.allowFallback,
+      resetDeepLink: options.resetDeepLink ?? '',
+      forceCold: options.forceCold ?? false,
+      coldEveryNResets: options.coldEveryNResets ?? 0,
+      waitForIdle: options.waitForIdle ?? true,
+      idleTimeoutMs: options.idleTimeoutMs ?? 0,
+      targetPath: options.targetPath ?? '/',
+    }, 600_000);
+  }
 
   async restartApp(packageName: string, waitForIdle = true): Promise<ActionResponse> {
     return this.call<ActionResponse>('restartApp', {
