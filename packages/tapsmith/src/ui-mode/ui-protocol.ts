@@ -289,11 +289,14 @@ export interface DeviceActivityMessage {
 export interface UIPreferences {
   /** Prepare the device (run the declared app reset) in the background between runs. */
   prepareBetweenRuns: boolean
-  /** Quiet time after a run before the device is prepared, so the final screen can be inspected. */
+  /** Quiet time after a run before the device is prepared (0 = immediately). */
   prepareDelayMs: number
 }
 
-export const DEFAULT_UI_PREFERENCES: UIPreferences = { prepareBetweenRuns: true, prepareDelayMs: 5_000 };
+// No grace by default: warm resets are sub-second, and the trace already holds
+// the post-action screenshots, so waiting only delays the next run. The mirror
+// interaction hold (ui-server.ts) still applies when the user is poking the device.
+export const DEFAULT_UI_PREFERENCES: UIPreferences = { prepareBetweenRuns: true, prepareDelayMs: 0 };
 
 export interface PreferencesMessage {
   type: 'preferences'

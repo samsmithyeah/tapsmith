@@ -46,7 +46,10 @@ export interface SessionPreflightContext {
  * best-effort: a failure leaves the capabilities unchanged.
  */
 export async function probeResetCapabilities(ctx: SessionPreflightContext): Promise<ResetCapabilities> {
-  const caps: ResetCapabilities = { ...(ctx.capabilities ?? {}) };
+  // Mutate in place: embedders share one capabilities object between the
+  // context and the runner options, so a replacement would leave the runner
+  // looking at a stale copy (and never switch to per-test warm resets).
+  const caps: ResetCapabilities = (ctx.capabilities ??= {});
   try {
     const h = await ctx.client.getUiHierarchy();
     const marker = parseHooksMarker(h.hierarchyXml);
@@ -54,7 +57,6 @@ export async function probeResetCapabilities(ctx: SessionPreflightContext): Prom
   } catch {
     // Keep whatever we knew.
   }
-  ctx.capabilities = caps;
   return caps;
 }
 
@@ -304,7 +306,7 @@ export async function executeAppReset(
       reason = result.reason;
       // The daemon looked at the marker to plan this reset — that is the
       // freshest word on whether the app has in-app hooks.
-      if (action.kind === 'warm') ctx.capabilities = { ...(ctx.capabilities ?? {}), hooksDetected: result.hooksDetected };
+      if (action.kind === 'warm') (ctx.capabilities ??= {}).hooksDetected = result.hooksDetected;
       if (result.fellBack) {
         process.stderr.write(`[tapsmith] App reset fell back to ${result.modeUsed}: ${result.reason ?? 'unknown reason'}\n`);
       }

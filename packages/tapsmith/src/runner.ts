@@ -738,6 +738,48 @@ function validateHookFixtures(
  * live. Screenshots are read from the beforeAll collector's temp dir, which
  * outlives per-test packaging (it is cleaned up after the suite finishes).
  */
+/**
+ * Full name of the first test that will actually run in this scope, searching
+ * nested describes depth-first with the same skip / `.only` / filter
+ * predicates the run loops use. `undefined` means nothing in the scope runs —
+ * in which case the scope's hooks and app reset must not run either (they
+ * would cost seconds and have no test to be attributed to).
+ */
+function firstRunnableTestName(ctx: SuiteContext, prefix: string, opts: RunOptions): string | undefined {
+  const hasOnlyTests = ctx.tests.some((t) => t.only);
+  const hasOnly = hasOnlyTests || ctx.suites.some((s) => s.only);
+  for (const t of ctx.tests) {
+    if (t.skip || (hasOnly && !t.only)) continue;
+    const fullName = prefix ? `${prefix} > ${t.name}` : t.name;
+    if (passesTestFilter(fullName, opts)) return fullName;
+  }
+  for (const s of ctx.suites) {
+    if (s.skip || (hasOnly && !s.only && !hasOnlyTests)) continue;
+    const childPrefix = prefix ? `${prefix} > ${s.name}` : s.name;
+    const found = firstRunnableTestName(materializeSuiteEntry(s), childPrefix, opts);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** Recorded scope setup (app reset + beforeAll) replayed into every test's trace. */
+interface ScopeSetupRecording {
+  events: readonly AnyTraceEvent[];
+  collector: TraceCollector | null;
+  hierarchies: Map<number, { before?: string; after?: string }>;
+  actionCount: number;
+}
+
+/**
+ * Setup inherited from enclosing scopes: the recordings to replay into each
+ * test (outermost first) and the test whose live stream already carried the
+ * setup events, so it is not streamed twice — nor announced twice.
+ */
+interface InheritedScopeSetup {
+  announced?: string;
+  recordings: ScopeSetupRecording[];
+}
+
 function replayBeforeAllEvents(
   testCollector: TraceCollector,
   events: readonly AnyTraceEvent[],
@@ -830,6 +872,7 @@ async function runSuiteContext(
   parentAfterEach: HookEntry[],
   parentOpts: RunOptions,
   parentPolicy?: AppResetPolicy,
+  inherited: InheritedScopeSetup = { recordings: [] },
 ): Promise<SuiteResult> {
   // Apply test.use() overrides for this scope (cascading from parent).
   // `timeout` is handled separately via the device — it should only affect
@@ -850,11 +893,18 @@ async function runSuiteContext(
   // describe declares a different policy (e.g. test.use({ appState })).
   // Test-scope policies reset before every test instead, so a scope only
   // needs an entry reset when it has beforeAll hooks that expect the state.
-  const needsScopeReset = canReset && (
+  // Nothing runnable in this scope (all skipped / filtered / not `.only`) →
+  // no setup at all: Playwright semantics, and it keeps a filtered-out
+  // describe's beforeAll from streaming trace events onto whichever test
+  // happened to run last.
+  const firstRunnable = firstRunnableTestName(ctx, parentPrefix, parentOpts);
+  const scopeHasRunnable = firstRunnable !== undefined;
+  const needsScopeReset = scopeHasRunnable && canReset && (
     policy.scope === 'file'
       ? (isRoot || policyChanged)
       : (ctx.beforeAll.length > 0 || policyChanged)
   );
+  const inheritedActionCount = inherited.recordings.reduce((n, r) => n + r.actionCount, 0);
   const resetContext = (): SessionPreflightContext => ({ ...opts.sessionContext!, config: opts.config });
 
   // Propagate timeout override to the device so assertion auto-wait uses it
@@ -886,22 +936,15 @@ async function runSuiteContext(
   // visible for every test in the suite (UI mode + trace viewer).
   let beforeAllCollector: TraceCollector | null = null;
   let beforeAllFirstFullName: string | undefined;
-  if ((ctx.beforeAll.length > 0 || needsScopeReset) && opts.device) {
+  if (scopeHasRunnable && (ctx.beforeAll.length > 0 || needsScopeReset) && opts.device) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
     if (shouldRecord(traceConfig.mode, 0)) {
-      // Pick the test to tag beforeAll trace events with. The predicate
-      // must match the loop's actual shouldSkip — otherwise we could fire
-      // onTestStart for a test that the loop will skip, and the
-      // duplicate-test-start guard below would swallow the real first-test
-      // test-start.
-      const targetTest = ctx.tests.find((t) => {
-        if (t.skip) return false;
-        if (hasOnly && !t.only) return false;
-        const fn = parentPrefix ? `${parentPrefix} > ${t.name}` : t.name;
-        return passesTestFilter(fn, opts);
-      });
-      if (targetTest && opts.onTestStart) {
-        beforeAllFirstFullName = parentPrefix ? `${parentPrefix} > ${targetTest.name}` : targetTest.name;
+      // Tag beforeAll trace events with the first test that will run in
+      // this scope — possibly inside a nested describe. An enclosing scope
+      // may already have announced that same test; announcing it again
+      // would make the UI reset the test's trace.
+      beforeAllFirstFullName = firstRunnable;
+      if (beforeAllFirstFullName !== inherited.announced && opts.onTestStart) {
         await opts.onTestStart(beforeAllFirstFullName);
       }
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-ba-'));
@@ -911,6 +954,8 @@ async function runSuiteContext(
       const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
       beforeAllCollector = new TraceCollector(traceConfig, tempDir);
       beforeAllCollector.setTimelineOrigin(suiteStart);
+      // Continue numbering after any enclosing scope's setup actions.
+      if (inheritedActionCount > 0) beforeAllCollector.setActionIndexOffset(inheritedActionCount);
       const cb = managedCollector.getEventCallback();
       if (cb) beforeAllCollector.setEventCallback(cb);
       opts.device.tracing._stopManaged();
@@ -953,7 +998,7 @@ async function runSuiteContext(
     if (beforeAllCollector) {
       await withActiveTraceCollector(beforeAllCollector, runScopeSetup);
       beforeAllCollector.endGroup();
-    } else {
+    } else if (scopeHasRunnable) {
       await runScopeSetup();
     }
   } catch (err) {
@@ -1025,7 +1070,10 @@ async function runSuiteContext(
 
   // Save beforeAll events for replay into each test's trace.
   const savedBeforeAllEvents = beforeAllCollector ? beforeAllCollector.events.slice() : [];
-  const beforeAllActionCount = beforeAllCollector ? beforeAllCollector.currentActionIndex : 0;
+  const beforeAllActionCount = beforeAllCollector
+    ? beforeAllCollector.currentActionIndex - inheritedActionCount
+    : 0;
+  const setupActionCount = inheritedActionCount + beforeAllActionCount;
   // Build hierarchy lookup for replay (hierarchies are in-memory, not on disk)
   const beforeAllHierarchies = new Map<number, { before?: string; after?: string }>();
   if (beforeAllCollector) {
@@ -1135,8 +1183,8 @@ async function runSuiteContext(
         setActiveTraceCollector(traceCollector);
 
         // Offset action index so per-test actions don't collide with beforeAll
-        if (beforeAllActionCount > 0) {
-          traceCollector.setActionIndexOffset(beforeAllActionCount);
+        if (setupActionCount > 0) {
+          traceCollector.setActionIndexOffset(setupActionCount);
         }
 
         // Start network capture if configured. PILOT-182: iOS traffic
@@ -1240,7 +1288,8 @@ async function runSuiteContext(
 
           // Notify UI mode on first attempt only — retries re-use the same
           // test slot in the UI rather than creating duplicate entries.
-          if (attempt === 0 && fullName !== beforeAllFirstFullName) {
+          const announced = beforeAllFirstFullName ?? inherited.announced;
+          if (attempt === 0 && fullName !== announced) {
             if (opts.onTestStart) await opts.onTestStart(fullName);
             opts.reporter?.onTestStart?.(fullName, opts.testFilePath, { project: opts.projectName });
           }
@@ -1251,11 +1300,19 @@ async function runSuiteContext(
           // events (recording them here is still needed — during beforeAll
           // the active collector was the standalone beforeAll collector, so
           // no test's own collector has these events).
-          if (savedBeforeAllEvents.length > 0 && traceCollector) {
-            replayBeforeAllEvents(
-              traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies,
-              fullName !== beforeAllFirstFullName,
-            );
+          if (traceCollector) {
+            for (const rec of inherited.recordings) {
+              replayBeforeAllEvents(
+                traceCollector, rec.events, rec.collector, rec.hierarchies,
+                fullName !== inherited.announced,
+              );
+            }
+            if (savedBeforeAllEvents.length > 0) {
+              replayBeforeAllEvents(
+                traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies,
+                fullName !== beforeAllFirstFullName,
+              );
+            }
           }
 
           // Open the beforeEach group before running setup work and hooks.
@@ -1902,7 +1959,20 @@ async function runSuiteContext(
 
     const childCtx = materializeSuiteEntry(suiteEntry);
     const prefix = parentPrefix ? `${parentPrefix} > ${suiteEntry.name}` : suiteEntry.name;
-    const childResult = await runSuiteContext(childCtx, prefix, allBeforeEach, allAfterEach, opts, policy);
+    const childInherited: InheritedScopeSetup = {
+      announced: beforeAllFirstFullName ?? inherited.announced,
+      recordings: savedBeforeAllEvents.length > 0
+        ? [...inherited.recordings, {
+            events: savedBeforeAllEvents,
+            collector: beforeAllCollector,
+            hierarchies: beforeAllHierarchies,
+            actionCount: beforeAllActionCount,
+          }]
+        : inherited.recordings,
+    };
+    const childResult = await runSuiteContext(
+      childCtx, prefix, allBeforeEach, allAfterEach, opts, policy, childInherited,
+    );
     result.suites.push(childResult);
   }
 
@@ -1912,7 +1982,7 @@ async function runSuiteContext(
   // actions are visible in headless runs too (the archive was written when
   // the test finished — beforeAll-style replay into a live collector is no
   // longer possible at this point).
-  if (ctx.afterAll.length > 0 && opts.device) {
+  if (scopeHasRunnable && ctx.afterAll.length > 0 && opts.device) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
     // Find the last test that actually ran, to tag events. Derived from the
     // recorded results (which include nested suites, already executed by
@@ -1995,7 +2065,8 @@ async function runSuiteContext(
         }
       }
     }
-  } else {
+  } else if (scopeHasRunnable) {
+    // No test ran in this scope → no teardown either (beforeAll was skipped too).
     for (const hook of ctx.afterAll) {
       try {
         await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
