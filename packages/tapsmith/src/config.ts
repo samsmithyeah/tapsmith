@@ -21,6 +21,8 @@ export type AppResetMode = 'auto' | 'clear' | 'restart' | 'warm' | 'none';
 export type AppResetScope = 'auto' | 'file' | 'test';
 export const APP_RESET_MODES: readonly AppResetMode[] = ['auto', 'clear', 'restart', 'warm', 'none'];
 export const APP_RESET_SCOPES: readonly AppResetScope[] = ['auto', 'file', 'test'];
+/** Default for {@link TapsmithConfig.appResetColdEvery}. */
+export const DEFAULT_APP_RESET_COLD_EVERY = 10;
 export type Platform = 'android' | 'ios';
 
 export type { TraceMode, TraceConfig, VideoMode, VideoConfig };
@@ -132,6 +134,14 @@ export interface TapsmithConfig {
    * is available (per-test isolation is then cheap enough to be the default).
    */
   appResetScope?: AppResetScope;
+
+  /**
+   * Bound the warm window: after this many consecutive warm resets the next
+   * one is delivered cold (terminate + relaunch), which keeps iOS simulator
+   * accessibility trees from drifting during long all-warm sessions. Only
+   * affects `appReset: 'warm'`. `0` disables the valve. Default 10.
+   */
+  appResetColdEvery?: number;
 
   /**
    * Delay in milliseconds between keystrokes when typing text.
@@ -296,6 +306,7 @@ export type UseOptions = Partial<Pick<TapsmithConfig,
   | 'resetAppWaitMs'
   | 'appReset'
   | 'appResetScope'
+  | 'appResetColdEvery'
   | 'doubleTapInterval'
   | 'baseURL'
   | 'extraHTTPHeaders'
@@ -417,9 +428,13 @@ function applyConfigDefaults(
  * accepted values instead of silently falling back to a default.
  */
 export function validateAppResetOptions(
-  options: Pick<Partial<TapsmithConfig>, 'appReset' | 'appResetScope'>,
+  options: Pick<Partial<TapsmithConfig>, 'appReset' | 'appResetScope' | 'appResetColdEvery'>,
   source = 'config',
 ): void {
+  if (options.appResetColdEvery !== undefined
+    && (!Number.isInteger(options.appResetColdEvery) || options.appResetColdEvery < 0)) {
+    throw new Error(`${source}: appResetColdEvery must be a non-negative integer (got ${JSON.stringify(options.appResetColdEvery)})`);
+  }
   if (options.appReset !== undefined && !APP_RESET_MODES.includes(options.appReset)) {
     throw new Error(
       `${source}: appReset must be one of ${APP_RESET_MODES.map((m) => `'${m}'`).join(', ')} (got ${JSON.stringify(options.appReset)})`,

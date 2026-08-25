@@ -1155,3 +1155,65 @@ describe('Device action progress events', () => {
     }
   });
 });
+
+// ─── resetApp ───
+
+describe('Device.resetApp()', () => {
+  it('runs the daemon ladder and maps the structured outcome', async () => {
+    const resetApp = vi.fn(async () => ({
+      requestId: '1', success: true, errorType: '', errorMessage: '', screenshot: Buffer.alloc(0),
+      modeRequested: 'APP_RESET_MODE_WARM', modeUsed: 'APP_RESET_MODE_RESTART', fellBack: true, coldLaunch: true,
+      reason: 'warm reset via in-app hooks failed (epoch did not advance within 3000ms)',
+      durationMs: 1234, hooksDetected: true, epochBefore: 3, epochAfter: 0,
+      steps: [
+        { name: 'warm-hooks', durationMs: 3000, ok: false, detail: 'epoch did not advance within 3000ms' },
+        { name: 'restart', durationMs: 900, ok: true, detail: '' },
+      ],
+    }));
+    const client = makeMockClient({ resetApp } as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app' });
+
+    const result = await device.resetApp({ target: '/login' });
+
+    expect(resetApp).toHaveBeenCalledWith('com.example.app', {
+      mode: 'warm', allowFallback: true, resetDeepLink: undefined, forceCold: false,
+      coldEveryNResets: undefined, waitForIdle: undefined, targetPath: '/login',
+    });
+    expect(result).toEqual({
+      modeRequested: 'warm', modeUsed: 'restart', fellBack: true, coldLaunch: true,
+      reason: 'warm reset via in-app hooks failed (epoch did not advance within 3000ms)',
+      durationMs: 1234, hooksDetected: true, epochBefore: 3, epochAfter: 0,
+      steps: [
+        { name: 'warm-hooks', durationMs: 3000, ok: false, detail: 'epoch did not advance within 3000ms' },
+        { name: 'restart', durationMs: 900, ok: true },
+      ],
+    });
+  });
+
+  it('throws with the daemon error when the ladder is exhausted', async () => {
+    const resetApp = vi.fn(async () => ({
+      requestId: '1', success: false, errorType: 'RESET_FAILED', errorMessage: 'clear failed (pm clear did not report success)',
+      screenshot: Buffer.alloc(0), modeRequested: 'APP_RESET_MODE_CLEAR', modeUsed: 'APP_RESET_MODE_CLEAR',
+      fellBack: false, coldLaunch: false, reason: '', durationMs: 10, hooksDetected: false, epochBefore: 0, epochAfter: 0, steps: [],
+    }));
+    const client = makeMockClient({ resetApp } as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app' });
+
+    await expect(device.resetApp({ mode: 'clear', fallback: false })).rejects.toThrow('clear failed');
+  });
+
+  it('retry attempts force a cold delivery', async () => {
+    const resetApp = vi.fn(async () => ({
+      requestId: '1', success: true, errorType: '', errorMessage: '', screenshot: Buffer.alloc(0),
+      modeRequested: 'APP_RESET_MODE_WARM', modeUsed: 'APP_RESET_MODE_WARM', fellBack: false, coldLaunch: true,
+      reason: 'cold relaunch: retry attempt', durationMs: 5000, hooksDetected: false, epochBefore: 0, epochAfter: 0, steps: [],
+    }));
+    const client = makeMockClient({ resetApp } as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app' });
+    device._setForceColdDeepLinks(true);
+
+    await device.resetApp();
+
+    expect(resetApp).toHaveBeenCalledWith('com.example.app', expect.objectContaining({ forceCold: true }));
+  });
+});

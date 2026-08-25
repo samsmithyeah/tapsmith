@@ -59,6 +59,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `doubleTapInterval` | `number` | `100` | Default interval in milliseconds between the two taps in `doubleTap()`. Can be overridden per-call via `doubleTap({ intervalMs: 150 })`. |
 | `appReset` | `'auto' \| 'clear' \| 'restart' \| 'warm' \| 'none'` | `'auto'` | How the app is reset to a known state before tests (see [Test isolation](writing-tests.md#test-isolation)). `auto` = `warm` when `resetAppDeepLink` is set, otherwise `clear`. Overridable per project and per `test.use()` scope. |
 | `appResetScope` | `'auto' \| 'file' \| 'test'` | `'auto'` | Reset once per test file, or before every test. `auto` = `file`. |
+| `appResetColdEvery` | `number` | `10` | With `appReset: 'warm'`, deliver every Nth reset cold (terminate + relaunch) so long all-warm iOS simulator sessions can't drift from a fresh launch. `0` disables. |
 | `resetAppDeepLink` | `string` | `undefined` | Deep link the app handles by clearing its own state and navigating to the start screen. Setting it makes `appReset: 'auto'` resolve to `warm`. Do not expose this route in production builds. |
 | `resetAppWaitMs` | `number` | `750` | Time in milliseconds to wait after navigating the `resetAppDeepLink` before continuing. Gives the app time to finish resetting. |
 | `testIgnore` | `string[]` | `[]` | Glob patterns for excluding test files from discovery. Files matching any pattern are skipped even if they match `testMatch`. |
@@ -550,7 +551,7 @@ export default defineConfig({
 
 Tapsmith navigates the deep link instead of clearing app data and relaunching. The deep link handler should clear app state and land on whatever screen your tests expect to start from. Keep this handler out of production builds, for example behind a test-only build flavor or equivalent guard. The reset appears in the trace as an `openDeepLink` step under **BEFORE ALL** (or **BEFORE EACH** with `appResetScope: 'test'`); if the deep link fails, Tapsmith falls back to a full clear and records why.
 
-On Android and physical iOS devices the reset deep link is delivered to the running app. On iOS simulators the *file-boundary* reset cold-relaunches the app with the URL so every file starts from a fresh process; per-test resets and deep links opened *inside* a test (including `device.openDeepLink()` calls to the reset link) are delivered warm when possible.
+The reset is delivered to the running app (warm). On iOS simulators the daemon bounds the warm window: every `appResetColdEvery` resets (default 10), on a retry attempt, or after two warm resets in a row fail to verify, the next reset cold-relaunches the app with the URL instead — and the trace says so (`cold relaunch: warm-window bound reached (10 resets)`). Deep links opened *inside* a test with `device.openDeepLink()` are always delivered warm when possible.
 
 ### API Request Fixture
 

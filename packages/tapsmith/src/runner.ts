@@ -939,9 +939,9 @@ async function runSuiteContext(
           phase: isRoot
             ? `file reset for ${path.basename(opts.testFilePath ?? '')}`
             : `reset for ${parentPrefix}`,
-          // File-boundary resets deliver the warm hook cold to bound the
-          // warm window on iOS simulators (see softResetAppViaDeepLink).
-          forceCold: policy.scope === 'file',
+          // Cold vs warm delivery of the hook is the daemon's policy
+          // (appResetColdEvery); only retries force it from here.
+          forceCold: false,
           prepared,
         });
         if (opts._prepared) opts._prepared.current = undefined;

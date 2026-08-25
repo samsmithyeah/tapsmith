@@ -28,8 +28,7 @@ import {
   type ColorScheme,
   type DeviceLogEntry,
   type CaptureTraceStateResponse,
-  type DaemonLogEntry,
-} from './grpc-client.js';
+  type DaemonLogEntry, type ResetAppRequestOptions, type ResetAppResponse } from './grpc-client.js';
 import * as nodePath from 'node:path';
 import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
 import { withActionProgress } from './action-progress.js';
@@ -37,7 +36,8 @@ import type { TapsmithConfig } from './config.js';
 import { Tracing } from './trace/tracing.js';
 import { type TraceCollector, getActiveTraceCollector, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory, ConsoleLevel } from './trace/types.js';
-import { tracedAction } from './trace/traced-action.js';
+import { tracedAction, type TracedActionExtra } from './trace/traced-action.js';
+import { appResetModeFromWire } from './grpc-client.js';
 import {
   NetworkRouteManager,
   type TapsmithRequest,
@@ -345,7 +345,7 @@ export class Device {
     selector: Selector | undefined,
     fn: () => Promise<ActionResponse>,
     fallbackMsg: string,
-    extra?: { inputValue?: string },
+    extra?: TracedActionExtra,
   ): Promise<void> {
     const collector = this._traceCollector;
     const ctx = collector ? {
@@ -581,6 +581,45 @@ export class Device {
       () => this._tracedAction('launchApp', 'navigation', undefined,
         () => this._client.launchApp(packageName, options),
         'Launch app failed'));
+  }
+
+  /**
+   * Bring the app to a known state — the same reset the runner performs for
+   * the declared `appReset` policy, callable mid-test. Runs the daemon's
+   * ladder (warm in-app hook → restart → clear, when `fallback` is on) and
+   * reports which rung actually ran.
+   */
+  async resetApp(options: AppResetOptions = {}): Promise<AppResetResult> {
+    return this._resetApp(this.requirePackageName(), options);
+  }
+
+  /** @internal — runner/preflight entry point with policy inputs. */
+  async _resetApp(packageName: string, options: InternalAppResetOptions): Promise<AppResetResult> {
+    const mode = options.mode ?? 'warm';
+    let response: ResetAppResponse | undefined;
+    const request: ResetAppRequestOptions = {
+      mode,
+      allowFallback: options.fallback ?? true,
+      resetDeepLink: options.resetDeepLink,
+      forceCold: (options.forceCold ?? false) || this._forceColdDeepLinks,
+      coldEveryNResets: options.coldEveryNResets,
+      waitForIdle: options.waitForIdle,
+      targetPath: options.target,
+    };
+    if (mode !== 'warm') await this._disposeWebViewManager();
+    await withActionProgress('resetApp', packageName,
+      () => this._tracedAction('resetApp', 'device', undefined,
+        async () => {
+          response = await this._client.resetApp(packageName, request);
+          if (mode === 'warm' && response.success && appResetModeFromWire(response.modeUsed) !== 'warm') {
+            // The process was recreated after all — drop cached WebView state.
+            await this._disposeWebViewManager();
+          }
+          return response;
+        },
+        'App reset failed',
+        { detail: () => (response ? describeAppResetResponse(mode, response) : undefined) }));
+    return toAppResetResult(mode, response!);
   }
 
   async openDeepLink(uri: string, options?: OpenDeepLinkOptions): Promise<void> {
@@ -1698,4 +1737,71 @@ function formatPattern(url: string | RegExp | ((url: URL) => boolean)): string {
   if (typeof url === 'string') return url;
   if (url instanceof RegExp) return url.toString();
   return '<predicate>';
+}
+
+// ─── App reset types ───
+
+export interface AppResetOptions {
+  /** How far to reset. Default `'warm'` (falls back per `fallback`). */
+  mode?: 'warm' | 'restart' | 'clear';
+  /** Escalate warm → restart → clear when a rung fails. Default `true`. */
+  fallback?: boolean;
+  /** Route to land on after an in-app (warm) reset. Default `'/'`. */
+  target?: string;
+}
+
+/** @internal */
+export interface InternalAppResetOptions extends AppResetOptions {
+  resetDeepLink?: string;
+  forceCold?: boolean;
+  coldEveryNResets?: number;
+  waitForIdle?: boolean;
+}
+
+export interface AppResetResult {
+  modeRequested: 'warm' | 'restart' | 'clear';
+  /** The rung that actually ran. */
+  modeUsed: 'warm' | 'restart' | 'clear';
+  fellBack: boolean;
+  /** The app process was recreated (cold delivery, restart or clear). */
+  coldLaunch: boolean;
+  /** Why a fallback or cold relaunch happened, when it did. */
+  reason?: string;
+  durationMs: number;
+  /** `@tapsmith/react-native` reset hooks were detected in the app. */
+  hooksDetected: boolean;
+  epochBefore?: number;
+  epochAfter?: number;
+  steps: Array<{ name: string; durationMs: number; ok: boolean; detail?: string }>;
+}
+
+function toAppResetResult(requested: 'warm' | 'restart' | 'clear', r: ResetAppResponse): AppResetResult {
+  return {
+    modeRequested: requested,
+    modeUsed: appResetModeFromWire(r.modeUsed) ?? requested,
+    fellBack: r.fellBack,
+    coldLaunch: r.coldLaunch,
+    ...(r.reason ? { reason: r.reason } : {}),
+    durationMs: r.durationMs,
+    hooksDetected: r.hooksDetected,
+    ...(r.hooksDetected ? { epochBefore: r.epochBefore, epochAfter: r.epochAfter } : {}),
+    steps: (r.steps ?? []).map((st) => ({
+      name: st.name,
+      durationMs: st.durationMs,
+      ok: st.ok,
+      ...(st.detail ? { detail: st.detail } : {}),
+    })),
+  };
+}
+
+function describeAppResetResponse(requested: 'warm' | 'restart' | 'clear', r: ResetAppResponse): string {
+  const used = appResetModeFromWire(r.modeUsed) ?? requested;
+  const via = used === 'warm'
+    ? (r.hooksDetected
+      ? `warm reset via @tapsmith/react-native (epoch ${r.epochBefore}→${r.epochAfter})`
+      : 'warm reset via resetAppDeepLink')
+    : used === 'restart' ? 'terminated and relaunched (data kept)' : 'cleared app data and relaunched';
+  const secs = `${(r.durationMs / 1000).toFixed(1)}s`;
+  if (!r.success) return `${via} — failed: ${r.errorMessage}`;
+  return r.reason ? `${via}, ${secs} — ${r.reason}` : `${via}, ${secs}`;
 }

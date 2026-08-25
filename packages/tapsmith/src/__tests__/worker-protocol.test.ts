@@ -237,6 +237,7 @@ describe('worker-protocol serialization', () => {
         resetAppWaitMs: 500,
         appReset: 'restart',
         appResetScope: 'test',
+        appResetColdEvery: 5,
         baseURL: 'https://api.example.com',
         extraHTTPHeaders: { Authorization: 'Bearer x' },
         grep: [/smoke/i],

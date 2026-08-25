@@ -17,6 +17,7 @@ function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]
     restoreAppState: vi.fn(async () => undefined),
     restartApp: vi.fn(async () => undefined),
     getAppState: vi.fn(async () => 'foreground' as const),
+    _resetApp: vi.fn(async (_pkg: string, opts: { mode?: 'warm' | 'restart' | 'clear' }) => resetResult(opts.mode ?? 'warm')),
   };
 
   const client = {
@@ -38,6 +39,23 @@ function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]
 }
 
 const iosHierarchy = { requestId: '1', hierarchyXml: '<hierarchy><node /></hierarchy>', errorMessage: '' };
+
+/** A daemon ResetApp outcome as Device._resetApp reports it. */
+function resetResult(
+  mode: 'warm' | 'restart' | 'clear',
+  overrides: Partial<import('../device.js').AppResetResult> = {},
+): import('../device.js').AppResetResult {
+  return {
+    modeRequested: mode,
+    modeUsed: mode,
+    fellBack: false,
+    coldLaunch: mode !== 'warm',
+    durationMs: 120,
+    hooksDetected: false,
+    steps: [{ name: mode === 'warm' ? 'warm-deep-link' : mode, durationMs: 120, ok: true }],
+    ...overrides,
+  };
+}
 const CLEAR_FILE: AppResetPolicy = { mode: 'clear', scope: 'file' };
 const WARM_FILE: AppResetPolicy = { mode: 'warm', scope: 'file' };
 const WARM_TEST: AppResetPolicy = { mode: 'warm', scope: 'test' };
@@ -187,22 +205,36 @@ describe('session-preflight', () => {
 
     const report = await executeAppReset(ctx, { mode: 'restart', scope: 'file', appState: '' }, { phase: 'file reset' });
 
-    expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
+    expect(ctx.device._resetApp).toHaveBeenCalledWith('com.example.app', expect.objectContaining({ mode: 'clear' }));
     expect(ctx.device.restoreAppState).not.toHaveBeenCalled();
     expect(report.modeUsed).toBe('clear');
   });
+  it('restart policy asks the daemon for a restart and passes the policy inputs through', async () => {
+    const ctx = makeContext({
+      config: { package: 'com.example.app', activity: '.MainActivity', resetAppDeepLink: 'app:///__reset', appResetColdEvery: 4 },
+    });
 
-  it('restart policy only restarts', async () => {
-    const ctx = makeContext();
+    const report = await executeAppReset(ctx, { mode: 'restart', scope: 'test' }, { phase: 'before test', forceCold: true });
 
-    const report = await executeAppReset(ctx, { mode: 'restart', scope: 'test' }, { phase: 'before test' });
-
-    expect(ctx.device.restartApp).toHaveBeenCalledWith('com.example.app');
+    expect(ctx.device._resetApp).toHaveBeenCalledWith('com.example.app', {
+      mode: 'restart',
+      fallback: true,
+      resetDeepLink: 'app:///__reset',
+      forceCold: true,
+      coldEveryNResets: 4,
+    });
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
-    expect(ctx.device.terminateApp).not.toHaveBeenCalled();
-    expect(report).toMatchObject({ origin: 'inline', modeUsed: 'restart' });
+    expect(report).toMatchObject({ origin: 'inline', modeUsed: 'restart', fellBack: false });
+    expect(report.steps.map((s) => s.name)).toEqual(['restart', 'resetApp', 'ensureSessionReady']);
   });
 
+  it('defaults the cold valve to 10 resets', async () => {
+    const ctx = makeContext();
+
+    await executeAppReset(ctx, CLEAR_FILE, { phase: 'file reset' });
+
+    expect(ctx.device._resetApp).toHaveBeenCalledWith('com.example.app', expect.objectContaining({ coldEveryNResets: 10, forceCold: undefined }));
+  });
   it('none policy only verifies the session', async () => {
     const ctx = makeContext();
 
@@ -234,26 +266,35 @@ describe('session-preflight', () => {
 
     const report = await executeAppReset(ctx, CLEAR_FILE, { phase: 'file reset', prepared });
 
-    expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
+    expect(ctx.device._resetApp).toHaveBeenCalledWith('com.example.app', expect.objectContaining({ mode: 'clear' }));
     expect(report.origin).toBe('inline');
   });
 
-  it('warm without a reset hook falls back to restart and says so', async () => {
+  it('surfaces a daemon fallback in the report and on stderr', async () => {
     const ctx = makeContext();
+    vi.mocked(ctx.device._resetApp).mockResolvedValueOnce(resetResult('warm', {
+      modeUsed: 'restart',
+      fellBack: true,
+      coldLaunch: true,
+      reason: 'warm reset requested but the app exposes no reset hook (@tapsmith/react-native or resetAppDeepLink); restarted instead',
+      steps: [{ name: 'restart', durationMs: 90, ok: true }],
+    }));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const report = await executeAppReset(ctx, WARM_TEST, { phase: 'before test' });
 
-    const report = await executeAppReset(ctx, WARM_TEST, { phase: 'before test' });
-
-    expect(ctx.device.openDeepLink).not.toHaveBeenCalled();
-    expect(ctx.device.restartApp).toHaveBeenCalledWith('com.example.app');
-    expect(report).toMatchObject({ modeUsed: 'restart', fellBack: true });
-    expect(report.reason).toMatch(/no reset hook/);
+      expect(report).toMatchObject({ modeUsed: 'restart', fellBack: true });
+      expect(report.reason).toMatch(/no reset hook/);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('App reset fell back to restart'));
+    } finally {
+      stderr.mockRestore();
+    }
   });
-
-  it('attaches the failing step to the thrown error path', async () => {
+  it('propagates a daemon reset failure', async () => {
     const ctx = makeContext();
-    vi.mocked(ctx.device.restartApp).mockRejectedValueOnce(new Error('boom'));
+    vi.mocked(ctx.device._resetApp).mockRejectedValueOnce(new Error('App reset failed: RESET_FAILED'));
 
-    await expect(executeAppReset(ctx, { mode: 'restart', scope: 'file' }, { phase: 'file reset' })).rejects.toThrow('boom');
+    await expect(executeAppReset(ctx, { mode: 'restart', scope: 'file' }, { phase: 'file reset' })).rejects.toThrow('RESET_FAILED');
   });
   it('still validates sessions without a configured package', async () => {
     const ctx = makeContext({
@@ -266,7 +307,7 @@ describe('session-preflight', () => {
     const report = await executeAppReset(ctx, CLEAR_FILE, { phase: 'file reset' });
     expect(report).toMatchObject({ origin: 'skipped', reason: 'no package configured' });
   });
-  it('uses the iOS warm reset hook; file-scope resets deliver it cold', async () => {
+  it('warm via the legacy deep link settles for resetAppWaitMs after the daemon returns', async () => {
     const ctx = makeContext({
       config: {
         package: 'com.example.app',
@@ -277,83 +318,28 @@ describe('session-preflight', () => {
       },
     });
 
-    const report = await executeAppReset(ctx, WARM_FILE, { phase: 'file reset', forceCold: true });
+    const report = await executeAppReset(ctx, WARM_FILE, { phase: 'file reset' });
 
-    expect(ctx.device.openDeepLink).toHaveBeenNthCalledWith(1, 'example:///__reset', { forceColdLaunch: true });
-    expect(ctx.device.openDeepLink).toHaveBeenCalledTimes(1);
+    expect(ctx.device._resetApp).toHaveBeenCalledWith('com.example.app', expect.objectContaining({ mode: 'warm', resetDeepLink: 'example:///__reset' }));
+    expect(ctx.device.openDeepLink).not.toHaveBeenCalled();
     expect(ctx.device.waitForIdle).toHaveBeenNthCalledWith(1, 321);
-    expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(1);
     expect(ctx.device.restartApp).not.toHaveBeenCalled();
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
     expect(report).toMatchObject({ origin: 'inline', modeUsed: 'warm', fellBack: false });
+    expect(report.steps.map((s) => s.name)).toEqual(['warm-deep-link', 'resetApp', 'settle', 'ensureSessionReady', 'waitForAppReady']);
   });
 
-  it('per-test warm resets deliver the hook warm (no forced cold launch)', async () => {
+  it('warm via in-app hooks needs no settle wait (the epoch is the ack)', async () => {
     const ctx = makeContext({
-      config: { package: 'com.example.app', activity: undefined, platform: 'ios', resetAppDeepLink: 'example:///__reset' },
+      config: { package: 'com.example.app', activity: undefined, platform: 'android' },
     });
+    vi.mocked(ctx.device._resetApp).mockResolvedValueOnce(resetResult('warm', { hooksDetected: true, epochBefore: 3, epochAfter: 4 }));
 
-    await executeAppReset(ctx, WARM_TEST, { phase: 'before test' });
+    const report = await executeAppReset(ctx, WARM_TEST, { phase: 'before test' });
 
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset', { forceColdLaunch: false });
-  });
-  it('falls back to iOS hard reset when the warm reset fails', async () => {
-    const ctx = makeContext({
-      config: {
-        package: 'com.example.app',
-        activity: undefined,
-        platform: 'ios',
-        resetAppDeepLink: 'example:///__reset',
-      },
-    });
-    vi.mocked(ctx.device.openDeepLink).mockRejectedValueOnce(new Error('deep link failed'));
-
-    const report = await executeAppReset(ctx, WARM_FILE, { phase: 'file reset', forceCold: true });
-
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset', { forceColdLaunch: true });
-    expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
-    expect(ctx.device.restartApp).toHaveBeenCalledWith('com.example.app');
-    expect(report).toMatchObject({ modeUsed: 'clear', fellBack: true });
-    expect(report.reason).toMatch(/warm reset failed \(deep link failed\); fell back to clear/);
-    expect(report.steps.some((s) => s.name === 'openDeepLink' && !s.ok)).toBe(true);
-  });
-  it('uses the warm reset hook on Android when configured', async () => {
-    const ctx = makeContext({
-      config: {
-        package: 'com.example.app',
-        activity: '.MainActivity',
-        platform: 'android',
-        resetAppDeepLink: 'example:///__reset',
-      },
-    });
-
-    await executeAppReset(ctx, WARM_FILE, { phase: 'file reset', forceCold: true });
-
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset', { forceColdLaunch: true });
-    expect(ctx.device.terminateApp).not.toHaveBeenCalled();
-    expect(ctx.device.clearAppData).not.toHaveBeenCalled();
-    expect(ctx.device.launchApp).not.toHaveBeenCalled();
-  });
-  it('falls back to Android hard reset when the warm reset fails', async () => {
-    const ctx = makeContext({
-      config: {
-        package: 'com.example.app',
-        activity: '.MainActivity',
-        platform: 'android',
-        resetAppDeepLink: 'example:///__reset',
-      },
-    });
-    vi.mocked(ctx.device.openDeepLink).mockRejectedValueOnce(new Error('deep link failed'));
-
-    await executeAppReset(ctx, WARM_FILE, { phase: 'file reset' });
-
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset', { forceColdLaunch: false });
-    expect(ctx.device.terminateApp).toHaveBeenCalledWith('com.example.app');
-    expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
-    expect(ctx.device.launchApp).toHaveBeenCalledWith('com.example.app', {
-      activity: '.MainActivity',
-      waitForIdle: false,
-    });
+    expect(report.steps.map((s) => s.name)).not.toContain('settle');
+    // ensureSessionReady's own idle wait is the only one.
+    expect(ctx.device.waitForIdle).toHaveBeenCalledTimes(1);
   });
   it('dismisses system overlay via pressBack when app is underneath', async () => {
     const ctx = makeContext();
@@ -433,7 +419,7 @@ describe('session-preflight', () => {
     expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(2);
   });
 
-  it('iOS clear policy: clearAppData + restartApp', async () => {
+  it('iOS clear policy runs the daemon ladder then the readiness waits', async () => {
     const ctx = makeContext({
       config: { package: 'com.example.app', activity: undefined, platform: 'ios' },
     });
@@ -442,60 +428,10 @@ describe('session-preflight', () => {
 
     const report = await executeAppReset(ctx, CLEAR_FILE, { phase: 'file reset' });
 
-    expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
-    expect(ctx.device.restartApp).toHaveBeenCalledWith('com.example.app');
-    expect(ctx.device.terminateApp).not.toHaveBeenCalled();
-    expect(ctx.device.launchApp).not.toHaveBeenCalled();
+    expect(ctx.device._resetApp).toHaveBeenCalledWith('com.example.app', expect.objectContaining({ mode: 'clear' }));
+    expect(ctx.device.clearAppData).not.toHaveBeenCalled();
     expect(ctx.device.openDeepLink).not.toHaveBeenCalled();
-    expect(report.steps.map((s) => s.name)).toEqual(['clearAppData', 'restartApp', 'ensureSessionReady', 'waitForAppReady']);
-  });
-  it('iOS clear policy recovers when restartApp fails', async () => {
-    const ctx = makeContext({
-      config: { package: 'com.example.app', activity: undefined, platform: 'ios' },
-    });
-    vi.mocked(ctx.device.restartApp).mockRejectedValueOnce(new Error('agent stale'));
-    vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue(iosHierarchy);
-
-    const report = await executeAppReset(ctx, CLEAR_FILE, { phase: 'file reset' });
-
-    expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
-    expect(ctx.device.restartApp).toHaveBeenCalledWith('com.example.app');
-    // Should still succeed via ensureSessionReady
-    expect(ctx.client.ping).toHaveBeenCalled();
-    expect(report.origin).toBe('inline');
-  });
-  it('iOS warm reset uses default wait time when resetAppWaitMs not set', async () => {
-    const ctx = makeContext({
-      config: {
-        package: 'com.example.app',
-        activity: undefined,
-        platform: 'ios',
-        resetAppDeepLink: 'example:///__reset',
-      },
-    });
-    vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue(iosHierarchy);
-
-    await executeAppReset(ctx, WARM_FILE, { phase: 'file reset' });
-
-    // Default is 750ms
-    expect(ctx.device.waitForIdle).toHaveBeenNthCalledWith(1, 750);
-  });
-  it('iOS warm reset falls back to setTimeout when waitForIdle rejects', async () => {
-    const ctx = makeContext({
-      config: {
-        package: 'com.example.app',
-        activity: undefined,
-        platform: 'ios',
-        resetAppDeepLink: 'example:///__reset',
-        resetAppWaitMs: 100,
-      },
-    });
-    vi.mocked(ctx.device.waitForIdle).mockRejectedValue(new Error('timeout'));
-    vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue(iosHierarchy);
-
-    await executeAppReset(ctx, WARM_FILE, { phase: 'file reset' });
-
-    expect(ctx.device.openDeepLink).toHaveBeenCalledTimes(1);
+    expect(report.steps.map((s) => s.name)).toEqual(['clear', 'resetApp', 'ensureSessionReady', 'waitForAppReady']);
   });
   it('startup/recovery launch never uses the warm hook', async () => {
     const ctx = makeContext({
