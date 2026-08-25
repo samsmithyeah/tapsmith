@@ -39,4 +39,8 @@ export type {
   McpStatusMessage,
   McpToolCallMessage,
   RunProgressMessage,
+  DeviceActivityMessage,
+  PreferencesMessage,
+  UIPreferences,
+  WorkerReadiness,
 } from "../packages/tapsmith/dist/ui-mode/ui-protocol.js"

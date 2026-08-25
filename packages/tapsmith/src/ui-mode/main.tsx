@@ -1,8 +1,8 @@
 import './fonts.css';
 import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
-import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo } from './ui-protocol.js';
-import { inferDevicePlatform, type DevicePlatform } from './ui-protocol.js';
+import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo, DeviceActivityMessage, UIPreferences } from './ui-protocol.js';
+import { inferDevicePlatform, DEFAULT_UI_PREFERENCES, type DevicePlatform } from './ui-protocol.js';
 import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata, SourceLocation } from '../trace/types.js';
 import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { useWebSocket } from './hooks/use-websocket.js';
@@ -31,7 +31,7 @@ import { Layout } from './components/Layout.js';
 import { TestExplorer } from './components/TestExplorer.js';
 import { RunControls, type Theme } from './components/RunControls.js';
 import { DevicePane } from './components/DevicePane.js';
-import { McpPanel } from './components/McpPanel.js';
+import { DeviceActivityPanel } from './components/DeviceActivityPanel.js';
 // Trace viewer components — reused for live trace display
 import { ActionsPanel } from '../trace-viewer/components/ActionsPanel.js';
 import { ScreenshotPanel } from '../trace-viewer/components/ScreenshotPanel.js';
@@ -205,6 +205,22 @@ function App() {
   const [mcpClients, setMcpClients] = useState<{ name: string; version: string }[]>([]);
   const [mcpToolCalls, setMcpToolCalls] = useState<import('./ui-protocol.js').McpToolCallMessage[]>([]);
   const [mcpPanelOpen, setMcpPanelOpen] = usePersistedJSON<boolean>('tapsmith-mcp-panel', false);
+  // Device activity outside traced tests (background preparation, mirror
+  // gestures, recycles) — shares the feed with MCP tool calls.
+  const [deviceActivity, setDeviceActivity] = useState<DeviceActivityMessage[]>([]);
+  // Preferences the server acts on. The client owns persistence (localStorage,
+  // like the run-deps toggle) and pushes them on connect; the server echoes
+  // the merged value back so every client agrees.
+  const [preferences, setPreferences] = useState<UIPreferences>(() => {
+    try {
+      const raw = localStorage.getItem('tapsmith-ui-preferences');
+      return raw ? { ...DEFAULT_UI_PREFERENCES, ...JSON.parse(raw) } : DEFAULT_UI_PREFERENCES;
+    } catch {
+      return DEFAULT_UI_PREFERENCES;
+    }
+  });
+  const preferencesRef = useRef(preferences);
+  preferencesRef.current = preferences;
 
   // Error banner state — auto-dismisses after 8s or on click
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -675,6 +691,18 @@ function App() {
           showInfo(msg.interrupted
             ? `Run stopped (${msg.interrupted} test${msg.interrupted === 1 ? '' : 's'} interrupted)`
             : 'Run stopped');
+        } else if (msg.timeToFirstActionMs != null) {
+          // The number users feel: how long before the first test did anything,
+          // and whether the background preparation paid for it.
+          const secs = `${(msg.timeToFirstActionMs / 1000).toFixed(1)}s`;
+          const how = msg.preflight?.origin === 'prepared'
+            ? 'device was prepared'
+            : msg.preflight?.origin === 'inline'
+              ? 'app reset ran inline'
+              : msg.preflight?.origin === 'skipped'
+                ? 'no app reset'
+                : undefined;
+          showInfo(`First action after ${secs}${how ? ` (${how})` : ''}`);
         }
         // Clear any tests/suites/files stuck in 'running' (e.g. after stop).
         treeRef.current.resetRunningStatuses();
@@ -1013,14 +1041,29 @@ function App() {
         break;
       }
       case 'workers-info':
-        setWorkers(msg.workers.map((w) => ({
-          ...w,
-          displayName: w.displayName,
-          status: 'idle' as const,
-          passed: 0,
-          failed: 0,
-          skipped: 0,
-        })));
+        setWorkers((prev) => msg.workers.map((w) => {
+          const existing = prev.find((p) => p.workerId === w.workerId);
+          return {
+            ...w,
+            displayName: w.displayName,
+            status: existing?.status ?? ('idle' as const),
+            passed: existing?.passed ?? 0,
+            failed: existing?.failed ?? 0,
+            skipped: existing?.skipped ?? 0,
+            readiness: existing?.readiness,
+            speculation: existing?.speculation,
+          };
+        }));
+        break;
+      case 'preferences':
+        setPreferences(msg.preferences);
+        break;
+      case 'device-activity':
+        setDeviceActivity((prev) => {
+          const idx = prev.findIndex((e) => e.id === msg.id);
+          const next = idx >= 0 ? prev.map((e, i) => (i === idx ? msg : e)) : [...prev, msg];
+          return next.length > 200 ? next.slice(-200) : next;
+        });
         break;
       case 'run-progress':
         setRunProgress((prev) => {
@@ -1043,6 +1086,8 @@ function App() {
             passed: msg.passed,
             failed: msg.failed,
             skipped: msg.skipped,
+            readiness: msg.readiness ?? next[idx].readiness,
+            speculation: msg.speculation ?? next[idx].speculation,
           };
           return next;
         });
@@ -1340,6 +1385,25 @@ function App() {
     }
   }, [setTestTraces]);
 
+  // Push stored preferences to the server on every (re)connect. A session
+  // that never changed a preference stays silent — the server's defaults are
+  // the same as ours, and nothing should go over the wire unprompted.
+  useEffect(() => {
+    if (!connected) return;
+    let stored = false;
+    try { stored = localStorage.getItem('tapsmith-ui-preferences') != null; } catch { /* ignore */ }
+    if (stored) send({ type: 'set-preferences', preferences: preferencesRef.current });
+  }, [connected, send]);
+
+  const handleTogglePrepareBetweenRuns = useCallback(() => {
+    setPreferences((prev) => {
+      const next = { ...prev, prepareBetweenRuns: !prev.prepareBetweenRuns };
+      try { localStorage.setItem('tapsmith-ui-preferences', JSON.stringify(next)); } catch { /* ignore */ }
+      send({ type: 'set-preferences', preferences: { prepareBetweenRuns: next.prepareBetweenRuns } });
+      return next;
+    });
+  }, [send]);
+
   const handleToggleRunDeps = useCallback(() => {
     setRunDepsFirst((prev) => {
       const next = !prev;
@@ -1463,6 +1527,13 @@ function App() {
         : runProgress.values().next().value;
       if (message) return message;
     }
+    // Before the worker reports anything, its readiness says what the click
+    // is waiting on: a background preparation still finishing, or nothing.
+    const readiness = (workers.find((w) => w.status !== 'error')?.readiness);
+    if (readiness?.state === 'preparing') {
+      return `Preparing device (${readiness.detail ?? readiness.policy.mode})…`;
+    }
+    if (readiness?.state === 'ready') return 'Device ready — starting…';
     return 'Waiting for first action…';
   }, [viewedTestNode, tree.pendingIds, runProgress, workers]);
 
@@ -1559,6 +1630,8 @@ function App() {
           mcpClients={mcpClients}
           mcpPanelOpen={mcpPanelOpen}
           onToggleMcpPanel={() => setMcpPanelOpen(prev => !prev)}
+          prepareBetweenRuns={preferences.prepareBetweenRuns}
+          onTogglePrepareBetweenRuns={handleTogglePrepareBetweenRuns}
         />
       }
       testExplorer={
@@ -1581,7 +1654,16 @@ function App() {
           onSelectTest={useCallback((id: string | null) => {
             if (id != null) autoFollowRef.current = 'manual';
             tree.setSelectedTestId(id);
-          }, [tree])}
+            // The selection is the server's best hint for what runs next, so
+            // it can prepare the device for that file's isolation policy.
+            const node = id ? findTreeNode(tree.files, id) : undefined;
+            const projectMatch = id?.match(/^project::([^:]+)::/);
+            send({
+              type: 'select-node',
+              filePath: node && node.type !== 'project' ? node.filePath : undefined,
+              projectName: node?.type === 'project' ? node.name : projectMatch?.[1],
+            });
+          }, [tree, send])}
           onSetNameFilter={tree.setNameFilter}
           onSetStatusFilter={tree.setStatusFilter}
           onSend={handleSend}
@@ -1680,13 +1762,14 @@ function App() {
         />
       }
       mcpPanel={mcpPanelOpen ? (
-        <McpPanel
+        <DeviceActivityPanel
           mcpUrl={mcpUrl}
           clientName={mcpClientName}
           clientVersion={mcpClientVersion}
           clients={mcpClients}
           toolCalls={mcpToolCalls}
-          onClear={() => setMcpToolCalls([])}
+          activity={deviceActivity}
+          onClear={() => { setMcpToolCalls([]); setDeviceActivity([]); }}
         />
       ) : undefined}
       detailTabs={
@@ -1734,5 +1817,16 @@ function applyInitialTheme(): void {
 applyInitialTheme();
 
 // ─── Render ───
+
+function findTreeNode(nodes: TestTreeNode[], id: string): TestTreeNode | undefined {
+  for (const n of nodes) {
+    if (n.id === id) return n;
+    if (n.children) {
+      const found = findTreeNode(n.children, id);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
 
 render(<App />, document.getElementById('app')!);

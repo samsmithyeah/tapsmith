@@ -456,6 +456,12 @@ html, body, #app {
 .rc-dot.done { background: var(--pass); }
 .rc-dot.initializing { background: var(--color-warning); }
 .rc-dot.error { background: var(--fail); }
+.rc-dot.ready { background: var(--pass); }
+.rc-dot.preparing { background: var(--color-warning); animation: pulse 1.2s infinite; }
+.rc-dot.stale { background: var(--fg-muted); }
+.rc-dot.unprepared { background: transparent; box-shadow: inset 0 0 0 1.5px var(--fg-muted); }
+.rc-readiness { font-size: 10px; color: var(--fg-muted); margin-left: 4px; font-variant-numeric: tabular-nums; }
+.rc-context-item[aria-checked] { font-variant-numeric: tabular-nums; }
 
 .rc-theme-select {
   padding: 3px 6px;
@@ -790,6 +796,7 @@ html, body, #app {
 .te-deps { font-size: 10px; color: var(--fg-muted); font-style: italic; flex-shrink: 0; margin-right: 4px; }
 
 .te-duration { font-size: 10px; color: var(--fg-muted); font-family: var(--font-mono); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.te-isolation { font-size: 9.5px; color: var(--fg-muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 5px; margin-right: 6px; flex-shrink: 0; letter-spacing: 0.02em; line-height: 14px; }
 
 .te-actions {
   position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
@@ -2256,6 +2263,11 @@ html, body, #app {
   animation: mcp-pulse 1.5s ease-in-out infinite;
 }
 .mcp-in-progress { font-style: italic; }
+.mcp-subtitle { font-size: 10px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-left: 6px; }
+.activity-kind { font-size: 9.5px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-left: 6px; }
+.mcp-entry.cancelled { opacity: 0.6; }
+.activity-entry.activity-prepare .mcp-tool { color: var(--accent); }
+.activity-entry.activity-mirror .mcp-tool { color: var(--fg-muted); }
 @keyframes mcp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
 .mcp-entry-detail {

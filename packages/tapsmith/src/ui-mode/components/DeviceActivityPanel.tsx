@@ -1,17 +1,30 @@
+/**
+ * DeviceActivityPanel — everything that happens to a device outside a traced
+ * test, in one time-ordered feed: MCP tool calls from agents sharing the
+ * session, background device preparation, worker recycles, and bursts of
+ * mirror gestures. Started/ended pairs merge by id so an in-flight item
+ * appears immediately and is replaced when it completes.
+ */
+
 import { useRef, useEffect, useState, useCallback } from 'preact/hooks';
-import type { McpToolCallMessage } from '../ui-protocol.js';
+import type { McpToolCallMessage, DeviceActivityMessage } from '../ui-protocol.js';
 import { groupAgents, agentsTooltip, type McpAgent } from '../mcp-agents.js';
 
-interface McpPanelProps {
+interface DeviceActivityPanelProps {
   mcpUrl?: string
   clientName?: string
   clientVersion?: string
   clients?: McpAgent[]
   toolCalls: McpToolCallMessage[]
+  activity?: DeviceActivityMessage[]
   onClear: () => void
 }
 
-export function McpPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls, onClear }: McpPanelProps) {
+type FeedItem =
+  | { kind: 'mcp'; ts: number; call: McpToolCallMessage }
+  | { kind: 'activity'; ts: number; entry: DeviceActivityMessage }
+
+export function DeviceActivityPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls, activity = [], onClear }: DeviceActivityPanelProps) {
   // Prefer the full client list; fall back to the single-client fields for back-compat.
   const agents: McpAgent[] = clients && clients.length > 0
     ? clients
@@ -34,15 +47,21 @@ export function McpPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls
   // Merge started+completed events: show in-progress items immediately,
   // replace with completed version when it arrives.
   const mergedCalls = mergeToolCalls(toolCalls);
+  const mergedActivity = mergeActivity(activity);
+  const feed: FeedItem[] = [
+    ...mergedCalls.map((call): FeedItem => ({ kind: 'mcp', ts: call.timestamp, call })),
+    ...mergedActivity.map((entry): FeedItem => ({ kind: 'activity', ts: entry.timestamp, entry })),
+  ].sort((a, b) => a.ts - b.ts);
 
   const single = grouped.length === 1 && grouped[0].count === 1;
 
   return (
-    <div class="mcp-panel" role="region" aria-label="MCP activity">
+    <div class="mcp-panel" role="region" aria-label="Device activity">
       <div class="mcp-header">
         <div class="mcp-header-top">
           <div class="mcp-header-left">
-            <span class="mcp-title">MCP Server</span>
+            <span class="mcp-title">Device activity</span>
+            <span class="mcp-subtitle">MCP</span>
             {!connected
               ? (
                 <span class="mcp-connection listening">
@@ -62,7 +81,7 @@ export function McpPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls
                 : null}
           </div>
           <div class="mcp-header-right">
-            {mergedCalls.length > 0 && (
+            {feed.length > 0 && (
               <button class="mcp-btn" onClick={onClear} title="Clear activity feed">
                 Clear
               </button>
@@ -82,8 +101,8 @@ export function McpPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls
         )}
       </div>
 
-      <div class="mcp-feed" ref={feedRef} role="log" aria-label="MCP activity feed">
-        {mergedCalls.length === 0
+      <div class="mcp-feed" ref={feedRef} role="log" aria-label="Device activity feed">
+        {feed.length === 0
           ? (
             <div class="mcp-empty" data-testid="mcp-empty">
               {connected
@@ -93,7 +112,8 @@ export function McpPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls
                   : 'MCP server starting...'}
             </div>
           )
-          : mergedCalls.map(tc => {
+          : feed.map((item) => item.kind === 'activity' ? <ActivityEntry key={item.entry.id} entry={item.entry} /> : (() => {
+            const tc = item.call;
             const hasArgs = Object.keys(tc.args).length > 0;
             const hasResult = Boolean(tc.resultText);
             return (
@@ -143,10 +163,49 @@ export function McpPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls
                 )}
               </div>
             );
-          })}
+          })())}
       </div>
     </div>
   );
+}
+
+const ACTIVITY_KIND_LABEL: Record<DeviceActivityMessage['kind'], string> = {
+  prepare: 'prepare',
+  validate: 'validate',
+  recycle: 'recycle',
+  mirror: 'mirror',
+  respawn: 'respawn',
+};
+
+function ActivityEntry({ entry }: { entry: DeviceActivityMessage }) {
+  const running = entry.status === 'started';
+  return (
+    <div
+      class={`mcp-entry activity-entry activity-${entry.kind} ${entry.status}`}
+      data-testid="activity-entry"
+      data-kind={entry.kind}
+      data-status={entry.status}
+      title={entry.forFile ? `For ${entry.forFile.split('/').pop()}` : undefined}
+    >
+      <div class="mcp-entry-header">
+        <span class="mcp-time">{formatTime(entry.timestamp)}</span>
+        <span class="mcp-tool">{entry.label}</span>
+        <span class="activity-kind">{ACTIVITY_KIND_LABEL[entry.kind]}</span>
+        {running
+          ? <span class="mcp-duration running">running…</span>
+          : entry.durationMs != null && <span class="mcp-duration">{formatDuration(entry.durationMs)}</span>}
+      </div>
+      {entry.detail && (
+        <div class={`mcp-entry-summary${running ? ' mcp-in-progress' : ''}`}>{entry.detail}</div>
+      )}
+    </div>
+  );
+}
+
+function mergeActivity(entries: DeviceActivityMessage[]): DeviceActivityMessage[] {
+  const byId = new Map<string, DeviceActivityMessage>();
+  for (const e of entries) byId.set(e.id, e); // later messages for an id supersede earlier ones
+  return Array.from(byId.values());
 }
 
 function CopyableCommand({ label, command }: { label: string; command: string }) {

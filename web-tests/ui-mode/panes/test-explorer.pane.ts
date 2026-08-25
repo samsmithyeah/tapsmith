@@ -137,6 +137,11 @@ export class TestExplorerPane {
     return this.node(name).getByTitle(/^Depends on:/)
   }
 
+  /** The declared-isolation badge on a row (only when the file/test declares one). */
+  isolationFor(name: string) {
+    return this.node(name).getByTestId("node-isolation")
+  }
+
   // ─── Flows ───
 
   /** Click a row, which both selects it and toggles it if it has children. */
