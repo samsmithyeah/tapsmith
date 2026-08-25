@@ -29,8 +29,8 @@ sed -i '' "s/\"$CURRENT_VERSION\"/\"$NEW_VERSION\"/g" "$ROOT/packages/tapsmith/p
 # 2. Rust daemon
 sed -i '' "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" "$ROOT/packages/tapsmith-core/Cargo.toml"
 
-# 3. Platform-specific npm packages
-for pkg in "$ROOT"/npm-packages/*/package.json; do
+# 3. Platform-specific npm packages + the in-app hooks package
+for pkg in "$ROOT"/npm-packages/*/package.json "$ROOT/packages/tapsmith-react-native/package.json"; do
   sed -i '' "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" "$pkg"
 done
 
@@ -61,6 +61,7 @@ echo "Regenerating lockfiles..."
   @tapsmith/core-linux-arm64 @tapsmith/core-linux-x64 \
   @tapsmith/agent-android @tapsmith/agent-ios-simulator-arm64 \
   @tapsmith/agent-ios-simulator-x64)
+(cd "$ROOT/packages/tapsmith-react-native" && npm install --package-lock-only --silent)
 (cd "$ROOT/packages/tapsmith-core" && cargo check --quiet)
 
 echo "Done. Verify with:"

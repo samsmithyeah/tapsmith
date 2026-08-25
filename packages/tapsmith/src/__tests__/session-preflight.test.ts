@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ensureSessionReady, executeAppReset, launchConfiguredApp } from '../session-preflight.js';
+import { ensureSessionReady, executeAppReset, launchConfiguredApp, probeResetCapabilities } from '../session-preflight.js';
 import type { AppResetPolicy } from '../app-reset.js';
 import { onActionProgress, type ActionProgressEvent } from '../action-progress.js';
 
@@ -461,8 +461,8 @@ describe('session-preflight', () => {
 
     await launchConfiguredApp(ctx, 'startup');
 
-    // 3 hierarchy calls: 2 empty + 1 non-empty
-    expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(3);
+    // 3 hierarchy calls (2 empty + 1 non-empty) + the reset-capabilities probe
+    expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(4);
   });
   it('dismisses blocking system dialogs before relaunching', async () => {
     const ctx = makeContext();
@@ -494,5 +494,48 @@ describe('session-preflight', () => {
     await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
     expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
     expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(3);
+  });
+
+  describe('reset capabilities', () => {
+    it('detects the in-app hooks marker after a launch and records it on the context', async () => {
+      const ctx = makeContext();
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue({
+        requestId: '1',
+        hierarchyXml: '<hierarchy><node package="com.example.app" text="tapsmith-hooks:1;epoch=0;url=app:///" /></hierarchy>',
+        errorMessage: '',
+      });
+
+      await launchConfiguredApp(ctx, 'startup launch', { skipAppReset: true });
+
+      expect(ctx.capabilities).toEqual({ hooksDetected: true });
+    });
+
+    it('a marker without a URL prefix does not count as usable hooks', async () => {
+      const ctx = makeContext();
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue({
+        requestId: '1',
+        hierarchyXml: '<hierarchy><node package="com.example.app" text="tapsmith-hooks:1;epoch=0;url=" /></hierarchy>',
+        errorMessage: '',
+      });
+      expect(await probeResetCapabilities(ctx)).toEqual({ hooksDetected: false });
+    });
+
+    it('a warm reset refreshes hooksDetected from the daemon answer', async () => {
+      const ctx = makeContext({
+        config: { package: 'com.example.app', activity: '.MainActivity', platform: 'android' },
+      });
+      vi.mocked(ctx.device._resetApp).mockResolvedValueOnce(resetResult('warm', { hooksDetected: true, epochBefore: 1, epochAfter: 2 }));
+
+      await executeAppReset(ctx, WARM_TEST, { phase: 'before test' });
+
+      expect(ctx.capabilities?.hooksDetected).toBe(true);
+    });
+
+    it('a probe failure leaves the capabilities as they were', async () => {
+      const ctx = makeContext();
+      ctx.capabilities = { hooksDetected: true };
+      vi.mocked(ctx.client.getUiHierarchy).mockRejectedValueOnce(new Error('agent busy'));
+      expect(await probeResetCapabilities(ctx)).toEqual({ hooksDetected: true });
+    });
   });
 });

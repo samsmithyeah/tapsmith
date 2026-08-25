@@ -1,6 +1,6 @@
 import { DEFAULT_APP_RESET_COLD_EVERY, type TapsmithConfig } from './config.js';
 import type { Device } from './device.js';
-import { appResetAction, satisfies, type AppResetPolicy, type AppResetReport, type AppResetStep, type PreparedState } from './app-reset.js';
+import { appResetAction, parseHooksMarker, satisfies, type AppResetPolicy, type AppResetReport, type AppResetStep, type PreparedState, type ResetCapabilities } from './app-reset.js';
 import type { LaunchAppOptions, TapsmithGrpcClient } from './grpc-client.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
 import { withActionProgress } from './action-progress.js';
@@ -31,6 +31,31 @@ export interface SessionPreflightContext {
    * no-op. Callers should compute this once via `isNetworkTracingEnabled`.
    */
   networkTracingEnabled?: boolean
+  /**
+   * What the running app can offer for resets (in-app hooks detected, …).
+   * Filled by {@link probeResetCapabilities} after a launch and refreshed by
+   * every reset; the runner resolves `appReset: 'auto'` from it. Mutable on
+   * purpose — one context object is shared across a worker's files.
+   */
+  capabilities?: ResetCapabilities
+}
+
+/**
+ * Look at the app's accessibility tree once and record whether it advertises
+ * `@tapsmith/react-native` reset hooks. Cheap (one hierarchy fetch) and
+ * best-effort: a failure leaves the capabilities unchanged.
+ */
+export async function probeResetCapabilities(ctx: SessionPreflightContext): Promise<ResetCapabilities> {
+  const caps: ResetCapabilities = { ...(ctx.capabilities ?? {}) };
+  try {
+    const h = await ctx.client.getUiHierarchy();
+    const marker = parseHooksMarker(h.hierarchyXml);
+    caps.hooksDetected = !!marker && marker.urlPrefix.length > 0;
+  } catch {
+    // Keep whatever we knew.
+  }
+  ctx.capabilities = caps;
+  return caps;
 }
 
 export interface EnsureSessionReadyOptions {
@@ -161,6 +186,7 @@ export async function launchConfiguredApp(
     if (ctx.config.platform === 'ios') {
       await waitForIosAppReady(ctx);
     }
+    await probeResetCapabilities(ctx);
     return prepared();
   }
 
@@ -169,6 +195,7 @@ export async function launchConfiguredApp(
   if (ctx.config.platform === 'ios') {
     await waitForIosAppReady(ctx);
   }
+  await probeResetCapabilities(ctx);
   return prepared();
 }
 
@@ -275,6 +302,9 @@ export async function executeAppReset(
       modeUsed = result.modeUsed;
       fellBack = result.fellBack;
       reason = result.reason;
+      // The daemon looked at the marker to plan this reset — that is the
+      // freshest word on whether the app has in-app hooks.
+      if (action.kind === 'warm') ctx.capabilities = { ...(ctx.capabilities ?? {}), hooksDetected: result.hooksDetected };
       if (result.fellBack) {
         process.stderr.write(`[tapsmith] App reset fell back to ${result.modeUsed}: ${result.reason ?? 'unknown reason'}\n`);
       }

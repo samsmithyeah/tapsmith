@@ -2701,6 +2701,7 @@ async function runTestFileWithRecovery(
         },
         abortFileOnError: isRecoverableInfrastructureError,
         sessionContext: opts.sessionContext,
+        resetCapabilities: opts.sessionContext.capabilities,
         // Only the first attempt can reuse the pre-launch state; a retry
         // follows a recovery relaunch, which is itself a fresh `clear`.
         preparedDevice: attempt === 1 ? opts.preparedDevice : recoveredPrepared,

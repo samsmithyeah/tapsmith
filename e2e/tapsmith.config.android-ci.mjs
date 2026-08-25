@@ -1,12 +1,10 @@
 import { defineConfig } from "tapsmith"
-import { RESET_APP_DEEP_LINK } from "./reset-app-deep-link.mjs"
 import { ciProjects } from "./ci-projects.mjs"
 
 export default defineConfig({
   apk: "./fixtures/app-release.apk",
   activity: "dev.tapsmith.testapp.MainActivity",
   package: "dev.tapsmith.testapp",
-  resetAppDeepLink: RESET_APP_DEEP_LINK,
   timeout: 15_000,
   // Two retries (Playwright's CI convention): emulator-load one-offs can
   // outlast a single retry on oversubscribed runners.

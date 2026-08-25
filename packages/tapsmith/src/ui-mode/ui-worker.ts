@@ -23,8 +23,8 @@ import {
   isRecoverableInfrastructureError,
   configFromSerialized,
 } from '../worker-protocol.js';
-import { ensureSessionReady, executeAppReset, launchConfiguredApp, type SessionPreflightContext } from '../session-preflight.js';
-import type { PreparedState } from '../app-reset.js';
+import { ensureSessionReady, executeAppReset, launchConfiguredApp, probeResetCapabilities, type SessionPreflightContext } from '../session-preflight.js';
+import type { PreparedState, ResetCapabilities } from '../app-reset.js';
 import { createActionProgressMessenger } from '../action-progress-renderer.js';
 import { isAbortError } from '../abort.js';
 import type { AnyTraceEvent } from '../trace/types.js';
@@ -75,6 +75,8 @@ function sendProgress(message: string): void {
  * when the declared policy is satisfied — consumed exactly once.
  */
 let preparedDevice: PreparedState | undefined;
+/** Runtime reset capabilities (in-app hooks detected?), shared by every context this worker builds. */
+const sharedCapabilities: ResetCapabilities = {};
 function consumePreparedDevice(): PreparedState | undefined {
   const p = preparedDevice;
   preparedDevice = undefined;
@@ -102,6 +104,7 @@ function sessionContext(
     iosAppPath: resolvedIosAppPathCached,
     deviceSerial: serial,
     networkTracingEnabled: isNetworkTracingEnabled(config.trace),
+    capabilities: sharedCapabilities,
   };
 }
 
@@ -181,6 +184,7 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
     await resolveArtifactPaths(msg);
     sendProgress('attaching to the primary device session');
     await ensureSessionReady(sessionContext(msg.deviceSerial), 'UI worker adopt');
+    await probeResetCapabilities(sessionContext(msg.deviceSerial));
     preparedDevice = {
       policy: { mode: 'clear', scope: 'file' },
       preparedAt: Date.now(),
@@ -334,7 +338,7 @@ async function resolveArtifactPaths(msg: UIWorkerInitMessage): Promise<{
 
 function finishInit(): void {
   sendProgress('ready');
-  send({ type: 'ready', workerId, policy: preparedDevice?.policy });
+  send({ type: 'ready', workerId, policy: preparedDevice?.policy, capabilities: { ...sharedCapabilities } });
 
   // From here on, stream slow-device-action progress (between-file preflight,
   // test.use({appState}) restore, recovery) so the UI can show "Restoring app
@@ -493,6 +497,7 @@ async function runFileWithRecovery(
         abortFileOnError: isRecoverableInfrastructureError,
         sessionContext: sessionContext(undefined),
         preparedDevice: consumePreparedDevice(),
+        resetCapabilities: sharedCapabilities,
         projectUseOptions,
         projectName,
         testFilter,

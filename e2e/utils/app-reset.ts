@@ -1,8 +1,11 @@
 import type { Device } from "tapsmith"
 import { RESET_APP_DEEP_LINK } from "../reset-app-deep-link.mjs"
 
-const RESET_APP_WAIT_MS = 750
-
+/**
+ * The legacy explicit reset route (`/__reset?path=…`). Only the
+ * `resetAppDeepLink` configuration in `tapsmith.config.ios-mixed.mjs` still
+ * uses it; everything else goes through the in-app hooks.
+ */
 export function resetAppDeepLink(path = "/") {
   const url = new URL(RESET_APP_DEEP_LINK)
   const targetPath = path.startsWith("/") ? path : `/${path}`
@@ -12,11 +15,11 @@ export function resetAppDeepLink(path = "/") {
   return url.toString()
 }
 
+/**
+ * Reset the app and land on `path`. Runs the daemon's reset ladder: a warm,
+ * acknowledged in-app reset via `@tapsmith/react-native` when the app
+ * advertises it, falling back to a restart or a clear.
+ */
 export async function resetApp(device: Device, path = "/") {
-  await device.openDeepLink(resetAppDeepLink(path))
-  try {
-    await device.waitForIdle(RESET_APP_WAIT_MS)
-  } catch {
-    await new Promise((resolve) => setTimeout(resolve, RESET_APP_WAIT_MS))
-  }
+  await device.resetApp({ target: path.startsWith("/") ? path : `/${path}` })
 }

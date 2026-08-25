@@ -804,6 +804,8 @@ export interface UIWorkerReadyMessage {
   workerId: number
   /** Policy the startup launch left the app in, when it did launch. */
   policy?: import('../app-reset.js').AppResetPolicy
+  /** Runtime reset capabilities probed after launch (in-app hooks detected?). */
+  capabilities?: import('../app-reset.js').ResetCapabilities
 }
 
 /** UI worker → server: a background preparation finished. */

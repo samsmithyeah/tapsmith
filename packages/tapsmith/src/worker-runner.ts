@@ -32,7 +32,7 @@ import {
   AGENT_START_RETRY_DELAY_MS,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
-import type { PreparedState } from './app-reset.js';
+import type { PreparedState, ResetCapabilities } from './app-reset.js';
 import { createActionProgressMessenger } from './action-progress-renderer.js';
 import type { TapsmithReporter } from './reporter.js';
 
@@ -63,6 +63,8 @@ function sendProgress(message: string): void {
  * when the declared policy is satisfied — consumed exactly once.
  */
 let preparedDevice: PreparedState | undefined;
+/** Runtime reset capabilities (in-app hooks detected?), shared by every context this worker builds. */
+const sharedCapabilities: ResetCapabilities = {};
 function consumePreparedDevice(): PreparedState | undefined {
   const p = preparedDevice;
   preparedDevice = undefined;
@@ -416,6 +418,7 @@ async function runFileWithRecovery(
         abortFileOnError: isRecoverableInfrastructureError,
         sessionContext: sessionContext(undefined),
         preparedDevice: consumePreparedDevice(),
+        resetCapabilities: sharedCapabilities,
         // On retry (attempt 2), bust the ESM import cache so the file's
         // test registrations re-execute. Without this, import() returns the
         // cached module and no tests are registered for the retry.
@@ -492,6 +495,7 @@ function sessionContext(
     iosAppPath: iosAppPath ?? resolvedAppPath,
     deviceSerial: serial,
     networkTracingEnabled: isNetworkTracingEnabled(config.trace),
+    capabilities: sharedCapabilities,
   };
 }
 

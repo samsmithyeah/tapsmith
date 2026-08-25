@@ -63,7 +63,7 @@ import { encodeScreenFrame, type TestNodeStatus } from './ui-protocol.js';
 import { RunQueue } from '../watch-queue.js';
 import { DeviceReadiness, toWireReadiness, type Candidate, type ReadinessCommand, type ReadinessEvent, type StaleReason } from './device-readiness.js';
 import { nextCandidate as pickCandidate, policyForFile, type CandidateProject } from './readiness-candidate.js';
-import type { AppResetPolicy, PreparedState } from '../app-reset.js';
+import type { AppResetPolicy, PreparedState, ResetCapabilities } from '../app-reset.js';
 import { DEFAULT_UI_PREFERENCES, type DeviceActivityMessage, type UIPreferences } from './ui-protocol.js';
 import {
   forkStdioForLaunchProgress,
@@ -219,6 +219,8 @@ interface UIWorkerHandle {
   readiness?: DeviceReadiness
   /** Policy the worker's startup launch left the app in (from its `ready` message). */
   initialPolicy?: AppResetPolicy
+  /** Runtime reset capabilities the worker probed (in-app hooks detected?). */
+  capabilities?: ResetCapabilities
   /** Last file this worker ran — the edit → rerun loop's best guess for what runs next. */
   lastRun?: { file: string; projectName?: string }
   /** Activity-feed id of the in-flight preparation. */
@@ -387,14 +389,15 @@ export async function startUIServer(
       rootConfig: ctx.config,
       treeFiles: ctx.testFiles,
       fileUse: fileUseMap(),
+      capabilities: worker.capabilities,
       exclude: claimedCandidateFiles(worker),
     });
   }
 
   /** The declared policy a file dispatched to `worker` will run under. */
-  function policyForDispatch(file: TaggedFile): AppResetPolicy {
+  function policyForDispatch(worker: UIWorkerHandle, file: TaggedFile): AppResetPolicy {
     const project = candidateProjects().find((p) => p.name === file.projectName) ?? candidateProjects().find((p) => p.testFiles.includes(file.filePath));
-    return policyForFile(file.filePath, project, { rootConfig: ctx.config, fileUse: fileUseMap() });
+    return policyForFile(file.filePath, project, { rootConfig: ctx.config, fileUse: fileUseMap(), capabilities: worker.capabilities });
   }
 
   function attachReadiness(worker: UIWorkerHandle): DeviceReadiness {
@@ -1733,6 +1736,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       const onMessage = (msg: UIWorkerChildMessage) => {
         if (msg.type === 'ready' && msg.workerId === id) {
           worker.initialPolicy = msg.policy;
+          worker.capabilities = msg.capabilities;
           events?.onReady?.();
           clearTimeout(timeout);
           cleanup();
@@ -1909,7 +1913,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         lastRunProject = next.projectName ?? lastRunProject;
         // Hand over a background preparation that satisfies this file's policy;
         // otherwise the runner resets inline. Either way the click never waits.
-        const want = policyForDispatch(next);
+        const want = policyForDispatch(worker, next);
         const preparedFor: PreparedState | undefined = worker.readiness?.preparedFor(want);
         readinessEvent(worker, { type: 'dispatch', file: next.filePath, want });
         broadcastWorkerStatus(worker, 'running');

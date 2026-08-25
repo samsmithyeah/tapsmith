@@ -3,6 +3,7 @@ import {
   appResetAction,
   appResetPolicyEquals,
   describeAction,
+  parseHooksMarker,
   resolveAppResetPolicy,
   satisfies,
   type AppResetPolicy,
@@ -97,5 +98,25 @@ describe('appResetPolicyEquals / describeAction', () => {
   it('labels the effective action', () => {
     expect(describeAction({ mode: 'clear', scope: 'file' })).toBe('App reset (clear)');
     expect(describeAction({ mode: 'warm', scope: 'test', appState: '/x/auth.tar.gz' })).toBe('App reset (restore auth.tar.gz)');
+  });
+});
+
+describe('parseHooksMarker', () => {
+  it('parses the Android text attribute and the iOS label attribute', () => {
+    expect(parseHooksMarker('<node text="tapsmith-hooks:1;epoch=4;url=myapp:///" class="android.widget.TextView"/>'))
+      .toEqual({ version: 1, epoch: 4, urlPrefix: 'myapp:///' });
+    expect(parseHooksMarker('<XCUIElementTypeStaticText label="tapsmith-hooks:1;epoch=7;url=exp://10.0.0.5:8081/--/" />'))
+      .toEqual({ version: 1, epoch: 7, urlPrefix: 'exp://10.0.0.5:8081/--/' });
+  });
+
+  it('decodes XML escapes and percent-encoded errors', () => {
+    const m = parseHooksMarker('<node text="tapsmith-hooks:1;epoch=2;url=a:///;err=AsyncStorage%20failed%3A%20boom&amp;x"/>');
+    expect(m).toEqual({ version: 1, epoch: 2, urlPrefix: 'a:///', error: 'AsyncStorage failed: boom&x' });
+  });
+
+  it('returns undefined for missing or malformed markers', () => {
+    expect(parseHooksMarker('<node text="hello"/>')).toBeUndefined();
+    expect(parseHooksMarker('<node text="tapsmith-hooks:1;url=x"/>')).toBeUndefined();
+    expect(parseHooksMarker('<node text="tapsmith-hooks:abc;epoch=1"/>')).toBeUndefined();
   });
 });

@@ -59,6 +59,10 @@ const FILES = [
     desc: 'Record and inspect step-by-step test execution with screenshots, hierarchy, and network.',
   },
   {
+    src: 'warm-reset.md',
+    dest: 'guides/warm-reset.md',
+  },
+  {
     src: 'watch-mode.md',
     dest: 'guides/watch-mode.md',
     title: 'Watch Mode',

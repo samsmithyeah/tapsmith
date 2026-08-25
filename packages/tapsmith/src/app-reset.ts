@@ -159,3 +159,51 @@ export function describeAction(policy: AppResetPolicy): string {
     ? `App reset (restore ${path.basename(action.archive)})`
     : `App reset (${action.kind})`;
 }
+
+// ─── @tapsmith/react-native hooks marker ───
+
+export const HOOKS_MARKER_PREFIX = 'tapsmith-hooks:';
+
+export interface HooksMarker {
+  version: number;
+  epoch: number;
+  /** URL prefix the module builds reset links from; empty when it could not determine one. */
+  urlPrefix: string;
+  error?: string;
+}
+
+/**
+ * Find the in-app reset hooks marker in a UI hierarchy dump (Android
+ * `text="…"`, iOS `label="…"`/`name="…"`). Mirrors `app_reset::parse_hooks_marker`
+ * in the daemon; the SDK uses it to resolve `appReset: 'auto'`.
+ */
+export function parseHooksMarker(hierarchyXml: string): HooksMarker | undefined {
+  const start = hierarchyXml.indexOf(HOOKS_MARKER_PREFIX);
+  if (start < 0) return undefined;
+  const rest = hierarchyXml.slice(start + HOOKS_MARKER_PREFIX.length);
+  const end = rest.search(/["'<\n]/);
+  const raw = xmlUnescape(end < 0 ? rest : rest.slice(0, end));
+  const [versionRaw, ...fields] = raw.split(';');
+  const version = Number.parseInt(versionRaw, 10);
+  if (!Number.isFinite(version)) return undefined;
+  let epoch: number | undefined;
+  let urlPrefix = '';
+  let error: string | undefined;
+  for (const field of fields) {
+    const eq = field.indexOf('=');
+    if (eq < 0) continue;
+    const key = field.slice(0, eq).trim();
+    const value = field.slice(eq + 1).trim();
+    if (key === 'epoch') epoch = Number.parseInt(value, 10);
+    else if (key === 'url') urlPrefix = value;
+    else if (key === 'err' && value) {
+      try { error = decodeURIComponent(value); } catch { error = value; }
+    }
+  }
+  if (epoch === undefined || !Number.isFinite(epoch)) return undefined;
+  return { version, epoch, urlPrefix, ...(error ? { error } : {}) };
+}
+
+function xmlUnescape(s: string): string {
+  return s.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
