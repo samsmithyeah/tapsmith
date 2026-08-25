@@ -20,7 +20,6 @@ import type {
   MainToWorkerMessage,
   WorkerToMainMessage,
   InitMessage,
-  SerializedConfig,
 } from './worker-protocol.js';
 import {
   serializeTestResult,
@@ -29,9 +28,11 @@ import {
   isRetryableAgentStartError,
   retryDeviceSelection,
   deserializeRegExpArray,
+  configFromSerialized,
   AGENT_START_RETRY_DELAY_MS,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
+import type { PreparedState } from './app-reset.js';
 import { createActionProgressMessenger } from './action-progress-renderer.js';
 import type { TapsmithReporter } from './reporter.js';
 
@@ -56,35 +57,16 @@ function sendProgress(message: string): void {
   send({ type: 'progress', workerId, message });
 }
 
-function configFromSerialized(s: SerializedConfig, daemonAddress: string): TapsmithConfig {
-  return {
-    timeout: s.timeout,
-    retries: s.retries,
-    screenshot: s.screenshot,
-    testMatch: [],
-    daemonAddress,
-    rootDir: s.rootDir,
-    outputDir: s.outputDir,
-    apk: s.apk,
-    activity: s.activity,
-    package: s.package,
-    agentApk: s.agentApk,
-    agentTestApk: s.agentTestApk,
-    workers: 1,
-    launchEmulators: false,
-    trace: s.trace as TapsmithConfig['trace'],
-    video: s.video as TapsmithConfig['video'],
-    platform: s.platform,
-    app: s.app,
-    iosXctestrun: s.iosXctestrun,
-    simulator: s.simulator,
-    resetAppDeepLink: s.resetAppDeepLink,
-    resetAppWaitMs: s.resetAppWaitMs,
-    baseURL: s.baseURL,
-    extraHTTPHeaders: s.extraHTTPHeaders,
-    grep: deserializeRegExpArray(s.grep),
-    grepInvert: deserializeRegExpArray(s.grepInvert),
-  };
+/**
+ * A launch that already left the app in fresh state (startup, warmup,
+ * recovery). Handed to the next file's runner so it can skip its own reset
+ * when the declared policy is satisfied — consumed exactly once.
+ */
+let preparedDevice: PreparedState | undefined;
+function consumePreparedDevice(): PreparedState | undefined {
+  const p = preparedDevice;
+  preparedDevice = undefined;
+  return p;
 }
 
 async function handleInit(msg: InitMessage): Promise<void> {
@@ -273,10 +255,10 @@ async function handleInit(msg: InitMessage): Promise<void> {
   try {
     if (config.package) {
       sendProgress(`launching ${config.package}`);
-      await launchConfiguredApp(
+      preparedDevice = await launchConfiguredApp(
         sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun, resolvedIosAppPath),
-        'worker initialization',
-        { allowSoftReset: false, skipAppReset: true },
+        'worker startup launch',
+        { skipAppReset: true },
       );
       sendProgress('app launched');
     } else {
@@ -300,10 +282,9 @@ async function handleInit(msg: InitMessage): Promise<void> {
     sendProgress('warming up fresh emulator');
     await device.waitForIdle();
     await device.terminateApp(config.package);
-    await launchConfiguredApp(
+    preparedDevice = await launchConfiguredApp(
       sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
-      'warmup',
-      { allowSoftReset: false },
+      'emulator warmup launch',
     );
     await device.waitForIdle();
   }
@@ -331,22 +312,10 @@ async function handleRunFile(
 
   send({ type: 'file-start', workerId, filePath });
 
-  // Reset app between files for isolation — retry once on transient errors.
-  // When this scope restores a non-empty `appState`, skip the destructive
-  // clearAppData: the restore owns isolation and preserves the AndroidKeyStore
-  // (a pm clear here would wipe the keys that decrypt saved credentials).
-  const restoresAppState = !!projectUseOptions?.appState;
-  if (config.package) {
-    try {
-      await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`, { skipDataClear: restoresAppState });
-    } catch (resetErr) {
-      if (!isRecoverableInfrastructureError(resetErr)) throw resetErr;
-      process.stderr.write(
-        `Worker ${workerId}: Recovering after file-reset failure for ${path.basename(filePath)}: ${resetErr instanceof Error ? resetErr.message : String(resetErr)}\n`,
-      );
-      await recoverFileSession(filePath, resetErr);
-    }
-  }
+  // The between-file app reset is the runner's job now: it executes the
+  // declared policy as traced fixture setup and ends with its own session
+  // readiness check, so nothing device-side happens here. Infrastructure
+  // failures surface in the results and drive runFileWithRecovery.
 
   const screenshotDir =
     config.screenshot !== 'never'
@@ -445,6 +414,8 @@ async function runFileWithRecovery(
           }
         },
         abortFileOnError: isRecoverableInfrastructureError,
+        sessionContext: sessionContext(undefined),
+        preparedDevice: consumePreparedDevice(),
         // On retry (attempt 2), bust the ESM import cache so the file's
         // test registrations re-execute. Without this, import() returns the
         // cached module and no tests are registered for the retry.
@@ -564,10 +535,9 @@ async function recoverFileSession(filePath: string, err: unknown): Promise<void>
   }
 
   if (config?.package) {
-    await launchConfiguredApp(
+    preparedDevice = await launchConfiguredApp(
       sessionContext(undefined),
       `recovery for ${path.basename(filePath)}`,
-      { allowSoftReset: false },
     );
   } else {
     await ensureSessionReady(sessionContext(undefined), `recovery for ${path.basename(filePath)}`);

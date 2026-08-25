@@ -1,10 +1,11 @@
 import type { TapsmithConfig } from './config.js';
 import type { Device } from './device.js';
+import { appResetAction, satisfies, type AppResetPolicy, type AppResetReport, type AppResetStep, type PreparedState } from './app-reset.js';
 import type { LaunchAppOptions, TapsmithGrpcClient } from './grpc-client.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
 import { withActionProgress } from './action-progress.js';
 
-type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'openDeepLink' | 'getAppState'>
+type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'restoreAppState' | 'openDeepLink' | 'getAppState'>
 type SessionClient = Pick<TapsmithGrpcClient, 'ping' | 'getUiHierarchy'>
 
 export interface SessionPreflightContext {
@@ -118,49 +119,41 @@ export async function ensureSessionReady(
   });
 }
 
+/**
+ * Startup / recovery launch. Brings the configured app to a fresh, ready
+ * state without any policy involvement:
+ *  - `skipAppReset`: the app was just installed (nothing to clear) — launch
+ *    and verify only.
+ *  - otherwise: hard clear + relaunch (the `clear` action).
+ *
+ * Between-file and per-test resets are NOT this function's job any more —
+ * the runner executes the declared policy via {@link executeAppReset}.
+ */
 export async function launchConfiguredApp(
   ctx: SessionPreflightContext,
   phase: string,
-  options: { allowSoftReset?: boolean; readinessAttempts?: number; skipAppReset?: boolean; skipDataClear?: boolean } = {},
-): Promise<void> {
+  options: { readinessAttempts?: number; skipAppReset?: boolean } = {},
+): Promise<PreparedState> {
   const readinessAttempts = options.readinessAttempts;
+  const started = Date.now();
+  // Both paths leave the app in fresh-install state, i.e. they satisfy the
+  // `clear` policy — the runner can skip the first file's reset.
+  const prepared = (): PreparedState => ({
+    policy: { mode: 'clear', scope: 'file' },
+    preparedAt: Date.now(),
+    durationMs: Date.now() - started,
+    source: phase,
+  });
 
   if (!ctx.config.package) {
     await ensureSessionReady(ctx, phase, readinessAttempts);
-    return;
+    return prepared();
   }
 
-  const allowSoftReset = options.allowSoftReset ?? true;
-  if (allowSoftReset && ctx.config.resetAppDeepLink) {
-    try {
-      await softResetAppViaDeepLink(ctx);
-      await ensureSessionReady(ctx, phase, readinessAttempts);
-      if (ctx.config.platform === 'ios') {
-        await waitForIosAppReady(ctx);
-      }
-      return;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[tapsmith] Soft reset failed, falling back to hard reset: ${message}\n`);
-    }
-  }
-
-  // Skip the expensive clearAppData + restartApp cycle when either:
-  //  - skipAppReset (fresh install / startup): the app was just installed,
-  //    there's no state to clear; or
-  //  - skipDataClear: a non-empty `appState` restore will follow for this
-  //    scope and owns isolation. The restore does its own keystore-preserving
-  //    in-place data clear, so clearing here is redundant AND harmful: on
-  //    Android `clearAppData` is `pm clear`, which also wipes the app's
-  //    AndroidKeyStore keys. Those keys decrypt credentials persisted inside
-  //    the data dir (e.g. Firebase Auth's Tink keyset), are device-bound, and
-  //    are NOT in the saved-state archive — so once pm clear destroys them the
-  //    restored ciphertext can't be decrypted and the app comes back signed
-  //    out. (On iOS the keychain is captured into the archive, so a clear here
-  //    is merely wasteful, not destructive.)
-  // On Android, explicitly launch the app (iOS auto-launches via the XCUITest
-  // agent during startAgent). Then go straight to ensuring the session is ready.
-  if (options.skipAppReset || options.skipDataClear) {
+  if (options.skipAppReset) {
+    // Fresh install / startup: there's no state to clear. On Android,
+    // explicitly launch the app (iOS auto-launches via the XCUITest agent
+    // during startAgent), then go straight to ensuring the session is ready.
     if (ctx.config.platform !== 'ios') {
       await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
     }
@@ -168,11 +161,152 @@ export async function launchConfiguredApp(
     if (ctx.config.platform === 'ios') {
       await waitForIosAppReady(ctx);
     }
-    return;
+    return prepared();
   }
 
+  await hardClearAndLaunch(ctx);
+  await ensureSessionReady(ctx, phase, readinessAttempts);
   if (ctx.config.platform === 'ios') {
-    // On iOS, clear data then restart for isolation between test files.
+    await waitForIosAppReady(ctx);
+  }
+  return prepared();
+}
+
+export interface ExecuteAppResetOptions {
+  /** Label for error messages / progress, e.g. "file reset for auth.test.ts". */
+  phase: string
+  /**
+   * Force a cold (terminate + relaunch) delivery of the warm reset hook.
+   * Retries set this; file-boundary resets set it today to bound the warm
+   * window on iOS simulators (PILOT-249) until the daemon owns that policy.
+   */
+  forceCold?: boolean
+  /**
+   * A reset that already happened (startup launch, background preparation).
+   * When it satisfies `policy`, no device work runs beyond the readiness
+   * check and the report says so (`origin: 'prepared'`).
+   */
+  prepared?: PreparedState
+}
+
+/**
+ * Execute a resolved {@link AppResetPolicy} against the device. This is the
+ * single implementation of "make the app satisfy policy P" — the runner
+ * calls it as fixture setup, UI mode's background preparation will call it,
+ * and it always ends with a session readiness check.
+ *
+ * Never throws for a *fallback* (warm → clear); throws when the device
+ * cannot be brought to a ready state at all, with `steps` in the report up
+ * to the failing one attached to the error as `report`.
+ */
+export async function executeAppReset(
+  ctx: SessionPreflightContext,
+  policy: AppResetPolicy,
+  options: ExecuteAppResetOptions,
+): Promise<AppResetReport> {
+  const started = Date.now();
+  const steps: AppResetStep[] = [];
+  const step = async (name: string, fn: () => Promise<void>, detail?: string): Promise<void> => {
+    const t0 = Date.now();
+    try {
+      await fn();
+      steps.push({ name, durationMs: Date.now() - t0, ok: true, ...(detail ? { detail } : {}) });
+    } catch (err) {
+      steps.push({ name, durationMs: Date.now() - t0, ok: false, detail: formatError(err) });
+      throw err;
+    }
+  };
+  const finish = (partial: Omit<AppResetReport, 'policy' | 'durationMs' | 'steps'>): AppResetReport => ({
+    policy,
+    durationMs: Date.now() - started,
+    steps,
+    ...partial,
+  });
+
+  const action = appResetAction(policy);
+
+  if (!ctx.config.package) {
+    await step('ensureSessionReady', () => ensureSessionReady(ctx, options.phase));
+    return finish({ origin: 'skipped', modeUsed: 'none', fellBack: false, reason: 'no package configured' });
+  }
+
+  if (options.prepared && satisfies(options.prepared.policy, policy)) {
+    await step('ensureSessionReady', () => ensureSessionReady(ctx, options.phase));
+    const when = new Date(options.prepared.preparedAt).toLocaleTimeString();
+    return finish({
+      origin: 'prepared',
+      modeUsed: action.kind,
+      fellBack: false,
+      reason: `satisfied by ${options.prepared.source} at ${when} (took ${formatSeconds(options.prepared.durationMs)})`,
+    });
+  }
+
+  if (action.kind === 'none') {
+    await step('ensureSessionReady', () => ensureSessionReady(ctx, options.phase));
+    return finish({ origin: 'skipped', modeUsed: 'none', fellBack: false, reason: 'appReset: none' });
+  }
+
+  const pkg = ctx.config.package;
+  let modeUsed: AppResetReport['modeUsed'] = action.kind;
+  let fellBack = false;
+  let reason: string | undefined;
+
+  switch (action.kind) {
+    case 'restore':
+      await step('restoreAppState', () => ctx.device.restoreAppState(pkg, (action as { archive: string }).archive));
+      await step('restartApp', () => ctx.device.restartApp(pkg));
+      break;
+    case 'restart':
+      await step('restartApp', () => ctx.device.restartApp(pkg));
+      break;
+    case 'warm': {
+      const link = ctx.config.resetAppDeepLink;
+      if (!link) {
+        // A warm reset needs a hook in the app. Without one the closest
+        // cheap equivalent is a restart; say so in the trace rather than
+        // silently degrading to a full wipe.
+        modeUsed = 'restart';
+        fellBack = true;
+        reason = 'appReset: warm requested but the app exposes no reset hook (resetAppDeepLink); restarted instead';
+        await step('restartApp', () => ctx.device.restartApp(pkg));
+        break;
+      }
+      try {
+        await step('openDeepLink', () => softResetAppViaDeepLink(ctx, !!options.forceCold), link);
+      } catch (err) {
+        const message = formatError(err);
+        process.stderr.write(`[tapsmith] Soft reset failed, falling back to hard reset: ${message}\n`);
+        modeUsed = 'clear';
+        fellBack = true;
+        reason = `warm reset failed (${message}); fell back to clear`;
+        await hardClearAndLaunch(ctx, step);
+      }
+      break;
+    }
+    case 'clear':
+      await hardClearAndLaunch(ctx, step);
+      break;
+  }
+
+  await step('ensureSessionReady', () => ensureSessionReady(ctx, options.phase));
+  if (ctx.config.platform === 'ios') {
+    await step('waitForAppReady', () => waitForIosAppReady(ctx));
+  }
+  return finish({ origin: 'inline', modeUsed, fellBack, ...(reason ? { reason } : {}) });
+}
+
+type StepRunner = (name: string, fn: () => Promise<void>, detail?: string) => Promise<void>;
+const runDirect: StepRunner = (_name, fn) => fn();
+
+/**
+ * The `clear` action: wipe app data and cold-launch. Does NOT include the
+ * final readiness check — callers add `ensureSessionReady` (+ iOS ready wait).
+ */
+async function hardClearAndLaunch(ctx: SessionPreflightContext, step: StepRunner = runDirect): Promise<void> {
+  const pkg = ctx.config.package!;
+
+  if (ctx.config.platform === 'ios') {
+    // On iOS, clear data then restart for isolation.
     // clearAppData removes AsyncStorage (including React Navigation state).
     // restartApp handles terminate → relaunch atomically through the daemon
     // with fallback mechanisms (in-runner relaunch → simctl relaunch →
@@ -183,9 +317,9 @@ export async function launchConfiguredApp(
     // uninstall + reinstall (devicectl), since there's no host-side
     // app-container access. That path requires StartAgent to have been
     // called with ios_app_path — tapsmith's CLI + worker runners always do.
-    await ctx.device.clearAppData(ctx.config.package);
+    await step('clearAppData', () => ctx.device.clearAppData(pkg));
     try {
-      await ctx.device.restartApp(ctx.config.package);
+      await step('restartApp', () => ctx.device.restartApp(pkg));
     } catch (err) {
       // restartApp can fail on iOS if the agent session is stale after
       // clearAppData. The app will be relaunched by ensureSessionReady's
@@ -193,14 +327,8 @@ export async function launchConfiguredApp(
       // the error to stderr so a real app crash here is debuggable rather
       // than silently masked until the next test fails for an unrelated
       // reason.
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[tapsmith] iOS file-level restartApp failed (will recover): ${message}\n`);
+      process.stderr.write(`[tapsmith] iOS restartApp after clear failed (will recover): ${formatError(err)}\n`);
     }
-    await ensureSessionReady(ctx, phase, readinessAttempts);
-    // After launch, wait for the app to actually be ready (non-empty
-    // accessibility hierarchy). This guards the file-level race where
-    // beforeAll can fire before the React Native JS bundle has loaded.
-    await waitForIosAppReady(ctx);
     return;
   }
 
@@ -210,16 +338,16 @@ export async function launchConfiguredApp(
   // the atomic restartApp path (above) to avoid reconnecting to a stale
   // process that's mid-teardown after clearAppData.
   try {
-    await ctx.device.terminateApp(ctx.config.package);
+    await step('terminateApp', () => ctx.device.terminateApp(pkg));
   } catch {
     // App may not be running yet
   }
 
-  // Clear app data before launching to ensure proper isolation between test
-  // files. Without this, state from a previous file (e.g. auth tokens in
-  // AsyncStorage) leaks into the next file. Projects that need persisted
-  // state use test.use({ appState }) which restores after this reset.
-  await ctx.device.clearAppData(ctx.config.package);
+  // Clear app data before launching to ensure proper isolation. Without
+  // this, state from a previous file (e.g. auth tokens in AsyncStorage)
+  // leaks into the next file. Scopes that need persisted state declare
+  // test.use({ appState }) which restores instead of clearing.
+  await step('clearAppData', () => ctx.device.clearAppData(pkg));
 
   // Restart the agent BEFORE launching the app. The terminate + clearAppData
   // sequence above kills the agent process. If we launch the app first and
@@ -229,17 +357,19 @@ export async function launchConfiguredApp(
   // Best-effort: if the agent restart fails here (e.g. missing APK),
   // ensureSessionReady's recovery path will retry with a clearer error.
   try {
-    await ctx.device.startAgent(
-      ctx.config.package, ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath, ctx.iosAppPath,
+    await step('startAgent', () => ctx.device.startAgent(
+      pkg, ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath, ctx.iosAppPath,
       ctx.networkTracingEnabled ?? false,
-    );
+    ));
   } catch {
     // Will be recovered by ensureSessionReady below
   }
 
-  await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
+  await step('launchApp', () => ctx.device.launchApp(pkg, launchOptions(ctx.config)));
+}
 
-  await ensureSessionReady(ctx, phase, readinessAttempts);
+function formatSeconds(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 async function verifySession(ctx: SessionPreflightContext): Promise<void> {
@@ -466,16 +596,17 @@ async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
   await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
 }
 
-async function softResetAppViaDeepLink(ctx: SessionPreflightContext): Promise<void> {
+async function softResetAppViaDeepLink(ctx: SessionPreflightContext, forceCold: boolean): Promise<void> {
   const resetDeepLink = ctx.config.resetAppDeepLink!;
-  // forceColdLaunch: the between-file reset is the boundary that keeps warm
-  // in-process delivery safe on iOS simulators. Long all-warm sessions
-  // accumulate native navigation-stack state that diverges observably from a
-  // cold launch (a11y trees stop being flattened, element ids go stale);
-  // cold-relaunching here bounds the warm window to a single test file and
-  // pins each file's starting state to a fresh process. No effect on Android
-  // or physical iOS, which always deliver warm.
-  await ctx.device.openDeepLink(resetDeepLink, { forceColdLaunch: true });
+  // forceCold: the file-boundary reset is what keeps warm in-process
+  // delivery safe on iOS simulators. Long all-warm sessions accumulate native
+  // navigation-stack state that diverges observably from a cold launch (a11y
+  // trees stop being flattened, element ids go stale); cold-relaunching at
+  // file boundaries bounds the warm window to a single test file and pins
+  // each file's starting state to a fresh process. Per-test resets and
+  // in-file resets stay warm. No effect on Android or physical iOS, which
+  // always deliver warm.
+  await ctx.device.openDeepLink(resetDeepLink, { forceColdLaunch: forceCold });
 
   const waitMs = ctx.config.resetAppWaitMs ?? DEFAULT_SOFT_RESET_WAIT_MS;
   try {

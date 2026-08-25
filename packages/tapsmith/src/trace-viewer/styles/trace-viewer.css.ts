@@ -370,6 +370,8 @@ html, body, #app {
 .action-item.selected .action-icon { background: var(--bg-elev-2); color: var(--fg-dim); border-color: var(--border); }
 .action-icon.assert.failed, .action-icon.failed { color: var(--fail); }
 .action-name { font-size: 12.5px; font-weight: 500; color: var(--fg); white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.action-detail { font-size: 11px; color: var(--fg-muted, var(--fg-dim, #888)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.action-origin-tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; padding: 1px 5px; border-radius: 999px; border: 1px solid var(--border, #444); color: var(--fg-muted, var(--fg-dim, #888)); }
 .action-item.failed .action-name { color: var(--fail); }
 .action-selector-text {
   font-family: var(--font-mono);

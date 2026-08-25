@@ -15,12 +15,12 @@ import { TapsmithGrpcClient } from '../grpc-client.js';
 import { Device } from '../device.js';
 import { runTestFile, collectResults } from '../runner.js';
 import type { TapsmithConfig } from '../config.js';
-import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from '../session-preflight.js';
+import type { SessionPreflightContext } from '../session-preflight.js';
 import { createActionProgressMessenger } from '../action-progress-renderer.js';
 import {
   serializeTestResult,
   serializeSuiteResult,
-  type SerializedConfig,
+  configFromSerialized,
 } from '../worker-protocol.js';
 import type {
   UIRunMessage,
@@ -46,35 +46,6 @@ function send(msg: UIRunChildMessage): Promise<void> {
       resolve();
     }
   });
-}
-
-function configFromSerialized(s: SerializedConfig, daemonAddress: string): TapsmithConfig {
-  return {
-    timeout: s.timeout,
-    retries: s.retries,
-    screenshot: s.screenshot,
-    testMatch: [],
-    daemonAddress,
-    rootDir: s.rootDir,
-    outputDir: s.outputDir,
-    apk: s.apk,
-    activity: s.activity,
-    package: s.package,
-    agentApk: s.agentApk,
-    agentTestApk: s.agentTestApk,
-    workers: 1,
-    launchEmulators: false,
-    trace: s.trace as TapsmithConfig['trace'],
-    video: s.video as TapsmithConfig['video'],
-    platform: s.platform,
-    app: s.app,
-    iosXctestrun: s.iosXctestrun,
-    simulator: s.simulator,
-    resetAppDeepLink: s.resetAppDeepLink,
-    resetAppWaitMs: s.resetAppWaitMs,
-    baseURL: s.baseURL,
-    extraHTTPHeaders: s.extraHTTPHeaders,
-  };
 }
 
 function buildSessionContext(
@@ -168,12 +139,8 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
     emit: (text, phase) => send({ type: 'progress', message: phase === 'end' ? undefined : text }),
   });
 
-  // Reset app for clean state
-  if (config.package) {
-    await launchConfiguredApp(ctx, `UI run for ${path.basename(msg.filePath)}`);
-  } else {
-    await ensureSessionReady(ctx, `UI preflight for ${path.basename(msg.filePath)}`);
-  }
+  // The app reset is the runner's job (declared policy, traced as fixture
+  // setup, ending with its own readiness check) — nothing device-side here.
 
   const screenshotDir = msg.screenshotDir;
 
@@ -212,6 +179,7 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
     onTestStart: async (fullName: string, options?: { attributionOnly?: boolean }) => {
       send({ type: 'test-start', fullName, filePath: msg.filePath, attributionOnly: options?.attributionOnly });
     },
+    sessionContext: ctx,
     projectUseOptions: msg.projectUseOptions,
     projectName: msg.projectName,
     testFilter: msg.testFilter,

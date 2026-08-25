@@ -59,6 +59,7 @@ import type {
   UIDiscoverChildMessage,
   UIWorkerChildMessage,
   UIWorkerMessage,
+  TestTreeUseOptions,
 } from './ui-protocol.js';
 import { encodeScreenFrame, type TestNodeStatus } from './ui-protocol.js';
 import { RunQueue } from '../watch-queue.js';
@@ -632,6 +633,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     if (node.children && node.children.length > 0) {
       entry.children = node.children.map(toTreeEntry);
     }
+    if (node.use) entry.use = node.use;
     return entry;
   }
 
@@ -874,12 +876,48 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
   /** Deep-clone a discovered tree node, prefixing every id so the same file
    * appearing under multiple projects gets independent expansion / status
    * state on the client. */
-  function cloneNodeWithIdPrefix(node: TestTreeNode, prefix: string): TestTreeNode {
+  function cloneNodeWithIdPrefix(
+    node: TestTreeNode,
+    prefix: string,
+    projectUse?: TestTreeUseOptions,
+  ): TestTreeNode {
+    const use = mergeTreeUse(projectUse, node.use);
     return {
       ...node,
       id: `${prefix}${node.id}`,
-      children: node.children?.map((c) => cloneNodeWithIdPrefix(c, prefix)),
+      children: node.children?.map((c) => cloneNodeWithIdPrefix(c, prefix, projectUse)),
+      ...(use ? { use } : {}),
     };
+  }
+
+  /**
+   * Project `use` is the base layer under a file's own `test.use()` cascade
+   * (mirrors runner.ts: `rootCtx.useOptions = { ...projectUse, ...fileUse }`).
+   * Only the isolation-relevant keys travel to the client.
+   */
+  function mergeTreeUse(
+    projectUse: TestTreeUseOptions | undefined,
+    nodeUse: TestTreeUseOptions | undefined,
+  ): TestTreeUseOptions | undefined {
+    if (!projectUse && !nodeUse) return undefined;
+    const merged: TestTreeUseOptions = {};
+    const appReset = nodeUse?.appReset ?? projectUse?.appReset;
+    const appResetScope = nodeUse?.appResetScope ?? projectUse?.appResetScope;
+    const appState = nodeUse?.appState ?? projectUse?.appState;
+    if (appReset !== undefined) merged.appReset = appReset;
+    if (appResetScope !== undefined) merged.appResetScope = appResetScope;
+    if (appState !== undefined) merged.appState = appState;
+    return Object.keys(merged).length > 0 ? merged : undefined;
+  }
+
+  function projectTreeUse(project: { use?: { appReset?: unknown; appResetScope?: unknown; appState?: unknown } }): TestTreeUseOptions | undefined {
+    const u = project.use;
+    if (!u) return undefined;
+    return mergeTreeUse(undefined, {
+      ...(u.appReset !== undefined ? { appReset: u.appReset as TestTreeUseOptions['appReset'] } : {}),
+      ...(u.appResetScope !== undefined ? { appResetScope: u.appResetScope as TestTreeUseOptions['appResetScope'] } : {}),
+      ...(typeof u.appState === 'string' ? { appState: u.appState } : {}),
+    });
   }
 
   function rebuildTestTreeFromDiscoveredFiles(): void {
@@ -893,7 +931,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
           .filter((n): n is TestTreeNode => n != null)
           // Deep-clone so each project owns its own nodes (unique ids,
           // independent expansion state, scoped status updates).
-          .map((n) => cloneNodeWithIdPrefix(n, idPrefix));
+          .map((n) => cloneNodeWithIdPrefix(n, idPrefix, projectTreeUse(project)));
 
         if (projectFiles.length === 0) continue;
 

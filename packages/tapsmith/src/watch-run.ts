@@ -9,19 +9,18 @@
  * @see PILOT-120
  */
 
-import * as path from 'node:path';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults } from './runner.js';
 import type { TapsmithConfig } from './config.js';
-import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
+import { ensureSessionReady, type SessionPreflightContext } from './session-preflight.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
-import { isAbortError } from './abort.js';
 import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
 import {
   serializeTestResult,
   serializeSuiteResult,
   deserializeRegExpArray,
+  configFromSerialized,
   type SerializedConfig,
   type RunFileUseOptions,
 } from './worker-protocol.js';
@@ -87,37 +86,6 @@ export type WatchRunChildMessage =
   | WatchRunErrorMessage
 
 // ─── Config reconstruction ───
-
-function configFromSerialized(s: SerializedConfig, daemonAddress: string): TapsmithConfig {
-  return {
-    timeout: s.timeout,
-    retries: s.retries,
-    screenshot: s.screenshot,
-    testMatch: [],
-    daemonAddress,
-    rootDir: s.rootDir,
-    outputDir: s.outputDir,
-    apk: s.apk,
-    activity: s.activity,
-    package: s.package,
-    agentApk: s.agentApk,
-    agentTestApk: s.agentTestApk,
-    workers: 1,
-    launchEmulators: false,
-    trace: s.trace as TapsmithConfig['trace'],
-    video: s.video as TapsmithConfig['video'],
-    platform: s.platform,
-    app: s.app,
-    iosXctestrun: s.iosXctestrun,
-    simulator: s.simulator,
-    resetAppDeepLink: s.resetAppDeepLink,
-    resetAppWaitMs: s.resetAppWaitMs,
-    baseURL: s.baseURL,
-    extraHTTPHeaders: s.extraHTTPHeaders,
-    grep: deserializeRegExpArray(s.grep),
-    grepInvert: deserializeRegExpArray(s.grepInvert),
-  };
-}
 
 // ─── Helpers ───
 
@@ -196,7 +164,6 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
 
   const label = msg.label ?? 'Watch';
   const ctx = buildSessionContext(config, device, client, msg.deviceSerial, label);
-  const phase = label.toLowerCase();
 
   // Created BEFORE preflight so a stop that lands during wake/unlock/app-reset
   // is honoured rather than being a no-op that runs the whole file anyway.
@@ -209,24 +176,10 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
   const disposeActionProgressPrinter = installActionProgressPrinter();
 
   try {
-    // Reset app for clean state
-    try {
-      if (config.package) {
-        await launchConfiguredApp(ctx, `${phase} reset for ${path.basename(msg.filePath)}`);
-      } else {
-        await ensureSessionReady(ctx, `${phase} preflight for ${path.basename(msg.filePath)}`);
-      }
-    } catch (err) {
-      // A stop during preflight is not a preflight failure. Report an ending
-      // either way — an unreported abort is what left the parent counting zero.
-      if (abortController.signal.aborted || isAbortError(err)) {
-        sendEmptyFileDone(msg.filePath);
-        return;
-      }
-      throw err;
-    }
+    // The app reset is the runner's job (declared policy, traced as fixture
+    // setup, ending with its own readiness check). A stop that lands during
+    // it leaves the file's tests untouched and reports an empty ending.
     if (abortController.signal.aborted) {
-      // Stop landed during preflight without failing a device call.
       sendEmptyFileDone(msg.filePath);
       return;
     }
@@ -248,6 +201,7 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
       device,
       screenshotDir,
       reporter: reporterProxy,
+      sessionContext: ctx,
       projectUseOptions: msg.projectUseOptions,
       projectName: msg.projectName,
       testFilter: msg.testFilter,

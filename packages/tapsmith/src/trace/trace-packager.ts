@@ -41,6 +41,9 @@ export interface PackageOptions {
   project?: string
   /** Path to the app state archive restored before this test. */
   appState?: string
+  /** Declared app reset mode / scope for this test (see TapsmithConfig.appReset). */
+  appReset?: string
+  appResetScope?: string
   /** Zero-based attempt number; retries get a `-retryN` filename suffix. */
   retry?: number
 }
@@ -98,6 +101,8 @@ export function packageTrace(
     error: options.error,
     project: options.project,
     appState: options.appState,
+    appReset: options.appReset,
+    appResetScope: options.appResetScope,
   };
   zipData['metadata.json'] = new TextEncoder().encode(
     JSON.stringify(metadata, null, 2),

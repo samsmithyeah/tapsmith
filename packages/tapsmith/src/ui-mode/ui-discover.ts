@@ -44,6 +44,7 @@ function suiteToTreeNode(suite: DiscoveredSuite, filePath: string): TestTreeNode
       filePath,
       fullName: test.fullName,
       status: 'idle',
+      ...(test.use ? { use: test.use } : {}),
     });
   }
 
@@ -58,6 +59,7 @@ function suiteToTreeNode(suite: DiscoveredSuite, filePath: string): TestTreeNode
       fullName: child.name,
       status: 'idle',
       children: suiteToTreeNode(child, filePath),
+      ...(child.use ? { use: child.use } : {}),
     };
     nodes.push(childNode);
   }
@@ -78,6 +80,7 @@ async function handleDiscover(msg: UIDiscoverMessage): Promise<void> {
     fullName: path.basename(msg.filePath),
     status: 'idle',
     children: suiteToTreeNode(suite, msg.filePath),
+    ...(suite.use ? { use: suite.use } : {}),
   };
 
   send({

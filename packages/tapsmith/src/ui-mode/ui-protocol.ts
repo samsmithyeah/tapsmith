@@ -93,6 +93,18 @@ export interface TestTreeNode {
   watchEnabled?: boolean
   /** For project nodes: names of projects this depends on. */
   dependencies?: string[]
+  /**
+   * Declared isolation options in effect for this node (project `use` merged
+   * with the file's `test.use()` cascade). Absent when nothing is declared —
+   * the runner then resolves `auto` at run time.
+   */
+  use?: TestTreeUseOptions
+}
+
+export interface TestTreeUseOptions {
+  appReset?: 'auto' | 'clear' | 'restart' | 'warm' | 'none'
+  appResetScope?: 'auto' | 'file' | 'test'
+  appState?: string
 }
 
 export type TestNodeStatus =

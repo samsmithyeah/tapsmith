@@ -20,9 +20,10 @@ import {
   serializeTestResult,
   serializeSuiteResult,
   isRecoverableInfrastructureError,
-  type SerializedConfig,
+  configFromSerialized,
 } from '../worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from '../session-preflight.js';
+import type { PreparedState } from '../app-reset.js';
 import { createActionProgressMessenger } from '../action-progress-renderer.js';
 import { isAbortError } from '../abort.js';
 import type { AnyTraceEvent } from '../trace/types.js';
@@ -63,33 +64,16 @@ function sendProgress(message: string): void {
   send({ type: 'progress', workerId, message });
 }
 
-function configFromSerialized(s: SerializedConfig, daemonAddress: string): TapsmithConfig {
-  return {
-    timeout: s.timeout,
-    retries: s.retries,
-    screenshot: s.screenshot,
-    testMatch: [],
-    daemonAddress,
-    rootDir: s.rootDir,
-    outputDir: s.outputDir,
-    apk: s.apk,
-    activity: s.activity,
-    package: s.package,
-    agentApk: s.agentApk,
-    agentTestApk: s.agentTestApk,
-    workers: 1,
-    launchEmulators: false,
-    trace: s.trace as TapsmithConfig['trace'],
-    video: s.video as TapsmithConfig['video'],
-    platform: s.platform,
-    app: s.app,
-    iosXctestrun: s.iosXctestrun,
-    simulator: s.simulator,
-    resetAppDeepLink: s.resetAppDeepLink,
-    resetAppWaitMs: s.resetAppWaitMs,
-    baseURL: s.baseURL,
-    extraHTTPHeaders: s.extraHTTPHeaders,
-  };
+/**
+ * A launch that already left the app in fresh state (startup, warmup,
+ * recovery). Handed to the next file's runner so it can skip its own reset
+ * when the declared policy is satisfied — consumed exactly once.
+ */
+let preparedDevice: PreparedState | undefined;
+function consumePreparedDevice(): PreparedState | undefined {
+  const p = preparedDevice;
+  preparedDevice = undefined;
+  return p;
 }
 
 function sessionContext(
@@ -271,10 +255,9 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
   try {
     if (config.package) {
       sendProgress(`launching ${config.package}`);
-      await launchConfiguredApp(
+      preparedDevice = await launchConfiguredApp(
         sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
-        'UI worker initialization',
-        { allowSoftReset: false },
+        'UI worker startup launch',
       );
     } else {
       sendProgress('validating session readiness');
@@ -294,10 +277,9 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
     sendProgress('warming up fresh emulator');
     await device.waitForIdle();
     await device.terminateApp(config.package);
-    await launchConfiguredApp(
+    preparedDevice = await launchConfiguredApp(
       sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
-      'warmup',
-      { allowSoftReset: false },
+      'emulator warmup launch',
     );
     await device.waitForIdle();
   }
@@ -340,17 +322,11 @@ async function handleRunFile(
 
   try {
     // Ensure the device is awake — the screen may have auto-locked while
-    // watch mode was idle waiting for file changes.
+    // watch mode was idle waiting for file changes. The between-file app
+    // reset itself is the runner's job (declared policy, recorded in the
+    // trace as fixture setup, ending with its own readiness check).
     await device.wake();
     await device.unlock();
-
-    // Reset app between files. When this scope restores a non-empty `appState`,
-    // skip the destructive clearAppData: the restore owns isolation and
-    // preserves the AndroidKeyStore (a pm clear here would wipe the keys that
-    // decrypt saved credentials, leaving the app signed out after restore).
-    if (config.package) {
-      await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`, { skipDataClear: !!projectUseOptions?.appState });
-    }
   } catch (err) {
     // Whether aborted or a genuine preflight failure, this run is over —
     // don't leave a stale controller for a later idle-state abort IPC.
@@ -462,6 +438,8 @@ async function runFileWithRecovery(
           await ensureSessionReady(sessionContext(undefined), `before test ${fullName}`);
         },
         abortFileOnError: isRecoverableInfrastructureError,
+        sessionContext: sessionContext(undefined),
+        preparedDevice: consumePreparedDevice(),
         projectUseOptions,
         projectName,
         testFilter,
@@ -526,10 +504,9 @@ async function recoverFileSession(filePath: string, err: unknown): Promise<void>
   }
 
   if (config?.package) {
-    await launchConfiguredApp(
+    preparedDevice = await launchConfiguredApp(
       sessionContext(undefined),
       `recovery for ${path.basename(filePath)}`,
-      { allowSoftReset: false },
     );
   } else {
     await ensureSessionReady(sessionContext(undefined), `recovery for ${path.basename(filePath)}`);

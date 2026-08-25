@@ -414,6 +414,7 @@ export default [
 | `tapsmith/prefer-role` | `locator({ className })` for standard widgets that have roles |
 | `tapsmith/prefer-accessible-selectors` | `getByTestId()` or `locator({ id })` when accessible selectors exist |
 | `tapsmith/no-bare-locator-xpath` | `locator({ xpath })` without an explanatory comment |
+| `tapsmith/prefer-app-reset-option` | a `beforeEach` that only restarts/clears the app — declare `test.use({ appReset })` instead |
 
 ## Flaky Test Mitigation
 

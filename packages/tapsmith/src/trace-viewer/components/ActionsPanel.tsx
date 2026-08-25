@@ -282,8 +282,18 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
                   >
                     <span class={`action-icon ${iconClass}`}>{icon}</span>
                     <div class="action-details">
-                      <span class="action-name">{label}</span>
-                      <SelectorDisplay sel={event.selector} />
+                      <span class="action-name">
+                        {label}
+                        {event.type === 'action' && event.origin === 'prepared' && (
+                          <span class="action-origin-tag" data-testid="action-origin" title="Satisfied by an earlier preparation — no device work ran here">prepared</span>
+                        )}
+                        {event.type === 'action' && event.origin === 'skipped' && (
+                          <span class="action-origin-tag" data-testid="action-origin">skipped</span>
+                        )}
+                      </span>
+                      {event.type === 'action' && !event.selector && event.detail
+                        ? <span class="action-detail" data-testid="action-detail">{event.detail}</span>
+                        : <SelectorDisplay sel={event.selector} />}
                     </div>
                     <span
                       class="action-duration act-dur"
@@ -371,6 +381,12 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
             {metadata.project && <>
               <span class="metadata-label">Project</span>
               <span class="metadata-value">{metadata.project}</span>
+            </>}
+            {metadata.appReset && <>
+              <span class="metadata-label">Isolation</span>
+              <span class="metadata-value" data-testid="metadata-isolation">
+                {metadata.appReset}{metadata.appResetScope ? ` · per ${metadata.appResetScope}` : ''}
+              </span>
             </>}
             {metadata.appState && <>
               <span class="metadata-label">App State</span>
