@@ -345,7 +345,11 @@ describe('runner app reset (declared isolation)', () => {
       const zip = unzipSync(fs.readFileSync(tracePath!));
       const events = new TextDecoder().decode(zip['trace.json']).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
       const groups = events.filter((e) => e.type === 'group-start').map((e) => e.name);
-      expect(groups.slice(0, 2)).toEqual(['beforeAll Hooks', 'App reset (clear)']);
+      // The reset is the first row of the beforeAll group itself — not a nested
+      // sub-group, which the actions panel would render as a flat header that
+      // swallows the hook's own actions.
+      expect(groups[0]).toBe('beforeAll Hooks');
+      expect(groups.filter((g) => g.startsWith('App reset'))).toEqual([]);
       const actions = events.filter((e) => e.type === 'action').map((e) => e.action);
       expect(actions[0]).toBe('resetApp');
       const metadata = JSON.parse(new TextDecoder().decode(zip['metadata.json']));

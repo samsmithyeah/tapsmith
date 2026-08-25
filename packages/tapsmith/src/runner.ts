@@ -829,10 +829,13 @@ function replayBeforeAllEvents(
 
 /**
  * Execute the declared app reset as a traced fixture step. Inline device work
- * (clearAppData, restartApp, openDeepLink, …) records its own action rows
- * under a nested "App reset (…)" group; when the reset was satisfied by a
- * prepared device, skipped by policy, or fell back to another mode, a summary
- * `appReset` row carries the explanation so the trace stays honest.
+ * (resetApp, clearAppData, restartApp, …) records its own action rows as the
+ * first entries of the enclosing hooks group — deliberately not a nested
+ * group: the actions panel renders group starts as flat section headers, so a
+ * sub-group would swallow the hook actions that follow it. When the reset was
+ * satisfied by a prepared device, skipped by policy, or fell back to another
+ * mode, a summary `appReset` row carries the explanation so the trace stays
+ * honest.
  */
 async function runTracedAppReset(
   collector: TraceCollector | null,
@@ -840,9 +843,8 @@ async function runTracedAppReset(
   policy: AppResetPolicy,
   options: ExecuteAppResetOptions,
 ): Promise<AppResetReport> {
-  collector?.startGroup(describeAction(policy));
   const started = Date.now();
-  try {
+  {
     const report = await executeAppReset(ctx, policy, options);
     if (collector && (report.origin !== 'inline' || report.fellBack)) {
       collector.addActionEvent({
@@ -862,8 +864,6 @@ async function runTracedAppReset(
       });
     }
     return report;
-  } finally {
-    collector?.endGroup();
   }
 }
 
