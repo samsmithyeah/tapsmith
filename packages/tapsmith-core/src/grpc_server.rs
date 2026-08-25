@@ -1046,6 +1046,7 @@ impl TapsmithServiceImpl {
         uri: &str,
         force_cold: bool,
         ack_epoch_gt: Option<u64>,
+        ack_boot_before: Option<String>,
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let platform = self.require_platform().await?;
         match platform {
@@ -1073,6 +1074,7 @@ impl TapsmithServiceImpl {
                         deliver_in_process: true,
                         require_ui_change: false,
                         ack_epoch_gt,
+                        ack_boot_before: ack_boot_before.clone(),
                     };
                     let result = self.send_agent_command(&command).await;
                     return self.make_action_response(request_id, result).await;
@@ -1123,6 +1125,7 @@ impl TapsmithServiceImpl {
                         // otherwise fall back to the hierarchy-change heuristic.
                         require_ui_change: ack_epoch_gt.is_none(),
                         ack_epoch_gt,
+                        ack_boot_before: ack_boot_before.clone(),
                     };
                     let warm_result = self
                         .send_agent_command_with_timeout(
@@ -1270,6 +1273,7 @@ impl TapsmithServiceImpl {
                         deliver_in_process: false,
                         require_ui_change: false,
                         ack_epoch_gt,
+                        ack_boot_before: ack_boot_before.clone(),
                     };
                     let result = self
                         .send_agent_command_with_timeout(
@@ -1356,7 +1360,13 @@ impl TapsmithServiceImpl {
 
                     let satisfied = match ack_epoch_gt {
                         Some(before) => match self.current_hooks_marker(5_000).await {
-                            Some(marker) if marker.epoch > before => {
+                            Some(marker)
+                                if app_reset::hooks_acknowledged(
+                                    before,
+                                    ack_boot_before.as_deref(),
+                                    &marker,
+                                ) =>
+                            {
                                 if let Some(err) = marker.err {
                                     return Ok(self
                                         .action_error(
@@ -3864,7 +3874,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             return Err(Status::invalid_argument("uri is required"));
         }
 
-        self.deliver_deep_link(request_id, &req.uri, req.force_cold_launch, None)
+        self.deliver_deep_link(request_id, &req.uri, req.force_cold_launch, None, None)
             .await
     }
 
@@ -7638,7 +7648,13 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
         );
         let resp = self
             .svc
-            .deliver_deep_link(Uuid::new_v4().to_string(), &url, cold, Some(marker.epoch))
+            .deliver_deep_link(
+                Uuid::new_v4().to_string(),
+                &url,
+                cold,
+                Some(marker.epoch),
+                marker.boot.clone(),
+            )
             .await
             .map_err(|e| e.message().to_string())?
             .into_inner();
@@ -7647,10 +7663,14 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
         }
         // Read back the acknowledged epoch (and any error the hook reported).
         match self.svc.current_hooks_marker(5_000).await {
-            Some(after) if after.epoch > marker.epoch => match after.err {
-                Some(err) => Err(format!("in-app reset reported an error: {err}")),
-                None => Ok(after.epoch),
-            },
+            Some(after)
+                if app_reset::hooks_acknowledged(marker.epoch, marker.boot.as_deref(), &after) =>
+            {
+                match after.err {
+                    Some(err) => Err(format!("in-app reset reported an error: {err}")),
+                    None => Ok(after.epoch),
+                }
+            }
             Some(_) => Err("in-app reset did not advance its epoch".to_string()),
             // The agent already verified the ack; the hierarchy may just be
             // mid-transition. Trust the delivery.
@@ -7661,7 +7681,7 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
     async fn warm_deep_link(&self, link: &str, cold: bool) -> Result<(), String> {
         let resp = self
             .svc
-            .deliver_deep_link(Uuid::new_v4().to_string(), link, cold, None)
+            .deliver_deep_link(Uuid::new_v4().to_string(), link, cold, None, None)
             .await
             .map_err(|e| e.message().to_string())?
             .into_inner();

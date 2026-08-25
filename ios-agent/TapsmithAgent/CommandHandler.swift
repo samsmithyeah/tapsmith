@@ -161,22 +161,24 @@ class CommandHandler {
     /// Parse the `@tapsmith/react-native` marker
     /// (`tapsmith-hooks:<v>;epoch=<n>;url=<prefix>[;err=<msg>]`) out of a
     /// snapshot, if the app renders one.
-    private func hooksMarker(in snapshot: XCUIElementSnapshot) -> (epoch: UInt64, err: String?)? {
+    private func hooksMarker(in snapshot: XCUIElementSnapshot) -> (epoch: UInt64, boot: String?, err: String?)? {
         let candidates = [snapshot.label, snapshot.identifier, String(describing: snapshot.value ?? "")]
         for text in candidates {
             guard let range = text.range(of: "tapsmith-hooks:") else { continue }
             let body = text[range.upperBound...]
             var epoch: UInt64?
+            var boot: String?
             var err: String?
             for field in body.split(separator: ";") {
                 let parts = field.split(separator: "=", maxSplits: 1).map(String.init)
                 guard parts.count == 2 else { continue }
                 if parts[0] == "epoch" { epoch = UInt64(parts[1]) }
+                if parts[0] == "boot", !parts[1].isEmpty { boot = parts[1] }
                 if parts[0] == "err", !parts[1].isEmpty {
                     err = parts[1].removingPercentEncoding ?? parts[1]
                 }
             }
-            if let epoch { return (epoch, err) }
+            if let epoch { return (epoch, boot, err) }
         }
         for child in snapshot.children {
             if let found = hooksMarker(in: child) { return found }
@@ -186,9 +188,21 @@ class CommandHandler {
 
     /// Wait until the in-app hooks marker reports an epoch greater than
     /// `epochBefore` — the ack that a declared reset actually ran.
+    /// The in-app hook acknowledged a reset when its epoch advanced past the
+    /// value read before the request — or, when the marker's per-process
+    /// `boot` token changed (the app was relaunched, so the counter restarted
+    /// at 0), when the fresh process reports any epoch ≥ 1.
+    private func hooksAcknowledged(
+        epoch: UInt64, boot: String?, epochBefore: UInt64, bootBefore: String?
+    ) -> Bool {
+        if let bootBefore, let boot, boot != bootBefore { return epoch >= 1 }
+        return epoch > epochBefore
+    }
+
     private func waitForHooksEpoch(
         _ app: XCUIApplication,
         greaterThan epochBefore: UInt64,
+        bootBefore: String?,
         timeout: TimeInterval
     ) -> HooksEpochOutcome {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
@@ -201,7 +215,10 @@ class CommandHandler {
                 _ = ObjCExceptionCatcher.catchException {
                     guard let snapshot = try? app.snapshot(),
                           let marker = self.hooksMarker(in: snapshot),
-                          marker.epoch > epochBefore else { return }
+                          self.hooksAcknowledged(
+                              epoch: marker.epoch, boot: marker.boot,
+                              epochBefore: epochBefore, bootBefore: bootBefore
+                          ) else { return }
                     if let err = marker.err {
                         outcome = .hookError(err)
                     } else {
@@ -1530,6 +1547,7 @@ class CommandHandler {
             // hierarchy-change heuristic (which cannot tell a same-screen reset
             // from a dropped Linking event).
             let ackEpochGreaterThan = (params["ackEpochGreaterThan"] as? NSNumber)?.uint64Value
+            let ackBootBefore = params["ackBootBefore"] as? String
             let targetApp = XCUIApplication(bundleIdentifier: bundleId)
             _ = safeAppState(targetApp)
             QuiescenceDisabler.disable(for: targetApp)
@@ -1567,7 +1585,7 @@ class CommandHandler {
                 }
 
                 if let epochBefore = ackEpochGreaterThan {
-                    let outcome = waitForHooksEpoch(targetApp, greaterThan: epochBefore, timeout: 8.0)
+                    let outcome = waitForHooksEpoch(targetApp, greaterThan: epochBefore, bootBefore: ackBootBefore, timeout: 8.0)
                     switch outcome {
                     case .acknowledged(let epoch):
                         if displayAppearsBlack() {
@@ -1627,7 +1645,7 @@ class CommandHandler {
                 // by the in-app hook — rendered content alone is what the
                 // hierarchy heuristic could not trust.
                 if let epochBefore = ackEpochGreaterThan {
-                    switch waitForHooksEpoch(targetApp, greaterThan: epochBefore, timeout: 8.0) {
+                    switch waitForHooksEpoch(targetApp, greaterThan: epochBefore, bootBefore: ackBootBefore, timeout: 8.0) {
                     case .acknowledged(let epoch):
                         _ = rebindApp(bundleId: bundleId)
                         return ["success": true, "epochAfter": epoch]

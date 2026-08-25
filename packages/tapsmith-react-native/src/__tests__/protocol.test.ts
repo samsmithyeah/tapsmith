@@ -14,6 +14,14 @@ describe('marker', () => {
 
   it('parses when embedded in surrounding text and rejects non-markers', () => {
     expect(parseMarker('label: tapsmith-hooks:1;epoch=2;url=a:///')?.epoch).toBe(2);
+  });
+
+  it('carries the per-process boot token so a relaunch is recognisable', () => {
+    const text = formatMarker({ epoch: 1, boot: 'c0ffee42', urlPrefix: 'myapp:///' });
+    expect(text).toBe('tapsmith-hooks:1;epoch=1;boot=c0ffee42;url=myapp:///');
+    expect(parseMarker(text)).toMatchObject({ epoch: 1, boot: 'c0ffee42' });
+    // Older markers simply have no token.
+    expect(parseMarker('tapsmith-hooks:1;epoch=2;url=a:///')?.boot).toBeUndefined();
     expect(parseMarker('hello')).toBeUndefined();
     expect(parseMarker('tapsmith-hooks:1;url=a:///')).toBeUndefined();
   });

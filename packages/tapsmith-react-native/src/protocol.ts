@@ -4,7 +4,13 @@
  * Kotlin or Swift implementation follows the same three rules.
  *
  *   marker (always-present a11y text):
- *     tapsmith-hooks:<version>;epoch=<n>;url=<prefix>[;err=<urlencoded>]
+ *     tapsmith-hooks:<version>;epoch=<n>;boot=<token>;url=<prefix>[;err=<urlencoded>]
+ *
+ *   `boot` is a random token generated once per app process. The epoch counter
+ *   lives in memory and restarts at 0 after a cold relaunch, so a reset that
+ *   is delivered cold (the daemon's periodic cold-launch valve, or a retry) can
+ *   never satisfy "epoch greater than before" — a changed `boot` tells the
+ *   daemon it is looking at a fresh process, where any epoch ≥ 1 is the ack.
  *   request (deep link the daemon opens):
  *     <prefix><target>?__tapsmith_reset=1&nonce=<opaque>
  *   ack:
@@ -19,15 +25,21 @@ export interface MarkerFields {
   epoch: number;
   /** URL prefix the daemon should build reset links from (ends with `/`). */
   urlPrefix: string;
+  /** Per-process token (see the module comment); omitted only by pre-boot markers. */
+  boot?: string;
   /** Last reset error, if the handler threw. */
   error?: string;
 }
 
 /** Render the marker text. Keep it a single line with no quotes — it lives in an XML attribute. */
+/** Random per-process token; regenerated only when the app process restarts. */
+export const BOOT_TOKEN: string = Math.random().toString(16).slice(2, 10).padStart(8, '0');
+
 export function formatMarker(fields: MarkerFields): string {
   const parts = [
     `${MARKER_PREFIX}${PROTOCOL_VERSION}`,
     `epoch=${fields.epoch}`,
+    ...(fields.boot ? [`boot=${fields.boot}`] : []),
     `url=${fields.urlPrefix}`,
   ];
   if (fields.error) parts.push(`err=${encodeURIComponent(fields.error).replace(/'/g, '%27').replace(/"/g, '%22')}`);
@@ -44,6 +56,7 @@ export function parseMarker(text: string): (MarkerFields & { version: number }) 
   if (!Number.isFinite(version)) return undefined;
   let epoch: number | undefined;
   let urlPrefix = '';
+  let boot: string | undefined;
   let error: string | undefined;
   for (const field of rest) {
     const eq = field.indexOf('=');
@@ -52,12 +65,13 @@ export function parseMarker(text: string): (MarkerFields & { version: number }) 
     const value = field.slice(eq + 1).trim();
     if (key === 'epoch') epoch = Number.parseInt(value, 10);
     else if (key === 'url') urlPrefix = value;
+    else if (key === 'boot' && value) boot = value;
     else if (key === 'err' && value) {
       try { error = decodeURIComponent(value); } catch { error = value; }
     }
   }
   if (epoch === undefined || !Number.isFinite(epoch)) return undefined;
-  return { version, epoch, urlPrefix, error };
+  return { version, epoch, urlPrefix, error, ...(boot ? { boot } : {}) };
 }
 
 export interface ResetRequest {

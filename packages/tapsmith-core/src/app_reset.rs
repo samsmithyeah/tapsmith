@@ -39,6 +39,11 @@ pub struct HooksMarker {
     pub url_prefix: String,
     /// Error reported by the last in-app reset, if it failed.
     pub err: Option<String>,
+    /// Random per-process token. The epoch counter restarts at 0 when the app
+    /// is relaunched, so a changed `boot` is how a cold-delivered reset is
+    /// recognised as acknowledged (see [`hooks_acknowledged`]). `None` for
+    /// modules that predate the field.
+    pub boot: Option<String>,
 }
 
 /// Find and parse the hooks marker in a UI hierarchy dump (Android
@@ -56,6 +61,7 @@ pub fn parse_hooks_marker(hierarchy_xml: &str) -> Option<HooksMarker> {
     let mut epoch: Option<u64> = None;
     let mut url_prefix = String::new();
     let mut err: Option<String> = None;
+    let mut boot: Option<String> = None;
     for field in fields {
         let Some((k, v)) = field.split_once('=') else {
             continue;
@@ -63,6 +69,12 @@ pub fn parse_hooks_marker(hierarchy_xml: &str) -> Option<HooksMarker> {
         match k.trim() {
             "epoch" => epoch = v.trim().parse().ok(),
             "url" => url_prefix = v.trim().to_string(),
+            "boot" => {
+                let b = v.trim();
+                if !b.is_empty() {
+                    boot = Some(b.to_string());
+                }
+            }
             "err" => {
                 let decoded = percent_decode(v.trim());
                 if !decoded.is_empty() {
@@ -77,7 +89,27 @@ pub fn parse_hooks_marker(hierarchy_xml: &str) -> Option<HooksMarker> {
         epoch: epoch?,
         url_prefix,
         err,
+        boot,
     })
+}
+
+/// Whether the marker read *after* a reset request acknowledges it.
+///
+/// Normally the ack is the epoch advancing past the value read before the
+/// request. A cold delivery relaunches the app, which restarts the in-memory
+/// counter at 0 — so when the marker's per-process `boot` token differs from
+/// the one read before, any epoch ≥ 1 (the fresh process handled its launch
+/// URL) is the acknowledgement. Without boot tokens on both sides, fall back
+/// to the strict comparison.
+pub fn hooks_acknowledged(
+    epoch_before: u64,
+    boot_before: Option<&str>,
+    after: &HooksMarker,
+) -> bool {
+    match (boot_before, after.boot.as_deref()) {
+        (Some(b), Some(a)) if a != b => after.epoch >= 1,
+        _ => after.epoch > epoch_before,
+    }
 }
 
 /// `<prefix><target>?__tapsmith_reset=1&nonce=<nonce>`.
@@ -530,7 +562,8 @@ mod tests {
                 version: 1,
                 epoch: 4,
                 url_prefix: "myapp://".into(),
-                err: None
+                err: None,
+                boot: None,
             })
         );
     }
@@ -590,12 +623,64 @@ mod tests {
 
     // ── policy ──
 
+    #[test]
+    fn parses_boot_token() {
+        let m = parse_hooks_marker(
+            r#"<node text="tapsmith-hooks:1;epoch=3;boot=a1b2c3d4;url=app:///" />"#,
+        )
+        .unwrap();
+        assert_eq!(m.epoch, 3);
+        assert_eq!(m.boot.as_deref(), Some("a1b2c3d4"));
+        let legacy =
+            parse_hooks_marker(r#"<node text="tapsmith-hooks:1;epoch=3;url=app:///" />"#).unwrap();
+        assert_eq!(legacy.boot, None);
+    }
+
+    #[test]
+    fn ack_rule_handles_relaunch() {
+        let after = |epoch: u64, boot: Option<&str>| HooksMarker {
+            version: 1,
+            epoch,
+            url_prefix: "app:///".into(),
+            err: None,
+            boot: boot.map(str::to_string),
+        };
+        // Same process: epoch must advance.
+        assert!(hooks_acknowledged(
+            10,
+            Some("aaaa"),
+            &after(11, Some("aaaa"))
+        ));
+        assert!(!hooks_acknowledged(
+            10,
+            Some("aaaa"),
+            &after(10, Some("aaaa"))
+        ));
+        // Relaunched process: counter restarted, any epoch ≥ 1 acks.
+        assert!(hooks_acknowledged(
+            10,
+            Some("aaaa"),
+            &after(1, Some("bbbb"))
+        ));
+        assert!(!hooks_acknowledged(
+            10,
+            Some("aaaa"),
+            &after(0, Some("bbbb"))
+        ));
+        // Retry-forced cold after a single warm reset: 1 → 1 is still an ack.
+        assert!(hooks_acknowledged(1, Some("aaaa"), &after(1, Some("bbbb"))));
+        // Legacy markers without boot fall back to the strict rule.
+        assert!(!hooks_acknowledged(10, None, &after(1, None)));
+        assert!(hooks_acknowledged(10, None, &after(11, None)));
+    }
+
     fn marker() -> HooksMarker {
         HooksMarker {
             version: 1,
             epoch: 3,
             url_prefix: "app://".into(),
             err: None,
+            boot: None,
         }
     }
 

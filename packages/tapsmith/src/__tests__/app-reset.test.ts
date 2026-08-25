@@ -115,6 +115,11 @@ describe('appResetPolicyEquals / describeAction', () => {
 });
 
 describe('parseHooksMarker', () => {
+  it('ignores fields it does not use (boot token from newer modules)', () => {
+    const m = parseHooksMarker('<node label="tapsmith-hooks:1;epoch=3;boot=c0ffee42;url=app:///" />');
+    expect(m).toMatchObject({ epoch: 3, urlPrefix: 'app:///' });
+  });
+
   it('parses the Android text attribute and the iOS label attribute', () => {
     expect(parseHooksMarker('<node text="tapsmith-hooks:1;epoch=4;url=myapp:///" class="android.widget.TextView"/>'))
       .toEqual({ version: 1, epoch: 4, urlPrefix: 'myapp:///' });

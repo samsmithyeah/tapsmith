@@ -522,6 +522,10 @@ pub enum AgentCommand {
         /// reset completed). Replaces the hierarchy-change heuristic for
         /// declared app resets; the agent reports `epochAfter` in its data.
         ack_epoch_gt: Option<u64>,
+        /// Per-process `boot` token read alongside `ack_epoch_gt`; lets the
+        /// agent recognise the ack after a cold relaunch (see
+        /// `app_reset::hooks_acknowledged`).
+        ack_boot_before: Option<String>,
     },
     AcceptOpenInAppDialog {
         timeout_ms: Option<u64>,
@@ -919,6 +923,7 @@ impl AgentCommand {
                 deliver_in_process,
                 require_ui_change,
                 ack_epoch_gt,
+                ack_boot_before,
             } => {
                 let mut p = json!({
                     "url": url,
@@ -928,6 +933,9 @@ impl AgentCommand {
                 });
                 if let Some(epoch) = ack_epoch_gt {
                     p["ackEpochGreaterThan"] = json!(epoch);
+                }
+                if let Some(boot) = ack_boot_before {
+                    p["ackBootBefore"] = json!(boot);
                 }
                 ("openDeepLink", p)
             }
@@ -1883,6 +1891,7 @@ mod tests {
             deliver_in_process: false,
             require_ui_change: false,
             ack_epoch_gt: None,
+            ack_boot_before: None,
         };
         let j = cmd.to_json("dl1");
         assert_eq!(j["method"], "openDeepLink");
@@ -1900,6 +1909,7 @@ mod tests {
             deliver_in_process: true,
             require_ui_change: true,
             ack_epoch_gt: None,
+            ack_boot_before: None,
         };
         let j = cmd.to_json("dl2");
         assert_eq!(j["method"], "openDeepLink");
@@ -1916,9 +1926,21 @@ mod tests {
             deliver_in_process: true,
             require_ui_change: false,
             ack_epoch_gt: Some(4),
+            ack_boot_before: None,
         };
         let j = cmd.to_json("dl3");
         assert_eq!(j["params"]["ackEpochGreaterThan"], 4);
+        let with_boot = AgentCommand::OpenDeepLink {
+            url: "tapsmithtest:///?__tapsmith_reset=1".into(),
+            package: "dev.tapsmith.testapp".into(),
+            deliver_in_process: false,
+            require_ui_change: false,
+            ack_epoch_gt: Some(4),
+            ack_boot_before: Some("c0ffee42".into()),
+        };
+        let j = with_boot.to_json("dl3");
+        assert_eq!(j["params"]["ackEpochGreaterThan"], 4);
+        assert_eq!(j["params"]["ackBootBefore"], "c0ffee42");
         assert_eq!(j["params"]["requireUiChange"], false);
     }
 

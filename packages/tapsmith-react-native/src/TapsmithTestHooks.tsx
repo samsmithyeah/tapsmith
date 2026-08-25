@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Linking, StyleSheet, Text, View } from 'react-native';
-import { formatMarker, parseResetRequest } from './protocol.js';
+import { formatMarker, parseResetRequest, BOOT_TOKEN } from './protocol.js';
 import { hooksEnabledByDefault } from './enabled.js';
 import { registeredHandlers, runResetPipeline, type Clearable, type ResetHandler } from './reset.js';
 
@@ -88,7 +88,7 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
   return (
     <View pointerEvents="none" style={styles.marker} accessibilityElementsHidden={false} importantForAccessibility="yes">
       <Text testID="tapsmith-hooks" style={styles.text}>
-        {formatMarker({ epoch, urlPrefix: prefix, error })}
+        {formatMarker({ epoch, boot: BOOT_TOKEN, urlPrefix: prefix, error })}
       </Text>
     </View>
   );
