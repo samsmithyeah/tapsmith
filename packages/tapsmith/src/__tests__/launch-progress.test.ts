@@ -49,11 +49,15 @@ describe('createUiLaunchSteps', () => {
       'app-install',
       'agent',
       'app-launch',
+      'ui-workers',
       'ui-server',
       'mcp',
       'test-tree',
       'browser',
     ]);
+    // A single-device UI session still runs through one persistent worker
+    // that attaches to the primary device.
+    expect(steps.find((s) => s.id === 'ui-workers')!.label).toBe('Worker');
     expect(steps[0]!.detail).toContain('1 worker');
     expect(steps[0]!.detail).toContain('3 test files');
     expect(steps.find((s) => s.id === 'app-install')!.detail).toBe('verify/install app-debug.apk');

@@ -2354,8 +2354,12 @@ async function main(): Promise<void> {
         launchedEmulators = [...launchedEmulators, ...uiProvision.launched];
         if (uiDeviceSerials) uiWorkersOverride = config.workers;
       }
-      if (!uiDeviceSerials || uiDeviceSerials.length <= 1) {
-        launchProgress?.skip('ui-workers', 'single-worker UI session');
+      // Every UI session runs through persistent workers. With one device the
+      // single worker adopts the primary daemon/agent set up above, so the
+      // server always gets a serial list to build workers from.
+      if (!uiDeviceSerials || uiDeviceSerials.length === 0) {
+        uiDeviceSerials = [config.device!];
+        uiWorkersOverride = 1;
       }
 
       const uiServer = await startUIServer({

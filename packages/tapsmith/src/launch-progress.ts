@@ -297,6 +297,14 @@ export function createUiLaunchSteps(input: UiLaunchPlanInput): LaunchStep[] {
           : "no package configured",
       },
     );
+    if (mode === "ui") {
+      steps.push({
+        id: "ui-workers",
+        label: "Worker",
+        state: "pending",
+        detail: "attach a persistent test worker to the primary device",
+      });
+    }
   }
 
   if (mode === "ui" && input.workerCount > 1) {
