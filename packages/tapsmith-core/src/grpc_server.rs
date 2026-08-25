@@ -5379,7 +5379,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         // Capture state is reset so this session starts clean.
         if let Some(existing) = proxy_guard.as_ref() {
             let existing_port = existing.port();
-            existing.reset_entries().await;
+            existing.reset_capture_state().await;
             // Clone out of the read guard before awaiting — holding a
             // RwLock guard across an await risks starving writers.
             let passthrough_hosts = self.passthrough_hosts.read().await.clone();

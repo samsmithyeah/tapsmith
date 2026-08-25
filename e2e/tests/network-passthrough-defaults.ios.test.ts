@@ -35,10 +35,18 @@ describe("Embedded-root passthrough defaults (iOS)", () => {
     })
     // Control: an ordinary host on the same screen must still be captured, so a
     // failure here reads as "capture is broken" rather than "the rule works".
-    const controlRequest = device.waitForRequest(
-      (req) => req.url.includes("jsonplaceholder.typicode.com"),
-      { timeout: 20_000 },
-    )
+    // Settled eagerly rather than awaited later: if the firestore assertion
+    // below throws (the regression this test exists to catch), an un-awaited
+    // waiter would reject on timeout with no handler, and the runner turns an
+    // unhandled rejection into a fatal teardown that loses the real failure.
+    const controlResult = device
+      .waitForRequest((req) => req.url.includes("jsonplaceholder.typicode.com"), {
+        timeout: 20_000,
+      })
+      .then(
+        (req) => ({ ok: true as const, req }),
+        (err: Error) => ({ ok: false as const, err }),
+      )
 
     await apiCallsScreen.fetchFirestoreHostButton.tap()
 
@@ -48,10 +56,22 @@ describe("Embedded-root passthrough defaults (iOS)", () => {
     } catch {
       // Expected: the tunnelled connection produces no request event.
     }
-    expect(capturedFirestoreUrl).toBe(null)
 
+    // Tap the control before asserting, so the control result is always
+    // available for the diagnosis below however the firestore check turns out.
     await apiCallsScreen.fetchUserButton.tap()
-    const control = await controlRequest
-    expect(control.url).toContain("jsonplaceholder.typicode.com")
+    const control = await controlResult
+
+    if (capturedFirestoreUrl !== null) {
+      throw new Error(
+        `${FIRESTORE_HOST} was captured on iOS — the built-in passthrough default is not applying: ${capturedFirestoreUrl}`,
+      )
+    }
+    if (!control.ok) {
+      throw new Error(
+        `Control request was not captured either, so capture itself is broken rather than firestore being tunnelled: ${control.err}`,
+      )
+    }
+    expect(control.req.url).toContain("jsonplaceholder.typicode.com")
   })
 })

@@ -454,13 +454,29 @@ impl NetworkProxy {
         self.state.lock().await.handler = None;
     }
 
-    /// Clear any captured entries without stopping the proxy. Used when a
+    /// Reset per-session capture state without stopping the proxy. Used when a
     /// test session starts network capture on a proxy that was pre-started
     /// for OCSP passthrough during agent launch — pre-start OCSP/CRL traffic
     /// would otherwise leak into the captured entries of the first test.
-    pub async fn reset_entries(&self) {
+    ///
+    /// This also clears the learned cert-reject state
+    /// (`mitm_rejected_hosts`/`mitm_handshake_aborts`), which is a *cache of a
+    /// device-side trust fact* rather than a permanent property of the host.
+    /// That fact changes underneath us: the Android CA install can land after
+    /// the app process already forked (`ensure_android_ca_installed` documents
+    /// the same race), and the app re-forks on every relaunch. Because the
+    /// runner keeps one proxy alive for the whole session (`keep_running`
+    /// drains entries instead of recreating it), never clearing this meant a
+    /// single early reject tunneled a host for the rest of the run with no
+    /// recovery — silently reverting Android Firestore capture (PILOT-279) to
+    /// the old behaviour. Re-probing once per capture start costs at most one
+    /// failed handshake for a host that really cannot trust us, and hosts known
+    /// up front are tunneled by the host rule before ever reaching this path.
+    pub async fn reset_capture_state(&self) {
         let mut state = self.state.lock().await;
         state.entries.clear();
+        state.mitm_rejected_hosts.clear();
+        state.mitm_handshake_aborts.clear();
     }
 
     /// Return captured entries and clear the buffer without stopping the
@@ -4971,6 +4987,42 @@ mod tests {
 
         let remaining = proxy.stop().await;
         assert!(remaining.is_empty());
+    }
+
+    /// A cert reject must not outlive the capture session that learned it. The
+    /// runner keeps one proxy for the whole run, so a reject recorded before the
+    /// Android CA install landed (or before the app re-forked) would otherwise
+    /// tunnel that host for every remaining test — silently undoing PILOT-279.
+    #[tokio::test]
+    async fn reset_capture_state_clears_learned_cert_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+        let proxy = NetworkProxy::start(ca).await.unwrap();
+
+        {
+            let mut state = proxy.state.lock().await;
+            state
+                .mitm_rejected_hosts
+                .insert("firestore.googleapis.com".to_string());
+            state
+                .mitm_handshake_aborts
+                .insert("pinned.example.com".to_string(), 1);
+        }
+
+        proxy.reset_capture_state().await;
+
+        let state = proxy.state.lock().await;
+        assert!(
+            state.mitm_rejected_hosts.is_empty(),
+            "a new capture session must re-probe hosts that previously rejected us"
+        );
+        assert!(
+            state.mitm_handshake_aborts.is_empty(),
+            "the abort tally must not carry across capture sessions either"
+        );
     }
 
     #[test]
