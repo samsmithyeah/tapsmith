@@ -1,5 +1,5 @@
 import type { Device } from "tapsmith"
-import { test, describe, expect, beforeAll } from "../fixtures.js"
+import { test, describe, expect } from "../fixtures.js"
 import type { LoginScreen } from "../screens/login.screen"
 
 /**
@@ -12,7 +12,7 @@ describe("App reset (declared isolation)", () => {
   // would only add noise to the timings they assert on.
   test.use({ appReset: "none" })
 
-  beforeAll(async ({ device }) => {
+  test.beforeAll(async ({ device }) => {
     await device.resetApp({ target: "/" })
   })
 
