@@ -47,6 +47,18 @@ export class NetworkPane {
     return this.page.getByTestId("net-detail-body")
   }
 
+  /** The body toolbar's label — content type, or the decoder's verdict for a
+   * gRPC/protobuf body (e.g. "gRPC · 2 messages"). */
+  get bodyInfo() {
+    return this.page.getByTestId("net-body-info")
+  }
+
+  /** Toggle between the decoded protobuf view and the raw bytes. Only rendered
+   * for a body the decoder recognised. */
+  get decodeToggle() {
+    return this.page.getByRole("button", { name: /^(Decode|Raw)$/ })
+  }
+
   get detailClose() {
     return this.page.getByRole("button", { name: "Close", exact: true })
   }

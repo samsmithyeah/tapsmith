@@ -1,6 +1,7 @@
 import * as preact from 'preact';
 import { useState, useMemo } from 'preact/hooks';
 import type { NetworkEntry } from '../../trace/types.js';
+import { decodeBodyForDisplay, isProtobufContentType } from '../../trace/grpc-protobuf.js';
 
 // ─── Injected Styles ───
 
@@ -134,7 +135,7 @@ function injectStyles() {
 
 interface Props {
   entries: NetworkEntry[]
-  bodies: Map<string, string>
+  bodies: Map<string, Uint8Array>
 }
 
 type ResourceType = 'all' | 'fetch' | 'doc' | 'js' | 'css' | 'img' | 'font' | 'media' | 'other'
@@ -545,7 +546,7 @@ function Waterfall({ entry, extent }: { entry: NetworkEntry; extent: { min: numb
 
 interface DetailPanelProps {
   entry: NetworkEntry
-  bodies: Map<string, string>
+  bodies: Map<string, Uint8Array>
   tab: DetailTab
   onTab: (t: DetailTab) => void
   onClose: () => void
@@ -646,34 +647,64 @@ function HeadersGrid({ headers }: { headers: Record<string, string> }) {
   );
 }
 
-function PayloadTab({ entry, body }: { entry: NetworkEntry; body: string | undefined }) {
-  if (!body) {
+function PayloadTab({ entry, body }: { entry: NetworkEntry; body: Uint8Array | undefined }) {
+  if (!body || body.length === 0) {
     return <div class="net-empty-inline">No request payload</div>;
   }
   return <BodyViewer body={body} contentType={entry.contentType} />;
 }
 
-function ResponseTab({ entry, body }: { entry: NetworkEntry; body: string | undefined }) {
-  if (!body) {
+function ResponseTab({ entry, body }: { entry: NetworkEntry; body: Uint8Array | undefined }) {
+  if (!body || body.length === 0) {
     return <div class="net-empty-inline">No response body{entry.routeAction === 'aborted' ? ' (aborted)' : ''}</div>;
   }
   return <BodyViewer body={body} contentType={entry.contentType} />;
 }
 
-function BodyViewer({ body, contentType }: { body: string; contentType: string }) {
+function BodyViewer({ body, contentType }: { body: Uint8Array; contentType: string }) {
+  // gRPC/protobuf bodies are binary, so decode them structurally rather than
+  // rendering bytes as text. Attempted for any body that either declares a
+  // protobuf content type or simply turns out to be decodable — gRPC-Web and
+  // some proxies mislabel the type, and a successful decode is strong evidence
+  // on its own (see `decodeBodyForDisplay`).
+  const decoded = useMemo(() => {
+    if (body.length === 0) return null;
+    if (isJsonContentType(contentType)) return null;
+    if (!isProtobufContentType(contentType) && !looksBinary(body)) return null;
+    return decodeBodyForDisplay(body);
+  }, [body, contentType]);
+
+  // Text view of the bytes, non-fatal so a partially-binary body still shows
+  // whatever text it contains rather than failing outright.
+  const text = useMemo(() => new TextDecoder().decode(body), [body]);
+
   const canPretty = isJsonContentType(contentType);
   const [pretty, setPretty] = useState(canPretty);
+  const [showDecoded, setShowDecoded] = useState(true);
   // Pretty-print is up to ~2 MiB of JSON.parse + JSON.stringify — keep it
   // out of the render path so toggling other state (tab switches, window
   // resizes) doesn't redo the work.
-  const display = useMemo(
-    () => (pretty && canPretty ? prettyJson(body).text : body),
-    [pretty, canPretty, body],
-  );
+  const display = useMemo(() => {
+    if (decoded && showDecoded) return decoded.text;
+    return pretty && canPretty ? prettyJson(text).text : text;
+  }, [decoded, showDecoded, pretty, canPretty, text]);
+
+  const label = decoded && showDecoded
+    ? decoded.label
+    : shortenContentType(contentType) || 'text';
+
   return (
     <>
       <div class="net-body-toolbar">
-        <span class="net-body-info">{shortenContentType(contentType) || 'text'} · {formatSize(body.length)}</span>
+        <span class="net-body-info" data-testid="net-body-info">{label} · {formatSize(body.length)}</span>
+        {decoded && (
+          <button
+            class={`net-toggle${showDecoded ? ' active' : ''}`}
+            onClick={() => setShowDecoded(d => !d)}
+          >
+            {showDecoded ? 'Raw' : 'Decode'}
+          </button>
+        )}
         {canPretty && (
           <button
             class={`net-toggle${pretty ? ' active' : ''}`}
@@ -686,6 +717,18 @@ function BodyViewer({ body, contentType }: { body: string; contentType: string }
       <pre class="net-body-block">{display}</pre>
     </>
   );
+}
+
+/** Cheap check for "this is not text": a NUL byte, or a 0xFF that cannot start
+ * a UTF-8 sequence. Used only to decide whether attempting a protobuf decode is
+ * worthwhile for a body whose content type doesn't declare one. */
+function looksBinary(body: Uint8Array): boolean {
+  const limit = Math.min(body.length, 512);
+  for (let i = 0; i < limit; i++) {
+    const b = body[i];
+    if (b === 0x00 || b === 0xff) return true;
+  }
+  return false;
 }
 
 function TimingTab({ entry, extent }: { entry: NetworkEntry; extent: { min: number; max: number } }) {

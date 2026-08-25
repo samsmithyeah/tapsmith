@@ -17,7 +17,7 @@ interface Props {
   sources: Map<string, string>
   metadata: TraceMetadata
   networkEntries: NetworkEntry[]
-  networkBodies: Map<string, string>
+  networkBodies: Map<string, Uint8Array>
   onHierarchyNodeSelect?: (bounds: Bounds | null) => void
   locatorTab?: ComponentChildren
   pickMode?: boolean

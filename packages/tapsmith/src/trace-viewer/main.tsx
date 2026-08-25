@@ -42,7 +42,7 @@ export interface TraceData {
   hierarchies: Map<string, string>;
   sources: Map<string, string>;
   network: NetworkEntry[];
-  networkBodies: Map<string, string>;
+  networkBodies: Map<string, Uint8Array>;
 }
 
 // ─── Zip Loader ───
@@ -125,10 +125,12 @@ function parseTraceZip(buf: Uint8Array): TraceData {
         .flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } })
     : [];
 
-  const networkBodies = new Map<string, string>();
+  const networkBodies = new Map<string, Uint8Array>();
   for (const [name, data] of Object.entries(files)) {
     if (name.startsWith("network/")) {
-      networkBodies.set(name, decoder.decode(data));
+      // Kept as bytes: binary bodies (gRPC/protobuf) cannot survive a
+      // UTF-8 decode, and the Network tab needs the originals to decode them.
+      networkBodies.set(name, data as Uint8Array);
     }
   }
 
