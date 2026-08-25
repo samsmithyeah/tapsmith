@@ -45,6 +45,9 @@ export interface FieldDef {
   map?: { value?: string }
   /** Varint field that is really a `bool`, so 0/1 render as false/true. */
   bool?: boolean
+  /** Repeated field. Marked in rendered paths so a one-element list is not
+   * mistaken for a scalar chain. */
+  repeated?: boolean
 }
 
 export interface MessageDef {
@@ -70,7 +73,7 @@ const WELL_KNOWN: Record<string, MessageDef> = {
     fields: {
       1: { name: 'code' },
       2: { name: 'message' },
-      3: { name: 'details' },
+      3: { name: 'details', repeated: true },
     },
   },
 };
@@ -103,7 +106,7 @@ const DOCUMENT: Record<string, MessageDef> = {
     },
   },
   'google.firestore.v1.ArrayValue': {
-    fields: { 1: { name: 'values', message: 'google.firestore.v1.Value' } },
+    fields: { 1: { name: 'values', message: 'google.firestore.v1.Value', repeated: true } },
   },
   'google.firestore.v1.MapValue': {
     fields: { 1: { name: 'fields', map: { value: 'google.firestore.v1.Value' } } },
@@ -138,7 +141,20 @@ const WRITE: Record<string, MessageDef> = {
     fields: {
       1: { name: 'target_id' },
       2: { name: 'count' },
-      3: { name: 'unchanged_names' },
+      3: { name: 'unchanged_names', message: 'google.firestore.v1.BloomFilter' },
+    },
+  },
+  // google/firestore/v1/bloom_filter.proto
+  'google.firestore.v1.BloomFilter': {
+    fields: {
+      1: { name: 'bits', message: 'google.firestore.v1.BitSequence' },
+      2: { name: 'hash_count' },
+    },
+  },
+  'google.firestore.v1.BitSequence': {
+    fields: {
+      1: { name: 'bitmap', bytes: true },
+      2: { name: 'padding' },
     },
   },
 };
@@ -186,7 +202,7 @@ const FIRESTORE: Record<string, MessageDef> = {
     },
   },
   'google.firestore.v1.Target.DocumentsTarget': {
-    fields: { 2: { name: 'documents' } },
+    fields: { 2: { name: 'documents', repeated: true } },
   },
   'google.firestore.v1.Target.QueryTarget': {
     fields: {
@@ -225,9 +241,17 @@ const QUERY: Record<string, MessageDef> = {
   'google.firestore.v1.StructuredQuery': {
     fields: {
       1: { name: 'select', message: 'google.firestore.v1.StructuredQuery.Projection' },
-      2: { name: 'from', message: 'google.firestore.v1.StructuredQuery.CollectionSelector' },
+      2: {
+        name: 'from',
+        message: 'google.firestore.v1.StructuredQuery.CollectionSelector',
+        repeated: true,
+      },
       3: { name: 'where', message: 'google.firestore.v1.StructuredQuery.Filter' },
-      4: { name: 'order_by', message: 'google.firestore.v1.StructuredQuery.Order' },
+      4: {
+        name: 'order_by',
+        message: 'google.firestore.v1.StructuredQuery.Order',
+        repeated: true,
+      },
       5: { name: 'limit', message: 'google.protobuf.Int32Value' },
       6: { name: 'offset' },
       7: { name: 'start_at' },
@@ -250,7 +274,11 @@ const QUERY: Record<string, MessageDef> = {
   'google.firestore.v1.StructuredQuery.CompositeFilter': {
     fields: {
       1: { name: 'op', enum: { 0: 'OPERATOR_UNSPECIFIED', 1: 'AND', 2: 'OR' } },
-      2: { name: 'filters', message: 'google.firestore.v1.StructuredQuery.Filter' },
+      2: {
+        name: 'filters',
+        message: 'google.firestore.v1.StructuredQuery.Filter',
+        repeated: true,
+      },
     },
   },
   'google.firestore.v1.StructuredQuery.FieldFilter': {

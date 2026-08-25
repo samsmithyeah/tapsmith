@@ -338,6 +338,46 @@ describe('schema-aware decoding', () => {
     expect(result!.text).not.toContain('target_change_type');
   });
 
+  it('names the bloom filter inside an existence filter', () => {
+    // ExistenceFilter.unchanged_names is a BloomFilter; without its schema the
+    // bitmap and hash_count showed as bare numbers.
+    const existenceFilter = protoLengthDelimited(5, [
+      ...protoVarintField(1, 4),
+      ...protoVarintField(2, 7),
+      ...protoLengthDelimited(3, [
+        ...protoLengthDelimited(1, [
+          ...protoLengthDelimited(1, [0xde, 0xad]),
+          ...protoVarintField(2, 3),
+        ]),
+        ...protoVarintField(2, 15),
+      ]),
+    ]);
+    const result = decodeBodyForDisplay(bytes(grpcFrame(existenceFilter)), {
+      url: LISTEN_URL,
+      direction: 'response',
+    });
+
+    expect(result!.text).toContain('unchanged_names');
+    expect(result!.text).toContain('bitmap: <2 bytes: de ad>');
+    expect(result!.text).toContain('padding: 3');
+    expect(result!.text).toContain('hash_count: 15');
+  });
+
+  it('marks a repeated field so a single element is not read as a scalar', () => {
+    // `documents` is repeated; folding it into a dotted path without a marker
+    // makes a one-element list look like a scalar chain.
+    const listenRequest = bytes(
+      grpcFrame(
+        protoLengthDelimited(2, protoLengthDelimited(3, protoString(2, 'documents/users/u1'))),
+      ),
+    );
+    const result = decodeBodyForDisplay(listenRequest, {
+      url: LISTEN_URL,
+      direction: 'request',
+    });
+    expect(result!.text).toContain('documents[]');
+  });
+
   it('picks the request schema for the request side', () => {
     const listenRequest = bytes(
       grpcFrame(protoString(1, 'projects/demo/databases/(default)')),
@@ -374,26 +414,44 @@ describe('decodeBodyForDisplay', () => {
     expect(result!.text).toContain('message (');
   });
 
-  it('collapses a run of same-shape messages', () => {
-    // Firestore streams emit dozens of acks differing only in timestamps;
-    // printing each in full buries the interesting ones.
-    const ack = (n: number) => grpcFrame(protoVarintField(1, n));
-    const result = decodeBodyForDisplay(
-      bytes(ack(1), ack(2), ack(3), ack(4), grpcFrame(protoString(2, 'different'))),
-    );
+  it('leads a long stream with a per-kind summary', () => {
+    // The point of the summary: a long stream is mostly bookkeeping, and the
+    // two interesting messages should be visible without reading all of it.
+    const ack = () => grpcFrame(protoLengthDelimited(2, protoVarintField(1, 1)));
+    const doc = () =>
+      grpcFrame(protoLengthDelimited(3, protoString(1, 'documents/users/u1')));
+    const result = decodeBodyForDisplay(bytes(ack(), ack(), ack(), ack(), doc()), {
+      url: 'https://firestore.googleapis.com/google.firestore.v1.Firestore/Listen',
+      direction: 'response',
+    });
 
-    expect(result!.text).toContain('message 1 of 5');
-    expect(result!.text).toContain('3 more of the same shape');
-    // The differently-shaped message is still shown.
-    expect(result!.text).toContain('"different"');
+    expect(result!.text).toContain('summary of 5 messages');
+    expect(result!.text).toContain('target_change');
+    expect(result!.text).toContain('×4');
+    expect(result!.text).toContain('document_change');
+    // Every message is still listed in full below the summary.
+    expect(result!.text).toContain('message 5 of 5');
   });
 
-  it('prints a lone repeat rather than summarising it', () => {
-    // Summarising one message costs more lines than showing it.
+  it('counts an omitted enum as its proto3 default', () => {
+    // An absent field is at its default, and enum defaults are always 0, so an
+    // omitted target_change_type means NO_CHANGE — not "unset". Counting it is
+    // what makes the tallies add up to the message count.
+    const noChange = () =>
+      grpcFrame(protoLengthDelimited(2, protoLengthDelimited(4, [0x01, 0x02])));
+    const result = decodeBodyForDisplay(bytes(noChange(), noChange(), noChange(), noChange()), {
+      url: 'https://firestore.googleapis.com/google.firestore.v1.Firestore/Listen',
+      direction: 'response',
+    });
+
+    expect(result!.text).toContain('NO_CHANGE ×4');
+  });
+
+  it('omits the summary for a short body', () => {
     const result = decodeBodyForDisplay(
       bytes(grpcFrame(protoVarintField(1, 1)), grpcFrame(protoVarintField(1, 2))),
     );
-    expect(result!.text).not.toContain('of the same shape');
+    expect(result!.text).not.toContain('summary of');
     expect(result!.text).toContain('message 2 of 2');
   });
 

@@ -767,7 +767,16 @@ Protobuf carries field *numbers* on the wire, never names, so the baseline outpu
   }
 ```
 
-Unknown services fall back to numbers rather than guessing. Compressed messages are listed but not inflated (the codec lives in `grpc-encoding`), runs of same-shape stream messages are collapsed into a count, and a body truncated by the capture cap says how much is missing.
+A body with more than a few messages is led by a per-kind summary, because a long stream is mostly bookkeeping — this one carries two document changes among sixty target acks, and the tallies also make listener churn obvious:
+
+```
+── summary of 64 messages
+   target_change   ×60  target_change_type: NO_CHANGE ×23, ADD ×13, CURRENT ×12, REMOVE ×12
+   document_change ×2   "…/documents/users/u1"
+   filter          ×2
+```
+
+Unknown services fall back to numbers rather than guessing. Repeated fields are marked `[]` so a single-element list is not mistaken for a scalar, compressed messages are listed but not inflated (the codec lives in `grpc-encoding`), and a body truncated by the capture cap says how much is missing.
 
 For any other HTTP/2-capable host that rejects the certificate — including Firestore on Android when the CA only reached the *user* trust store — Tapsmith detects the rejection and tunnels later connections for the same SNI. The rejection is recognised both when the client sends a TLS alert (`unknown_ca`, `bad_certificate`) and when it simply tears the connection down without one — gRPC-C++/BoringSSL stacks abort with a connection reset rather than a decodable alert, so this abrupt-close case is treated as a rejection once it repeats for a host. The app continues to work, and the trace shows a single `CONNECT` row marked `passthrough`, but the encrypted requests inside are not available to `device.route()`, `device.waitForRequest()`, `device.waitForResponse()`, or the trace viewer.
 

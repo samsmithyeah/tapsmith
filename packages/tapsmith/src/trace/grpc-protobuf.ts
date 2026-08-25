@@ -112,6 +112,8 @@ export interface ProtoField {
   fieldNumber: number
   /** Schema name, when the containing type is known. */
   name?: string
+  /** Whether the schema declares this field repeated. */
+  repeated?: boolean
   value: ProtoValue
 }
 
@@ -188,6 +190,7 @@ export function decodeProtobuf(
         fields.push({
           fieldNumber,
           name: def?.name,
+          ...(def?.repeated ? { repeated: true } : {}),
           value: {
             kind: 'varint',
             value,
@@ -202,7 +205,12 @@ export function decodeProtobuf(
         let v = 0n;
         for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(bytes[cur.pos + i]);
         cur.pos += 8;
-        fields.push({ fieldNumber, name: def?.name, value: { kind: 'fixed64', value: v } });
+        fields.push({
+          fieldNumber,
+          name: def?.name,
+          ...(def?.repeated ? { repeated: true } : {}),
+          value: { kind: 'fixed64', value: v },
+        });
         break;
       }
       case 2: {
@@ -215,6 +223,7 @@ export function decodeProtobuf(
         fields.push({
           fieldNumber,
           name: def?.name,
+          ...(def?.repeated ? { repeated: true } : {}),
           value: classifyLengthDelimited(slice, ctx, def),
         });
         break;
@@ -227,7 +236,12 @@ export function decodeProtobuf(
           bytes[cur.pos + 2] * 0x10000 +
           bytes[cur.pos + 3] * 0x1000000;
         cur.pos += 4;
-        fields.push({ fieldNumber, name: def?.name, value: { kind: 'fixed32', value: v } });
+        fields.push({
+          fieldNumber,
+          name: def?.name,
+          ...(def?.repeated ? { repeated: true } : {}),
+          value: { kind: 'fixed32', value: v },
+        });
         break;
       }
       // Wire types 3/4 are deprecated group markers and 6/7 are illegal; either
@@ -445,11 +459,15 @@ const MAX_OUTPUT_CHARS = 400_000;
 /** Longest message rendered on a single line rather than as an indented block. */
 const INLINE_WIDTH = 72;
 
-/** Shortest run of same-shape messages worth collapsing into a summary line. */
-const MIN_COLLAPSE_RUN = 2;
+/** Above this many messages, lead with a per-kind summary. Below it the list
+ * is short enough to read directly. */
+const SUMMARY_MIN_MESSAGES = 3;
 
 function label(field: ProtoField): string {
-  return field.name ?? `${field.fieldNumber}`;
+  const base = field.name ?? `${field.fieldNumber}`;
+  // `[]` keeps a folded path honest: a one-element repeated field would
+  // otherwise read exactly like a scalar chain.
+  return field.repeated ? `${base}[]` : base;
 }
 
 function formatBytesPreview(bytes: Uint8Array): string {
@@ -581,20 +599,122 @@ export function formatProtobuf(fields: ProtoField[], indent = ''): string {
 }
 
 /**
- * Structural fingerprint of a message: field numbers and value kinds, ignoring
- * scalar values. Used to collapse runs of near-identical stream messages —
- * Firestore's `Listen` emits dozens of `target_change` acks that differ only in
- * their timestamps, and printing each in full buries the interesting ones.
+ * Per-message-kind summary of a streamed body.
+ *
+ * Long gRPC streams are overwhelmingly bookkeeping: a captured Firestore
+ * `Listen` response can carry two `document_change`s among sixty
+ * `target_change` acks, and reading the list top to bottom does not tell you
+ * that. This answers "what happened on this stream?" before the detail.
+ *
+ * An earlier attempt collapsed *consecutive* runs of same-shaped messages, and
+ * it never fired on real traffic: the acks cycle
+ * (`CURRENT` → `NO_CHANGE` → `REMOVE` → `ADD`) rather than repeat, so no run
+ * ever reached the threshold. Counting by kind is indifferent to ordering.
  */
-function shapeSignature(fields: ProtoField[]): string {
-  return fields
-    .map((f) => {
-      const v = f.value;
-      if (v.kind === 'message') return `${f.fieldNumber}m(${shapeSignature(v.fields)})`;
-      if (v.kind === 'mapEntry') return `${f.fieldNumber}e`;
-      return `${f.fieldNumber}${v.kind[0]}`;
-    })
-    .join(',');
+interface KindSummary {
+  label: string
+  count: number
+  /** Enum tallies keyed by field name, e.g. `target_change_type` → ADD ×14. */
+  enums: Map<string, Map<string, number>>
+  /** A couple of distinct identifying strings, e.g. document names. */
+  samples: string[]
+}
+
+/** Deepest level searched when gathering enum tallies and sample strings —
+ * enough to reach `document_change.document.name` without walking whole maps. */
+const SUMMARY_SCAN_DEPTH = 3;
+
+function scanForSummary(
+  fields: ProtoField[],
+  summary: KindSummary,
+  depth: number,
+): void {
+  if (depth > SUMMARY_SCAN_DEPTH) return;
+  for (const field of fields) {
+    const value = field.value;
+    if (value.kind === 'varint' && value.enumName && field.name) {
+      const tally = summary.enums.get(field.name) ?? new Map<string, number>();
+      tally.set(value.enumName, (tally.get(value.enumName) ?? 0) + 1);
+      summary.enums.set(field.name, tally);
+    } else if (value.kind === 'string' && summary.samples.length < 2) {
+      if (!summary.samples.includes(value.value)) summary.samples.push(value.value);
+    } else if (value.kind === 'message') {
+      scanForSummary(value.fields, summary, depth + 1);
+    }
+  }
+}
+
+/**
+ * Enum fields absent from a proto3 message are at their default, and enum
+ * defaults are always 0 — so an omitted `target_change_type` means `NO_CHANGE`
+ * rather than "not set". Counting those keeps the tallies adding up to the
+ * message count, which is what makes the summary trustworthy.
+ */
+function countDefaultedEnums(
+  fields: ProtoField[],
+  typeName: string | undefined,
+  summary: KindSummary,
+): void {
+  const schema = lookupMessage(typeName);
+  if (!schema) return;
+  for (const [num, def] of Object.entries(schema.fields)) {
+    const zeroName = def.enum?.[0];
+    if (!zeroName) continue;
+    const present = fields.some((f) => f.fieldNumber === Number(num));
+    if (present) continue;
+    const tally = summary.enums.get(def.name) ?? new Map<string, number>();
+    tally.set(zeroName, (tally.get(zeroName) ?? 0) + 1);
+    summary.enums.set(def.name, tally);
+  }
+}
+
+function summariseFrames(
+  perFrameFields: (ProtoField[] | null)[],
+  type: string | undefined,
+): string[] {
+  const summaries = new Map<string, KindSummary>();
+  for (const fields of perFrameFields) {
+    if (!fields) continue;
+    // A oneof-style response has exactly one top-level field, which names the
+    // kind; anything else is summarised under its field list.
+    const key = fields.length === 1 ? label(fields[0]) : fields.map(label).join('+');
+    const summary =
+      summaries.get(key) ??
+      { label: key, count: 0, enums: new Map(), samples: [] };
+    summary.count++;
+    if (fields.length === 1 && fields[0].value.kind === 'message') {
+      const inner = fields[0].value.fields;
+      scanForSummary(inner, summary, 0);
+      countDefaultedEnums(inner, nestedTypeOf(type, fields[0].fieldNumber), summary);
+    } else {
+      scanForSummary(fields, summary, 0);
+    }
+    summaries.set(key, summary);
+  }
+
+  if (summaries.size === 0) return [];
+  const width = Math.max(...Array.from(summaries.keys(), (k) => k.length));
+  return Array.from(summaries.values()).map((s) => {
+    const parts: string[] = [];
+    for (const [field, tally] of s.enums) {
+      const counts = Array.from(tally)
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, n]) => `${name} ×${n}`)
+        .join(', ');
+      parts.push(`${field}: ${counts}`);
+    }
+    for (const sample of s.samples) {
+      parts.push(sample.length > 60 ? `"…${sample.slice(-57)}"` : `"${sample}"`);
+    }
+    const count = `×${s.count}`;
+    if (parts.length === 0) return `   ${s.label.padEnd(width)} ${count}\n`;
+    return `   ${s.label.padEnd(width)} ${count.padEnd(4)} ${parts.join(' · ')}\n`;
+  });
+}
+
+/** Message type of a nested field, for resolving defaulted enums. */
+function nestedTypeOf(parentType: string | undefined, fieldNumber: number): string | undefined {
+  return lookupMessage(parentType)?.fields[fieldNumber]?.message;
 }
 
 export interface DecodeBodyOptions {
@@ -624,53 +744,33 @@ export function decodeBodyForDisplay(
   if (framing) {
     const out: string[] = [];
     const total = framing.frames.length;
-    let i = 0;
-    while (i < total) {
+
+    // Decode once, so the summary and the listing agree and nothing is parsed
+    // twice.
+    const decoded = framing.frames.map((frame) =>
+      frame.compressed ? null : decodeProtobuf(frame.message, { depth: 0, type }),
+    );
+
+    if (total > SUMMARY_MIN_MESSAGES) {
+      out.push(`── summary of ${total} messages\n`);
+      out.push(...summariseFrames(decoded, type));
+      out.push('\n');
+    }
+
+    for (let i = 0; i < total; i++) {
       const frame = framing.frames[i];
       if (frame.compressed) {
         out.push(
           `── message ${i + 1} of ${total} (compressed, ${frame.message.length} bytes — not decoded)\n`,
         );
-        i++;
         continue;
       }
-      const fields = decodeProtobuf(frame.message, { depth: 0, type });
+      const fields = decoded[i];
       const header = total > 1 ? `message ${i + 1} of ${total}` : 'message';
       out.push(`── ${header} (${frame.message.length} bytes)\n`);
       out.push(
         fields ? formatProtobuf(fields, '  ') : `  <${formatBytesPreview(frame.message)}>\n`,
       );
-      i++;
-
-      // Collapse the run of following frames with the same shape.
-      if (!fields) continue;
-      const signature = shapeSignature(fields);
-      let repeats = 0;
-      while (i < total && !framing.frames[i].compressed) {
-        const next = decodeProtobuf(framing.frames[i].message, { depth: 0, type });
-        if (!next || shapeSignature(next) !== signature) break;
-        repeats++;
-        i++;
-      }
-      // Only worth collapsing a real run: summarising a single message costs
-      // more lines than printing it.
-      if (repeats >= MIN_COLLAPSE_RUN) {
-        out.push(
-          `── messages ${i - repeats + 1}–${i}: ${repeats} more of the same shape (values differ)\n`,
-        );
-      } else if (repeats > 0) {
-        // Re-render the one skipped frame rather than hiding it.
-        for (let j = i - repeats; j < i; j++) {
-          const skipped = framing.frames[j];
-          const skippedFields = decodeProtobuf(skipped.message, { depth: 0, type });
-          out.push(`── message ${j + 1} of ${total} (${skipped.message.length} bytes)\n`);
-          out.push(
-            skippedFields
-              ? formatProtobuf(skippedFields, '  ')
-              : `  <${formatBytesPreview(skipped.message)}>\n`,
-          );
-        }
-      }
     }
     if (framing.trailingBytes > 0) {
       const missing =
