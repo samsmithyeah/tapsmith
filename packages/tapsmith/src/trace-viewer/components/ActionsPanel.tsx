@@ -146,6 +146,7 @@ function formatGroupName(name: string): string {
     case 'afterEach Hooks': return 'AFTER EACH';
     case 'afterAll Hooks': return 'AFTER ALL';
     case 'Test': return 'TEST BODY';
+    case 'App reset': return 'APP RESET';
     default: return name.toUpperCase();
   }
 }
@@ -192,6 +193,23 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
   }
 
   const filterLower = filter.toLowerCase();
+
+  // Sections with nothing to show (an empty lifecycle group, or one whose
+  // every action the filter hides) render no header. Groups are matched to
+  // their `group-end` by depth so nested groups count for their parents too.
+  const rowMatchesFilter = (event: ActionTraceEvent | AssertionTraceEvent): boolean =>
+    !filterLower ||
+    getLabel(event).toLowerCase().includes(filterLower) ||
+    getSelectorDisplay(event).toLowerCase().includes(filterLower);
+  const nonEmptyGroups = new Set<number>();
+  {
+    const open: number[] = [];
+    items.forEach((item, i) => {
+      if (item.kind === 'group-start') open.push(i);
+      else if (item.kind === 'group-end') open.pop();
+      else if (rowMatchesFilter(item.event)) for (const g of open) nonEmptyGroups.add(g);
+    });
+  }
 
   // Compute max duration across all actions for the heatmap
   const maxDur = items.reduce((max, item) => {
@@ -243,10 +261,10 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
             <div class="actions-list" data-testid="actions-list">
               {items.map((item, i) => {
                 if (item.kind === 'group-start') {
-                  if (filterLower && !item.event.name.toLowerCase().includes(filterLower)) return null;
-                  const isLifecycle = item.event.name === 'beforeAll Hooks' || item.event.name === 'beforeEach Hooks' || item.event.name === 'afterEach Hooks' || item.event.name === 'Test';
+                  if (!nonEmptyGroups.has(i)) return null;
+                  const isLifecycle = item.event.name === 'App reset' || item.event.name === 'beforeAll Hooks' || item.event.name === 'beforeEach Hooks' || item.event.name === 'afterEach Hooks' || item.event.name === 'afterAll Hooks' || item.event.name === 'Test';
                   return (
-                    <div key={`g-${i}`} class={`group-item${isLifecycle ? ' lifecycle' : ''} act-group`}>
+                    <div key={`g-${i}`} class={`group-item${isLifecycle ? ' lifecycle' : ''} act-group`} data-testid="action-group">
                       {formatGroupName(item.event.name)}
                     </div>
                   );

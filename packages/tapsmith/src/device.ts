@@ -663,10 +663,11 @@ export class Device {
     return res.activity;
   }
 
-  async terminateApp(packageName: string): Promise<void> {
-    return withActionProgress('terminateApp', packageName,
+  async terminateApp(packageName?: string): Promise<void> {
+    const pkg = packageName ?? this.requirePackageName();
+    return withActionProgress('terminateApp', pkg,
       () => this._tracedAction('terminateApp', 'device', undefined,
-        () => this._client.terminateApp(packageName),
+        () => this._client.terminateApp(pkg),
         'Terminate app failed'));
   }
 

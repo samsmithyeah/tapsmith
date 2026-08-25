@@ -19,6 +19,14 @@ export class ActionsPane {
     return this.page.getByTestId("action-item")
   }
 
+  /**
+   * Section headers ("APP RESET", "BEFORE ALL", "TEST BODY", …). A group with
+   * no visible rows renders no header, so this only lists sections with content.
+   */
+  get groups() {
+    return this.page.getByTestId("action-group")
+  }
+
   item(name: string) {
     return this.items.filter({ hasText: name })
   }

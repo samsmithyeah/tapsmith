@@ -388,8 +388,11 @@ pub async fn run_ladder(
     allow_fallback: bool,
 ) -> ResetOutcome {
     let mut steps: Vec<ResetStep> = Vec::new();
+    // A plan that could not honour the requested mode (warm asked for, but no
+    // hook or link available) is already a fallback before any step runs.
+    let mut fell_back =
+        plan.reason.is_some() && matches!(plan.first, FirstStep::Restart | FirstStep::Clear);
     let mut reasons: Vec<String> = plan.reason.into_iter().collect();
-    let mut fell_back = false;
 
     async fn timed<T>(
         steps: &mut Vec<ResetStep>,
@@ -894,6 +897,27 @@ mod tests {
             first,
             reason: None,
         }
+    }
+
+    #[tokio::test]
+    async fn warm_requested_without_hooks_is_reported_as_a_fallback() {
+        // The app is not running (or exposes no hook): the plan starts at
+        // restart, but the caller asked for warm — that is a fallback, and
+        // the outcome must say so (the runner records a summary row for it).
+        let ops = MockOps::new();
+        let plan = decide(
+            &ResetPolicyState::default(),
+            &input(ResetMode::Warm, None, ""),
+        );
+        let out = run_ladder(&ops, plan, true).await;
+        assert_eq!(out.mode_used, ResetMode::Restart);
+        assert!(out.fell_back);
+        assert!(out
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("no reset hook"));
+        assert_eq!(ops.calls(), vec!["restart"]);
     }
 
     #[tokio::test]

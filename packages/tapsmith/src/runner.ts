@@ -31,6 +31,7 @@ import { getSimulatorScreenScale } from './ios-simulator.js';
 import type { TraceDeviceInfo } from './trace/types.js';
 import { TestAbortedError, isAbortError } from './abort.js';
 import {
+  appResetAction,
   appResetPolicyEquals,
   describeAction,
   resolveAppResetPolicy,
@@ -827,15 +828,20 @@ function replayBeforeAllEvents(
   }
 }
 
+/** Trace group that holds the declared app reset (rendered as APP RESET). */
+const APP_RESET_GROUP = 'App reset';
+
 /**
- * Execute the declared app reset as a traced fixture step. Inline device work
- * (resetApp, clearAppData, restartApp, …) records its own action rows as the
- * first entries of the enclosing hooks group — deliberately not a nested
- * group: the actions panel renders group starts as flat section headers, so a
- * sub-group would swallow the hook actions that follow it. When the reset was
- * satisfied by a prepared device, skipped by policy, or fell back to another
- * mode, a summary `appReset` row carries the explanation so the trace stays
- * honest.
+ * Execute the declared app reset as a traced fixture step, in its own
+ * top-level "App reset" group that precedes the hooks group (BEFORE ALL /
+ * BEFORE EACH). The hooks groups then contain only the user's own hook code,
+ * and the isolation cost stays visible per test. Inline device work
+ * (resetApp, clearAppData, restartApp, …) records its own action rows; when
+ * the reset was satisfied by a prepared device, skipped by policy, or fell
+ * back to another mode, a summary `appReset` row carries the explanation so
+ * the trace stays honest. Callers must invoke this before opening the hooks
+ * group — the actions panel renders groups as flat sections, so nesting would
+ * swallow the hook actions that follow.
  */
 async function runTracedAppReset(
   collector: TraceCollector | null,
@@ -843,10 +849,14 @@ async function runTracedAppReset(
   policy: AppResetPolicy,
   options: ExecuteAppResetOptions,
 ): Promise<AppResetReport> {
+  collector?.startGroup(APP_RESET_GROUP);
   const started = Date.now();
-  {
+  try {
     const report = await executeAppReset(ctx, policy, options);
-    if (collector && (report.origin !== 'inline' || report.fellBack)) {
+    // `appReset: 'none'` does nothing worth a row (the policy is in the trace
+    // metadata); prepared / fallback outcomes get a summary row.
+    const isNone = appResetAction(policy).kind === 'none';
+    if (collector && !isNone && (report.origin !== 'inline' || report.fellBack)) {
       collector.addActionEvent({
         category: 'device',
         action: 'appReset',
@@ -864,6 +874,8 @@ async function runTracedAppReset(
       });
     }
     return report;
+  } finally {
+    collector?.endGroup();
   }
 }
 
@@ -904,10 +916,13 @@ async function runSuiteContext(
   // happened to run last.
   const firstRunnable = firstRunnableTestName(ctx, parentPrefix, parentOpts);
   const scopeHasRunnable = firstRunnable !== undefined;
+  // A test-scoped policy resets before every test, so its scope only needs an
+  // entry reset when beforeAll hooks expect the declared state first; a mere
+  // policy change is covered by the first per-test reset.
   const needsScopeReset = scopeHasRunnable && canReset && (
     policy.scope === 'file'
       ? (isRoot || policyChanged)
-      : (ctx.beforeAll.length > 0 || policyChanged)
+      : ctx.beforeAll.length > 0
   );
   const inheritedActionCount = inherited.recordings.reduce((n, r) => n + r.actionCount, 0);
   const resetContext = (): SessionPreflightContext => ({ ...opts.sessionContext!, config: opts.config });
@@ -965,7 +980,16 @@ async function runSuiteContext(
       if (cb) beforeAllCollector.setEventCallback(cb);
       opts.device.tracing._stopManaged();
 
-      beforeAllCollector.startGroup('beforeAll Hooks');
+      // Fold the enclosing scopes' setup into this collector first, so this
+      // scope's recording is chronological (root reset → root hooks → this
+      // scope's reset → its hooks) and the UI sees it in that order as well.
+      // Streamed unless the announced test already received it live.
+      for (const rec of inherited.recordings) {
+        replayBeforeAllEvents(
+          beforeAllCollector, rec.events, rec.collector, rec.hierarchies,
+          beforeAllFirstFullName !== inherited.announced,
+        );
+      }
     }
   }
   const suiteFixtures: Record<string, unknown> = {
@@ -980,11 +1004,15 @@ async function runSuiteContext(
   try {
     const runScopeSetup = async (): Promise<void> => {
       if (needsScopeReset) {
-        // The declared app reset is fixture setup: it runs first, inside the
-        // beforeAll group, so the trace shows exactly what the file paid for
-        // isolation. A prepared device (startup launch, background
-        // preparation) that already satisfies the policy is consumed here.
-        const prepared = isRoot ? opts._prepared?.current : undefined;
+        // The declared app reset is fixture setup: it runs first, in its own
+        // APP RESET group ahead of BEFORE ALL, so the trace shows exactly
+        // what the scope paid for isolation. A prepared device (startup
+        // launch, background preparation) that already satisfies the policy
+        // is consumed here — by whichever scope resets first. The prepared
+        // state is cleared by the first reset of the file (any scope), so a
+        // nested describe reached before anything touched the app can use it
+        // just as the root scope would; later scopes find it already spent.
+        const prepared = opts._prepared?.current;
         await runTracedAppReset(beforeAllCollector, resetContext(), policy, {
           phase: isRoot
             ? `file reset for ${path.basename(opts.testFilePath ?? '')}`
@@ -996,6 +1024,8 @@ async function runSuiteContext(
         });
         if (opts._prepared) opts._prepared.current = undefined;
       }
+      // The hooks group holds only the user's beforeAll code.
+      beforeAllCollector?.startGroup('beforeAll Hooks');
       for (const hook of ctx.beforeAll) {
         await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
       }
@@ -1075,10 +1105,10 @@ async function runSuiteContext(
 
   // Save beforeAll events for replay into each test's trace.
   const savedBeforeAllEvents = beforeAllCollector ? beforeAllCollector.events.slice() : [];
-  const beforeAllActionCount = beforeAllCollector
-    ? beforeAllCollector.currentActionIndex - inheritedActionCount
-    : 0;
-  const setupActionCount = inheritedActionCount + beforeAllActionCount;
+  // With a collector, its recording already contains the inherited setup
+  // (folded in above); without one, the inherited recordings are replayed
+  // into each test directly.
+  const setupActionCount = beforeAllCollector ? beforeAllCollector.currentActionIndex : inheritedActionCount;
   // Build hierarchy lookup for replay (hierarchies are in-memory, not on disk)
   const beforeAllHierarchies = new Map<number, { before?: string; after?: string }>();
   if (beforeAllCollector) {
@@ -1306,11 +1336,13 @@ async function runSuiteContext(
           // the active collector was the standalone beforeAll collector, so
           // no test's own collector has these events).
           if (traceCollector) {
-            for (const rec of inherited.recordings) {
-              replayBeforeAllEvents(
-                traceCollector, rec.events, rec.collector, rec.hierarchies,
-                fullName !== inherited.announced,
-              );
+            if (!beforeAllCollector) {
+              for (const rec of inherited.recordings) {
+                replayBeforeAllEvents(
+                  traceCollector, rec.events, rec.collector, rec.hierarchies,
+                  fullName !== inherited.announced,
+                );
+              }
             }
             if (savedBeforeAllEvents.length > 0) {
               replayBeforeAllEvents(
@@ -1327,19 +1359,14 @@ async function runSuiteContext(
           const hasTestScopedFixtures = registry.byScope('test').size > 0;
           const hasBeforeEachWork =
             !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0 || hasTestScopedFixtures;
-          if (hasBeforeEachWork) {
-            traceCollector?.startGroup('beforeEach Hooks');
-          }
-
-          // Setup work that may issue device actions (e.g. ensureSessionReady
-          // in UI worker mode). Runs inside the beforeEach group.
-          if (opts.beforeEachTest) {
-            await opts.beforeEachTest(fullName);
-          }
-
           // Per-test app reset (appResetScope: 'test'). Runs on every attempt
           // so a retry genuinely starts from the declared state; retries
           // deliver the warm hook cold (see _setForceColdDeepLinks above).
+          // It records into its own APP RESET group, ahead of BEFORE EACH,
+          // so the hooks group holds only the user's code. The reset itself
+          // ends with a session readiness check, so it needs no prior
+          // beforeEachTest recovery — a dead app just takes the ladder's
+          // restart rung, and the trace says so.
           if (policy.scope === 'test' && canReset) {
             const prepared = opts._prepared?.current;
             await runTracedAppReset(traceCollector, resetContext(), policy, {
@@ -1348,6 +1375,16 @@ async function runSuiteContext(
               prepared,
             });
             if (opts._prepared) opts._prepared.current = undefined;
+          }
+
+          if (hasBeforeEachWork) {
+            traceCollector?.startGroup('beforeEach Hooks');
+          }
+
+          // Setup work that may issue device actions (e.g. ensureSessionReady
+          // in UI worker mode). Runs inside the beforeEach group.
+          if (opts.beforeEachTest) {
+            await opts.beforeEachTest(fullName);
           }
 
           // Wait for the device to be idle before each test. This ensures
@@ -1967,12 +2004,14 @@ async function runSuiteContext(
     const childInherited: InheritedScopeSetup = {
       announced: beforeAllFirstFullName ?? inherited.announced,
       hasBeforeAll,
-      recordings: savedBeforeAllEvents.length > 0
-        ? [...inherited.recordings, {
+      // This scope's recording already contains the inherited setup, so it
+      // replaces the inherited list rather than extending it.
+      recordings: beforeAllCollector
+        ? [{
             events: savedBeforeAllEvents,
             collector: beforeAllCollector,
             hierarchies: beforeAllHierarchies,
-            actionCount: beforeAllActionCount,
+            actionCount: setupActionCount,
           }]
         : inherited.recordings,
     };

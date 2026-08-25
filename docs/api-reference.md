@@ -335,7 +335,7 @@ Returns the current activity name.
 const activity = await device.currentActivity(); // ".settings.ProfileActivity"
 ```
 
-### `device.terminateApp(packageName: string): Promise<void>`
+### `device.terminateApp(packageName?: string): Promise<void>`
 
 Force-stop an app.
 

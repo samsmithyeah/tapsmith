@@ -7,6 +7,7 @@ import {
   test as tapsmithTest,
   describe as tapsmithDescribe,
   beforeAll as tapsmithBeforeAll,
+  beforeEach as tapsmithBeforeEach,
   collectResults,
   _internal,
   type RunOptions,
@@ -99,6 +100,14 @@ function makeOpts(d: ReturnType<typeof makeDevice>, config: TapsmithConfig, extr
   };
 }
 
+/** Mimic the real Device recording a lifecycle call into the active collector. */
+function recordAction(action: string): void {
+  getActiveTraceCollector()?.addActionEvent({
+    category: 'device', action, duration: 1, success: true,
+    hasScreenshotBefore: false, hasScreenshotAfter: false, hasHierarchyBefore: false, hasHierarchyAfter: false,
+  });
+}
+
 /** Device-level reset calls only (drop readiness-check noise). */
 function resetCalls(d: ReturnType<typeof makeDevice>): string[] {
   return d.calls.filter((c) => !['startAgent'].includes(c));
@@ -125,7 +134,8 @@ describe('runner app reset (declared isolation)', () => {
     expect(order).toEqual(['clear', 'beforeAll', 'one', 'two']);
     expect(resetCalls(d)).toEqual(['resetApp:clear']);
     const [first, second] = collectResults(result);
-    expect(first.setupMs).toBeGreaterThanOrEqual(0);
+    // setupMs is only recorded when non-zero; with instant mocks it may be 0.
+    expect(first.setupMs ?? 0).toBeGreaterThanOrEqual(0);
     expect(first.durationMs).toBeGreaterThanOrEqual(first.setupMs ?? 0);
     expect(second.setupMs).toBeUndefined();
   });
@@ -163,6 +173,35 @@ describe('runner app reset (declared isolation)', () => {
     expect(d.device._setForceColdDeepLinks).toHaveBeenCalledWith(true);
     // The retry attempt asks for a cold delivery explicitly.
     expect(d.device._resetApp.mock.calls.map((c) => c[1].forceCold)).toEqual([false, true, false]);
+  });
+
+  it('per-test resets record in an APP RESET group ahead of BEFORE EACH', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-appreset-pertest-'));
+    const d = makeDevice();
+    d.device._resetApp.mockImplementation(async (_pkg, opts) => {
+      recordAction('resetApp');
+      return { modeRequested: opts.mode ?? 'warm', modeUsed: 'restart', fellBack: false, coldLaunch: true, durationMs: 5, hooksDetected: false, steps: [] };
+    });
+    try {
+      pushContext();
+      tapsmithBeforeEach(async () => { recordAction('tap'); });
+      tapsmithTest('one', async () => {});
+      const ctx = popContext();
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig({
+        rootDir: tempRoot, appReset: 'restart', appResetScope: 'test',
+        trace: { mode: 'on', network: false, screenshots: false, snapshots: false, sources: false },
+      })));
+      const zip = unzipSync(fs.readFileSync(result.tests[0].tracePath!));
+      const events = new TextDecoder().decode(zip['trace.json']).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+      const ordered = events.filter((e) => e.type === 'action' || e.type === 'group-start' || e.type === 'group-end')
+        .map((e) => e.type === 'action' ? `action:${e.action}` : `${e.type}:${e.name}`);
+      expect(ordered.slice(0, 6)).toEqual([
+        'group-start:App reset', 'action:resetApp', 'group-end:App reset',
+        'group-start:beforeEach Hooks', 'action:tap', 'group-end:beforeEach Hooks',
+      ]);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('test-scoped policy still resets at file entry when the file has beforeAll hooks', async () => {
@@ -269,6 +308,29 @@ describe('runner app reset (declared isolation)', () => {
     expect(holder.current).toBeUndefined();          // consumed exactly once
   });
 
+  it('a nested describe that resets first consumes the prepared device (root scope did not reset)', async () => {
+    const d = makeDevice();
+    const prepared = { current: { policy: { mode: 'warm' as const, scope: 'test' as const }, preparedAt: Date.now(), durationMs: 1000, source: 'background preparation' } };
+    pushContext();
+    // Root: hooks detected → auto per-test → no root reset. The describe has
+    // a beforeAll → per-file → resets on entry; that reset is the file's first
+    // and must use the prepared device instead of resetting again.
+    tapsmithDescribe('shared setup', () => {
+      tapsmithBeforeAll(async () => {});
+      tapsmithTest('one', async () => {});
+    });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), {
+      resetCapabilities: { hooksDetected: true },
+      _prepared: prepared,
+    }));
+
+    expect(collectResults(result).map((t) => t.status)).toEqual(['passed']);
+    expect(resetCalls(d)).toEqual([]);
+    expect(prepared.current).toBeUndefined();
+  });
+
   it('a prepared device that does not satisfy the policy is ignored (appState wins)', async () => {
     const d = makeDevice();
     pushContext();
@@ -316,7 +378,7 @@ describe('runner app reset (declared isolation)', () => {
     popContext();
   });
 
-  it('records the reset in the trace under the beforeAll group with policy metadata', async () => {
+  it('records the reset in its own APP RESET group ahead of BEFORE ALL, with policy metadata', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-appreset-'));
     const d = makeDevice();
     // The real Device records each lifecycle call as a traced action into the
@@ -332,6 +394,7 @@ describe('runner app reset (declared isolation)', () => {
     });
     try {
       pushContext();
+      tapsmithBeforeAll(async () => { recordAction('tap'); });
       tapsmithTest('one', async () => {});
       const ctx = popContext();
 
@@ -345,13 +408,17 @@ describe('runner app reset (declared isolation)', () => {
       const zip = unzipSync(fs.readFileSync(tracePath!));
       const events = new TextDecoder().decode(zip['trace.json']).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
       const groups = events.filter((e) => e.type === 'group-start').map((e) => e.name);
-      // The reset is the first row of the beforeAll group itself — not a nested
-      // sub-group, which the actions panel would render as a flat header that
-      // swallows the hook's own actions.
-      expect(groups[0]).toBe('beforeAll Hooks');
-      expect(groups.filter((g) => g.startsWith('App reset'))).toEqual([]);
-      const actions = events.filter((e) => e.type === 'action').map((e) => e.action);
-      expect(actions[0]).toBe('resetApp');
+      // The reset is a sibling section *before* the hooks group — not nested
+      // inside it (the actions panel renders groups as flat headers, so a
+      // nested group would swallow the hook's own actions) and not mixed into
+      // BEFORE ALL (which holds only the user's hook code).
+      expect(groups.slice(0, 2)).toEqual(['App reset', 'beforeAll Hooks']);
+      const ordered = events.filter((e) => e.type === 'action' || e.type === 'group-start' || e.type === 'group-end')
+        .map((e) => e.type === 'action' ? `action:${e.action}` : `${e.type}:${e.name}`);
+      expect(ordered.slice(0, 6)).toEqual([
+        'group-start:App reset', 'action:resetApp', 'group-end:App reset',
+        'group-start:beforeAll Hooks', 'action:tap', 'group-end:beforeAll Hooks',
+      ]);
       const metadata = JSON.parse(new TextDecoder().decode(zip['metadata.json']));
       expect(metadata).toMatchObject({ appReset: 'clear', appResetScope: 'file' });
     } finally {

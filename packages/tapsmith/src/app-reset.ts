@@ -106,13 +106,19 @@ export function resolveAppResetPolicy(
     ? (warmAvailable ? 'warm' : 'clear')
     : requestedMode;
 
+  // Per-test isolation is only the default when each reset is warm (< 2 s):
+  // an in-app hook is available, the mode resolves to warm, and the scope
+  // has no appState (restore/clear are cold by nature) or beforeAll hooks
+  // (shared setup a per-test reset would destroy). Everything else stays
+  // per-file unless the user asks for 'test' explicitly.
+  const appState = scopeOptions?.appState;
   const requestedScope = config.appResetScope ?? 'auto';
+  const warmPerTest = !!caps.hooksDetected && mode === 'warm' && appState === undefined && !hints.hasBeforeAll;
   const scope: ResolvedAppResetScope = requestedScope === 'auto'
-    ? (caps.hooksDetected && !hints.hasBeforeAll ? 'test' : 'file')
+    ? (warmPerTest ? 'test' : 'file')
     : requestedScope;
 
   const policy: AppResetPolicy = { mode, scope };
-  const appState = scopeOptions?.appState;
   if (appState !== undefined) {
     policy.appState = appState === ''
       ? ''

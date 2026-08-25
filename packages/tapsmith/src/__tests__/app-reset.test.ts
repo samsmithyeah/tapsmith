@@ -39,11 +39,24 @@ describe('resolveAppResetPolicy', () => {
     expect(p.scope).toBe('test');
   });
 
+  it('appState keeps auto isolation per file — restore and clear are cold, not warm', () => {
+    expect(resolveAppResetPolicy({ appState: 'auth.tar.gz' }, base, { hooksDetected: true }))
+      .toEqual({ mode: 'warm', scope: 'file', appState: '/proj/auth.tar.gz' });
+    expect(resolveAppResetPolicy({ appState: '' }, base, { hooksDetected: true }))
+      .toEqual({ mode: 'warm', scope: 'file', appState: '' });
+  });
+
+  it('an explicit cold mode keeps auto isolation per file even with hooks detected', () => {
+    expect(resolveAppResetPolicy(undefined, { ...base, appReset: 'clear' }, { hooksDetected: true }))
+      .toEqual({ mode: 'clear', scope: 'file' });
+  });
+
   it('explicit mode and scope win over auto', () => {
     expect(resolveAppResetPolicy(undefined, { ...base, appReset: 'restart', appResetScope: 'test' }, { hooksDetected: true }))
       .toEqual({ mode: 'restart', scope: 'test' });
+    // 'none' never resets, so its auto scope stays the per-file default.
     expect(resolveAppResetPolicy(undefined, { ...base, appReset: 'none' }, { hooksDetected: true }))
-      .toEqual({ mode: 'none', scope: 'test' });
+      .toEqual({ mode: 'none', scope: 'file' });
   });
 
   it('resolves a relative appState against rootDir and keeps "" as clear', () => {

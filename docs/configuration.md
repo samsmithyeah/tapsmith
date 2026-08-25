@@ -551,7 +551,7 @@ export default defineConfig({
 });
 ```
 
-Tapsmith navigates the deep link instead of clearing app data and relaunching. The deep link handler should clear app state and land on whatever screen your tests expect to start from. Keep this handler out of production builds, for example behind a test-only build flavor or equivalent guard. The reset appears in the trace as an `openDeepLink` step under **BEFORE ALL** (or **BEFORE EACH** with `appResetScope: 'test'`); if the deep link fails, Tapsmith falls back to a full clear and records why.
+Tapsmith navigates the deep link instead of clearing app data and relaunching. The deep link handler should clear app state and land on whatever screen your tests expect to start from. Keep this handler out of production builds, for example behind a test-only build flavor or equivalent guard. The reset appears in the trace as a `resetApp` step in the **APP RESET** section preceding **BEFORE ALL** (or **BEFORE EACH** with `appResetScope: 'test'`); if the deep link fails, Tapsmith falls back to a full clear and records why.
 
 The reset is delivered to the running app (warm). On iOS simulators the daemon bounds the warm window: every `appResetColdEvery` resets (default 10), on a retry attempt, or after two warm resets in a row fail to verify, the next reset cold-relaunches the app with the URL instead — and the trace says so (`cold relaunch: warm-window bound reached (10 resets)`). Deep links opened *inside* a test with `device.openDeepLink()` are always delivered warm when possible.
 

@@ -112,7 +112,7 @@ describe("Login screen", () => {
 
 Tests must not depend on each other. Each test should start from a known state and leave the device in a state that does not affect subsequent tests.
 
-Tapsmith resets the app for you — the mobile equivalent of Playwright giving every test a fresh browser context. The reset is **declared**, not written by hand: it runs as fixture setup, appears in the trace under **BEFORE ALL** (per-file) or **BEFORE EACH** (per-test), and its time counts toward the test's duration so slow isolation is visible rather than hidden.
+Tapsmith resets the app for you — the mobile equivalent of Playwright giving every test a fresh browser context. The reset is **declared**, not written by hand: it runs as fixture setup, appears in the trace in its own **APP RESET** section just before **BEFORE ALL** (per-file) or **BEFORE EACH** (per-test) — so the hook sections contain only your code — and its time counts toward the test's duration so slow isolation is visible rather than hidden.
 
 ### Declaring the reset policy
 
@@ -130,7 +130,7 @@ Two options control it, at any level — config, `projects[].use`, or `test.use(
 | `warm` | In-app reset through the app's reset hook (`resetAppDeepLink`); no process restart | < 1 s |
 | `none` | No reset — only verify the session is healthy | ~0 |
 
-`'auto'` picks the fastest hermetic option the app supports: `warm` when a reset hook is configured, otherwise `clear`. The scope is per-file, except that an in-app warm hook makes it per-test — for scopes without `beforeAll` hooks. A `describe` (or file) with `beforeAll` is sharing setup between its tests, so it is reset once on entry and left alone in between; set `appResetScope: "test"` explicitly if you want a reset before every test regardless. With no configuration at all you get today's behaviour — a clean app once per file — and nothing to write.
+`'auto'` picks the fastest hermetic option the app supports: `warm` when a reset hook is configured, otherwise `clear`. The scope is per-file, except that an in-app warm hook makes it per-test — when each reset really is warm: no `appState` (restoring or clearing is a cold relaunch) and no `beforeAll` hooks in the scope (a `describe` or file with `beforeAll` is sharing setup between its tests, so it is reset once on entry and left alone in between). Set `appResetScope: "test"` explicitly if you want a reset before every test regardless. With no configuration at all you get today's behaviour — a clean app once per file — and nothing to write.
 
 ```typescript
 // tapsmith.config.ts — restart between files instead of wiping data
