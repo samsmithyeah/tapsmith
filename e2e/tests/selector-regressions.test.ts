@@ -3,14 +3,9 @@
  * Each section preserves the original PILOT issue ID so future regressions
  * are easy to triage.
  */
-import { beforeEach, describe, expect, test } from "tapsmith"
-import { resetApp } from "../utils/app-reset.js"
+import { describe, expect, test } from "tapsmith"
 
 describe("Selector & assertion regressions", () => {
-  beforeEach(async ({ device }) => {
-    await resetApp(device)
-  })
-
   // ─── PILOT-131: testId() now resolves to resource-id ───
   test("PILOT-131: testId() should find element by resource-id", async ({ device }) => {
     await device.getByDescription("Login Form").tap()

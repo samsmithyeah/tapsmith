@@ -1,9 +1,9 @@
 import { describe, expect, test } from "../fixtures.js"
-import { resetApp } from "../utils/app-reset.js"
+import { openScreen } from "../utils/app-reset.js"
 
 describe("Gestures screen", () => {
   test.beforeEach(async ({ device, gesturesScreen }) => {
-    await resetApp(device, "/gestures")
+    await openScreen(device, "/gestures")
     await expect(gesturesScreen.heading).toBeVisible()
   })
 

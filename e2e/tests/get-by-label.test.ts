@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "tapsmith"
-import { resetApp } from "../utils/app-reset.js"
+import { openScreen } from "../utils/app-reset.js"
 
 describe("getByLabel", () => {
   // ─── Text fields (Login screen) ───
@@ -37,7 +37,7 @@ describe("getByLabel", () => {
 
   describe("switches", () => {
     beforeAll(async ({ device }) => {
-      await resetApp(device, "/toggles")
+      await openScreen(device, "/toggles")
     })
 
     test("finds switch by its accessibility label", async ({ device }) => {

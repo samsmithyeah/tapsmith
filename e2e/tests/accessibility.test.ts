@@ -1,15 +1,15 @@
 import { describe, expect, test } from "../fixtures.js"
-import { resetApp } from "../utils/app-reset.js"
+import { openScreen } from "../utils/app-reset.js"
 
 describe("Accessibility screen", () => {
   test.beforeAll(async ({ device, accessibilityScreen }) => {
-    await resetApp(device, "/accessibility")
+    await openScreen(device, "/accessibility")
     await expect(accessibilityScreen.heading).toBeVisible()
   })
 
   test.beforeEach(async ({ device, accessibilityScreen }) => {
     if (!(await accessibilityScreen.heading.exists())) {
-      await resetApp(device, "/accessibility")
+      await openScreen(device, "/accessibility")
     }
   })
 
