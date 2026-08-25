@@ -13,6 +13,7 @@ import {
   revokeTraceScreenshots,
   reconcileTraceWallDuration,
   emptyTraceData,
+  resolveActionHierarchy,
   getOrCreateTrace,
   EMPTY_MAP,
   EMPTY_EVENTS,
@@ -510,15 +511,20 @@ function App() {
   // picks on a before-screenshot would hit-test the after-hierarchy.
   const [screenshotVariant, setScreenshotVariant] = useState<'before' | 'after'>('before');
 
-  // Hierarchy XML for the current action (used by selector playground)
-  const currentHierarchyXml = useMemo(() => {
-    if (!selectedEvent || hierarchies.size === 0) return undefined;
-    const pad = String(selectedEvent.actionIndex).padStart(3, '0');
-    const afterXml = hierarchies.get(`hierarchy/action-${pad}-after.xml`);
-    const beforeXml = hierarchies.get(`hierarchy/action-${pad}-before.xml`);
-    return screenshotVariant === 'before' ? (beforeXml ?? afterXml) : (afterXml ?? beforeXml);
-  }, [selectedEvent, hierarchies, screenshotVariant]);
+  // Hierarchy for the current action (used by selector playground) — resolved
+  // to depict the same moment as the displayed screenshot, borrowing for
+  // actions that capture none (network family). PILOT-302.
+  const currentHierarchy = useMemo(
+    () => selectedEvent
+      ? resolveActionHierarchy(hierarchies, screenshots, selectedEvent.actionIndex, screenshotVariant)
+      : undefined,
+    [selectedEvent, hierarchies, screenshots, screenshotVariant],
+  );
 
+  // Keyed on the xml string, not the wrapper object: the trace maps are
+  // rebuilt on every streamed message, and re-parsing a large tree per
+  // message is jank the string key avoids.
+  const currentHierarchyXml = currentHierarchy?.xml;
   const currentRoots = useMemo(
     () => currentHierarchyXml ? parseHierarchyXml(currentHierarchyXml) : [],
     [currentHierarchyXml],
@@ -1630,6 +1636,8 @@ function App() {
               onRunContainer={handleRunContainer}
               pickMode={pickTarget === 'screenshot'}
               onPickModeToggle={handlePickToggle}
+              hierarchyBorrowedFromStep={currentHierarchy?.borrowedFromStep}
+              pickUnavailable={!!selectedEvent && currentRoots.length === 0}
               onDisplayedVariantChange={setScreenshotVariant}
               devicePixelRatio={viewedTestDpr}
               testName={metadata.testName}

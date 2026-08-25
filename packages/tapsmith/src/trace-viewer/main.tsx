@@ -29,6 +29,7 @@ import {
   handleHoverFromScreenshot,
 } from "./components/SelectorPlayground.js";
 import { parseHierarchyXml } from "./components/hierarchy-utils.js";
+import { resolveActionHierarchy } from "../ui-mode/hooks/use-trace-data.js";
 import type { HierarchyNode, Bounds } from "./components/hierarchy-utils.js";
 import { traceViewerStyles } from "./styles/trace-viewer.css.js";
 
@@ -480,15 +481,19 @@ function App() {
   // picks on a before-screenshot would hit-test the after-hierarchy.
   const [screenshotVariant, setScreenshotVariant] = useState<'before' | 'after'>('before');
 
-  // Hierarchy XML for the current action (used by selector playground)
-  const currentHierarchyXml = useMemo(() => {
-    if (!trace || !selectedEvent) return undefined;
-    const pad = String(selectedEvent.actionIndex).padStart(3, "0");
-    const afterXml = trace.hierarchies.get(`hierarchy/action-${pad}-after.xml`);
-    const beforeXml = trace.hierarchies.get(`hierarchy/action-${pad}-before.xml`);
-    return screenshotVariant === 'before' ? (beforeXml ?? afterXml) : (afterXml ?? beforeXml);
-  }, [trace, selectedEvent, screenshotVariant]);
+  // Hierarchy for the current action (used by selector playground) — resolved
+  // to depict the same moment as the displayed screenshot, borrowing for
+  // actions that capture none (network family). PILOT-302.
+  const currentHierarchy = useMemo(
+    () => trace && selectedEvent
+      ? resolveActionHierarchy(trace.hierarchies, trace.screenshots, selectedEvent.actionIndex, screenshotVariant)
+      : undefined,
+    [trace, selectedEvent, screenshotVariant],
+  );
 
+  // Keyed on the xml string, not the wrapper object, so an unchanged tree is
+  // never re-parsed just because the wrapper was recomputed.
+  const currentHierarchyXml = currentHierarchy?.xml;
   const currentRoots = useMemo(
     () => (currentHierarchyXml ? parseHierarchyXml(currentHierarchyXml) : []),
     [currentHierarchyXml],
@@ -592,6 +597,8 @@ function App() {
           onScreenshotHover={pickMode ? handleScreenshotHover : undefined}
           pickMode={pickMode}
           onPickModeToggle={handlePickToggle}
+          hierarchyBorrowedFromStep={currentHierarchy?.borrowedFromStep}
+          pickUnavailable={!!selectedEvent && currentRoots.length === 0}
           onDisplayedVariantChange={setScreenshotVariant}
           devicePixelRatio={trace.metadata.device?.devicePixelRatio}
           nodeType="test"

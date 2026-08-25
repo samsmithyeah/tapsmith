@@ -149,7 +149,7 @@ own: `node-duration`, `filter-count`, `count-passed`/`-failed`/`-skipped`,
 `call-grid`, `no-content`, `log-entry`, `error-entry`, `source-line`,
 `source-filename`, `net-detail-body`, `hierarchy-row`, `hierarchy-properties`,
 `locator-code`, `selector-match-count`, `selector-strict-warning`, `film-frame`,
-`timeline-meta`, `viewer-title`, `screenshot-empty`, `viewer-empty`, `mcp-entry`,
+`timeline-meta`, `viewer-title`, `screenshot-empty`, `viewer-empty`, `pick-note`, `mcp-entry`,
 `mcp-agent`, `mcp-empty`, `actions-list`, `action-item`, `locator-suggestions`,
 `locator-option`, `explorer-pane`, `explorer-resize`, `source-line` (which also
 carries `data-line`, its 1-based line number).

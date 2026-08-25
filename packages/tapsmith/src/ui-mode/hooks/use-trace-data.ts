@@ -72,6 +72,20 @@ export function base64ToUtf8(base64: string): string {
   }
 }
 
+/** Nearest step before `actionIndex` with any screenshot — the step the panel
+ * borrows its displayed frame from when the selected action captured none. */
+function nearestScreenshotStep(
+  screenshots: Map<string, string>,
+  actionIndex: number,
+): number | undefined {
+  for (let i = actionIndex - 1; i >= 0; i--) {
+    const pad = String(i).padStart(3, '0');
+    if (screenshots.has(`screenshots/action-${pad}-after.png`)
+      || screenshots.has(`screenshots/action-${pad}-before.png`)) return i;
+  }
+  return undefined;
+}
+
 /**
  * Walk backwards from `actionIndex` to find the nearest available screenshot.
  * Used at render time so no-screenshot actions (e.g. toBe assertions, query
@@ -81,13 +95,77 @@ export function findNearestScreenshot(
   screenshots: Map<string, string>,
   actionIndex: number,
 ): string | undefined {
-  for (let i = actionIndex - 1; i >= 0; i--) {
-    const pad = String(i).padStart(3, '0');
-    const url = screenshots.get(`screenshots/action-${pad}-after.png`)
-      ?? screenshots.get(`screenshots/action-${pad}-before.png`);
-    if (url) return url;
+  const step = nearestScreenshotStep(screenshots, actionIndex);
+  if (step === undefined) return undefined;
+  const pad = String(step).padStart(3, '0');
+  return screenshots.get(`screenshots/action-${pad}-after.png`)
+    ?? screenshots.get(`screenshots/action-${pad}-before.png`);
+}
+
+export interface ResolvedHierarchy {
+  xml: string;
+  /** Set when the tree was borrowed from an earlier step because this action
+   * captured none (network actions never touch the device). The displayed
+   * screenshot is borrowed from the same step, so tree and frame agree —
+   * but the UI should say the data predates the selected action. */
+  borrowedFromStep?: number;
+}
+
+/**
+ * The hierarchy the selector playground must hit-test for an action, which
+ * has to depict the same moment as the screenshot the panel displays — or a
+ * pick would resolve one screen over a picture of another (PILOT-302):
+ *
+ * - The "after" display is the next action's before-screenshot (see
+ *   ScreenshotPanel), so its tree is the next action's before-hierarchy —
+ *   the same moment by definition, not a borrow. Own after-hierarchies
+ *   (legacy traces only) and, failing those, the own before-hierarchy
+ *   (correct for read-only actions like assertions) come first for
+ *   compatibility with traces that captured them.
+ * - The "before" display falls back to the frame findNearestScreenshot
+ *   borrows, so the tree is anchored to that same step; if that step's
+ *   hierarchy capture was lost, resolve nothing rather than hit-test a tree
+ *   from a different step than the displayed frame.
+ */
+export function resolveActionHierarchy(
+  hierarchies: Map<string, string>,
+  screenshots: Map<string, string>,
+  actionIndex: number,
+  variant: 'before' | 'after',
+): ResolvedHierarchy | undefined {
+  const pad = String(actionIndex).padStart(3, '0');
+  const ownBefore = hierarchies.get(`hierarchy/action-${pad}-before.xml`);
+  const ownAfter = hierarchies.get(`hierarchy/action-${pad}-after.xml`);
+
+  if (variant === 'after') {
+    const nextPad = String(actionIndex + 1).padStart(3, '0');
+    const nextBefore = hierarchies.get(`hierarchy/action-${nextPad}-before.xml`);
+    if (screenshots.has(`screenshots/action-${nextPad}-before.png`)) {
+      // The panel displays the next action's before-frame; only trees from
+      // that same moment may hit-test it. ownAfter (legacy) is equivalent —
+      // nothing runs between the end of N and the start of N+1.
+      const xml = nextBefore ?? ownAfter;
+      return xml ? { xml } : undefined;
+    }
+    if (screenshots.has(`screenshots/action-${pad}-after.png`)) {
+      const xml = ownAfter ?? nextBefore;
+      return xml ? { xml } : undefined;
+    }
+    // No after-frame at all (e.g. screenshot-less traces): the own tree keeps
+    // the Locator playground working; there is no picture to disagree with.
+    const own = ownAfter ?? nextBefore ?? ownBefore;
+    if (own) return { xml: own };
+  } else {
+    const own = ownBefore ?? ownAfter;
+    if (own) return { xml: own };
   }
-  return undefined;
+
+  const step = nearestScreenshotStep(screenshots, actionIndex);
+  if (step === undefined) return undefined;
+  const stepPad = String(step).padStart(3, '0');
+  const xml = hierarchies.get(`hierarchy/action-${stepPad}-after.xml`)
+    ?? hierarchies.get(`hierarchy/action-${stepPad}-before.xml`);
+  return xml ? { xml, borrowedFromStep: step } : undefined;
 }
 
 /** Revoke all blob URLs in a trace's screenshot map to free memory. */
