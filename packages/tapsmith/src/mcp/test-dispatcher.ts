@@ -70,6 +70,8 @@ export interface TestTreeEntry {
   filePath: string
   status: string
   children?: TestTreeEntry[]
+  /** Declared isolation options (appReset / appResetScope / appState) when any are set. */
+  use?: { appReset?: string; appResetScope?: string; appState?: string }
 }
 
 export interface ProjectInfo {

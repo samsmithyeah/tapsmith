@@ -18,6 +18,7 @@ import { Device } from './device.js';
 import { runTestFile, collectResults, markFileRetryFlakes, type TestResult, type SuiteResult } from './runner.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
+import type { PreparedState } from './app-reset.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { discoverTestFiles } from './test-file-discovery.js';
@@ -47,7 +48,7 @@ import {
   waitForDeviceStability,
   ensureAdbRoot,
 } from './emulator.js';
-import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeRegExpArray } from './worker-protocol.js';
+import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeConfig } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
 import {
@@ -953,7 +954,7 @@ async function setupSequentialDevice(
         iosAppPath: resolvedIosAppPath,
         deviceSerial: cfg.device,
         networkTracingEnabled,
-      }, 'startup', { allowSoftReset: false, readinessAttempts: 3, skipAppReset });
+      }, 'startup launch', { readinessAttempts: 3, skipAppReset });
       if (progress) progress.complete('app-launch', `launched ${cfg.package}`);
       else console.log(dim(`Launched ${cfg.package}`));
     } catch (err) {
@@ -1454,40 +1455,6 @@ interface PerProjectProvisionResult {
 }
 
 /**
- * Build a SerializedConfig from a TapsmithConfig (a per-bucket effective config).
- */
-function buildSerializedConfig(cfg: TapsmithConfig): import('./worker-protocol.js').SerializedConfig {
-  return {
-    timeout: cfg.timeout,
-    retries: cfg.retries,
-    screenshot: cfg.screenshot,
-    rootDir: cfg.rootDir,
-    outputDir: cfg.outputDir,
-    apk: cfg.apk,
-    activity: cfg.activity,
-    package: cfg.package,
-    agentApk: cfg.agentApk,
-    agentTestApk: cfg.agentTestApk,
-    trace: typeof cfg.trace === 'string' || typeof cfg.trace === 'object'
-      ? cfg.trace
-      : undefined,
-    video: typeof cfg.video === 'string' || typeof cfg.video === 'object'
-      ? cfg.video
-      : undefined,
-    platform: cfg.platform,
-    app: cfg.app,
-    iosXctestrun: cfg.iosXctestrun,
-    simulator: cfg.simulator,
-    resetAppDeepLink: cfg.resetAppDeepLink,
-    resetAppWaitMs: cfg.resetAppWaitMs,
-    baseURL: cfg.baseURL,
-    extraHTTPHeaders: cfg.extraHTTPHeaders,
-    grep: serializeRegExpArray(normalizeGrep(cfg.grep)),
-    grepInvert: serializeRegExpArray(normalizeGrep(cfg.grepInvert)),
-  };
-}
-
-/**
  * Provision devices for a single bucket using its effective config and a
  * fixed worker count. Returns the device serials successfully provisioned
  * (may be fewer than requested if hardware constraints prevent it).
@@ -1670,7 +1637,7 @@ async function provisionPerProjectDevices(
     const { signature, bucketEffective, provisioned } = outcome;
     result.launched.push(...provisioned.launched);
     result.reusedSimulatorCount += provisioned.reusedSimulatorCount;
-    const bucketSerialized = buildSerializedConfig(bucketEffective);
+    const bucketSerialized = serializeConfig(bucketEffective);
     for (const serial of provisioned.serials) {
       result.deviceSerials.push(serial);
       result.configByDevice.set(serial, bucketSerialized);
@@ -2573,72 +2540,13 @@ async function main(): Promise<void> {
         // when projects override device-shaping fields via `use:`.
         const projectConfig = currentSequentialState?.effectiveConfig ?? config;
 
-        let isFirstFileInProject = true;
         for (const file of project.testFiles) {
-          // Skip the file-level reset when the project has appState — the
-          // runner's suite-level restoreAppState + restartApp will handle
-          // the transition, making a prior launchConfiguredApp redundant.
-          const projectHasAppState = !!(project.use?.appState);
-          if (fileIndex > 0 && projectConfig.package
-            && !(isFirstFileInProject && projectHasAppState)) {
-            const resetCtx: import('./session-preflight.js').SessionPreflightContext = {
-              label: `Device ${projectConfig.device}`,
-              config: projectConfig,
-              device: device!,
-              client: client!,
-              agentApkPath: resolvedAgentApk,
-              agentTestApkPath: resolvedAgentTestApk,
-              iosXctestrunPath: resolvedIosXctestrun,
-              iosAppPath: resolvedIosAppPath,
-              deviceSerial: projectConfig.device,
-              networkTracingEnabled: isNetworkTracingEnabled(projectConfig.trace),
-            };
-            let resetOk = false;
-            try {
-              // For appState projects, skip the destructive clearAppData (pm
-              // clear) — the suite-level restoreAppState owns isolation and
-              // preserves the AndroidKeyStore key that decrypts saved creds.
-              await launchConfiguredApp(resetCtx, `reset before ${path.basename(file)}`, { skipDataClear: projectHasAppState });
-              const pong = await client!.ping();
-              if (!pong.agentConnected) {
-                throw new Error('Not connected to agent after app reset');
-              }
-              resetOk = true;
-            } catch (err) {
-              if (isRecoverableInfrastructureError(err)) {
-                process.stderr.write(
-                  dim(`Recovering session after reset failure before ${path.basename(file)}: ${err instanceof Error ? err.message : String(err)}\n`),
-                );
-                try {
-                  await launchConfiguredApp(resetCtx, `recovery for reset before ${path.basename(file)}`, { allowSoftReset: false, skipDataClear: projectHasAppState });
-                  const recoveryPong = await client!.ping();
-                  if (recoveryPong.agentConnected) {
-                    resetOk = true;
-                  }
-                } catch {
-                  // Hard recovery also failed — fall through to skip
-                }
-              } else {
-                console.error(red(`Failed to reset app between test files: ${err}`));
-              }
-            }
-            if (!resetOk) {
-              console.error(red(`Failed to reset app before ${path.basename(file)}, skipping file.`));
-              reporter.onTestFileStart(file);
-              const skippedResult: TestResult = {
-                name: path.basename(file),
-                fullName: path.basename(file),
-                status: 'skipped',
-                durationMs: 0,
-                project: project.name,
-              };
-              allResults.push(skippedResult);
-              reporter.onTestFileEnd(file, [skippedResult]);
-              sequentialExitCode = 1;
-              projectFailed = true;
-              continue;
-            }
-          }
+          // The between-file app reset is the runner's job (declared policy,
+          // recorded in the trace as fixture setup). The first file after a
+          // device launch inherits that launch as its prepared state.
+          const preparedDevice: PreparedState | undefined = fileIndex === 0
+            ? { policy: { mode: 'clear', scope: 'file' }, preparedAt: Date.now(), durationMs: 0, source: 'startup launch' }
+            : undefined;
 
           reporter.onTestFileStart(file);
 
@@ -2654,6 +2562,7 @@ async function main(): Promise<void> {
             projectName: projectLabel(project),
             projectGrep: projectGrepRe.length > 0 ? projectGrepRe : undefined,
             projectGrepInvert: projectGrepInvertRe.length > 0 ? projectGrepInvertRe : undefined,
+            preparedDevice,
             sessionContext: {
               label: `Device ${projectConfig.device}`,
               config: projectConfig,
@@ -2673,7 +2582,6 @@ async function main(): Promise<void> {
 
           reporter.onTestFileEnd(file, fileResults);
           fileIndex++;
-          isFirstFileInProject = false;
 
           if (fileResults.some((r) => r.status === 'failed')) {
             projectFailed = true;
@@ -2747,11 +2655,13 @@ async function runTestFileWithRecovery(
     projectGrep?: RegExp[]
     projectGrepInvert?: RegExp[]
     sessionContext: import('./session-preflight.js').SessionPreflightContext
+    preparedDevice?: PreparedState
   },
 ): Promise<SuiteResult> {
   const grep = normalizeGrep(opts.config.grep);
   const grepInvert = normalizeGrep(opts.config.grepInvert);
   let firstAttemptSuite: SuiteResult | undefined;
+  let recoveredPrepared: PreparedState | undefined;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const suite = await runTestFile(file, {
@@ -2786,6 +2696,10 @@ async function runTestFileWithRecovery(
           }
         },
         abortFileOnError: isRecoverableInfrastructureError,
+        sessionContext: opts.sessionContext,
+        // Only the first attempt can reuse the pre-launch state; a retry
+        // follows a recovery relaunch, which is itself a fresh `clear`.
+        preparedDevice: attempt === 1 ? opts.preparedDevice : recoveredPrepared,
         // In-process retries need the same ESM cache busting as worker
         // retries; otherwise import() returns the cached module and the
         // retry registers no tests.
@@ -2824,7 +2738,7 @@ async function runTestFileWithRecovery(
       process.stderr.write(
         dim(`Recovering session after infrastructure error in ${path.basename(file)}: ${infraFailure.error?.message ?? 'unknown'}\n`),
       );
-      await launchConfiguredApp(opts.sessionContext, `recovery for ${path.basename(file)}`, { allowSoftReset: false });
+      recoveredPrepared = await launchConfiguredApp(opts.sessionContext, `recovery for ${path.basename(file)}`);
     } catch (err) {
       if (!isRecoverableInfrastructureError(err) || attempt === 2) {
         // If the retry itself crashed, return the first attempt's results
@@ -2835,7 +2749,7 @@ async function runTestFileWithRecovery(
       process.stderr.write(
         dim(`Recovering session after infrastructure error in ${path.basename(file)}: ${err instanceof Error ? err.message : err}\n`),
       );
-      await launchConfiguredApp(opts.sessionContext, `recovery for ${path.basename(file)}`, { allowSoftReset: false });
+      recoveredPrepared = await launchConfiguredApp(opts.sessionContext, `recovery for ${path.basename(file)}`);
     }
   }
   // Unreachable — loop always returns or throws

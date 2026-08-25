@@ -119,6 +119,16 @@ export interface ActionTraceEvent extends TraceEvent {
   retryCount?: number
   /** Internal action log entries. */
   log?: string[]
+  /**
+   * Free-text second line for actions that have no selector (e.g. the
+   * declared app reset: "satisfied by background preparation … (took 9.8s)").
+   */
+  detail?: string
+  /**
+   * Where the work behind this row happened: inline in this run, satisfied
+   * by an earlier preparation, or skipped by policy.
+   */
+  origin?: 'inline' | 'prepared' | 'skipped'
 }
 
 export interface AssertionTraceEvent extends TraceEvent {
@@ -252,6 +262,10 @@ export interface TraceMetadata {
   project?: string
   /** Path to the app state archive restored before this test. */
   appState?: string
+  /** Declared app reset mode in effect for this test's scope. */
+  appReset?: string
+  /** Declared app reset scope ('file' | 'test') in effect for this test. */
+  appResetScope?: string
 }
 
 export interface TraceDeviceInfo {

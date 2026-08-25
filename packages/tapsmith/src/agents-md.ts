@@ -50,7 +50,7 @@ When using MCP, inspect before editing: \`tapsmith_snapshot\` for the accessibil
 - Group related behavior with \`describe()\`. Keep each test focused on one user-visible behavior, and use hooks only to put the app into a known starting state.
 - Prefer screen objects for reused screens. A screen object should take \`Device\`, expose locators as getters, and provide composite multi-step actions such as \`login()\` or \`openSettings()\`. Avoid one-line wrappers around \`.tap()\`; tests can tap exposed locators directly.
 - Keep assertions in tests, not screen objects. Screen objects provide locators and intentful actions; specs decide what must be true.
-- Tests should be independent and parallel-safe. Prefer deep links, API setup, \`restartApp()\`, \`launchApp({ clearData: true })\`, setup projects, or saved app state over clicking through unrelated setup UI. Generate unique names/emails/IDs for data created during tests.
+- Tests should be independent and parallel-safe. Tapsmith resets the app for you between files (or per test with \`test.use({ appResetScope: 'test' })\`); declare the policy with \`test.use({ appReset: 'clear' | 'restart' | 'warm' | 'none' })\` instead of writing \`restartApp()\` / \`launchApp({ clearData: true })\` in a \`beforeEach\`. Prefer deep links, API setup, setup projects, or saved app state over clicking through unrelated setup UI. Generate unique names/emails/IDs for data created during tests.
 - Clean up per-test network routes or mocks, for example with \`device.unrouteAll()\`, when a test installs routes that could affect later tests.
 
 ### Projects and authenticated state

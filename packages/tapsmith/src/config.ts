@@ -15,6 +15,12 @@ import type { VideoMode, VideoConfig } from './video/types.js';
 
 export type ScreenshotMode = 'always' | 'only-on-failure' | 'never';
 export type DeviceStrategy = 'prefer-connected' | 'avd-only';
+/** How the app is reset before tests — see {@link TapsmithConfig.appReset}. */
+export type AppResetMode = 'auto' | 'clear' | 'restart' | 'warm' | 'none';
+/** How often the app reset runs — see {@link TapsmithConfig.appResetScope}. */
+export type AppResetScope = 'auto' | 'file' | 'test';
+export const APP_RESET_MODES: readonly AppResetMode[] = ['auto', 'clear', 'restart', 'warm', 'none'];
+export const APP_RESET_SCOPES: readonly AppResetScope[] = ['auto', 'file', 'test'];
 export type Platform = 'android' | 'ios';
 
 export type { TraceMode, TraceConfig, VideoMode, VideoConfig };
@@ -102,6 +108,30 @@ export interface TapsmithConfig {
    * Defaults to 750ms when the deep link is configured.
    */
   resetAppWaitMs?: number;
+
+  /**
+   * How the app is reset to a known state before tests run (the mobile
+   * analogue of Playwright's per-test browser context). Recorded in the trace
+   * as fixture setup under the BEFORE ALL / BEFORE EACH group.
+   *
+   * - `'auto'` (default): `'warm'` when the app exposes a reset hook
+   *   (`resetAppDeepLink`, or `@tapsmith/react-native` once detected),
+   *   otherwise `'clear'`.
+   * - `'clear'`: wipe app data and cold-launch (slowest, fully hermetic).
+   * - `'restart'`: terminate and relaunch, keeping persisted data.
+   * - `'warm'`: in-app reset via the reset hook, no process restart (fastest).
+   * - `'none'`: no reset — only verify the session is healthy.
+   *
+   * Overridable per project (`projects[].use`) and per scope (`test.use()`).
+   */
+  appReset?: AppResetMode;
+
+  /**
+   * Whether the reset runs once per test file or before every test.
+   * `'auto'` (default) is `'file'`, or `'test'` when a warm in-app reset hook
+   * is available (per-test isolation is then cheap enough to be the default).
+   */
+  appResetScope?: AppResetScope;
 
   /**
    * Delay in milliseconds between keystrokes when typing text.
@@ -264,6 +294,8 @@ export type UseOptions = Partial<Pick<TapsmithConfig,
   | 'launchEmulators'
   | 'resetAppDeepLink'
   | 'resetAppWaitMs'
+  | 'appReset'
+  | 'appResetScope'
   | 'doubleTapInterval'
   | 'baseURL'
   | 'extraHTTPHeaders'
@@ -375,7 +407,29 @@ function applyConfigDefaults(
   if (raw.launchEmulators === undefined && raw.avd) {
     config.launchEmulators = true;
   }
+  validateAppResetOptions(raw);
   return config;
+}
+
+/**
+ * Reject unknown `appReset` / `appResetScope` literals. Shared by config
+ * loading, project `use`, and `test.use()` so a typo fails fast with the
+ * accepted values instead of silently falling back to a default.
+ */
+export function validateAppResetOptions(
+  options: Pick<Partial<TapsmithConfig>, 'appReset' | 'appResetScope'>,
+  source = 'config',
+): void {
+  if (options.appReset !== undefined && !APP_RESET_MODES.includes(options.appReset)) {
+    throw new Error(
+      `${source}: appReset must be one of ${APP_RESET_MODES.map((m) => `'${m}'`).join(', ')} (got ${JSON.stringify(options.appReset)})`,
+    );
+  }
+  if (options.appResetScope !== undefined && !APP_RESET_SCOPES.includes(options.appResetScope)) {
+    throw new Error(
+      `${source}: appResetScope must be one of ${APP_RESET_SCOPES.map((s) => `'${s}'`).join(', ')} (got ${JSON.stringify(options.appResetScope)})`,
+    );
+  }
 }
 
 /**

@@ -12,6 +12,9 @@
  *   - prefer-accessible-selectors: Warns when `.getByTestId()` or
  *     `.locator({ id })` is used instead of `getByRole`, `getByText`,
  *     `getByDescription`, etc.
+ *   - prefer-app-reset-option: Warns when a `beforeEach` hook only restarts
+ *     or clears the app — declare `test.use({ appReset, appResetScope })`
+ *     instead so the reset runs as traced fixture setup.
  */
 
 // We define our own minimal types to avoid a hard dependency on @types/eslint.
@@ -28,6 +31,11 @@ interface ASTNode {
   key?: ASTNode;
   value?: unknown;
   loc?: { start: { line: number }; end: { line: number } };
+  // Function / statement shapes used by prefer-app-reset-option.
+  body?: ASTNode | ASTNode[];
+  expression?: ASTNode;
+  argument?: ASTNode;
+  params?: ASTNode[];
 }
 
 interface Comment {
@@ -219,12 +227,112 @@ const preferAccessibleSelectors: RuleModule = {
   },
 };
 
+// ─── prefer-app-reset-option ───
+
+/** `beforeEach(...)` or `test.beforeEach(...)` / `<x>.beforeEach(...)`. */
+function isBeforeEachCall(node: ASTNode): boolean {
+  if (node.type !== 'CallExpression' || !node.callee) return false;
+  const callee = node.callee;
+  if (callee.type === 'Identifier') return callee.name === 'beforeEach';
+  return (
+    callee.type === 'MemberExpression' &&
+    callee.computed !== true &&
+    callee.property?.type === 'Identifier' &&
+    callee.property.name === 'beforeEach'
+  );
+}
+
+/** Unwrap `await expr` → `expr`. */
+function unwrapAwait(node: ASTNode | undefined): ASTNode | undefined {
+  return node?.type === 'AwaitExpression' ? node.argument : node;
+}
+
+/**
+ * Return the hook body as a list of top-level expressions, or undefined when
+ * the body contains anything other than expression statements (then it is
+ * doing more than resetting and the rule stays quiet).
+ */
+function hookBodyExpressions(fn: ASTNode | undefined): ASTNode[] | undefined {
+  if (!fn || (fn.type !== 'ArrowFunctionExpression' && fn.type !== 'FunctionExpression')) return undefined;
+  const body = fn.body;
+  if (!body) return undefined;
+  if (!Array.isArray(body)) {
+    // Expression-bodied arrow: `() => device.restartApp()`
+    if (body.type === 'BlockStatement') {
+      const stmts = (body.body as ASTNode[] | undefined) ?? [];
+      const exprs: ASTNode[] = [];
+      for (const stmt of stmts) {
+        if (stmt.type !== 'ExpressionStatement' || !stmt.expression) return undefined;
+        exprs.push(stmt.expression);
+      }
+      return exprs;
+    }
+    return [body];
+  }
+  return undefined;
+}
+
+const preferAppResetOption: RuleModule = {
+  meta: {
+    type: 'suggestion',
+    docs: {
+      description:
+        'Prefer test.use({ appReset }) over a beforeEach hook that only restarts or clears the app',
+      recommended: true,
+    },
+    messages: {
+      preferRestart:
+        "This beforeEach only restarts the app. Declare it instead: test.use({ appReset: 'restart', appResetScope: 'test' }) — the reset then runs as traced fixture setup, shows up in the UI, and can be prepared ahead of time.",
+      preferClear:
+        "This beforeEach only clears and relaunches the app. Declare it instead: test.use({ appReset: 'clear', appResetScope: 'test' }) — the reset then runs as traced fixture setup, shows up in the UI, and can be prepared ahead of time.",
+    },
+    schema: [],
+  },
+  create(context) {
+    return {
+      CallExpression(node: ASTNode) {
+        if (!isBeforeEachCall(node)) return;
+        const fn = node.arguments?.[node.arguments.length - 1];
+        const exprs = hookBodyExpressions(fn);
+        if (!exprs || exprs.length === 0) return;
+
+        const calls = exprs.map(unwrapAwait);
+        if (calls.some((c) => !c || c.type !== 'CallExpression')) return;
+        const names = calls.map((c) => {
+          for (const m of ['restartApp', 'clearAppData', 'launchApp'] as const) {
+            if (isMethodCall(c!, m)) return m;
+          }
+          return undefined;
+        });
+        if (names.some((n) => n === undefined)) return;
+
+        if (names.length === 1 && names[0] === 'restartApp') {
+          context.report({ node, messageId: 'preferRestart' });
+          return;
+        }
+        if (names.length === 2 && names[0] === 'clearAppData' && names[1] === 'launchApp') {
+          context.report({ node, messageId: 'preferClear' });
+          return;
+        }
+        if (names.length === 1 && names[0] === 'launchApp') {
+          const opts = calls[0]!.arguments?.[1];
+          const clearData = getObjectProperty(opts, 'clearData');
+          if (clearData?.type === 'Literal' && clearData.value === true) {
+            context.report({ node, messageId: 'preferClear' });
+          }
+        }
+      },
+    };
+  },
+};
+
 // ─── Plugin export ───
 
 const rules: Record<string, RuleModule> = {
   'prefer-role': preferRole,
   'no-bare-locator-xpath': noBareLocatorXpath,
   'prefer-accessible-selectors': preferAccessibleSelectors,
+  'prefer-app-reset-option': preferAppResetOption,
 };
 
 const recommendedConfig = {
@@ -233,6 +341,7 @@ const recommendedConfig = {
     'tapsmith/prefer-role': 'warn' as const,
     'tapsmith/no-bare-locator-xpath': 'error' as const,
     'tapsmith/prefer-accessible-selectors': 'warn' as const,
+    'tapsmith/prefer-app-reset-option': 'warn' as const,
   },
 };
 

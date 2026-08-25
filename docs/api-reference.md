@@ -1467,7 +1467,9 @@ describe("custom config", () => {
 | `retries`    | `number`                                    | Retry count for failed tests                 |
 | `trace`      | `TraceMode \| Partial<TraceConfig>`         | Trace recording configuration. See [configuration.md](./configuration.md#traceconfig) for the full `TraceConfig` shape (includes `network`, `networkHosts`, `networkIgnoreHosts`, `networkPassthroughHosts`, `screenshots`, etc.). |
 | `video`      | `VideoMode \| Partial<VideoConfig>`         | Video recording configuration. See the [Video recording](#video-recording) section below. |
-| `appState`   | `string`                                    | Path to saved app state archive to restore   |
+| `appState`   | `string`                                    | Path to saved app state archive to restore; `""` means clear |
+| `appReset`   | `'auto' \| 'clear' \| 'restart' \| 'warm' \| 'none'` | How the app is reset before tests in this scope. See [Test isolation](./writing-tests.md#test-isolation). |
+| `appResetScope` | `'auto' \| 'file' \| 'test'`            | Reset once per file or before every test     |
 
 The following device-shaping fields may **only** be set on a project's
 `use` block (not via `test.use()`), since the device is bound to the
@@ -1488,7 +1490,7 @@ worker before any test runs:
 | `iosXctestrun`    | `string`                              | Override path to the iOS .xctestrun file |
 | `deviceStrategy`  | `'prefer-connected' \| 'avd-only'`    | Device selection strategy (Android)      |
 | `launchEmulators` | `boolean`                             | Auto-launch emulators (Android)          |
-| `resetAppDeepLink`| `string`                              | Soft-reset deep link between files       |
+| `resetAppDeepLink`| `string`                              | Warm-reset deep link (makes `appReset: 'auto'` → `warm`) |
 | `resetAppWaitMs`  | `number`                              | Wait after the reset deep link           |
 
 **Reusable auth state** — mirrors Playwright's `storageState`:
