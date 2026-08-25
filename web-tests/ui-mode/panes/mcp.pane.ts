@@ -1,4 +1,6 @@
-// MCP panel — the feed of tool calls made by agents sharing this session.
+// Device activity panel — one feed of everything done to a device outside a
+// traced test: MCP tool calls from agents sharing the session, background
+// preparation, worker recycles, mirror gestures.
 
 import type { Page } from "@playwright/test"
 
@@ -6,11 +8,11 @@ export class McpPane {
   constructor(private page: Page) {}
 
   get root() {
-    return this.page.getByRole("region", { name: "MCP activity" })
+    return this.page.getByRole("region", { name: "Device activity" })
   }
 
   get feed() {
-    return this.page.getByRole("log", { name: "MCP activity feed" })
+    return this.page.getByRole("log", { name: "Device activity feed" })
   }
 
   get entries() {
@@ -23,6 +25,15 @@ export class McpPane {
    */
   entry(tool: string) {
     return this.entries.filter({ hasText: tool })
+  }
+
+  /** Non-MCP entries: background preparation, recycles, mirror bursts. */
+  get activityEntries() {
+    return this.page.getByTestId("activity-entry")
+  }
+
+  activityOfKind(kind: "prepare" | "validate" | "recycle" | "mirror" | "respawn") {
+    return this.activityEntries.and(this.page.locator(`[data-kind="${kind}"]`))
   }
 
   get emptyState() {
@@ -41,7 +52,7 @@ export class McpPane {
 
   /** Toggle in the top rail that opens and closes this panel. */
   get toggle() {
-    return this.page.getByRole("button", { name: /MCP activity$/ })
+    return this.page.getByRole("button", { name: /device activity$/ })
   }
 
   // ─── Flows ───

@@ -23,7 +23,7 @@ import {
   isRecoverableInfrastructureError,
   configFromSerialized,
 } from '../worker-protocol.js';
-import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from '../session-preflight.js';
+import { ensureSessionReady, executeAppReset, launchConfiguredApp, type SessionPreflightContext } from '../session-preflight.js';
 import type { PreparedState } from '../app-reset.js';
 import { createActionProgressMessenger } from '../action-progress-renderer.js';
 import { isAbortError } from '../abort.js';
@@ -35,6 +35,7 @@ import type {
   UIWorkerMessage,
   UIWorkerChildMessage,
   UIWorkerInitMessage,
+  UIWorkerPrepareMessage,
   UIWorkerTraceEventMessage,
 } from './ui-protocol.js';
 
@@ -333,7 +334,7 @@ async function resolveArtifactPaths(msg: UIWorkerInitMessage): Promise<{
 
 function finishInit(): void {
   sendProgress('ready');
-  send({ type: 'ready', workerId });
+  send({ type: 'ready', workerId, policy: preparedDevice?.policy });
 
   // From here on, stream slow-device-action progress (between-file preflight,
   // test.use({appState}) restore, recovery) so the UI can show "Restoring app
@@ -356,10 +357,14 @@ async function handleRunFile(
   projectUseOptions?: import('../worker-protocol.js').RunFileUseOptions,
   projectName?: string,
   testFilter?: string,
+  preparedFor?: PreparedState,
 ): Promise<void> {
   if (!config || !device) {
     throw new Error(`UI Worker ${workerId}: Not initialized`);
   }
+  // A background preparation that the server judged to satisfy this file's
+  // policy replaces whatever launch-time prepared state was pending.
+  if (preparedFor) preparedDevice = preparedFor;
 
   // Created BEFORE the between-files preflight so a stop that lands during
   // wake/unlock/app-reset is honored too — otherwise the abort IPC would be
@@ -571,6 +576,59 @@ function handleShutdown(): void {
 
 // ─── IPC message handler ───
 
+// ─── Background preparation ───
+
+let currentPrepare: { prepareId: string; abort: AbortController } | undefined;
+
+/**
+ * Reset the app to `policy` while no run is in flight so the next Run click
+ * pays only a readiness check. Cooperative cancellation: a `run-file` that
+ * arrives mid-prepare aborts it (the gRPC call is cancelled through the
+ * client's abort signal) and the queue then runs the file — the run never
+ * waits for the preparation to finish.
+ */
+async function handlePrepare(msg: UIWorkerPrepareMessage): Promise<void> {
+  if (!config || !device) {
+    throw new Error(`UI Worker ${workerId}: Not initialized`);
+  }
+  const abort = new AbortController();
+  currentPrepare = { prepareId: msg.prepareId, abort };
+  device._client._setAbortSignal(abort.signal);
+  const startedAt = Date.now();
+  try {
+    await device.wake();
+    await device.unlock();
+    // Project-level use (appState etc.) is folded into the policy by the
+    // server; the effective config is the worker's own.
+    const report = await executeAppReset(sessionContext(undefined), msg.policy, {
+      phase: `background preparation${msg.forFile ? ` for ${path.basename(msg.forFile)}` : ''}`,
+    });
+    if (abort.signal.aborted) throw new Error('preparation cancelled');
+    preparedDevice = undefined; // the server hands the prepared state back with run-file
+    send({
+      type: 'prepared',
+      workerId,
+      prepareId: msg.prepareId,
+      policy: msg.policy,
+      startedAt,
+      durationMs: Date.now() - startedAt,
+      steps: report.steps.map((s) => `${s.name}: ${s.durationMs}ms${s.ok ? '' : ' (failed)'}`),
+    });
+  } catch (err) {
+    const cancelled = abort.signal.aborted || isAbortError(err);
+    send({
+      type: 'prepare-failed',
+      workerId,
+      prepareId: msg.prepareId,
+      error: { message: err instanceof Error ? err.message : String(err) },
+      cancelled,
+    });
+  } finally {
+    device._client._setAbortSignal(undefined);
+    if (currentPrepare?.prepareId === msg.prepareId) currentPrepare = undefined;
+  }
+}
+
 // ─── Message loop ───
 //
 // Device-touching operations (init, run-file) are serialized through one
@@ -601,7 +659,13 @@ process.on('message', (msg: UIWorkerMessage) => {
       enqueue(() => handleInit(msg));
       break;
     case 'run-file':
-      enqueue(() => handleRunFile(msg.filePath, msg.projectUseOptions, msg.projectName, msg.testFilter));
+      enqueue(() => handleRunFile(msg.filePath, msg.projectUseOptions, msg.projectName, msg.testFilter, msg.preparedFor));
+      break;
+    case 'prepare':
+      enqueue(() => handlePrepare(msg));
+      break;
+    case 'cancel-prepare':
+      if (currentPrepare?.prepareId === msg.prepareId) currentPrepare.abort.abort();
       break;
     case 'abort':
       currentAbortController?.abort();

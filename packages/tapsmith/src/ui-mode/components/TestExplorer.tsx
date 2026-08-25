@@ -304,6 +304,13 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
           </span>
         )}
 
+        {(() => {
+          const iso = isolationBadge(node);
+          return iso
+            ? <span class="te-isolation" data-testid="node-isolation" title={iso.title}>{iso.label}</span>
+            : null;
+        })()}
+
         {node.duration !== undefined && node.duration > 0 && (
           <span class="te-duration dur" data-testid="node-duration">{formatDuration(node.duration)}</span>
         )}
@@ -373,6 +380,37 @@ function StatusIcon({ status, pending }: { status: TestTreeNode['status']; pendi
 }
 
 // ─── Helpers ───
+
+/**
+ * The declared isolation for a node, when it declares one (project `use`
+ * folded in by the server). Nothing is shown for the implicit default so the
+ * tree stays quiet unless a file opts into something.
+ */
+function isolationBadge(node: TestTreeNode): { label: string; title: string } | undefined {
+  const use = node.use;
+  if (!use) return undefined;
+  const parts: string[] = [];
+  let label: string;
+  if (use.appState) {
+    label = 'state';
+    parts.push(`Restores saved app state: ${use.appState}`);
+  } else if (use.appState === '') {
+    label = 'clear';
+    parts.push('Starts from cleared app data (appState: "")');
+  } else if (use.appReset && use.appReset !== 'auto') {
+    label = use.appReset;
+    parts.push(`appReset: ${use.appReset}`);
+  } else {
+    return undefined;
+  }
+  if (use.appResetScope === 'test') {
+    label += ' / test';
+    parts.push('Reset before every test');
+  } else if (use.appResetScope === 'file') {
+    parts.push('Reset once per file');
+  }
+  return { label, title: parts.join('\n') };
+}
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;

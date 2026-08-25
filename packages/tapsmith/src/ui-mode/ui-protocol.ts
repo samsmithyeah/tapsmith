@@ -8,6 +8,8 @@
  * @see PILOT-87
  */
 
+import type { WorkerReadiness } from './device-readiness.js';
+export type { WorkerReadiness };
 import type { AnyTraceEvent } from '../trace/types.js';
 
 // ─── Shared Types ───
@@ -74,7 +76,14 @@ export interface WorkerInfo {
   platform?: 'android' | 'ios'
   /** Logical-point → pixel scale. iOS only; unset for Android (= 1). */
   devicePixelRatio?: number
+  isEmulator?: boolean
+  /** Background device preparation state (see device-readiness.ts). */
+  readiness?: WorkerReadiness
+  /** Whether this worker prepares the device between runs. */
+  speculation?: 'on' | 'off'
 }
+
+export type { AppResetPolicy } from '../app-reset.js';
 
 // ─── Test Tree ───
 
@@ -136,6 +145,10 @@ export interface RunStartMessage {
 
 export interface RunEndMessage {
   type: 'run-end'
+  /** Milliseconds from run start to the first traced action of the first test. */
+  timeToFirstActionMs?: number
+  /** How the first file's isolation was satisfied. */
+  preflight?: { origin: 'prepared' | 'inline' | 'skipped' | 'unknown' }
   /** 'stopped' = the user stopped the run before it finished. */
   status: 'passed' | 'failed' | 'stopped'
   duration: number
@@ -247,6 +260,44 @@ export interface WorkerStatusMessage {
   passed: number
   failed: number
   skipped: number
+  /** Background device preparation state. */
+  readiness?: import('./device-readiness.js').WorkerReadiness
+  speculation?: 'on' | 'off'
+}
+
+/**
+ * Something happened to a device outside a traced test: a background
+ * preparation, a validation, a worker recycle, a burst of mirror gestures.
+ * Same start/end merge-by-id shape as `mcp-tool-call`.
+ */
+export interface DeviceActivityMessage {
+  type: 'device-activity'
+  id: string
+  workerId: number
+  kind: 'prepare' | 'validate' | 'recycle' | 'mirror' | 'respawn'
+  status: 'started' | 'completed' | 'error' | 'cancelled'
+  /** e.g. "Prepare device (clear)", "Mirror: 3 taps" */
+  label: string
+  /** Last progress line, error message, or outcome summary. */
+  detail?: string
+  policy?: import('../app-reset.js').AppResetPolicy
+  forFile?: string
+  timestamp: number
+  durationMs?: number
+}
+
+export interface UIPreferences {
+  /** Prepare the device (run the declared app reset) in the background between runs. */
+  prepareBetweenRuns: boolean
+  /** Quiet time after a run before the device is prepared, so the final screen can be inspected. */
+  prepareDelayMs: number
+}
+
+export const DEFAULT_UI_PREFERENCES: UIPreferences = { prepareBetweenRuns: true, prepareDelayMs: 5_000 };
+
+export interface PreferencesMessage {
+  type: 'preferences'
+  preferences: UIPreferences
 }
 
 export interface WorkersInfoMessage {
@@ -368,6 +419,8 @@ export type ServerMessage =
   | McpStatusMessage
   | McpToolCallMessage
   | RunProgressMessage
+  | DeviceActivityMessage
+  | PreferencesMessage
 
 // ─── Client → Server messages ───
 
@@ -551,6 +604,30 @@ export interface RecycleWorkerCommand {
   workerId: number
 }
 
+/** Client preferences the server needs to act on (persisted client-side). */
+export interface SetPreferencesCommand {
+  type: 'set-preferences'
+  preferences: Partial<UIPreferences>
+}
+
+/** Prepare the device now (even with background preparation off). */
+export interface PrepareNowCommand {
+  type: 'prepare-now'
+  workerId?: number
+}
+
+export interface CancelPrepareCommand {
+  type: 'cancel-prepare'
+  workerId?: number
+}
+
+/** The node the user has selected — the strongest hint for what runs next. */
+export interface SelectNodeCommand {
+  type: 'select-node'
+  filePath?: string
+  projectName?: string
+}
+
 /** Union of all client → server JSON messages. */
 export type ClientMessage =
   | RunTestCommand
@@ -576,6 +653,10 @@ export type ClientMessage =
   | SelectWorkerViewCommand
   | RespawnWorkerCommand
   | RecycleWorkerCommand
+  | SetPreferencesCommand
+  | PrepareNowCommand
+  | CancelPrepareCommand
+  | SelectNodeCommand
 
 // ─── Binary frame helpers ───
 
@@ -680,6 +761,23 @@ export interface UIWorkerRunFileMessage {
   projectUseOptions?: import('../worker-protocol.js').RunFileUseOptions
   projectName?: string
   testFilter?: string
+  /** The device already satisfies this file's policy (background preparation). */
+  preparedFor?: import('../app-reset.js').PreparedState
+}
+
+/** Server → UI worker: reset the app in the background to `policy`. */
+export interface UIWorkerPrepareMessage {
+  type: 'prepare'
+  prepareId: string
+  policy: import('../app-reset.js').AppResetPolicy
+  projectUseOptions?: import('../worker-protocol.js').RunFileUseOptions
+  projectName?: string
+  forFile?: string
+}
+
+export interface UIWorkerCancelPrepareMessage {
+  type: 'cancel-prepare'
+  prepareId: string
 }
 
 /** Server → UI worker: shut down gracefully. */
@@ -697,11 +795,34 @@ export type UIWorkerMessage =
   | UIWorkerRunFileMessage
   | UIWorkerShutdownMessage
   | UIWorkerAbortMessage
+  | UIWorkerPrepareMessage
+  | UIWorkerCancelPrepareMessage
 
 /** UI worker → server: worker is ready. */
 export interface UIWorkerReadyMessage {
   type: 'ready'
   workerId: number
+  /** Policy the startup launch left the app in, when it did launch. */
+  policy?: import('../app-reset.js').AppResetPolicy
+}
+
+/** UI worker → server: a background preparation finished. */
+export interface UIWorkerPreparedMessage {
+  type: 'prepared'
+  workerId: number
+  prepareId: string
+  policy: import('../app-reset.js').AppResetPolicy
+  startedAt: number
+  durationMs: number
+  steps: string[]
+}
+
+export interface UIWorkerPrepareFailedMessage {
+  type: 'prepare-failed'
+  workerId: number
+  prepareId: string
+  error: { message: string }
+  cancelled: boolean
 }
 
 /** UI worker → server: progress during initialization, and live slow-device-
@@ -786,3 +907,5 @@ export type UIWorkerChildMessage =
   | UIWorkerNetworkMessage
   | UIWorkerFileDoneMessage
   | UIWorkerErrorMessage
+  | UIWorkerPreparedMessage
+  | UIWorkerPrepareFailedMessage

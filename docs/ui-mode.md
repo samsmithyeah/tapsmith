@@ -112,6 +112,14 @@ When `workers > 1`, one worker per device is started, files are dispatched acros
 npx tapsmith test --ui --workers 4
 ```
 
+### The device is prepared before you click Run
+
+After a run finishes (and after startup), the worker resets the app in the background to the state the next run will need — the declared `appReset` policy of the file you have selected, or the file you last ran. When you click Run, the worker only verifies the session (well under a second) and the trace records the reset as **satisfied by background preparation** instead of paying for it inline. The run summary tells you what you got: *First action after 0.6s (device was prepared)* versus *(app reset ran inline)*.
+
+The device chip in the top rail shows the state: **ready** (prepared, with what it was prepared for and how long it took in the tooltip), **preparing…**, **stale** (something touched the device since — an MCP agent's tap, a gesture on the mirror — and it will be prepared again after a short pause), or nothing when preparation between runs is off. Preparation waits a few seconds after a run and holds off while you are interacting with the mirror, so the final screen is not yanked away while you are looking at it.
+
+Right-click the chip for **Prepare device now**, **Cancel preparation**, and the **Prepare device between runs** toggle (remembered in this browser). Background preparations, mirror gestures and worker recycles all appear in the **Device activity** panel alongside MCP tool calls.
+
 ### Fresh code on every run
 
 Test files are re-imported on every run. Files they import — page objects, fixtures, helpers — live in the worker's module cache, so when one of those changes under your project root the UI recycles the worker (a ~1–2 s process restart against the same daemon; the device is untouched). A change during a run is applied as soon as the run ends. Use **Respawn worker** if a device session ever needs to be rebuilt from scratch.

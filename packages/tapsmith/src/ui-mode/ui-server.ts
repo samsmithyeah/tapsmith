@@ -61,6 +61,10 @@ import type {
 } from './ui-protocol.js';
 import { encodeScreenFrame, type TestNodeStatus } from './ui-protocol.js';
 import { RunQueue } from '../watch-queue.js';
+import { DeviceReadiness, toWireReadiness, type Candidate, type ReadinessCommand, type ReadinessEvent, type StaleReason } from './device-readiness.js';
+import { nextCandidate as pickCandidate, policyForFile, type CandidateProject } from './readiness-candidate.js';
+import type { AppResetPolicy, PreparedState } from '../app-reset.js';
+import { DEFAULT_UI_PREFERENCES, type DeviceActivityMessage, type UIPreferences } from './ui-protocol.js';
 import {
   forkStdioForLaunchProgress,
   pipeForkOutputForLaunchProgress,
@@ -211,6 +215,14 @@ interface UIWorkerHandle {
   adoptedPrimary?: boolean
   /** Source files changed since this process started; recycle before the next run. */
   codeStale?: boolean
+  /** Background device preparation state machine. */
+  readiness?: DeviceReadiness
+  /** Policy the worker's startup launch left the app in (from its `ready` message). */
+  initialPolicy?: AppResetPolicy
+  /** Last file this worker ran — the edit → rerun loop's best guess for what runs next. */
+  lastRun?: { file: string; projectName?: string }
+  /** Activity-feed id of the in-flight preparation. */
+  prepareActivityId?: string
   busy: boolean
   currentFile?: TaggedFile
   currentTest?: string
@@ -261,6 +273,8 @@ export async function startUIServer(
   function markRunStarted(): void {
     isRunning = true;
     runStartedAt = Date.now();
+    runFirstActionAt = undefined;
+    runPreflightOrigin = undefined;
     // A new run clears any previous stop request. Multi-file loops check
     // stopRequested BEFORE starting the next file, so a stop still ends the
     // whole user-initiated run — this reset only ever runs for files the
@@ -317,10 +331,239 @@ export async function startUIServer(
       failed: final.failed,
       skipped: final.skipped,
       interrupted: final.interrupted,
+      timeToFirstActionMs: runFirstActionAt !== undefined && runStartedAt > 0 ? runFirstActionAt - runStartedAt : undefined,
+      preflight: { origin: runPreflightOrigin ?? 'unknown' },
     });
     lastRunEnd = final;
     for (const w of runEndWaiters.splice(0)) w(final);
+    // The run is over: every worker can prepare the device for the next one.
+    for (const w of uiWorkers) {
+      if (!w.retired) readinessEvent(w, { type: 'run-ended', stopped: final.status === 'stopped' });
+    }
     return final;
+  }
+
+  // ─── Device readiness wiring ───
+
+  function speculationAllowed(): boolean {
+    return preferences.prepareBetweenRuns;
+  }
+
+  function candidateProjects(): CandidateProject[] {
+    return (ctx.projects ?? []).map((p) => ({
+      name: p.name,
+      testFiles: p.testFiles,
+      use: p.use,
+      effectiveConfig: p.effectiveConfig,
+      bucketSignature: ctx.bucketByProject?.get(p.name),
+    }));
+  }
+
+  function fileUseMap(): Map<string, TestTreeUseOptions | undefined> {
+    const m = new Map<string, TestTreeUseOptions | undefined>();
+    for (const [file, node] of discoveredFileNodes) m.set(file, node.use);
+    return m;
+  }
+
+  /** Files sibling workers are already preparing for / prepared for. */
+  function claimedCandidateFiles(except: UIWorkerHandle): Set<string> {
+    const claimed = new Set<string>();
+    for (const w of uiWorkers) {
+      if (w === except || w.retired) continue;
+      const st = w.readiness?.state;
+      if (st?.kind === 'preparing' && st.forFile) claimed.add(st.forFile);
+      if (st?.kind === 'ready' && st.forFile) claimed.add(st.forFile);
+    }
+    return claimed;
+  }
+
+  function candidateFor(worker: UIWorkerHandle): Candidate | undefined {
+    return pickCandidate({
+      bucketSignature: worker.bucketSignature,
+      selected: selectedNode,
+      lastRun: worker.lastRun,
+      lastRunProject,
+      projects: candidateProjects(),
+      rootConfig: ctx.config,
+      treeFiles: ctx.testFiles,
+      fileUse: fileUseMap(),
+      exclude: claimedCandidateFiles(worker),
+    });
+  }
+
+  /** The declared policy a file dispatched to `worker` will run under. */
+  function policyForDispatch(file: TaggedFile): AppResetPolicy {
+    const project = candidateProjects().find((p) => p.name === file.projectName) ?? candidateProjects().find((p) => p.testFiles.includes(file.filePath));
+    return policyForFile(file.filePath, project, { rootConfig: ctx.config, fileUse: fileUseMap() });
+  }
+
+  function attachReadiness(worker: UIWorkerHandle): DeviceReadiness {
+    const readiness = new DeviceReadiness(worker.id, {
+      now: () => Date.now(),
+      speculationEnabled: speculationAllowed,
+      nextCandidate: () => candidateFor(worker),
+      graceMs: () => preferences.prepareDelayMs,
+      recentlyInteracted: () => Date.now() - lastMirrorInteraction < READINESS_INTERACTION_HOLD_WINDOW_MS,
+    });
+    worker.readiness = readiness;
+    return readiness;
+  }
+
+  function readinessEvent(worker: UIWorkerHandle, event: ReadinessEvent): void {
+    const readiness = worker.readiness;
+    if (!readiness) return;
+    executeReadinessCommands(worker, readiness.handle(event));
+  }
+
+  function executeReadinessCommands(worker: UIWorkerHandle, cmds: ReadinessCommand[]): void {
+    for (const cmd of cmds) {
+      switch (cmd.type) {
+        case 'broadcast':
+          broadcastWorkerStatus(worker, worker.retired ? 'error' : worker.busy ? 'running' : 'idle');
+          break;
+        case 'start-timer': {
+          const existing = readinessTimers.get(cmd.timerId);
+          if (existing) clearTimeout(existing);
+          readinessTimers.set(cmd.timerId, setTimeout(() => {
+            readinessTimers.delete(cmd.timerId);
+            readinessEvent(worker, { type: 'grace-elapsed', timerId: cmd.timerId });
+          }, cmd.ms));
+          break;
+        }
+        case 'clear-timer': {
+          const existing = readinessTimers.get(cmd.timerId);
+          if (existing) { clearTimeout(existing); readinessTimers.delete(cmd.timerId); }
+          break;
+        }
+        case 'send-prepare': {
+          const project = cmd.projectName ? ctx.projects?.find((p) => p.name === cmd.projectName) : undefined;
+          const activityId = `prepare-${worker.id}-${cmd.prepareId}`;
+          worker.prepareActivityId = activityId;
+          pushActivity({
+            type: 'device-activity', id: activityId, workerId: worker.id, kind: 'prepare', status: 'started',
+            label: `Prepare device (${describePolicyShort(cmd.target)})`, policy: cmd.target, forFile: cmd.forFile, timestamp: Date.now(),
+          });
+          try {
+            worker.process.send({
+              type: 'prepare',
+              prepareId: cmd.prepareId,
+              policy: cmd.target,
+              projectUseOptions: project?.use as RunFileUseOptions | undefined,
+              projectName: cmd.projectName,
+              forFile: cmd.forFile,
+            } satisfies UIWorkerMessage);
+          } catch (err) {
+            readinessEvent(worker, { type: 'prepare-failed', prepareId: cmd.prepareId, message: err instanceof Error ? err.message : String(err), cancelled: false });
+          }
+          break;
+        }
+        case 'send-cancel-prepare':
+          try {
+            worker.process.send({ type: 'cancel-prepare', prepareId: cmd.prepareId } satisfies UIWorkerMessage);
+          } catch { /* IPC closed */ }
+          break;
+      }
+    }
+  }
+
+  function describePolicyShort(policy: AppResetPolicy): string {
+    if (policy.appState) return `restore ${path.basename(policy.appState)}`;
+    if (policy.appState === '') return 'clear';
+    return policy.mode;
+  }
+
+  function pushActivity(msg: DeviceActivityMessage): void {
+    const idx = deviceActivityBuffer.findIndex((m) => m.id === msg.id);
+    if (idx >= 0) deviceActivityBuffer[idx] = msg;
+    else {
+      deviceActivityBuffer.push(msg);
+      if (deviceActivityBuffer.length > MAX_ACTIVITY_BUFFER) deviceActivityBuffer.shift();
+    }
+    broadcast(msg);
+  }
+
+  /** Messages a worker sends outside a run dispatch (background preparation). */
+  function handleIdleWorkerMessage(worker: UIWorkerHandle, msg: UIWorkerChildMessage): void {
+    switch (msg.type) {
+      case 'prepared': {
+        const started = worker.readiness?.state;
+        readinessEvent(worker, { type: 'prepared', prepareId: msg.prepareId, policy: msg.policy, startedAt: msg.startedAt, durationMs: msg.durationMs });
+        if (worker.prepareActivityId) {
+          pushActivity({
+            type: 'device-activity', id: worker.prepareActivityId, workerId: worker.id, kind: 'prepare', status: 'completed',
+            label: `Prepared device (${describePolicyShort(msg.policy)})`, detail: msg.steps.join(' · '), policy: msg.policy,
+            forFile: started?.kind === 'preparing' ? started.forFile : undefined, timestamp: msg.startedAt, durationMs: msg.durationMs,
+          });
+          worker.prepareActivityId = undefined;
+        }
+        lastProgressByWorker.delete(worker.id);
+        break;
+      }
+      case 'prepare-failed': {
+        readinessEvent(worker, { type: 'prepare-failed', prepareId: msg.prepareId, message: msg.error.message, cancelled: msg.cancelled });
+        if (worker.prepareActivityId) {
+          const existing = deviceActivityBuffer.find((m) => m.id === worker.prepareActivityId);
+          pushActivity({
+            type: 'device-activity', id: worker.prepareActivityId, workerId: worker.id, kind: 'prepare',
+            status: msg.cancelled ? 'cancelled' : 'error',
+            label: existing?.label ?? 'Prepare device', detail: msg.cancelled ? 'cancelled' : msg.error.message,
+            policy: existing?.policy, forFile: existing?.forFile, timestamp: existing?.timestamp ?? Date.now(),
+            durationMs: existing ? Date.now() - existing.timestamp : undefined,
+          });
+          worker.prepareActivityId = undefined;
+        }
+        lastProgressByWorker.delete(worker.id);
+        break;
+      }
+      case 'progress':
+        // Outside a run the label describes the background preparation.
+        if (!worker.busy) {
+          if (msg.message) lastProgressByWorker.set(worker.id, msg.message);
+          else lastProgressByWorker.delete(worker.id);
+          readinessEvent(worker, { type: 'progress', detail: msg.message || undefined });
+          if (worker.prepareActivityId && msg.message) {
+            const existing = deviceActivityBuffer.find((m) => m.id === worker.prepareActivityId);
+            if (existing) pushActivity({ ...existing, detail: msg.message });
+          }
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  function invalidateWorkers(reason: StaleReason, workerIds?: number[]): void {
+    for (const w of uiWorkers) {
+      if (w.retired) continue;
+      if (workerIds && !workerIds.includes(w.id)) continue;
+      readinessEvent(w, { type: 'invalidate', reason });
+    }
+  }
+
+  /** A mirror gesture: bump the interactive poll rate, invalidate the device, and log a coalesced activity entry. */
+  function noteMirrorInteraction(workerId: number | undefined, kind: string): void {
+    lastMirrorInteraction = Date.now();
+    const id = workerId ?? selectedWorkerId;
+    invalidateWorkers('mirror-gesture', [id]);
+    const now = Date.now();
+    let burst = mirrorBursts.get(id);
+    if (!burst || now - burst.last > 2_000) {
+      burst = { id: `mirror-${id}-${now}`, counts: new Map(), startedAt: now, last: now };
+      mirrorBursts.set(id, burst);
+    }
+    burst.last = now;
+    burst.counts.set(kind, (burst.counts.get(kind) ?? 0) + 1);
+    const label = 'Mirror: ' + [...burst.counts].map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`).join(', ');
+    pushActivity({ type: 'device-activity', id: burst.id, workerId: id, kind: 'mirror', status: 'completed', label, timestamp: burst.startedAt, durationMs: now - burst.startedAt });
+  }
+
+  /** Route an MCP device interaction to the worker(s) it touched. */
+  function invalidateForMcpTool(tool: string, args: Record<string, unknown> | undefined): void {
+    if (!MUTATING_MCP_TOOLS.has(tool)) return;
+    const projectName = typeof args?.project === 'string' ? args.project : undefined;
+    const bucket = projectName ? ctx.bucketByProject?.get(projectName) : undefined;
+    const targets = bucket ? uiWorkers.filter((w) => w.bucketSignature === bucket).map((w) => w.id) : undefined;
+    invalidateWorkers('mcp-tool', targets);
   }
 
   let screenPollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -387,6 +630,22 @@ export async function startUIServer(
   const workersEnabled = workerSerials.length > 0;
   /** Progress label last reported by each worker (replayed to late clients). */
   const lastProgressByWorker = new Map<number, string>();
+  // ─── Device readiness (background preparation) ───
+  let preferences: UIPreferences = { ...DEFAULT_UI_PREFERENCES };
+  const readinessTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const deviceActivityBuffer: DeviceActivityMessage[] = [];
+  const MAX_ACTIVITY_BUFFER = 200;
+  /** Node the client has selected — the strongest hint for what runs next. */
+  let selectedNode: { file: string; projectName?: string } | undefined;
+  let lastRunProject: string | undefined;
+  /** Per run: when the first traced action landed, and how the first file's isolation was satisfied. */
+  let runFirstActionAt: number | undefined;
+  let runPreflightOrigin: 'prepared' | 'inline' | 'skipped' | undefined;
+  /** Coalesced mirror-gesture bursts per worker for the activity feed. */
+  const mirrorBursts = new Map<number, { id: string; counts: Map<string, number>; startedAt: number; last: number }>();
+  const MUTATING_MCP_TOOLS = new Set(['tapsmith_tap', 'tapsmith_type', 'tapsmith_swipe', 'tapsmith_press_key', 'tapsmith_launch_app']);
+  /** Mirror interactions within this window hold background preparation. */
+  const READINESS_INTERACTION_HOLD_WINDOW_MS = 10_000;
   /** Workers whose Node process should be recycled before the next run (source changed). */
   let recycleTimer: NodeJS.Timeout | null = null;
   const launchProgress = options.launchProgress;
@@ -826,6 +1085,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     const mcpMsg: McpToolCallMessage = { type: 'mcp-tool-call', ...event };
     if (mcpToolCallBuffer.length < MAX_MCP_BUFFER) mcpToolCallBuffer.push(mcpMsg);
     broadcast(mcpMsg);
+    if (event.status !== 'started') invalidateForMcpTool(event.tool, event.args);
   });
 
   // ─── Test Discovery ───
@@ -1472,6 +1732,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
 
       const onMessage = (msg: UIWorkerChildMessage) => {
         if (msg.type === 'ready' && msg.workerId === id) {
+          worker.initialPolicy = msg.policy;
           events?.onReady?.();
           clearTimeout(timeout);
           cleanup();
@@ -1507,12 +1768,18 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       child.send(initMsg);
     });
 
+    // Background preparation: the state machine and the listener for its
+    // messages live for the worker's whole life (dispatch listeners come and go
+    // per run).
+    child.on('message', (msg: UIWorkerChildMessage) => handleIdleWorkerMessage(worker, msg));
+    attachReadiness(worker);
     broadcastWorkerStatus(worker, 'idle');
+    readinessEvent(worker, { type: 'worker-ready', initialPolicy: worker.initialPolicy });
     return worker;
   }
 
-  function broadcastWorkerStatus(worker: UIWorkerHandle, status: 'idle' | 'running' | 'done' | 'initializing' | 'error'): void {
-    broadcast({
+  function workerStatusMessage(worker: UIWorkerHandle, status: 'idle' | 'running' | 'done' | 'initializing' | 'error'): ServerMessage {
+    return {
       type: 'worker-status',
       workerId: worker.id,
       deviceSerial: worker.deviceSerial,
@@ -1522,7 +1789,13 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       passed: worker.passed,
       failed: worker.failed,
       skipped: worker.skipped,
-    });
+      readiness: worker.readiness ? toWireReadiness(worker.readiness.state) : undefined,
+      speculation: speculationAllowed() ? 'on' : 'off',
+    };
+  }
+
+  function broadcastWorkerStatus(worker: UIWorkerHandle, status: 'idle' | 'running' | 'done' | 'initializing' | 'error'): void {
+    broadcast(workerStatusMessage(worker, status));
   }
 
   /**
@@ -1632,6 +1905,13 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         worker.busy = true;
         worker.currentFile = next;
         worker.currentTest = undefined;
+        worker.lastRun = { file: next.filePath, projectName: next.projectName };
+        lastRunProject = next.projectName ?? lastRunProject;
+        // Hand over a background preparation that satisfies this file's policy;
+        // otherwise the runner resets inline. Either way the click never waits.
+        const want = policyForDispatch(next);
+        const preparedFor: PreparedState | undefined = worker.readiness?.preparedFor(want);
+        readinessEvent(worker, { type: 'dispatch', file: next.filePath, want });
         broadcastWorkerStatus(worker, 'running');
         broadcastFileStatus(next.filePath, 'running', next.projectName);
 
@@ -1641,6 +1921,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
           projectUseOptions: next.projectUseOptions,
           projectName: next.projectName,
           testFilter: next.testFilter,
+          preparedFor,
         };
         worker.process.send(msg);
       }
@@ -1675,6 +1956,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         worker.currentFile = undefined;
         worker.currentTest = undefined;
         worker.busy = false;
+        readinessEvent(worker, { type: 'worker-retired' });
         broadcastWorkerStatus(worker, 'error');
         // Release the daemon/screen client now rather than at the next run's
         // respawn — a retired worker's resources serve no one in between —
@@ -1791,6 +2073,14 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
               break;
             }
             case 'trace-event': {
+              const ev = msg.event as { type?: string; action?: string; origin?: string };
+              if (runFirstActionAt === undefined && (ev.type === 'action' || ev.type === 'assertion')) {
+                runFirstActionAt = Date.now();
+              }
+              if (runPreflightOrigin === undefined && ev.type === 'action') {
+                if (ev.action === 'appReset' && (ev.origin === 'prepared' || ev.origin === 'skipped')) runPreflightOrigin = ev.origin;
+                else if (ev.action === 'resetApp' || ev.action === 'restoreAppState') runPreflightOrigin = 'inline';
+              }
               const traceMsg: TraceEventMessage = {
                 type: 'trace-event',
                 testFullName: worker.currentTest ?? '',
@@ -1852,6 +2142,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
               broadcastFileStatus(msg.filePath, 'done', worker.currentFile?.projectName);
               lastProgressByWorker.delete(worker.id);
               broadcast({ type: 'run-progress', workerId: worker.id });
+              readinessEvent(worker, { type: 'file-done' });
               worker.currentFile = undefined;
               worker.currentTest = undefined;
 
@@ -2104,6 +2395,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
 
       worker.retired = true;
       worker.busy = false;
+      readinessEvent(worker, { type: 'worker-retired' });
       broadcastWorkerStatus(worker, 'error');
       releaseWorkerResources(worker);
       if (worker.currentFile) {
@@ -2180,6 +2472,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     const agentPort = baseAgentPort + 100 + worker.id;
 
     // Make sure the old process is gone before a new one joins its daemon.
+    readinessEvent(worker, { type: 'worker-retired' });
     await terminateWorkerProcess(worker);
     // A worker that adopted the primary keeps adopting while that daemon is
     // alive; otherwise (or if the primary died) it gets its own daemon.
@@ -2208,9 +2501,13 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     if (index < 0) return;
     console.log(`${DIM}Recycling worker ${worker.id} (${worker.deviceSerial}): ${reason}${RESET}`);
     broadcastWorkerStatus(worker, 'initializing');
+    const activityId = `recycle-${worker.id}-${Date.now()}`;
+    const startedAt = Date.now();
+    pushActivity({ type: 'device-activity', id: activityId, workerId: worker.id, kind: 'recycle', status: 'started', label: 'Recycle worker (fresh code)', detail: reason, timestamp: startedAt });
     try {
       await respawnWorkerAt(index);
       broadcastWorkerStatus(uiWorkers[index], 'idle');
+      pushActivity({ type: 'device-activity', id: activityId, workerId: worker.id, kind: 'recycle', status: 'completed', label: 'Recycled worker (fresh code)', detail: reason, timestamp: startedAt, durationMs: Date.now() - startedAt });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       worker.retired = true;
@@ -3247,21 +3544,21 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         sendSourceFromDisk(msg.path);
         break;
       case 'mirror-tap': {
-        lastMirrorInteraction = Date.now();
+        noteMirrorInteraction(msg.workerId, 'tap');
         const t = resolveGestureTarget(msg.workerId);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.tapXY(p.x, p.y).catch(() => {});
         break;
       }
       case 'mirror-long-press': {
-        lastMirrorInteraction = Date.now();
+        noteMirrorInteraction(msg.workerId, 'long press');
         const t = resolveGestureTarget(msg.workerId);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.longPressXY(p.x, p.y, msg.durationMs).catch(() => {});
         break;
       }
       case 'mirror-swipe': {
-        lastMirrorInteraction = Date.now();
+        noteMirrorInteraction(msg.workerId, 'swipe');
         const t = resolveGestureTarget(msg.workerId);
         const from = normalizedToLogical(msg.fromX, msg.fromY, t.dims, t.dpr);
         const to = normalizedToLogical(msg.toX, msg.toY, t.dims, t.dpr);
@@ -3271,19 +3568,19 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         break;
       }
       case 'mirror-input-text': {
-        lastMirrorInteraction = Date.now();
+        noteMirrorInteraction(msg.workerId, 'text input');
         const t = resolveGestureTarget(msg.workerId);
         if (t.client) t.client.inputText(msg.text).catch(() => {});
         break;
       }
       case 'mirror-press-key': {
-        lastMirrorInteraction = Date.now();
+        noteMirrorInteraction(msg.workerId, 'key press');
         const t = resolveGestureTarget(msg.workerId);
         if (t.client) t.client.pressKey(msg.key).catch(() => {});
         break;
       }
       case 'mirror-touch-start': {
-        lastMirrorInteraction = Date.now();
+        noteMirrorInteraction(msg.workerId, 'touch');
         const t = resolveGestureTarget(msg.workerId);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.touchDown(p.x, p.y, 0).catch(() => {});
@@ -3363,6 +3660,34 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
             }
           }).catch(() => {});
         }
+        break;
+      }
+      case 'set-preferences': {
+        preferences = { ...preferences, ...msg.preferences };
+        broadcast({ type: 'preferences', preferences });
+        for (const w of uiWorkers) if (!w.retired) readinessEvent(w, { type: 'preferences-changed' });
+        break;
+      }
+      case 'prepare-now': {
+        for (const w of uiWorkers) {
+          if (w.retired) continue;
+          if (msg.workerId !== undefined && w.id !== msg.workerId) continue;
+          readinessEvent(w, { type: 'prepare-now' });
+        }
+        break;
+      }
+      case 'cancel-prepare': {
+        for (const w of uiWorkers) {
+          if (w.retired) continue;
+          if (msg.workerId !== undefined && w.id !== msg.workerId) continue;
+          const st = w.readiness?.state;
+          if (st?.kind === 'preparing') executeReadinessCommands(w, [{ type: 'send-cancel-prepare', prepareId: st.prepareId }]);
+        }
+        break;
+      }
+      case 'select-node': {
+        selectedNode = msg.filePath ? { file: msg.filePath, projectName: msg.projectName } : undefined;
+        for (const w of uiWorkers) if (!w.retired) readinessEvent(w, { type: 'candidate-changed' });
         break;
       }
       case 'recycle-worker': {
@@ -3580,17 +3905,11 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
 
       // Send current worker statuses (including currentFile/currentTest)
       for (const w of uiWorkers) {
-        ws.send(JSON.stringify({
-          type: 'worker-status',
-          workerId: w.id,
-          deviceSerial: w.deviceSerial,
-          currentFile: w.currentFile?.filePath ? path.basename(w.currentFile.filePath) : undefined,
-          currentTest: w.currentTest,
-          status: w.retired ? 'error' : w.busy ? 'running' : 'idle',
-          passed: w.passed,
-          failed: w.failed,
-          skipped: w.skipped,
-        } satisfies ServerMessage));
+        ws.send(JSON.stringify(workerStatusMessage(w, w.retired ? 'error' : w.busy ? 'running' : 'idle')));
+      }
+      ws.send(JSON.stringify({ type: 'preferences', preferences } satisfies ServerMessage));
+      for (const activity of deviceActivityBuffer) {
+        ws.send(JSON.stringify(activity));
       }
       // Replay in-flight slow-action labels ("Clearing app data…") so a
       // client that connects mid-preflight sees what the device is doing.
@@ -3698,8 +4017,9 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         try {
           const event = JSON.parse(body);
           const mcpMsg: McpToolCallMessage = { type: 'mcp-tool-call', ...event };
-    if (mcpToolCallBuffer.length < MAX_MCP_BUFFER) mcpToolCallBuffer.push(mcpMsg);
-    broadcast(mcpMsg);
+          if (mcpToolCallBuffer.length < MAX_MCP_BUFFER) mcpToolCallBuffer.push(mcpMsg);
+          broadcast(mcpMsg);
+          if (mcpMsg.status !== 'started') invalidateForMcpTool(mcpMsg.tool, mcpMsg.args);
         } catch { /* ignore malformed */ }
         res.writeHead(200);
         res.end('OK');
@@ -3815,6 +4135,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       // Clean up workers, then the primary device/client the CLI handed us
       // (the adopted worker shares that client, so it is closed last).
       if (recycleTimer) clearTimeout(recycleTimer);
+      for (const t of readinessTimers.values()) clearTimeout(t);
+      readinessTimers.clear();
       for (const worker of uiWorkers) {
         void terminateWorkerProcess(worker);
         releaseWorkerResources(worker);
