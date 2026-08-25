@@ -37,17 +37,32 @@ function protoNested(fieldNumber: number, inner: number[]): number[] {
   return [(fieldNumber << 3) | 2, ...varint(inner.length), ...inner]
 }
 
+/** A varint (wire type 0) field. */
+function protoVarint(fieldNumber: number, value: number): number[] {
+  return [(fieldNumber << 3) | 0, ...varint(value)]
+}
+
 /** Wrap a message in gRPC framing: `[flag][4-byte big-endian length][message]`. */
 function grpcFrame(message: number[]): number[] {
   const len = message.length
   return [0, (len >>> 24) & 0xff, (len >>> 16) & 0xff, (len >>> 8) & 0xff, len & 0xff, ...message]
 }
 
-/** A Firestore-shaped ListenRequest: database path plus a nested target. */
+/**
+ * A Firestore ListenRequest with the shape real traffic has: `database`, then
+ * `add_target` → `documents` → the document path. Built to match the schema so
+ * the test exercises the naming layer, not just the wire decode.
+ */
 const LISTEN_REQUEST = new Uint8Array(
   grpcFrame([
     ...protoString(1, "projects/demo/databases/(default)"),
-    ...protoNested(2, protoString(2, "projects/demo/databases/(default)/documents/users/u1")),
+    ...protoNested(2, [
+      ...protoNested(
+        3,
+        protoString(2, "projects/demo/databases/(default)/documents/users/u1"),
+      ),
+      ...protoVarint(5, 2),
+    ]),
   ]),
 )
 
@@ -323,13 +338,16 @@ test.describe("Network tab", () => {
       await network.selectRow("Listen")
       await network.openDetailTab("Payload")
 
-      // The decoder's verdict, not just the content type.
+      // The decoder's verdict, including the message type it recognised.
       await expect(network.bodyInfo).toContainText("gRPC")
-      // Strings inside the protobuf are readable, and nesting is shown.
+      await expect(network.bodyInfo).toContainText("ListenRequest")
+      // Strings inside the protobuf are readable...
       await expect(network.detailBody).toContainText(
         "projects/demo/databases/(default)/documents/users/u1",
       )
-      await expect(network.detailBody).toContainText("2 {")
+      // ...and fields carry their schema names rather than numbers.
+      await expect(network.detailBody).toContainText("database:")
+      await expect(network.detailBody).toContainText("target_id: 2")
     })
 
     test("can switch between the decoded view and the raw bytes", async ({
@@ -349,10 +367,11 @@ test.describe("Network tab", () => {
       await expect(network.decodeToggle).toBeVisible()
       await network.decodeToggle.click()
 
-      // Raw view drops the decoded field markers but keeps the readable text
+      // Raw view drops the decoded field names but keeps the readable text
       // that happens to be embedded in the bytes.
       await expect(network.bodyInfo).toContainText("grpc")
-      await expect(network.detailBody).not.toContainText("2 {")
+      await expect(network.detailBody).not.toContainText("database:")
+      await expect(network.detailBody).toContainText("projects/demo")
     })
 
     test("does not offer a decoded view for a JSON body", async ({

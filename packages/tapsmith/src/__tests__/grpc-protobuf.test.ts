@@ -191,9 +191,163 @@ describe('formatProtobuf', () => {
     const text = formatProtobuf(fields!);
 
     expect(text).toContain('1: "projects/demo/databases/(default)"');
-    expect(text).toContain('2 {');
-    expect(text).toContain('  4: 42');
+    // A single-field nested message folds onto one line as a dotted path.
+    expect(text).toContain('2.4: 42');
+  });
+
+  it('renders a wide multi-field message as an indented block', () => {
+    const fields = decodeProtobuf(
+      bytes(
+        protoLengthDelimited(3, [
+          ...protoString(1, 'projects/demo/databases/(default)/documents/users/u1'),
+          ...protoString(2, 'projects/demo/databases/(default)/documents/stories/s1'),
+        ]),
+      ),
+    );
+
+    const text = formatProtobuf(fields!);
+
+    // Past the inline width, so it keeps its braces and indents its fields.
+    expect(text).toContain('3 {');
+    expect(text).toContain('  1: "projects/demo/databases/(default)/documents/users/u1"');
+    expect(text).toContain('  2: "projects/demo/databases/(default)/documents/stories/s1"');
     expect(text).toContain('}');
+  });
+
+  it('inlines a small multi-field message', () => {
+    const fields = decodeProtobuf(
+      bytes(protoLengthDelimited(2, [...protoVarintField(1, 1), ...protoVarintField(2, 4)])),
+    );
+    expect(formatProtobuf(fields!).trim()).toBe('2 { 1: 1, 2: 4 }');
+  });
+});
+
+// ─── Ambiguity between text and nested messages ───
+
+describe('length-delimited disambiguation', () => {
+  it('reads a short string that also parses as a message as the string', () => {
+    // Regression: "email" is a valid message on the wire — 0x65 is a legal tag
+    // for field 12, wire type 5, which consumes "mail" as a fixed32 and lands
+    // exactly on the end. It used to render as `12: 0x6c69616d (fixed32)`.
+    const fields = decodeProtobuf(bytes(protoString(1, 'email')));
+    expect(fields![0].value).toEqual({ kind: 'string', value: 'email' });
+  });
+
+  it('still reads a genuine small message as a message', () => {
+    // The counter-case to the rule above: `{4: 42}` encodes to 0x20 0x2a, both
+    // printable, so a blanket prefer-text rule would flatten it to `" *"`.
+    const fields = decodeProtobuf(bytes(protoLengthDelimited(1, protoVarintField(4, 42))));
+    const value = fields![0].value;
+    expect(value.kind).toBe('message');
+    if (value.kind !== 'message') throw new Error('expected a message');
+    expect(value.fields[0].value).toEqual({ kind: 'varint', value: 42n });
+  });
+
+  it('annotates an unschema-d seconds/nanos pair as a timestamp', () => {
+    const fields = decodeProtobuf(
+      bytes(
+        protoLengthDelimited(1, [
+          ...protoVarintField(1, 1_781_090_975),
+          ...protoVarintField(2, 776_000_000),
+        ]),
+      ),
+    );
+    expect(fields![0].value).toEqual({
+      kind: 'timestamp',
+      iso: '2026-06-10T11:29:35.776Z',
+    });
+  });
+
+  it('does not mistake small integer pairs for timestamps', () => {
+    const fields = decodeProtobuf(
+      bytes(protoLengthDelimited(1, [...protoVarintField(1, 3), ...protoVarintField(2, 4)])),
+    );
+    expect(fields![0].value.kind).toBe('message');
+  });
+});
+
+// ─── Schema-driven decoding (grpc-schema.ts) ───
+
+describe('schema-aware decoding', () => {
+  const LISTEN_URL =
+    'https://firestore.googleapis.com/google.firestore.v1.Firestore/Listen';
+
+  /** ListenResponse.target_change with type, packed target_ids and a resume token. */
+  const targetChange = () =>
+    bytes(
+      grpcFrame(
+        protoLengthDelimited(2, [
+          ...protoVarintField(1, 1),
+          // target_ids is a packed repeated int32, so length-delimited on the wire.
+          ...protoLengthDelimited(2, [2]),
+          ...protoLengthDelimited(4, [0x0a, 0x09, 0x08, 0xff]),
+        ]),
+      ),
+    );
+
+  it('names fields, resolves enums and unpacks repeated scalars', () => {
+    const result = decodeBodyForDisplay(targetChange(), {
+      url: LISTEN_URL,
+      direction: 'response',
+    });
+
+    expect(result!.label).toContain('ListenResponse');
+    expect(result!.text).toContain('target_change');
+    expect(result!.text).toContain('target_change_type: ADD (1)');
+    // Without the schema this rendered as `<1 bytes: 02>`.
+    expect(result!.text).toContain('target_ids: [2]');
+  });
+
+  it('keeps opaque bytes opaque', () => {
+    // A resume token is random bytes that often parse as a plausible message;
+    // the schema marks it `bytes` so no structure is invented.
+    const result = decodeBodyForDisplay(targetChange(), {
+      url: LISTEN_URL,
+      direction: 'response',
+    });
+    expect(result!.text).toContain('resume_token: <4 bytes: 0a 09 08 ff>');
+  });
+
+  it('renders map entries as key/value lines and bools as true/false', () => {
+    const document = protoLengthDelimited(3, [
+      ...protoLengthDelimited(1, [
+        ...protoString(1, 'projects/demo/databases/(default)/documents/users/u1'),
+        // fields: { "verified": { boolean_value: true } }
+        ...protoLengthDelimited(2, [
+          ...protoString(1, 'verified'),
+          ...protoLengthDelimited(2, protoVarintField(1, 1)),
+        ]),
+      ]),
+    ]);
+    const result = decodeBodyForDisplay(bytes(grpcFrame(document)), {
+      url: LISTEN_URL,
+      direction: 'response',
+    });
+
+    expect(result!.text).toContain('document_change');
+    expect(result!.text).toContain('fields:');
+    expect(result!.text).toContain('verified: { boolean_value: true }');
+  });
+
+  it('falls back to numeric output for an unknown service', () => {
+    const result = decodeBodyForDisplay(targetChange(), {
+      url: 'https://example.test/some.other.Service/Method',
+      direction: 'response',
+    });
+    expect(result!.label).not.toContain('ListenResponse');
+    expect(result!.text).not.toContain('target_change_type');
+  });
+
+  it('picks the request schema for the request side', () => {
+    const listenRequest = bytes(
+      grpcFrame(protoString(1, 'projects/demo/databases/(default)')),
+    );
+    const result = decodeBodyForDisplay(listenRequest, {
+      url: LISTEN_URL,
+      direction: 'request',
+    });
+    expect(result!.label).toContain('ListenRequest');
+    expect(result!.text).toContain('database: "projects/demo/databases/(default)"');
   });
 });
 
@@ -218,6 +372,29 @@ describe('decodeBodyForDisplay', () => {
     expect(result!.label).toBe('gRPC · 1 message');
     expect(result!.text).toContain('projects/demo/databases/(default)/documents/users/u1');
     expect(result!.text).toContain('message (');
+  });
+
+  it('collapses a run of same-shape messages', () => {
+    // Firestore streams emit dozens of acks differing only in timestamps;
+    // printing each in full buries the interesting ones.
+    const ack = (n: number) => grpcFrame(protoVarintField(1, n));
+    const result = decodeBodyForDisplay(
+      bytes(ack(1), ack(2), ack(3), ack(4), grpcFrame(protoString(2, 'different'))),
+    );
+
+    expect(result!.text).toContain('message 1 of 5');
+    expect(result!.text).toContain('3 more of the same shape');
+    // The differently-shaped message is still shown.
+    expect(result!.text).toContain('"different"');
+  });
+
+  it('prints a lone repeat rather than summarising it', () => {
+    // Summarising one message costs more lines than showing it.
+    const result = decodeBodyForDisplay(
+      bytes(grpcFrame(protoVarintField(1, 1)), grpcFrame(protoVarintField(1, 2))),
+    );
+    expect(result!.text).not.toContain('of the same shape');
+    expect(result!.text).toContain('message 2 of 2');
   });
 
   it('numbers each message when a body carries several', () => {

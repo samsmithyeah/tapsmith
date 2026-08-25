@@ -749,7 +749,25 @@ Some clients do not trust the device or simulator trust store. Firestore is the 
 - **Android: Firestore is captured.** Its gRPC stack (gRPC-Java) validates TLS against the platform trust store, so once Tapsmith has installed its CA there, Firestore calls are decrypted and recorded like any other HTTP/2 traffic — each RPC appears as an inspectable request/response, and `device.route()` can match and mock it. This needs a rootable emulator image so the CA reaches the *system* store; see [Android emulator image requirements](#android-emulator-image-requirements).
 - **iOS: Firestore is tunnelled.** Its gRPC stack (gRPC-C++/BoringSSL) compiles its own CA roots into the app binary and passes them explicitly, so it rejects Tapsmith's certificate no matter what the device trust store contains. No configuration changes that. `firestore.googleapis.com` is therefore **tunnelled by default on iOS**, which keeps Firestore-backed screens working out of the box at the cost of not being able to inspect those calls.
 
-Firestore RPC bodies are protobuf rather than JSON. The trace viewer decodes them: a gRPC body is split into its length-prefixed messages and each is shown as protobuf fields, with a **Raw** toggle for the underlying bytes. Because protobuf carries no field *names* on the wire, fields appear by number (`1: "projects/demo/databases/(default)"`) in the same style as `protoc --decode_raw` — enough to read paths, strings and timestamps without a `.proto` file. Compressed messages are listed but not inflated, and a body truncated by the capture cap says how much is missing.
+Firestore RPC bodies are protobuf rather than JSON. The trace viewer decodes them: a gRPC body is split into its length-prefixed messages and each is shown as protobuf fields, with a **Raw** toggle for the underlying bytes.
+
+Protobuf carries field *numbers* on the wire, never names, so the baseline output is numeric (`1: "projects/demo/databases/(default)"`, in the style of `protoc --decode_raw`). For services Tapsmith knows — currently Firestore's `Listen` — a built-in name table lifts that to real field names, resolves enums, unpacks repeated scalars and formats timestamps:
+
+```
+── message 3 of 64 (902 bytes)
+  document_change {
+    document {
+      name: "projects/demo/databases/(default)/documents/users/u1"
+      fields:
+        displayName: { string_value: "E2E Test User" }
+        onboardingCompletedAt: { timestamp_value: 2026-06-10T11:29:35.776Z }
+        onboardingCompleted: { boolean_value: true }
+    }
+    target_ids: [2]
+  }
+```
+
+Unknown services fall back to numbers rather than guessing. Compressed messages are listed but not inflated (the codec lives in `grpc-encoding`), runs of same-shape stream messages are collapsed into a count, and a body truncated by the capture cap says how much is missing.
 
 For any other HTTP/2-capable host that rejects the certificate — including Firestore on Android when the CA only reached the *user* trust store — Tapsmith detects the rejection and tunnels later connections for the same SNI. The rejection is recognised both when the client sends a TLS alert (`unknown_ca`, `bad_certificate`) and when it simply tears the connection down without one — gRPC-C++/BoringSSL stacks abort with a connection reset rather than a decodable alert, so this abrupt-close case is treated as a rejection once it repeats for a host. The app continues to work, and the trace shows a single `CONNECT` row marked `passthrough`, but the encrypted requests inside are not available to `device.route()`, `device.waitForRequest()`, `device.waitForResponse()`, or the trace viewer.
 

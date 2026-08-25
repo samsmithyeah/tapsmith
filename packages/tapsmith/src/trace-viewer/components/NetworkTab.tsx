@@ -651,17 +651,36 @@ function PayloadTab({ entry, body }: { entry: NetworkEntry; body: Uint8Array | u
   if (!body || body.length === 0) {
     return <div class="net-empty-inline">No request payload</div>;
   }
-  return <BodyViewer body={body} contentType={entry.contentType} />;
+  return (
+    <BodyViewer
+      body={body}
+      contentType={entry.contentType}
+      url={entry.url}
+      direction="request"
+    />
+  );
 }
 
 function ResponseTab({ entry, body }: { entry: NetworkEntry; body: Uint8Array | undefined }) {
   if (!body || body.length === 0) {
     return <div class="net-empty-inline">No response body{entry.routeAction === 'aborted' ? ' (aborted)' : ''}</div>;
   }
-  return <BodyViewer body={body} contentType={entry.contentType} />;
+  return (
+    <BodyViewer
+      body={body}
+      contentType={entry.contentType}
+      url={entry.url}
+      direction="response"
+    />
+  );
 }
 
-function BodyViewer({ body, contentType }: { body: Uint8Array; contentType: string }) {
+function BodyViewer({ body, contentType, url, direction }: {
+  body: Uint8Array
+  contentType: string
+  url: string
+  direction: 'request' | 'response'
+}) {
   // gRPC/protobuf bodies are binary, so decode them structurally rather than
   // rendering bytes as text. Attempted for any body that either declares a
   // protobuf content type or simply turns out to be decodable — gRPC-Web and
@@ -671,8 +690,8 @@ function BodyViewer({ body, contentType }: { body: Uint8Array; contentType: stri
     if (body.length === 0) return null;
     if (isJsonContentType(contentType)) return null;
     if (!isProtobufContentType(contentType) && !looksBinary(body)) return null;
-    return decodeBodyForDisplay(body);
-  }, [body, contentType]);
+    return decodeBodyForDisplay(body, { url, direction });
+  }, [body, contentType, url, direction]);
 
   // Text view of the bytes, non-fatal so a partially-binary body still shows
   // whatever text it contains rather than failing outright.
