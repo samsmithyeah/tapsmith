@@ -102,13 +102,19 @@ export default defineConfig({
 
 Running a test from the "Pixel 6" project routes it to the Android emulator; running one from "iPhone 16" routes it to the iOS simulator. The UI handles this routing transparently.
 
-## Multi-worker UI
+## Workers
 
-When `workers > 1`, the UI server initializes persistent worker processes (one per device), the same way watch mode does. Files are dispatched across workers in parallel, and per-worker device screens are displayed in the UI.
+Every UI session runs tests in a persistent worker process per device. With a single device, that one worker attaches to the daemon and agent the CLI already set up — nothing is provisioned twice, and there is no per-run process start-up: clicking Run goes straight to the runner (the declared app reset, then your tests).
+
+When `workers > 1`, one worker per device is started, files are dispatched across them in parallel, and per-worker device screens are displayed in the UI.
 
 ```bash
 npx tapsmith test --ui --workers 4
 ```
+
+### Fresh code on every run
+
+Test files are re-imported on every run. Files they import — page objects, fixtures, helpers — live in the worker's module cache, so when one of those changes under your project root the UI recycles the worker (a ~1–2 s process restart against the same daemon; the device is untouched). A change during a run is applied as soon as the run ends. Use **Respawn worker** if a device session ever needs to be rebuilt from scratch.
 
 ## Mutual exclusion
 

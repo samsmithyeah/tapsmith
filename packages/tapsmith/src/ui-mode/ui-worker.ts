@@ -2,8 +2,9 @@
  * Persistent UI worker child process.
  *
  * Combines the persistent lifecycle of worker-runner.ts (init once, run
- * many files) with the real-time trace streaming of ui-run.ts. Forked
- * by the UI server when workers > 1.
+ * many files) with real-time trace streaming to the UI server. Every UI
+ * session runs through these workers — one per device; a single device is
+ * one worker that adopts the primary daemon/agent the CLI provisioned.
  *
  * @see PILOT-87
  */
@@ -27,7 +28,7 @@ import type { PreparedState } from '../app-reset.js';
 import { createActionProgressMessenger } from '../action-progress-renderer.js';
 import { isAbortError } from '../abort.js';
 import type { AnyTraceEvent } from '../trace/types.js';
-import { isNetworkTracingEnabled, networkHostsForPac } from '../trace/types.js';
+import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from '../trace/types.js';
 import { encodeNetworkBodies } from './encode-bodies.js';
 import { streamSourcesForEvent } from './source-stream.js';
 import type {
@@ -48,6 +49,9 @@ let screenshotDir: string | undefined;
 let ipcOpen = true;
 let currentAbortController: AbortController | undefined;
 let resolvedXctestrunPath: string | undefined;
+let resolvedAgentApkPath: string | undefined;
+let resolvedAgentTestApkPath: string | undefined;
+let resolvedIosAppPathCached: string | undefined;
 
 // ─── Helpers ───
 
@@ -90,8 +94,11 @@ function sessionContext(
     ? `UI Worker ${workerId} (${serial})`
     : `UI Worker ${workerId}`;
   return {
-    label, config, device, client, agentApkPath, agentTestApkPath,
+    label, config, device, client,
+    agentApkPath: agentApkPath ?? resolvedAgentApkPath,
+    agentTestApkPath: agentTestApkPath ?? resolvedAgentTestApkPath,
     iosXctestrunPath: iosXctestrunPath ?? resolvedXctestrunPath,
+    iosAppPath: resolvedIosAppPathCached,
     deviceSerial: serial,
     networkTracingEnabled: isNetworkTracingEnabled(config.trace),
   };
@@ -152,6 +159,7 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
       msg.deviceSerial,
       isNetworkTracingEnabled(config.trace),
       networkHostsForPac(config.trace),
+      networkPassthroughHosts(config.trace),
     );
   }
 
@@ -162,6 +170,24 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
     await device.unlock();
   } catch {
     // Non-fatal
+  }
+
+  // Adopting the primary device: the CLI already installed the app, started
+  // the agent and cold-launched. Resolve the artifact paths recovery needs,
+  // verify the session, and hand that launch to the first file as its
+  // prepared state.
+  if (msg.adoptPrimary) {
+    await resolveArtifactPaths(msg);
+    sendProgress('attaching to the primary device session');
+    await ensureSessionReady(sessionContext(msg.deviceSerial), 'UI worker adopt');
+    preparedDevice = {
+      policy: { mode: 'clear', scope: 'file' },
+      preparedAt: Date.now(),
+      durationMs: 0,
+      source: 'startup launch',
+    };
+    finishInit();
+    return;
   }
 
   // Install app if needed. Always reinstall on freshly-launched devices —
@@ -209,39 +235,8 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
   }
 
   // Start agent
-  const resolvedAgentApk = config.agentApk
-    ? path.resolve(config.rootDir, config.agentApk)
-    : undefined;
-  const resolvedAgentTestApk = config.agentTestApk
-    ? path.resolve(config.rootDir, config.agentTestApk)
-    : undefined;
-  let resolvedIosXctestrun = config.iosXctestrun
-    ? path.resolve(config.rootDir, config.iosXctestrun)
-    : undefined;
-  // Auto-detect xctestrun if omitted, mirroring the single-worker
-  // resolution in cli.ts and the parallel-worker path in worker-runner.ts.
-  if (!resolvedIosXctestrun && config.platform === 'ios' && msg.deviceSerial) {
-    const { isPhysicalDevice } = await import('../ios-devicectl.js');
-    const { findDeviceXctestrun, findSimulatorXctestrun } =
-      await import('../ios-device-resolve.js');
-    const isPhys = isPhysicalDevice(msg.deviceSerial);
-    const found = isPhys ? findDeviceXctestrun(config.rootDir) : findSimulatorXctestrun();
-    if (found) {
-      resolvedIosXctestrun = found;
-      sendProgress(`auto-detected xctestrun: ${path.basename(found)}`);
-    }
-  }
-  resolvedXctestrunPath = resolvedIosXctestrun;
-  // Cache the device-signed .app path on physical iOS so the daemon can
-  // reinstall via devicectl for clearAppData (no host-filesystem container
-  // access on real hardware). Matches the cli.ts setupSequentialDevice path.
-  let resolvedIosAppPath: string | undefined;
-  if (config.platform === 'ios' && config.app && msg.deviceSerial) {
-    const { isPhysicalDevice } = await import('../ios-devicectl.js');
-    if (isPhysicalDevice(msg.deviceSerial)) {
-      resolvedIosAppPath = path.resolve(config.rootDir, config.app);
-    }
-  }
+  const { resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun, resolvedIosAppPath } =
+    await resolveArtifactPaths(msg);
   sendProgress('starting Tapsmith agent');
   await device.startAgent(
     config.package ?? '',
@@ -284,6 +279,59 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
     await device.waitForIdle();
   }
 
+  finishInit();
+}
+
+/**
+ * Resolve agent APK / xctestrun / device-signed .app paths from the config,
+ * auto-detecting the xctestrun like cli.ts and worker-runner.ts do. Needed
+ * both to start the agent and (in adopt mode) for session recovery later.
+ */
+async function resolveArtifactPaths(msg: UIWorkerInitMessage): Promise<{
+  resolvedAgentApk?: string
+  resolvedAgentTestApk?: string
+  resolvedIosXctestrun?: string
+  resolvedIosAppPath?: string
+}> {
+  if (!config) throw new Error(`UI Worker ${workerId}: Not initialized`);
+  const resolvedAgentApk = config.agentApk
+    ? path.resolve(config.rootDir, config.agentApk)
+    : undefined;
+  const resolvedAgentTestApk = config.agentTestApk
+    ? path.resolve(config.rootDir, config.agentTestApk)
+    : undefined;
+  let resolvedIosXctestrun = config.iosXctestrun
+    ? path.resolve(config.rootDir, config.iosXctestrun)
+    : undefined;
+  if (!resolvedIosXctestrun && config.platform === 'ios' && msg.deviceSerial) {
+    const { isPhysicalDevice } = await import('../ios-devicectl.js');
+    const { findDeviceXctestrun, findSimulatorXctestrun } =
+      await import('../ios-device-resolve.js');
+    const isPhys = isPhysicalDevice(msg.deviceSerial);
+    const found = isPhys ? findDeviceXctestrun(config.rootDir) : findSimulatorXctestrun();
+    if (found) {
+      resolvedIosXctestrun = found;
+      sendProgress(`auto-detected xctestrun: ${path.basename(found)}`);
+    }
+  }
+  resolvedXctestrunPath = resolvedIosXctestrun;
+  // Cache the device-signed .app path on physical iOS so the daemon can
+  // reinstall via devicectl for clearAppData (no host-filesystem container
+  // access on real hardware). Matches the cli.ts setupSequentialDevice path.
+  let resolvedIosAppPath: string | undefined;
+  if (config.platform === 'ios' && config.app && msg.deviceSerial) {
+    const { isPhysicalDevice } = await import('../ios-devicectl.js');
+    if (isPhysicalDevice(msg.deviceSerial)) {
+      resolvedIosAppPath = path.resolve(config.rootDir, config.app);
+    }
+  }
+  resolvedAgentApkPath = resolvedAgentApk;
+  resolvedAgentTestApkPath = resolvedAgentTestApk;
+  resolvedIosAppPathCached = resolvedIosAppPath;
+  return { resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun, resolvedIosAppPath };
+}
+
+function finishInit(): void {
   sendProgress('ready');
   send({ type: 'ready', workerId });
 
@@ -523,29 +571,43 @@ function handleShutdown(): void {
 
 // ─── IPC message handler ───
 
-process.on('message', async (msg: UIWorkerMessage) => {
-  try {
-    switch (msg.type) {
-      case 'init':
-        await handleInit(msg);
-        break;
-      case 'run-file':
-        await handleRunFile(msg.filePath, msg.projectUseOptions, msg.projectName, msg.testFilter);
-        break;
-      case 'abort':
-        currentAbortController?.abort();
-        break;
-      case 'shutdown':
-        handleShutdown();
-        break;
-    }
-  } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    process.stderr.write(`UI Worker ${workerId} error: ${error.message}\n`);
-    send({
-      type: 'error',
-      workerId,
-      error: { message: error.message, stack: error.stack },
-    });
+// ─── Message loop ───
+//
+// Device-touching operations (init, run-file) are serialized through one
+// promise chain: the IPC handler used to start each message's async work
+// concurrently, so a `run-file` arriving while a previous op was still on
+// the device raced it. `abort` and `shutdown` bypass the queue — they exist
+// to interrupt whatever the queue is doing.
+
+let opQueue: Promise<void> = Promise.resolve();
+
+function reportError(err: unknown): void {
+  const error = err instanceof Error ? err : new Error(String(err));
+  process.stderr.write(`UI Worker ${workerId} error: ${error.message}\n`);
+  send({
+    type: 'error',
+    workerId,
+    error: { message: error.message, stack: error.stack },
+  });
+}
+
+function enqueue(op: () => Promise<void>): void {
+  opQueue = opQueue.then(op, op).catch(reportError);
+}
+
+process.on('message', (msg: UIWorkerMessage) => {
+  switch (msg.type) {
+    case 'init':
+      enqueue(() => handleInit(msg));
+      break;
+    case 'run-file':
+      enqueue(() => handleRunFile(msg.filePath, msg.projectUseOptions, msg.projectName, msg.testFilter));
+      break;
+    case 'abort':
+      currentAbortController?.abort();
+      break;
+    case 'shutdown':
+      handleShutdown();
+      break;
   }
 });

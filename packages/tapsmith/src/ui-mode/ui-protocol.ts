@@ -541,6 +541,16 @@ export interface RespawnWorkerCommand {
   workerId: number
 }
 
+/**
+ * Restart a worker's Node process against its existing daemon so the next run
+ * imports fresh code (page objects, fixtures, helpers — anything the ESM cache
+ * would otherwise keep). The device is untouched.
+ */
+export interface RecycleWorkerCommand {
+  type: 'recycle-worker'
+  workerId: number
+}
+
 /** Union of all client → server JSON messages. */
 export type ClientMessage =
   | RunTestCommand
@@ -565,6 +575,7 @@ export type ClientMessage =
   | SelectWorkerCommand
   | SelectWorkerViewCommand
   | RespawnWorkerCommand
+  | RecycleWorkerCommand
 
 // ─── Binary frame helpers ───
 
@@ -616,87 +627,7 @@ export function decodeBinaryFrame(data: ArrayBuffer): DecodedBinaryFrame {
   };
 }
 
-// ─── IPC protocol (child process ↔ UI server) ───
-
-export interface UIRunMessage {
-  type: 'run'
-  daemonAddress: string
-  deviceSerial: string
-  filePath: string
-  config: import('../worker-protocol.js').SerializedConfig
-  screenshotDir?: string
-  projectUseOptions?: import('../worker-protocol.js').RunFileUseOptions
-  projectName?: string
-  /** Filter to a specific test by fullName (for single-test runs). */
-  testFilter?: string
-}
-
-export interface UIRunTestStartMessage {
-  type: 'test-start'
-  fullName: string
-  filePath: string
-  /** Re-tag of trace attribution for a finished test (see TestStartMessage). */
-  attributionOnly?: boolean
-}
-
-export interface UIRunTestEndMessage {
-  type: 'test-end'
-  result: import('../worker-protocol.js').SerializedTestResult
-}
-
-export interface UIRunFileDoneMessage {
-  type: 'file-done'
-  filePath: string
-  results: import('../worker-protocol.js').SerializedTestResult[]
-  suite: import('../worker-protocol.js').SerializedSuiteResult
-}
-
-export interface UIRunTraceEventMessage {
-  type: 'trace-event'
-  event: AnyTraceEvent
-  /** Lifecycle stage. Omitted = legacy completed. */
-  lifecycle?: 'started' | 'completed'
-  screenshotBefore?: string
-  screenshotAfter?: string
-  hierarchyBefore?: string
-  hierarchyAfter?: string
-}
-
-export interface UIRunSourceMessage {
-  type: 'source'
-  path: string
-  fileName: string
-  content: string
-}
-
-export interface UIRunNetworkMessage {
-  type: 'network'
-  entries: import('../trace/types.js').NetworkEntry[]
-  bodies?: Record<string, string>
-}
-
-export interface UIRunErrorMessage {
-  type: 'error'
-  error: { message: string; stack?: string }
-}
-
-/** Run child → server: live progress for a slow device action (preflight
- * reset etc.). Empty/absent message = action finished, clear the indicator.
- * @see PILOT-232 */
-export interface UIRunProgressMessage {
-  type: 'progress'
-  message?: string
-}
-
-export type UIRunChildMessage =
-  | UIRunTestStartMessage
-  | UIRunTestEndMessage
-  | UIRunFileDoneMessage
-  | UIRunTraceEventMessage
-  | UIRunSourceMessage
-  | UIRunNetworkMessage
-  | UIRunErrorMessage
-  | UIRunProgressMessage
+// ─── IPC protocol (child processes ↔ UI server) ───
 
 // ─── Discovery IPC ───
 
@@ -732,6 +663,14 @@ export interface UIWorkerInitMessage {
   config: import('../worker-protocol.js').SerializedConfig
   screenshotDir?: string
   freshEmulator?: boolean
+  /**
+   * The daemon at `daemonPort` already has this device selected, the agent
+   * running and the app launched (the CLI's primary-device setup). Skip
+   * install / startAgent / the cold launch: connect, re-select the device and
+   * verify the session — the launch that already happened is this worker's
+   * prepared state for the first file.
+   */
+  adoptPrimary?: boolean
 }
 
 /** Server → UI worker: run a test file. */
