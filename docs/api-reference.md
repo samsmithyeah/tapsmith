@@ -385,7 +385,7 @@ await device.resetApp({ target: "/settings" })                 // warm reset lan
 |---|---|---|---|
 | `mode` | `'warm' \| 'restart' \| 'clear'` | `'warm'` | How far to reset |
 | `fallback` | `boolean` | `true` | Escalate warm → restart → clear when a rung fails |
-| `target` | `string` | `'/'` | Route to land on after an in-app reset |
+| `target` | `string` | `'/'` | Route to land on after an in-app (warm) reset — it is the reset deep link's path. A `restart`/`clear` rung leaves the app at its launch route; check `modeUsed` and navigate if needed. |
 
 **`AppResetResult`**
 

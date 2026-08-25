@@ -1746,7 +1746,11 @@ export interface AppResetOptions {
   mode?: 'warm' | 'restart' | 'clear';
   /** Escalate warm → restart → clear when a rung fails. Default `true`. */
   fallback?: boolean;
-  /** Route to land on after an in-app (warm) reset. Default `'/'`. */
+  /**
+   * Route to land on after an in-app (warm) reset — the reset deep link's
+   * path. A `restart`/`clear` rung leaves the app at its launch route; check
+   * `modeUsed` and navigate if the route matters. Default `'/'`.
+   */
   target?: string;
 }
 

@@ -4141,8 +4141,12 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       if (recycleTimer) clearTimeout(recycleTimer);
       for (const t of readinessTimers.values()) clearTimeout(t);
       readinessTimers.clear();
+      // The CLI calls process.exit right after close(), so a cooperative
+      // shutdown message may never be flushed — signal the child as well so
+      // no worker outlives the server (its tsx wrapper forwards the signal).
       for (const worker of uiWorkers) {
         void terminateWorkerProcess(worker);
+        try { worker.process.kill('SIGTERM'); } catch { /* already dead */ }
         releaseWorkerResources(worker);
       }
       ctx.device?.close();

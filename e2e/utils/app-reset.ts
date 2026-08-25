@@ -18,8 +18,14 @@ export function resetAppDeepLink(path = "/") {
 /**
  * Reset the app and land on `path`. Runs the daemon's reset ladder: a warm,
  * acknowledged in-app reset via `@tapsmith/react-native` when the app
- * advertises it, falling back to a restart or a clear.
+ * advertises it, falling back to a restart or a clear. Only the warm rung
+ * carries the route (it is the deep link itself); after a fallback the app is
+ * at its launch route, so navigate explicitly.
  */
 export async function resetApp(device: Device, path = "/") {
-  await device.resetApp({ target: path.startsWith("/") ? path : `/${path}` })
+  const target = path.startsWith("/") ? path : `/${path}`
+  const result = await device.resetApp({ target })
+  if (result.modeUsed !== "warm" && target !== "/") {
+    await device.openDeepLink(`tapsmithtest://${target}`)
+  }
 }
