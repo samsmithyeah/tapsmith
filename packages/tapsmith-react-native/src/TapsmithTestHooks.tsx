@@ -71,9 +71,8 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
         setError(err instanceof Error ? err.message : String(err));
       }
       // Always advance the epoch so Tapsmith never waits on a failed reset;
-      // the error rides along in the marker. Screens keyed by
-      // useTapsmithResetEpoch() remount at the same moment.
-      setEpoch((e) => { publishResetEpoch(e + 1); return e + 1; });
+      // the error rides along in the marker.
+      setEpoch((e) => e + 1);
     };
 
     const sub = Linking.addEventListener('url', ({ url }) => { void handle(url); });
@@ -84,6 +83,11 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
       sub.remove();
     };
   }, [active]);
+
+  // Screens keyed by useTapsmithResetEpoch() remount with the marker. Published
+  // from an effect, not the state updater: an update issued to another
+  // component while this one renders is deferred or dropped by React.
+  useEffect(() => { publishResetEpoch(epoch); }, [epoch]);
 
   if (!active) return null;
 

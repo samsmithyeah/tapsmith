@@ -44,18 +44,22 @@ Release builds strip `__DEV__`. Set `EXPO_PUBLIC_TAPSMITH_HOOKS=1` in the enviro
 
 ## What a warm reset does not clear
 
-The reset clears storage and re-navigates, but React keeps component-local state that survives navigation: a `ScrollView` offset, an uncontrolled `TextInput`, an animation value. If a test relies on such state being fresh (for example, tapping a link at the top of a home list that an earlier test scrolled), remount the component on reset by keying it with the epoch:
+The reset clears storage and re-navigates, but React keeps component-local state that survives navigation: a `ScrollView` offset, an uncontrolled `TextInput`, an animation value. If a test relies on such state being fresh (for example, tapping a link at the top of a home list that an earlier test scrolled), reset it when the epoch changes:
 
 ```tsx
 import { useTapsmithResetEpoch } from "@tapsmith/react-native"
 
 export default function HomeScreen() {
   const resetEpoch = useTapsmithResetEpoch()
-  return <ScrollView key={resetEpoch}>…</ScrollView>
+  const listRef = useRef<ScrollView>(null)
+  useEffect(() => {
+    if (resetEpoch > 0) listRef.current?.scrollTo({ y: 0, animated: false })
+  }, [resetEpoch])
+  return <ScrollView ref={listRef}>…</ScrollView>
 }
 ```
 
-`useTapsmithResetEpoch()` returns the number of resets acknowledged in this process — it changes after every reset and is `0` at launch, so keying by it costs nothing in production builds where the hooks are disabled.
+`useTapsmithResetEpoch()` returns the number of resets acknowledged in this process — it changes after every reset and is `0` at launch, so it costs nothing in production builds where the hooks are disabled. Prefer an imperative reset like this over remounting with `key={resetEpoch}`: on Android a remounted `ScrollView` exposes accessibility nodes with empty bounds until the next input event, which hides its items from UIAutomator.
 
 ## How a warm reset works
 
@@ -83,3 +87,7 @@ const result = await device.resetApp({ target: "/settings" })
 ```
 
 See [`device.resetApp`](api-reference.md#deviceresetappoptions-promiseappresetresult).
+
+### Known limitation — Android: stale accessibility tree after an idle background preparation
+
+On the Android emulator, when UI mode prepares the device in the background (no test running) and the reset navigates away from a screen the previous run scrolled, the agent's long-lived UIAutomator connection can keep reporting the *previous* list state: UIAutomator logs "Skipping invisible child" for on-screen items, and lookups for them fail until the next real gesture. A fresh `uiautomator dump` from another process sees the correct tree, and resets performed *during* a run are unaffected. Clearing the accessibility cache, refreshing nodes and re-registering the service info do not help. Until this is resolved, start a scope with a deep link (`openDeepLink`) rather than by tapping an element of a list that an earlier test may have scrolled.

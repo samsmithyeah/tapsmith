@@ -6,7 +6,11 @@ describe("getByLabel", () => {
 
   describe("text fields", () => {
     beforeAll(async ({ device }) => {
-      await device.getByDescription("Login Form").tap()
+      // Deep link rather than tapping the home card: after a background
+      // preparation on Android the home list's top items can be missing from
+      // the accessibility tree until the next gesture (see the "Android:
+      // stale tree after idle prepare" note in docs/warm-reset.md).
+      await openScreen(device, "/login")
     })
 
     test("finds text field by its accessibility label", async ({ device }) => {
