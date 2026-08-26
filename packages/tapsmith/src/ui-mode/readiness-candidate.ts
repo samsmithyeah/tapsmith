@@ -7,7 +7,7 @@
 
 import { resolveAppResetPolicy, type AppResetPolicy, type ResetCapabilities } from '../app-reset.js';
 import type { TapsmithConfig, UseOptions } from '../config.js';
-import type { TestTreeNode, TestTreeUseOptions } from './ui-protocol.js';
+import type { TestTreeUseOptions } from './ui-protocol.js';
 import type { Candidate } from './device-readiness.js';
 
 export interface CandidateProject {

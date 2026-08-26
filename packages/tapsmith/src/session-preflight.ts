@@ -53,7 +53,16 @@ export async function probeResetCapabilities(ctx: SessionPreflightContext): Prom
   try {
     const h = await ctx.client.getUiHierarchy();
     const marker = parseHooksMarker(h.hierarchyXml);
-    caps.hooksDetected = !!marker && marker.urlPrefix.length > 0;
+    if (marker && marker.urlPrefix.length > 0) {
+      caps.hooksDetected = true;
+    } else {
+      // Sticky: hooks compiled into the app do not vanish mid-session. A
+      // probe that misses the marker (mid-transition screen, keyboard, a
+      // slow dump under load) must not demote the policy from warm — that
+      // silently downgraded whole files to clear resets on loaded CI
+      // runners. Only a session that never saw the marker records false.
+      caps.hooksDetected ??= false;
+    }
   } catch {
     // Keep whatever we knew.
   }
@@ -308,9 +317,10 @@ export async function executeAppReset(
       fellBack = result.fellBack;
       reason = result.reason;
       processRecreated = result.modeUsed !== 'warm' || result.coldLaunch;
-      // The daemon looked at the marker to plan this reset — that is the
-      // freshest word on whether the app has in-app hooks.
-      if (action.kind === 'warm') (ctx.capabilities ??= {}).hooksDetected = result.hooksDetected;
+      // The daemon seeing the marker is fresh proof of hooks. The reverse is
+      // not: a missed read under load plans a fallback without disproving the
+      // hooks, so detection only ever upgrades (sticky, like the probe).
+      if (action.kind === 'warm' && result.hooksDetected) (ctx.capabilities ??= {}).hooksDetected = true;
       if (result.fellBack) {
         process.stderr.write(`[tapsmith] App reset fell back to ${result.modeUsed}: ${result.reason ?? 'unknown reason'}\n`);
       }

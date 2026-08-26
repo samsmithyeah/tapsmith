@@ -4248,7 +4248,11 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             cold_launch: outcome.cold_launch,
             reason: outcome.reason.clone().unwrap_or_default(),
             duration_ms,
-            hooks_detected: marker.is_some(),
+            // Session-sticky: a marker seen earlier in this session still
+            // proves the app has hooks even when this reset's own read missed
+            // it (the SDK demoting `auto` policies off one missed read was
+            // silently downgrading whole files to clear resets under load).
+            hooks_detected: marker.is_some() || self.last_hooks_marker.read().await.is_some(),
             epoch_before,
             epoch_after: outcome.epoch_after.unwrap_or(0),
             steps: outcome

@@ -221,7 +221,7 @@ describe('runner app reset (declared isolation)', () => {
     expect(order).toEqual(['restart', 'beforeAll', 'restart', 'one']);
   });
 
-  it('auto isolation with in-app hooks: per test, except in scopes that share setup through beforeAll', async () => {
+  it('auto isolation with in-app hooks: one warm reset per file (per-test is an explicit opt-in)', async () => {
     const d = makeDevice();
     const order: string[] = [];
     d.device._resetApp.mockImplementation(async (_pkg, opts) => {
@@ -245,11 +245,11 @@ describe('runner app reset (declared isolation)', () => {
     }));
 
     expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed', 'passed', 'passed']);
-    // The beforeAll navigation in "shared setup" survives between its tests
-    // (one warm reset on entry); "independent" is reset before every test.
+    // One warm reset at file entry; the nested describes declare no policy of
+    // their own, so nothing resets between tests (per-test isolation is an
+    // explicit `appResetScope: 'test'` opt-in).
     expect(order).toEqual([
-      'reset:warm', 'beforeAll', 'one', 'two',
-      'reset:warm', 'three', 'reset:warm', 'four',
+      'reset:warm', 'beforeAll', 'one', 'two', 'three', 'four',
     ]);
   });
 

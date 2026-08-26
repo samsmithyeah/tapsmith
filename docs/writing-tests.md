@@ -130,7 +130,7 @@ Two options control it, at any level — config, `projects[].use`, or `test.use(
 | `warm` | In-app reset through the app's reset hook (`resetAppDeepLink`); no process restart | < 1 s |
 | `none` | No reset — only verify the session is healthy | ~0 |
 
-`'auto'` picks the fastest hermetic option the app supports: `warm` when a reset hook is configured, otherwise `clear`. The scope is per-file, except that an in-app warm hook makes it per-test — when each reset really is warm: no `appState` (restoring or clearing is a cold relaunch) and no `beforeAll` hooks in the scope (a `describe` or file with `beforeAll` is sharing setup between its tests, so it is reset once on entry and left alone in between). Set `appResetScope: "test"` explicitly if you want a reset before every test regardless. With no configuration at all you get today's behaviour — a clean app once per file — and nothing to write.
+`'auto'` picks the fastest hermetic option the app supports: `warm` when a reset hook is configured, otherwise `clear`. The scope is per-file — one reset at file entry (and at a nested `describe` that declares a different policy). Even a warm reset costs ~1-2 s, so resetting before every test roughly doubles a suite that navigates per test anyway; scopes that genuinely need it opt in with `appResetScope: "test"` (each of those resets is warm when the app mounts the hooks). With no configuration at all you get a clean app once per file, and nothing to write.
 
 ```typescript
 // tapsmith.config.ts — restart between files instead of wiping data

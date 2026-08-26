@@ -900,9 +900,7 @@ async function runSuiteContext(
   // The declared isolation policy for this scope. `appReset`/`appResetScope`
   // cascade through `opts.config`; `appState` is this scope's own.
   const hasBeforeAll = !!inherited.hasBeforeAll || ctx.beforeAll.length > 0;
-  const policy = resolveAppResetPolicy(
-    { appState: scopeAppState }, opts.config, opts.resetCapabilities, { hasBeforeAll },
-  );
+  const policy = resolveAppResetPolicy({ appState: scopeAppState }, opts.config, opts.resetCapabilities);
   const isRoot = parentPrefix === '';
   const policyChanged = !isRoot && !appResetPolicyEquals(policy, parentPolicy);
   const canReset = !!opts.sessionContext && !!opts.config.package && !!opts.device;

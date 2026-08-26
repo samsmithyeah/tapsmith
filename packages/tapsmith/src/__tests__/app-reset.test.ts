@@ -21,22 +21,17 @@ describe('resolveAppResetPolicy', () => {
       .toEqual({ mode: 'warm', scope: 'file' });
   });
 
-  it('detected in-app hooks make auto resolve to warm · per test', () => {
+  it('detected in-app hooks make auto resolve to warm · per file', () => {
+    // Per-test isolation is an explicit opt-in (appResetScope: 'test') —
+    // even warm resets cost ~1-2 s each, which roughly doubled suite time
+    // when auto defaulted to per-test.
     expect(resolveAppResetPolicy(undefined, base, { hooksDetected: true }))
-      .toEqual({ mode: 'warm', scope: 'test' });
+      .toEqual({ mode: 'warm', scope: 'file' });
   });
 
-  it('a scope with beforeAll hooks keeps auto isolation per file even with hooks detected', () => {
-    // beforeAll shares setup between tests; a per-test reset would destroy it.
-    const p = resolveAppResetPolicy(undefined, base, { hooksDetected: true }, { hasBeforeAll: true });
-    expect(p).toEqual({ mode: 'warm', scope: 'file' });
-  });
-
-  it('an explicit per-test scope still wins in a scope with beforeAll hooks', () => {
-    const p = resolveAppResetPolicy(
-      undefined, { ...base, appResetScope: 'test' }, { hooksDetected: true }, { hasBeforeAll: true },
-    );
-    expect(p.scope).toBe('test');
+  it('an explicit per-test scope opts a scope into warm per-test resets', () => {
+    const p = resolveAppResetPolicy(undefined, { ...base, appResetScope: 'test' }, { hooksDetected: true });
+    expect(p).toEqual({ mode: 'warm', scope: 'test' });
   });
 
   it('appState keeps auto isolation per file — restore and clear are cold, not warm', () => {

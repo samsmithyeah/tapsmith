@@ -593,6 +593,32 @@ describe('session-preflight', () => {
       expect(ctx.capabilities?.hooksDetected).toBe(true);
     });
 
+    it('a probe that misses the marker never demotes hooksDetected (sticky under load)', async () => {
+      const ctx = makeContext();
+      (ctx as { capabilities?: { hooksDetected?: boolean } }).capabilities = { hooksDetected: true };
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValueOnce({
+        requestId: '1',
+        hierarchyXml: '<hierarchy><node package="com.example.app" text="mid-transition, no marker" /></hierarchy>',
+        errorMessage: '',
+      });
+
+      const caps = await probeResetCapabilities(ctx);
+
+      expect(caps.hooksDetected).toBe(true);
+    });
+
+    it('a fallback reset (daemon saw no marker this time) does not demote hooksDetected', async () => {
+      const ctx = makeContext();
+      (ctx as { capabilities?: { hooksDetected?: boolean } }).capabilities = { hooksDetected: true };
+      vi.mocked(ctx.device._resetApp).mockResolvedValueOnce(resetResult('warm', {
+        modeUsed: 'restart', fellBack: true, coldLaunch: true, hooksDetected: false,
+      }));
+
+      await executeAppReset(ctx, WARM_TEST, { phase: 'before test' });
+
+      expect((ctx as { capabilities?: { hooksDetected?: boolean } }).capabilities?.hooksDetected).toBe(true);
+    });
+
     it('a probe failure leaves the capabilities as they were', async () => {
       const ctx = makeContext();
       ctx.capabilities = { hooksDetected: true };

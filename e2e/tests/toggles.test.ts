@@ -2,6 +2,10 @@ import { describe, expect, test } from "../fixtures.js"
 import { openScreen } from "../utils/app-reset.js"
 
 describe("Toggles screen", () => {
+  // Tests toggle persisted state and scroll the screen; the beforeEach
+  // asserts a clean top-of-screen, so reset before every test.
+  test.use({ appResetScope: "test" })
+
   test.beforeEach(async ({ device, togglesScreen }) => {
     await openScreen(device, "/toggles")
     await expect(togglesScreen.switchesHeading).toBeVisible()

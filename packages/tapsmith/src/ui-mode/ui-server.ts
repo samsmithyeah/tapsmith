@@ -30,7 +30,6 @@ import { TapsmithGrpcClient } from '../grpc-client.js';
 import type { Device } from '../device.js';
 import type { ResolvedProject } from '../project.js';
 import { collectTransitiveDeps, projectLabel } from '../project.js';
-import { matchesTestFilter } from '../test-filter.js';
 import { LaunchSetupError } from '../dispatcher.js';
 import { STOPPED_BY_USER } from '../abort.js';
 import { classifyEntryStatus, isInterruptedEntry } from '../mcp/test-dispatcher.js';

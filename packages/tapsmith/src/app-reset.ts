@@ -86,20 +86,10 @@ export interface AppResetReport {
  * `appReset` / `appResetScope` are ordinary config keys and arrive already
  * cascaded through `config` (root → project `use` → `test.use()`).
  */
-export interface ResolveAppResetHints {
-  /**
-   * The scope (or an enclosing one) has `beforeAll` hooks. Shared setup is
-   * exactly what a per-test reset would destroy, so `appResetScope: 'auto'`
-   * stays per-file there; an explicit `'test'` still forces per-test resets.
-   */
-  hasBeforeAll?: boolean;
-}
-
 export function resolveAppResetPolicy(
   scopeOptions: { appState?: string } | undefined,
   config: Pick<TapsmithConfig, 'appReset' | 'appResetScope' | 'resetAppDeepLink' | 'rootDir'>,
   caps: ResetCapabilities = {},
-  hints: ResolveAppResetHints = {},
 ): AppResetPolicy {
   const warmAvailable = !!caps.hooksDetected || !!config.resetAppDeepLink;
 
@@ -108,17 +98,15 @@ export function resolveAppResetPolicy(
     ? (warmAvailable ? 'warm' : 'clear')
     : requestedMode;
 
-  // Per-test isolation is only the default when each reset is warm (< 2 s):
-  // an in-app hook is available, the mode resolves to warm, and the scope
-  // has no appState (restore/clear are cold by nature) or beforeAll hooks
-  // (shared setup a per-test reset would destroy). Everything else stays
-  // per-file unless the user asks for 'test' explicitly.
+  // `auto` isolation is per-file: one reset at scope entry. Even a warm
+  // reset costs ~1-2 s, and most suites navigate to their screen per test
+  // anyway, so defaulting to per-test roughly doubled suite time for no
+  // isolation the tests asked for. Files that genuinely need a reset before
+  // every test opt in with `appResetScope: 'test'` (still warm when the app
+  // mounts `@tapsmith/react-native`).
   const appState = scopeOptions?.appState;
   const requestedScope = config.appResetScope ?? 'auto';
-  const warmPerTest = !!caps.hooksDetected && mode === 'warm' && appState === undefined && !hints.hasBeforeAll;
-  const scope: ResolvedAppResetScope = requestedScope === 'auto'
-    ? (warmPerTest ? 'test' : 'file')
-    : requestedScope;
+  const scope: ResolvedAppResetScope = requestedScope === 'auto' ? 'file' : requestedScope;
 
   const policy: AppResetPolicy = { mode, scope };
   if (appState !== undefined) {

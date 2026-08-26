@@ -13,7 +13,7 @@ import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults } from './runner.js';
 import type { TapsmithConfig } from './config.js';
-import { ensureSessionReady, type SessionPreflightContext } from './session-preflight.js';
+import { type SessionPreflightContext } from './session-preflight.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
 import {
