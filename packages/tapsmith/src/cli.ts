@@ -36,6 +36,7 @@ import {
   preserveEmulatorsForReuse,
   filterHealthyDevices,
   isPackageInstalled,
+  installedApkMatches,
   listAdbDevices,
   waitForPackageIndexed,
   cleanupStaleEmulators,
@@ -741,16 +742,21 @@ async function setupSequentialDevice(
         && cfg.package
         && cfg.device
         && isPackageInstalled(cfg.device, cfg.package);
+      // A rebuilt APK must replace the installed one — matching the iOS
+      // "installed build differs" check.
+      const buildDiffers = isInstalled && cfg.package && cfg.device
+        && installedApkMatches(cfg.device, cfg.package, path.resolve(cfg.rootDir, cfg.apk)) === false;
 
-      if (isInstalled && !forceInstall) {
-        if (progress) progress.complete('app-install', `${cfg.package} already installed`);
+      if (isInstalled && !forceInstall && !buildDiffers) {
+        if (progress) progress.complete('app-install', `${cfg.package} already installed (matching build)`);
         else console.log(dim(`App ${cfg.package} already installed, skipping APK install. Use --force-install to reinstall.`));
       } else {
         const resolvedApk = path.resolve(cfg.rootDir, cfg.apk);
         try {
           if (isInstalled) {
-            if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling ${path.basename(resolvedApk)}` });
-            else console.log(dim(`Reinstalling app APK: ${path.basename(resolvedApk)}`));
+            const why = buildDiffers ? ' (installed build differs)' : '';
+            if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling ${path.basename(resolvedApk)}${why}` });
+            else console.log(dim(`Reinstalling app APK${why}: ${path.basename(resolvedApk)}`));
           } else {
             progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApk)}` });
           }

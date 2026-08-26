@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Linking, StyleSheet, Text, View } from 'react-native';
 import { formatMarker, parseResetRequest, BOOT_TOKEN } from './protocol.js';
+import { publishResetEpoch } from './epoch.js';
 import { hooksEnabledByDefault } from './enabled.js';
 import { registeredHandlers, runResetPipeline, type Clearable, type ResetHandler } from './reset.js';
 
@@ -70,8 +71,9 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
         setError(err instanceof Error ? err.message : String(err));
       }
       // Always advance the epoch so Tapsmith never waits on a failed reset;
-      // the error rides along in the marker.
-      setEpoch((e) => e + 1);
+      // the error rides along in the marker. Screens keyed by
+      // useTapsmithResetEpoch() remount at the same moment.
+      setEpoch((e) => { publishResetEpoch(e + 1); return e + 1; });
     };
 
     const sub = Linking.addEventListener('url', ({ url }) => { void handle(url); });

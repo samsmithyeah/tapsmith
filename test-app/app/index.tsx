@@ -1,5 +1,6 @@
 import { Link } from "expo-router"
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native"
+import { useTapsmithResetEpoch } from "@tapsmith/react-native"
 
 const screens = [
   {
@@ -42,8 +43,11 @@ const screens = [
 ] as const
 
 export default function HomeScreen() {
+  // Component-local state (here: the scroll offset) survives the warm reset's
+  // navigation; keying by the reset epoch remounts the list at the top.
+  const resetEpoch = useTapsmithResetEpoch()
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView key={resetEpoch} style={styles.container}>
       <Text style={styles.heading} accessibilityRole="header">
         Test Screens
       </Text>

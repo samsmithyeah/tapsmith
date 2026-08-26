@@ -41,6 +41,22 @@ That is the whole integration. **No Tapsmith config changes**: `appReset: 'auto'
 
 Release builds strip `__DEV__`. Set `EXPO_PUBLIC_TAPSMITH_HOOKS=1` in the environment of the build that your tests run against (the repo's own e2e workflows do this). Never ship a build with the flag to users: a reset link can clear local storage and navigate the app.
 
+
+## What a warm reset does not clear
+
+The reset clears storage and re-navigates, but React keeps component-local state that survives navigation: a `ScrollView` offset, an uncontrolled `TextInput`, an animation value. If a test relies on such state being fresh (for example, tapping a link at the top of a home list that an earlier test scrolled), remount the component on reset by keying it with the epoch:
+
+```tsx
+import { useTapsmithResetEpoch } from "@tapsmith/react-native"
+
+export default function HomeScreen() {
+  const resetEpoch = useTapsmithResetEpoch()
+  return <ScrollView key={resetEpoch}>…</ScrollView>
+}
+```
+
+`useTapsmithResetEpoch()` returns the number of resets acknowledged in this process — it changes after every reset and is `0` at launch, so keying by it costs nothing in production builds where the hooks are disabled.
+
 ## How a warm reset works
 
 1. The component renders a tiny marker in the accessibility tree — `tapsmith-hooks:1;epoch=<n>;boot=<token>;url=<prefix>` — that Tapsmith reads once after launch (that is the detection) and again after every reset. `boot` is a random token generated once per app process: when Tapsmith delivers a reset cold (its periodic cold-launch valve, or a retry), the epoch counter restarts with the process, and a changed `boot` is how the fresh process's acknowledgement is recognised.

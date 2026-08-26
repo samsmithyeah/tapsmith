@@ -15,7 +15,7 @@ import { TapsmithGrpcClient } from '../grpc-client.js';
 import { Device } from '../device.js';
 import { runTestFile, collectResults } from '../runner.js';
 import type { TapsmithConfig } from '../config.js';
-import { isPackageInstalled, waitForPackageIndexed } from '../emulator.js';
+import { installedApkMatches, isPackageInstalled, waitForPackageIndexed } from '../emulator.js';
 import { installApp, isAppInstalled, probeSimulatorHealth, rebootSimulator } from '../ios-simulator.js';
 import {
   serializeTestResult,
@@ -198,13 +198,16 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
   // Install app if needed. Always reinstall on freshly-launched devices —
   // the AVD/simulator snapshot may have a stale copy of the app baked in.
   if (config.apk) {
+    const resolvedApkPath = path.resolve(config.rootDir, config.apk);
     const alreadyInstalled = !msg.freshEmulator
       && config.package
       && msg.deviceSerial
-      && isPackageInstalled(msg.deviceSerial, config.package);
+      && isPackageInstalled(msg.deviceSerial, config.package)
+      // A rebuilt APK must replace the installed one.
+      && installedApkMatches(msg.deviceSerial, config.package, resolvedApkPath) !== false;
 
     if (alreadyInstalled) {
-      sendProgress(`app ${config.package} already installed, skipping APK install`);
+      sendProgress(`app ${config.package} already installed (matching build), skipping APK install`);
     } else {
       const resolvedApk = path.resolve(config.rootDir, config.apk);
       sendProgress(`installing app APK ${path.basename(resolvedApk)}`);

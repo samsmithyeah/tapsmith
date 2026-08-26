@@ -1469,8 +1469,11 @@ impl TapsmithServiceImpl {
                 ))
             }
             Platform::Android => {
+                // `pidof` exits non-zero when nothing matches, which adb::shell
+                // surfaces as an error — `|| true` makes "no process" read as
+                // not running rather than unknown.
                 let serial = self.active_serial().await.ok()?;
-                let out = adb::shell(&serial, &format!("pidof {package}"))
+                let out = adb::shell(&serial, &format!("pidof {package} 2>/dev/null || true"))
                     .await
                     .ok()?;
                 Some(!out.trim().is_empty())
