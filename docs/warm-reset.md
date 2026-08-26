@@ -88,6 +88,3 @@ const result = await device.resetApp({ target: "/settings" })
 
 See [`device.resetApp`](api-reference.md#deviceresetappoptions-promiseappresetresult).
 
-### Known limitation — Android: stale accessibility tree after an idle background preparation
-
-On the Android emulator, when UI mode prepares the device in the background (no test running) and the reset navigates away from a screen the previous run scrolled, the agent's long-lived UIAutomator connection can keep reporting the *previous* list state: UIAutomator logs "Skipping invisible child" for on-screen items, and lookups for them fail until the next real gesture. A fresh `uiautomator dump` from another process sees the correct tree, and resets performed *during* a run are unaffected. Clearing the accessibility cache, refreshing nodes and re-registering the service info do not help. Until this is resolved, start a scope with a deep link (`openDeepLink`) rather than by tapping an element of a list that an earlier test may have scrolled.
