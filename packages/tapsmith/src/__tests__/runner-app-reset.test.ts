@@ -77,7 +77,7 @@ function makeDevice() {
     ping: vi.fn(async () => ({ version: '0.1.0', agentConnected: true })),
     getUiHierarchy: vi.fn(async () => ({
       requestId: '1',
-      hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
+      hierarchyXml: '<hierarchy><node package="com.example.app" text="Home" /></hierarchy>',
       errorMessage: '',
     })),
   };
