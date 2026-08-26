@@ -159,6 +159,11 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
 
   if (msg.deviceSerial) {
     sendProgress(`selecting device ${msg.deviceSerial}`);
+    // SetDevice resolves the serial against the daemon's last device listing.
+    // A worker that (re)connects later — a recycle, a respawn — cannot assume
+    // that listing still holds the device (an Android daemon reported
+    // "Device emulator-5554 not found. Run ListDevices first"), so refresh it.
+    await device.listDevices();
     await device.setDevice(
       msg.deviceSerial,
       isNetworkTracingEnabled(config.trace),

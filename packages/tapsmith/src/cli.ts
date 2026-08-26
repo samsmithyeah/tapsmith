@@ -9,6 +9,7 @@
  *   tapsmith --version                 Print version
  */
 
+import * as net from 'node:net';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, EXPLICIT_WORKERS, isExplicitWorkers, type TapsmithConfig } from './config.js';
@@ -364,13 +365,33 @@ function installSequentialFatalHandlers(
   process.on('unhandledRejection', (reason) => runFatalTeardown('rejection', reason));
 }
 
+/** An OS-assigned free TCP port on localhost. */
+function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+/**
+ * Start (or attach to) the daemon and return the client together with the
+ * address actually used — which differs from the requested one when another
+ * live Tapsmith session already owns that port.
+ */
 async function ensureDaemonRunning(
-  address: string,
+  requestedAddress: string,
   daemonBin?: string,
   platform?: string,
   progress?: LaunchProgressSink,
-): Promise<TapsmithGrpcClient> {
-  const port = address.split(':').pop() ?? '50051';
+): Promise<{ client: TapsmithGrpcClient; address: string }> {
+  let address = requestedAddress;
+  let port = address.split(':').pop() ?? '50051';
   progress?.start('daemon', `starting tapsmith-core on ${address}`);
 
   // When TAPSMITH_REUSE_DAEMON is set (e.g. from MCP server's tapsmith_run_tests),
@@ -383,29 +404,36 @@ async function ensureDaemonRunning(
       const version = (await client.ping()).version;
       if (progress) progress.complete('daemon', `connected to existing tapsmith-core v${version}`);
       else console.log(dim(`Connected to existing Tapsmith daemon v${version}`));
-      return client;
+      return { client, address };
     }
     client.close();
     // Fall through to normal startup if no daemon is running
   }
 
-  // Kill any stale daemon on this port so we always get a fresh one
-  // with the correct --platform flag. The daemon starts in <1s so
-  // the cost of a restart is negligible.
+  // A daemon that answers on the requested port belongs to another live
+  // Tapsmith session (UI mode on the other platform, a watch, an MCP server).
+  // Killing it would break that session — and worse, its workers would then
+  // silently reconnect to *our* daemon and drive the wrong device. Start on a
+  // free port instead; the resolved address is threaded to every consumer via
+  // the config. A listener that does not answer is a stale daemon: kill it and
+  // reuse the port so the --platform flag is always the current one.
   try {
     const probe = new TapsmithGrpcClient(address);
     const alive = await probe.waitForReady(1_000);
+    probe.close();
     if (alive) {
-      probe.close();
-      // Find and kill the process listening on this port
+      const freePort = await findFreePort();
+      const requestedPort = requestedAddress.split(':').pop() ?? port;
+      address = `localhost:${freePort}`;
+      port = String(freePort);
+      if (progress) progress.note(`port ${requestedPort} is in use by another Tapsmith session; starting on ${address}`);
+      else console.log(dim(`Daemon port ${requestedPort} is in use by another Tapsmith session; starting on ${address}`));
+    } else {
       const pids = findPidsOnPort(port);
       for (const pid of pids) {
         try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
       }
-      // Brief wait for the port to free up
-      await new Promise((r) => setTimeout(r, 500));
-    } else {
-      probe.close();
+      if (pids.length > 0) await new Promise((r) => setTimeout(r, 500));
     }
   } catch {
     // No daemon running, nothing to kill
@@ -494,7 +522,7 @@ async function ensureDaemonRunning(
   const version = (await newClient.ping()).version;
   if (progress) progress.complete('daemon', `connected to tapsmith-core v${version}`);
   else console.log(dim(`Connected to Tapsmith daemon v${version}`));
-  return newClient;
+  return { client: newClient, address };
 }
 
 // ─── Sequential per-project device setup ───
@@ -548,7 +576,9 @@ async function setupSequentialDevice(
     await checkDeviceHealth(cfg.device);
   }
 
-  const client = await ensureDaemonRunning(cfg.daemonAddress, cfg.daemonBin, cfg.platform, progress);
+  const { client, address: daemonAddress } = await ensureDaemonRunning(cfg.daemonAddress, cfg.daemonBin, cfg.platform, progress);
+  // Workers, the UI server and recovery all read the address from the config.
+  cfg.daemonAddress = daemonAddress;
   const device = new Device(client, cfg);
 
   // Tell the daemon whether this session intends to capture network traffic.
