@@ -19,7 +19,7 @@ import { Device } from './device.js';
 import { runTestFile, collectResults, markFileRetryFlakes, type TestResult, type SuiteResult } from './runner.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
-import type { PreparedState } from './app-reset.js';
+import type { PreparedState, ResetCapabilities } from './app-reset.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { discoverTestFiles } from './test-file-discovery.js';
@@ -538,6 +538,10 @@ interface SequentialDeviceState {
   resolvedIosXctestrun?: string
   resolvedIosAppPath?: string
   signature: string
+  /** Reset capabilities probed after the startup launch (in-app hooks, …).
+   * One object per device, shared into every file's sessionContext so the
+   * runner resolves `appReset: 'auto'` from it and warm resets refresh it. */
+  capabilities: ResetCapabilities
 }
 
 /**
@@ -976,6 +980,10 @@ async function setupSequentialDevice(
     throw new Error(`Failed to start agent: ${err}`);
   }
 
+  // One capabilities object per device: probeResetCapabilities (inside the
+  // launch below) fills it, and it is shared into every file's sessionContext
+  // so `appReset: 'auto'` resolves from the detected in-app hooks.
+  const capabilities: ResetCapabilities = {};
   if (cfg.package) {
     try {
       progress?.start('app-launch', `launching ${cfg.package}`);
@@ -990,6 +998,7 @@ async function setupSequentialDevice(
         iosAppPath: resolvedIosAppPath,
         deviceSerial: cfg.device,
         networkTracingEnabled,
+        capabilities,
       }, 'startup launch', { readinessAttempts: 3, skipAppReset });
       if (progress) progress.complete('app-launch', `launched ${cfg.package}`);
       else console.log(dim(`Launched ${cfg.package}`));
@@ -1012,6 +1021,7 @@ async function setupSequentialDevice(
     resolvedIosXctestrun,
     resolvedIosAppPath,
     signature,
+    capabilities,
   };
 }
 
@@ -2608,6 +2618,7 @@ async function main(): Promise<void> {
               config: projectConfig,
               device: device!,
               client: client!,
+              capabilities: currentSequentialState?.capabilities ?? {},
               agentApkPath: resolvedAgentApk,
               agentTestApkPath: resolvedAgentTestApk,
               iosXctestrunPath: resolvedIosXctestrun,
