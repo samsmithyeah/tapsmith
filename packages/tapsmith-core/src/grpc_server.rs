@@ -127,6 +127,12 @@ pub struct TapsmithServiceImpl {
     /// StartAgent idempotent when the daemon is already connected to the same
     /// live agent for the same device/configuration.
     started_agent_config: Arc<RwLock<Option<StartedAgentConfig>>>,
+    /// Cached Android launcher activity (`.MainActivity`) for the active
+    /// package, resolved once at StartAgent when the device is calm. Reused by
+    /// every clean-task relaunch so a restart never depends on a per-reset
+    /// `resolve-activity` call succeeding under load. Cleared on device/agent
+    /// change.
+    android_launcher_activity: Arc<RwLock<Option<String>>>,
     /// Counters behind the warm/cold decision for declared app resets
     /// (`ResetApp`). Reset whenever the active device or agent session changes.
     reset_policy: Arc<RwLock<app_reset::ResetPolicyState>>,
@@ -296,6 +302,7 @@ impl TapsmithServiceImpl {
             ios_ca_cert_installed: Arc::new(RwLock::new(std::collections::HashSet::new())),
             ios_agent_config: Arc::new(RwLock::new(None)),
             started_agent_config: Arc::new(RwLock::new(None)),
+            android_launcher_activity: Arc::new(RwLock::new(None)),
             reset_policy: Arc::new(RwLock::new(app_reset::ResetPolicyState::default())),
             last_hooks_marker: Arc::new(RwLock::new(None)),
             ios_iproxy: Arc::new(RwLock::new(None)),
@@ -1530,12 +1537,22 @@ impl TapsmithServiceImpl {
         wait_for_idle: bool,
         idle_timeout_ms: u64,
     ) -> Result<(), String> {
-        match self
-            .resolve_launcher_activity(serial, package_name)
-            .await
-            .ok()
-            .flatten()
-        {
+        let cached = self.android_launcher_activity.read().await.clone();
+        let activity = match cached {
+            Some(a) => Some(a),
+            None => {
+                let resolved = self
+                    .resolve_launcher_activity(serial, package_name)
+                    .await
+                    .ok()
+                    .flatten();
+                if let Some(ref a) = resolved {
+                    *self.android_launcher_activity.write().await = Some(a.clone());
+                }
+                resolved
+            }
+        };
+        match activity {
             Some(activity) => {
                 let cmd = format!(
                     "am start -S -a android.intent.action.MAIN                      -c android.intent.category.LAUNCHER                      --activity-clear-task -n {package_name}/{activity}"
@@ -3211,6 +3228,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 if device_changed {
                     *self.started_agent_config.write().await = None;
                     *self.ios_agent_config.write().await = None;
+                    *self.android_launcher_activity.write().await = None;
                     *self.reset_policy.write().await = app_reset::ResetPolicyState::default();
                     *self.last_hooks_marker.write().await = None;
                     // Drop the previous device's pre-installed CA marker so the
@@ -3334,6 +3352,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         }
 
         *self.started_agent_config.write().await = None;
+        *self.android_launcher_activity.write().await = None;
         // A fresh agent session starts a fresh warm window.
         *self.reset_policy.write().await = app_reset::ResetPolicyState::default();
         *self.last_hooks_marker.write().await = None;
@@ -3531,6 +3550,28 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                                 .insert(format!("{serial_c}\u{0}{pkg}"), path);
                         }
                     });
+                }
+                // Resolve and cache the Android launcher activity now, while
+                // the device is calm, so every later clean-task relaunch (the
+                // restart/clear reset rungs) can discard saved instance state
+                // without depending on a `resolve-activity` call landing under
+                // load. `pm clear` wipes app data but NOT the ActivityManager
+                // task record, so a relaunch that can't clear the task brings
+                // back the old route and scroll position.
+                if matches!(self.require_platform().await, Ok(Platform::Android))
+                    && !desired_agent_config.target_package.is_empty()
+                {
+                    if let Ok(serial) = self.active_serial().await {
+                        let activity = self
+                            .resolve_launcher_activity(
+                                &serial,
+                                &desired_agent_config.target_package,
+                            )
+                            .await
+                            .ok()
+                            .flatten();
+                        *self.android_launcher_activity.write().await = activity;
+                    }
                 }
                 *self.started_agent_config.write().await = Some(desired_agent_config);
                 Ok(Self::success_action_response(request_id))
