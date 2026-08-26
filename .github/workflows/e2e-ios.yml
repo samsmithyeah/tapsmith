@@ -12,9 +12,51 @@ concurrency:
 
 env:
   SHARD_TOTAL: 5
+  # Cached login state for the `authenticated` project. Shards restore it
+  # before the test step; ci-projects.mjs drops the `authentication` setup
+  # project when the archive is present. Bump the -v suffix if the daemon's
+  # app-state archive layout changes incompatibly.
+  AUTH_STATE_ARCHIVE: e2e/tapsmith-results/auth-state-authentication.tar.gz
+  AUTH_STATE_CACHE_VERSION: v1
 
 jobs:
   # ─── Build prerequisites (parallel) ────────────────────────────────────
+
+  build-sdk:
+    name: Build SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # dist/ is platform-independent (tsc output, proto copy, iOS agent
+      # sources, vite web bundles), so build it once here instead of in each
+      # of the shard jobs and the report job.
+      - name: Cache SDK build
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: packages/tapsmith/dist
+          key: sdk-dist-${{ hashFiles('packages/tapsmith/**', 'proto/tapsmith.proto',
+            'ios-agent/TapsmithAgent/**', 'ios-agent/TapsmithAgent.xcodeproj/**',
+            'ios-agent/create-xcode-project.sh', 'ios-agent/Package.swift') }}
+
+      - uses: actions/setup-node@v4
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: packages/tapsmith/package-lock.json
+
+      - name: Install and build SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        working-directory: packages/tapsmith
+        run: npm ci && npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-dist
+          retention-days: 1
+          path: packages/tapsmith/dist/
 
   build-daemon:
     name: Build Daemon
@@ -153,7 +195,7 @@ jobs:
 
   e2e-test:
     name: "Shard ${{ matrix.shard }}/5"
-    needs: [ build-daemon, build-agent, build-test-app ]
+    needs: [ build-sdk, build-daemon, build-agent, build-test-app ]
     runs-on: macos-latest
     timeout-minutes: 60
     strategy:
@@ -213,6 +255,14 @@ jobs:
           name: test-app-ios
           path: .
 
+      # e2e/node_modules/tapsmith is a `file:../packages/tapsmith` symlink, so
+      # the build has to land at that real path.
+      - name: Download SDK build
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-dist
+          path: packages/tapsmith/dist
+
       - name: Make daemon executable
         env:
           GH_TOKEN: ${{ github.token }}
@@ -253,13 +303,26 @@ jobs:
         working-directory: packages/tapsmith
         run: npm ci
 
-      - name: Build SDK
-        working-directory: packages/tapsmith
-        run: npm run build
+      # Artifacts don't preserve file modes; `npx tapsmith` execs dist/cli.js
+      # directly through the npm bin symlink.
+      - name: Make SDK CLI executable
+        run: chmod +x packages/tapsmith/dist/cli.js
 
       - name: Install E2E dependencies
         working-directory: e2e
         run: npm ci
+
+      # Exact-key match only: a stale login state for a different test-app
+      # build must fall through to a fresh auth.setup run, never be reused.
+      - name: Restore cached auth state
+        id: auth-state-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.AUTH_STATE_ARCHIVE }}
+          key: auth-state-ios-${{ env.AUTH_STATE_CACHE_VERSION }}-${{
+            hashFiles('test-app/app/**', 'test-app/assets/**',
+            'test-app/package-lock.json', 'test-app/app.json') }}-${{
+            hashFiles('e2e/tests/auth.setup.ts', 'e2e/fixtures.ts', 'e2e/screens/**') }}
 
       - name: Wait for simulator boot
         run: |
@@ -294,6 +357,33 @@ jobs:
           TAPSMITH_DAEMON_LOG: /tmp/tapsmith-daemon-ios-${{ matrix.shard }}.log
         run: |
           npx tapsmith test -c tapsmith.config.ios-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1
+
+      # Only shards that ran auth.setup produce the archive (hashFiles is
+      # empty otherwise), and only a green run may seed the cache. The
+      # simulator's device-level keychain rides along in the archive under a
+      # reserved member; the test app keeps its login in AsyncStorage, so drop
+      # that member to keep the cached state independent of the simulator it
+      # was captured on (restoreAppState skips the keychain swap when the
+      # member is absent).
+      - name: Prepare auth state for caching
+        if: >-
+          success() && steps.auth-state-cache.outputs.cache-hit != 'true'
+          && hashFiles(env.AUTH_STATE_ARCHIVE) != ''
+        run: |
+          STAGE=$(mktemp -d)
+          tar xzf "$AUTH_STATE_ARCHIVE" -C "$STAGE"
+          rm -rf "$STAGE/.tapsmith-keychain"
+          tar czf "$AUTH_STATE_ARCHIVE" -C "$STAGE" .
+          echo "Cacheable auth state: $(du -h "$AUTH_STATE_ARCHIVE" | cut -f1)"
+
+      - name: Save auth state to cache
+        if: >-
+          success() && steps.auth-state-cache.outputs.cache-hit != 'true'
+          && hashFiles(env.AUTH_STATE_ARCHIVE) != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.AUTH_STATE_ARCHIVE }}
+          key: ${{ steps.auth-state-cache.outputs.cache-primary-key }}
 
       - name: Summarize iOS timing breakdown
         if: always()
@@ -369,8 +459,8 @@ jobs:
 
   e2e-report:
     name: Merge Reports
-    needs: [ e2e-test ]
-    if: always()
+    needs: [ build-sdk, e2e-test ]
+    if: always() && needs.build-sdk.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -379,11 +469,22 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: packages/tapsmith/package-lock.json
+          cache-dependency-path: |
+            packages/tapsmith/package-lock.json
+            e2e/package-lock.json
 
-      - name: Install and build SDK
+      - name: Install SDK dependencies
         working-directory: packages/tapsmith
-        run: npm ci && npm run build
+        run: npm ci
+
+      - name: Download SDK build
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-dist
+          path: packages/tapsmith/dist
+
+      - name: Make SDK CLI executable
+        run: chmod +x packages/tapsmith/dist/cli.js
 
       - name: Download all blob reports
         uses: actions/download-artifact@v4
