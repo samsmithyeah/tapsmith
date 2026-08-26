@@ -104,6 +104,9 @@ const IOS_APP_READY_POLL_DEADLINE_MS = 5_000;
  *  foreground to SpringBoard on a slow runner. */
 const IOS_APP_READY_RELAUNCH_AFTER_MS = 20_000;
 const HIERARCHY_POLL_INTERVAL_MS = 500;
+/** How long a cold-launched Android app gets to render its first content
+ * before we proceed anyway (see {@link waitForAndroidAppReady}). */
+const ANDROID_APP_READY_TIMEOUT_MS = 10_000;
 const DEFAULT_SOFT_RESET_WAIT_MS = 750;
 
 export async function ensureSessionReady(
@@ -185,18 +188,14 @@ export async function launchConfiguredApp(
       await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
     }
     await ensureSessionReady(ctx, phase, readinessAttempts);
-    if (ctx.config.platform === 'ios') {
-      await waitForIosAppReady(ctx);
-    }
+    await waitForAppReady(ctx);
     await probeResetCapabilities(ctx);
     return prepared();
   }
 
   await hardClearAndLaunch(ctx);
   await ensureSessionReady(ctx, phase, readinessAttempts);
-  if (ctx.config.platform === 'ios') {
-    await waitForIosAppReady(ctx);
-  }
+  await waitForAppReady(ctx);
   await probeResetCapabilities(ctx);
   return prepared();
 }
@@ -282,6 +281,7 @@ export async function executeAppReset(
   let modeUsed: AppResetReport['modeUsed'] = action.kind;
   let fellBack = false;
   let reason: string | undefined;
+  let processRecreated = true;
 
   if (action.kind === 'restore') {
     await step('restoreAppState', () => ctx.device.restoreAppState(pkg, action.archive));
@@ -307,6 +307,7 @@ export async function executeAppReset(
       modeUsed = result.modeUsed;
       fellBack = result.fellBack;
       reason = result.reason;
+      processRecreated = result.modeUsed !== 'warm' || result.coldLaunch;
       // The daemon looked at the marker to plan this reset — that is the
       // freshest word on whether the app has in-app hooks.
       if (action.kind === 'warm') (ctx.capabilities ??= {}).hooksDetected = result.hooksDetected;
@@ -329,8 +330,13 @@ export async function executeAppReset(
   }
 
   await step('ensureSessionReady', () => ensureSessionReady(ctx, options.phase));
-  if (ctx.config.platform === 'ios') {
-    await step('waitForAppReady', () => waitForIosAppReady(ctx));
+  if (processRecreated || ctx.config.platform === 'ios') {
+    // A relaunched process is "ready" only once the app has drawn something:
+    // the session check above is satisfied by a bare Activity/splash window,
+    // and a deep link or hooks probe fired into a still-booting React Native
+    // app is silently lost. An acknowledged warm reset needs none of this —
+    // the marker epoch is the proof of rendering.
+    await step('waitForAppReady', () => waitForAppReady(ctx));
   }
   return finish({ origin: 'inline', modeUsed, fellBack, ...(reason ? { reason } : {}) });
 }
@@ -480,6 +486,61 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
     } else {
       await waitForAndroidAppHierarchy(ctx, hierarchy.hierarchyXml, ctx.config.package);
     }
+  }
+}
+
+/**
+ * Wait for a (re)launched app to have rendered its first content. Platform
+ * dispatch: iOS polls for a non-empty hierarchy ({@link waitForIosAppReady});
+ * Android polls for rendered content ({@link waitForAndroidAppReady}).
+ */
+async function waitForAppReady(ctx: SessionPreflightContext): Promise<void> {
+  if (ctx.config.platform === 'ios') return waitForIosAppReady(ctx);
+  return waitForAndroidAppReady(ctx);
+}
+
+/**
+ * True when the Android hierarchy has at least one node of `packageName`
+ * carrying text or a content description — i.e. the app has drawn real UI,
+ * not just its Activity/splash window. Exported for tests.
+ */
+export function androidHierarchyHasRenderedContent(hierarchyXml: string, packageName: string): boolean {
+  const nodeRe = /<node\b[^>]*>/g;
+  const pkgAttr = `package="${packageName}"`;
+  for (const match of hierarchyXml.matchAll(nodeRe)) {
+    const node = match[0];
+    if (!node.includes(pkgAttr)) continue;
+    if (/\btext="[^"]+"/.test(node) || /\bcontent-desc="[^"]+"/.test(node)) return true;
+  }
+  return false;
+}
+
+/**
+ * After a cold launch on Android, `ensureSessionReady` returns as soon as
+ * the app's window exists — for a React Native app that is the splash,
+ * seconds before the JS bundle has rendered anything. Anything sent to the
+ * app in that window (a deep link, the hooks-marker probe) is lost. Poll for
+ * rendered content, bounded; a first screen with no text at all simply falls
+ * through after the timeout — the tests' own auto-waiting takes over.
+ */
+async function waitForAndroidAppReady(ctx: SessionPreflightContext): Promise<void> {
+  const pkg = ctx.config.package;
+  if (!pkg) return;
+  const start = Date.now();
+  while (true) {
+    try {
+      const h = await ctx.client.getUiHierarchy(IOS_APP_READY_POLL_DEADLINE_MS);
+      if (androidHierarchyHasRenderedContent(h.hierarchyXml ?? '', pkg)) return;
+    } catch {
+      // Agent may still be settling after the relaunch — keep polling.
+    }
+    if (Date.now() - start >= ANDROID_APP_READY_TIMEOUT_MS) {
+      process.stderr.write(
+        `[tapsmith] ${pkg} showed no rendered content ${ANDROID_APP_READY_TIMEOUT_MS}ms after launch; continuing\n`,
+      );
+      return;
+    }
+    await delay(HIERARCHY_POLL_INTERVAL_MS);
   }
 }
 

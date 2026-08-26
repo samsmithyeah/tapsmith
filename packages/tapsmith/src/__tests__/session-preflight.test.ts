@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ensureSessionReady, executeAppReset, launchConfiguredApp, probeResetCapabilities } from '../session-preflight.js';
+import { androidHierarchyHasRenderedContent, ensureSessionReady, executeAppReset, launchConfiguredApp, probeResetCapabilities } from '../session-preflight.js';
 import type { AppResetPolicy } from '../app-reset.js';
 import { onActionProgress, type ActionProgressEvent } from '../action-progress.js';
 
@@ -24,7 +24,7 @@ function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]
     ping: vi.fn(async () => ({ version: '0.1.0', agentConnected: true })),
     getUiHierarchy: vi.fn(async () => ({
       requestId: '1',
-      hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
+      hierarchyXml: '<hierarchy><node package="com.example.app" text="Home" /></hierarchy>',
       errorMessage: '',
     })),
   };
@@ -146,7 +146,7 @@ describe('session-preflight', () => {
       })
       .mockResolvedValueOnce({
         requestId: '2',
-        hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
+        hierarchyXml: '<hierarchy><node package="com.example.app" text="Home" /></hierarchy>',
         errorMessage: '',
       });
 
@@ -197,7 +197,7 @@ describe('session-preflight', () => {
     expect(ctx.device.restoreAppState).toHaveBeenCalledWith('com.example.app', '/abs/auth.tar.gz');
     expect(ctx.device.restartApp).toHaveBeenCalledWith('com.example.app');
     expect(report).toMatchObject({ origin: 'inline', modeUsed: 'restore', fellBack: false });
-    expect(report.steps.map((s) => s.name)).toEqual(['restoreAppState', 'restartApp', 'ensureSessionReady']);
+    expect(report.steps.map((s) => s.name)).toEqual(['restoreAppState', 'restartApp', 'ensureSessionReady', 'waitForAppReady']);
   });
 
   it('appState "" means clear', async () => {
@@ -225,7 +225,7 @@ describe('session-preflight', () => {
     });
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
     expect(report).toMatchObject({ origin: 'inline', modeUsed: 'restart', fellBack: false });
-    expect(report.steps.map((s) => s.name)).toEqual(['restart', 'resetApp', 'ensureSessionReady']);
+    expect(report.steps.map((s) => s.name)).toEqual(['restart', 'resetApp', 'ensureSessionReady', 'waitForAppReady']);
   });
 
   it('defaults the cold valve to 10 resets', async () => {
@@ -329,6 +329,68 @@ describe('session-preflight', () => {
     expect(report.steps.map((s) => s.name)).toEqual(['warm-deep-link', 'resetApp', 'settle', 'ensureSessionReady', 'waitForAppReady']);
   });
 
+  describe('Android app readiness after a cold launch', () => {
+    const splash = { requestId: '1', hierarchyXml: '<hierarchy><node package="com.example.app" class="android.widget.FrameLayout" text="" content-desc="" /></hierarchy>', errorMessage: '' };
+    const rendered = { requestId: '2', hierarchyXml: '<hierarchy><node package="com.example.app" text="Home" /></hierarchy>', errorMessage: '' };
+
+    it('androidHierarchyHasRenderedContent needs text or a content description from the app itself', () => {
+      expect(androidHierarchyHasRenderedContent(splash.hierarchyXml, 'com.example.app')).toBe(false);
+      expect(androidHierarchyHasRenderedContent(rendered.hierarchyXml, 'com.example.app')).toBe(true);
+      expect(androidHierarchyHasRenderedContent('<hierarchy><node package="com.example.app" content-desc="Menu" /></hierarchy>', 'com.example.app')).toBe(true);
+      // System UI text does not count: the app has not drawn anything yet.
+      expect(androidHierarchyHasRenderedContent('<hierarchy><node package="com.android.systemui" text="10:06" /><node package="com.example.app" /></hierarchy>', 'com.example.app')).toBe(false);
+    });
+
+    it('a clear reset polls until the app has rendered content (regression: deep link lost into a booting RN app)', async () => {
+      const ctx = makeContext({ config: { package: 'com.example.app', activity: undefined, platform: 'android' } });
+      // ensureSessionReady's own fetch sees the window; the readiness wait then
+      // sees the splash twice before the JS bundle renders.
+      vi.mocked(ctx.client.getUiHierarchy)
+        .mockResolvedValueOnce(splash)
+        .mockResolvedValueOnce(splash)
+        .mockResolvedValueOnce(splash)
+        .mockResolvedValueOnce(rendered);
+
+      const report = await executeAppReset(ctx, CLEAR_FILE, { phase: 'file reset' });
+
+      expect(report.steps.map((s) => s.name)).toEqual(['clear', 'resetApp', 'ensureSessionReady', 'waitForAppReady']);
+      expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(4);
+    });
+
+    it('an acknowledged warm reset does not poll for content (the epoch proves rendering)', async () => {
+      const ctx = makeContext({ config: { package: 'com.example.app', activity: undefined, platform: 'android' } });
+      vi.mocked(ctx.device._resetApp).mockResolvedValueOnce(resetResult('warm', { hooksDetected: true, epochBefore: 3, epochAfter: 4 }));
+
+      const report = await executeAppReset(ctx, WARM_TEST, { phase: 'before test' });
+
+      expect(report.steps.map((s) => s.name)).not.toContain('waitForAppReady');
+      expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(1);
+    });
+
+    it('a warm reset the daemon delivered cold waits like a relaunch', async () => {
+      const ctx = makeContext({ config: { package: 'com.example.app', activity: undefined, platform: 'android' } });
+      vi.mocked(ctx.device._resetApp).mockResolvedValueOnce(resetResult('warm', { hooksDetected: true, coldLaunch: true }));
+
+      const report = await executeAppReset(ctx, WARM_TEST, { phase: 'before test' });
+
+      expect(report.steps.map((s) => s.name)).toContain('waitForAppReady');
+    });
+
+    it('startup launch waits for rendered content before probing for hooks', async () => {
+      const ctx = makeContext({ config: { package: 'com.example.app', activity: undefined, platform: 'android' } });
+      const marker = { requestId: '3', hierarchyXml: '<hierarchy><node package="com.example.app" text="tapsmith-hooks:1;epoch=0;boot=abc;url=app:///" /></hierarchy>', errorMessage: '' };
+      vi.mocked(ctx.client.getUiHierarchy)
+        .mockResolvedValueOnce(splash)
+        .mockResolvedValueOnce(splash)
+        .mockResolvedValueOnce(marker)
+        .mockResolvedValue(marker);
+
+      await launchConfiguredApp(ctx, 'startup', { skipAppReset: true });
+
+      expect((ctx as { capabilities?: { hooksDetected?: boolean } }).capabilities?.hooksDetected).toBe(true);
+    });
+  });
+
   it('warm via in-app hooks needs no settle wait (the epoch is the ack)', async () => {
     const ctx = makeContext({
       config: { package: 'com.example.app', activity: undefined, platform: 'android' },
@@ -390,7 +452,7 @@ describe('session-preflight', () => {
       })
       .mockResolvedValueOnce({
         requestId: '2',
-        hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
+        hierarchyXml: '<hierarchy><node package="com.example.app" text="Home" /></hierarchy>',
         errorMessage: '',
       });
 
@@ -409,7 +471,7 @@ describe('session-preflight', () => {
       })
       .mockResolvedValueOnce({
         requestId: '2',
-        hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
+        hierarchyXml: '<hierarchy><node package="com.example.app" text="Home" /></hierarchy>',
         errorMessage: '',
       });
 
@@ -482,12 +544,12 @@ describe('session-preflight', () => {
       })
       .mockResolvedValueOnce({
         requestId: '1',
-        hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
+        hierarchyXml: '<hierarchy><node package="com.example.app" text="Home" /></hierarchy>',
         errorMessage: '',
       })
       .mockResolvedValueOnce({
         requestId: '1',
-        hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
+        hierarchyXml: '<hierarchy><node package="com.example.app" text="Home" /></hierarchy>',
         errorMessage: '',
       });
 
