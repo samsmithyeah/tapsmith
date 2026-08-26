@@ -47,9 +47,26 @@ describe('DeviceReadiness', () => {
 
     expect(r.state.kind).toBe('ready');
     expect(types(cmds)).toEqual(['broadcast']); // candidate wants clear → satisfied, no prepare
-    expect(r.preparedFor(CLEAR)).toMatchObject({ policy: CLEAR, source: 'background preparation' });
+    expect(r.preparedFor(CLEAR)).toMatchObject({ policy: CLEAR, source: 'startup launch' });
     expect(r.preparedFor(RESTART)).toBeDefined(); // clear ⊇ restart
     expect(r.preparedFor(AUTH)).toBeUndefined(); // never satisfies a restore
+  });
+
+  it('credits the preparation that did the work when a prepare pass found the device already prepared', () => {
+    const env = makeEnv();
+    const r = new DeviceReadiness(0, env);
+    r.handle({ type: 'worker-ready', initialPolicy: CLEAR });
+    r.handle({ type: 'dispatch', file: '/t/a.test.ts', want: CLEAR });
+    r.handle({ type: 'file-done' });
+    r.handle({ type: 'run-ended', stopped: false });
+    const prep = sendPrepare(r.handle({ type: 'grace-elapsed', timerId: 'readiness-0' }))!;
+    expect(prep).toBeDefined();
+    // The worker's executeAppReset saw a prepared device and did nothing.
+    r.handle({
+      type: 'prepared', prepareId: prep.prepareId, policy: CLEAR, startedAt: env.now(), durationMs: 12,
+      satisfiedBy: { policy: CLEAR, preparedAt: 1_000, durationMs: 9_800, source: 'startup launch' },
+    });
+    expect(r.preparedFor(CLEAR)).toMatchObject({ preparedAt: 1_000, durationMs: 9_800, source: 'startup launch' });
   });
 
   it('goes stale when the likely-next file wants something the startup launch does not satisfy', () => {

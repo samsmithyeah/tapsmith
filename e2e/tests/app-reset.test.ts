@@ -57,7 +57,7 @@ describe("App reset (declared isolation)", () => {
     expect(result.fellBack).toBe(true)
     // With the app gone the daemon sees no reset hook at all (and says so); a
     // hook that is present but unresponsive reports the warm attempt failing.
-    expect(result.reason).toMatch(/no reset hook|failed/)
+    expect(result.reason).toMatch(/not running|no reset hook|failed/)
     await expect(device.getByText("Test Screens", { exact: true })).toBeVisible()
   })
 

@@ -820,6 +820,12 @@ export interface UIWorkerPreparedMessage {
   startedAt: number
   durationMs: number
   steps: string[]
+  /**
+   * Set when the device already satisfied the policy (e.g. the startup
+   * launch): the preparation that did the work, so the UI and the runner's
+   * summary row credit it rather than this no-op pass.
+   */
+  satisfiedBy?: import('../app-reset.js').PreparedState
 }
 
 export interface UIWorkerPrepareFailedMessage {

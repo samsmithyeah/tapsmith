@@ -122,6 +122,11 @@ pub struct TapsmithServiceImpl {
     /// Counters behind the warm/cold decision for declared app resets
     /// (`ResetApp`). Reset whenever the active device or agent session changes.
     reset_policy: Arc<RwLock<app_reset::ResetPolicyState>>,
+    /// The last in-app hooks marker seen in this session. A single hierarchy
+    /// read can miss the marker (mid-transition screen, keyboard, a slow
+    /// dump); knowing hooks exist lets `ResetApp` re-read before concluding
+    /// the app has none and falling back to a 4 s restart.
+    last_hooks_marker: Arc<RwLock<Option<app_reset::HooksMarker>>>,
     /// iproxy USB tunnel for the physical iOS device, if any. Held for the
     /// lifetime of the XCUITest runner session; dropped when a new agent is
     /// started or the session is torn down.
@@ -284,6 +289,7 @@ impl TapsmithServiceImpl {
             ios_agent_config: Arc::new(RwLock::new(None)),
             started_agent_config: Arc::new(RwLock::new(None)),
             reset_policy: Arc::new(RwLock::new(app_reset::ResetPolicyState::default())),
+            last_hooks_marker: Arc::new(RwLock::new(None)),
             ios_iproxy: Arc::new(RwLock::new(None)),
             network_tracing_enabled: Arc::new(RwLock::new(false)),
             passthrough_hosts: Arc::new(RwLock::new(Vec::new())),
@@ -1445,6 +1451,31 @@ impl TapsmithServiceImpl {
     async fn current_hooks_marker(&self, timeout_ms: u64) -> Option<app_reset::HooksMarker> {
         let xml = self.current_hierarchy_xml(timeout_ms).await?;
         app_reset::parse_hooks_marker(&xml)
+    }
+
+    /// Whether `package` has a live process. `None` when it cannot be told
+    /// (no agent, command failure).
+    async fn app_is_running(&self, package: &str) -> Option<bool> {
+        match self.require_platform().await.ok()? {
+            Platform::Ios => {
+                let command = AgentCommand::GetAppState {
+                    package: package.to_string(),
+                };
+                let result = self.send_agent_command(&command).await.ok()?;
+                let state = result.data.get("state").and_then(|v| v.as_str())?;
+                Some(!matches!(
+                    state,
+                    "stopped" | "not_running" | "notRunning" | "unknown"
+                ))
+            }
+            Platform::Android => {
+                let serial = self.active_serial().await.ok()?;
+                let out = adb::shell(&serial, &format!("pidof {package}"))
+                    .await
+                    .ok()?;
+                Some(!out.trim().is_empty())
+            }
+        }
     }
 
     /// Terminate + relaunch keeping data — the `restart` rung of the reset ladder.
@@ -3097,6 +3128,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     *self.started_agent_config.write().await = None;
                     *self.ios_agent_config.write().await = None;
                     *self.reset_policy.write().await = app_reset::ResetPolicyState::default();
+                    *self.last_hooks_marker.write().await = None;
                     // Drop the previous device's pre-installed CA marker so the
                     // Android CA pre-install below runs for the newly-selected
                     // device rather than short-circuiting on stale state. The
@@ -3220,6 +3252,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         *self.started_agent_config.write().await = None;
         // A fresh agent session starts a fresh warm window.
         *self.reset_policy.write().await = app_reset::ResetPolicyState::default();
+        *self.last_hooks_marker.write().await = None;
 
         match platform {
             Platform::Ios => {
@@ -3963,14 +3996,44 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
         // The pre-reset hierarchy tells us whether the app advertises in-app
         // reset hooks and what epoch to acknowledge against.
-        let marker = if mode == app_reset::ResetMode::Warm {
+        let mut marker = if mode == app_reset::ResetMode::Warm {
             self.current_hooks_marker(5_000).await
         } else {
             None
         };
+        // Why a warm request could not start warm, when the plan's own reason
+        // ("exposes no reset hook") would be misleading.
+        let mut no_hook_reason: Option<String> = None;
+        if mode == app_reset::ResetMode::Warm {
+            if marker.is_some() {
+                *self.last_hooks_marker.write().await = marker.clone();
+            } else {
+                let seen_before = self.last_hooks_marker.read().await.is_some();
+                if seen_before {
+                    // Hooks were seen earlier in this session: one missed read
+                    // is far more likely a transient hierarchy gap than a
+                    // vanished hook. Re-read briefly before giving up on warm.
+                    for _ in 0..2 {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        marker = self.current_hooks_marker(5_000).await;
+                        if marker.is_some() {
+                            *self.last_hooks_marker.write().await = marker.clone();
+                            break;
+                        }
+                    }
+                }
+                if marker.is_none() && self.app_is_running(&req.package_name).await == Some(false) {
+                    no_hook_reason = Some(
+                        "warm reset requested but the app is not running (nothing to acknowledge \
+                         the hook); restarted instead"
+                            .to_string(),
+                    );
+                }
+            }
+        }
         let epoch_before = marker.as_ref().map(|m| m.epoch).unwrap_or(0);
 
-        let plan = {
+        let mut plan = {
             let state = self.reset_policy.read().await;
             app_reset::decide(
                 &state,
@@ -3984,6 +4047,11 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 },
             )
         };
+        if let (Some(reason), app_reset::FirstStep::Restart | app_reset::FirstStep::Clear) =
+            (no_hook_reason, &plan.first)
+        {
+            plan.reason = Some(reason);
+        }
         info!(
             %serial, package = %req.package_name, ?mode, first = ?plan.first,
             hooks = marker.is_some(), "app reset planned"

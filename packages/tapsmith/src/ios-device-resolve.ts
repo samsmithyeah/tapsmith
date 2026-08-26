@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { listPhysicalDevices, listUsbAttachedIosDevices } from './ios-devicectl.js';
 
@@ -213,17 +214,27 @@ export function findSimulatorXctestrun(): string | undefined {
   }
 
   // 3. DerivedData scan (local Xcode builds).
+  // Local builds: Xcode's default DerivedData plus the monorepo's own build
+  // dirs (`ios-agent/.build-sim`, `ios-agent/build`) — relative to this module
+  // and to the cwd — so a rebuild in any of them is picked up. Newest wins
+  // across all locations.
   const root = path.join(os.homedir(), 'Library', 'Developer', 'Xcode', 'DerivedData');
-  let dirs: string[];
+  const productDirs: string[] = [];
   try {
-    dirs = fs.readdirSync(root);
+    for (const d of fs.readdirSync(root)) {
+      if (d.startsWith('TapsmithAgent-')) productDirs.push(path.join(root, d, 'Build', 'Products'));
+    }
   } catch {
-    return undefined;
+    // No DerivedData — the monorepo dirs may still apply.
+  }
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  for (const base of [path.resolve(moduleDir, '..', '..', '..'), process.cwd()]) {
+    for (const build of ['.build-sim', 'build']) {
+      productDirs.push(path.join(base, 'ios-agent', build, 'Build', 'Products'));
+    }
   }
   const candidates: string[] = [];
-  for (const d of dirs) {
-    if (!d.startsWith('TapsmithAgent-')) continue;
-    const productsDir = path.join(root, d, 'Build', 'Products');
+  for (const productsDir of new Set(productDirs)) {
     let entries: string[];
     try {
       entries = fs.readdirSync(productsDir);

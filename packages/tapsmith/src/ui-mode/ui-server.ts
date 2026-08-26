@@ -490,7 +490,7 @@ export async function startUIServer(
     switch (msg.type) {
       case 'prepared': {
         const started = worker.readiness?.state;
-        readinessEvent(worker, { type: 'prepared', prepareId: msg.prepareId, policy: msg.policy, startedAt: msg.startedAt, durationMs: msg.durationMs });
+        readinessEvent(worker, { type: 'prepared', prepareId: msg.prepareId, policy: msg.policy, startedAt: msg.startedAt, durationMs: msg.durationMs, satisfiedBy: msg.satisfiedBy });
         if (worker.prepareActivityId) {
           pushActivity({
             type: 'device-activity', id: worker.prepareActivityId, workerId: worker.id, kind: 'prepare', status: 'completed',

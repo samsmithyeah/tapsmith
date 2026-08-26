@@ -32,7 +32,7 @@ export type ReadinessState =
   | { kind: 'running'; file?: string }
   | { kind: 'unprepared'; reason: UnpreparedReason }
   | { kind: 'preparing'; prepareId: string; target: AppResetPolicy; forFile?: string; startedAt: number; detail?: string }
-  | { kind: 'ready'; policy: AppResetPolicy; forFile?: string; preparedAt: number; durationMs: number; prepareId: string }
+  | { kind: 'ready'; policy: AppResetPolicy; forFile?: string; preparedAt: number; durationMs: number; prepareId: string; /** Who did the work (default: background preparation). */ source?: string }
   | { kind: 'stale'; reason: StaleReason; since: number; previous?: AppResetPolicy }
   | { kind: 'error'; message: string; since: number; attempts: number }
   | { kind: 'retired' };
@@ -49,7 +49,7 @@ export type ReadinessEvent =
   | { type: 'file-done' }
   | { type: 'run-ended'; stopped: boolean }
   | { type: 'grace-elapsed'; timerId: string }
-  | { type: 'prepared'; prepareId: string; policy: AppResetPolicy; startedAt: number; durationMs: number }
+  | { type: 'prepared'; prepareId: string; policy: AppResetPolicy; startedAt: number; durationMs: number; satisfiedBy?: PreparedState }
   | { type: 'prepare-failed'; prepareId: string; message: string; cancelled: boolean }
   | { type: 'progress'; detail?: string }
   | { type: 'invalidate'; reason: StaleReason }
@@ -106,7 +106,7 @@ export class DeviceReadiness {
   preparedFor(want: AppResetPolicy): PreparedState | undefined {
     const s = this._state;
     if (s.kind !== 'ready' || !satisfies(s.policy, want)) return undefined;
-    return { policy: s.policy, preparedAt: s.preparedAt, durationMs: s.durationMs, source: 'background preparation' };
+    return { policy: s.policy, preparedAt: s.preparedAt, durationMs: s.durationMs, source: s.source ?? 'background preparation' };
   }
 
   handle(event: ReadinessEvent): ReadinessCommand[] {
@@ -116,7 +116,7 @@ export class DeviceReadiness {
         this._errorAttempts = 0;
         if (event.initialPolicy) {
           this._state = {
-            kind: 'ready', policy: event.initialPolicy, preparedAt: this.env.now(), durationMs: 0, prepareId: this.nextId(),
+            kind: 'ready', policy: event.initialPolicy, preparedAt: this.env.now(), durationMs: 0, prepareId: this.nextId(), source: 'startup launch',
           };
           // The startup launch may not be what the likely-next file wants.
           return [{ type: 'broadcast' }, ...this.reconcileCandidate()];
@@ -156,8 +156,11 @@ export class DeviceReadiness {
           kind: 'ready',
           policy: event.policy,
           forFile: s.forFile,
-          preparedAt: event.startedAt + event.durationMs,
-          durationMs: event.durationMs,
+          // A pass that found the device already prepared credits the
+          // preparation that actually did the work.
+          preparedAt: event.satisfiedBy?.preparedAt ?? event.startedAt + event.durationMs,
+          durationMs: event.satisfiedBy?.durationMs ?? event.durationMs,
+          source: event.satisfiedBy?.source,
           prepareId: event.prepareId,
         };
         return [{ type: 'broadcast' }];

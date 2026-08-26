@@ -266,7 +266,10 @@ export async function executeAppReset(
       origin: 'prepared',
       modeUsed: action.kind,
       fellBack: false,
-      reason: `satisfied by ${options.prepared.source} at ${when} (took ${formatSeconds(options.prepared.durationMs)})`,
+      satisfiedBy: options.prepared,
+      reason: options.prepared.durationMs > 0
+        ? `satisfied by ${options.prepared.source} at ${when} (took ${formatSeconds(options.prepared.durationMs)})`
+        : `satisfied by ${options.prepared.source} at ${when}`,
     });
   }
 

@@ -618,6 +618,7 @@ async function handlePrepare(msg: UIWorkerPrepareMessage): Promise<void> {
       startedAt,
       durationMs: Date.now() - startedAt,
       steps: report.steps.map((s) => `${s.name}: ${s.durationMs}ms${s.ok ? '' : ' (failed)'}`),
+      satisfiedBy: report.satisfiedBy,
     });
   } catch (err) {
     const cancelled = abort.signal.aborted || isAbortError(err);

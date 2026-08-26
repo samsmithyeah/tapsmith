@@ -65,6 +65,8 @@ export interface AppResetStep {
 }
 
 export interface AppResetReport {
+  /** When `origin` is 'prepared': the earlier preparation that satisfied the policy. */
+  satisfiedBy?: PreparedState;
   policy: AppResetPolicy;
   origin: AppResetOrigin;
   /** The mode that actually ran (may differ from `policy.mode` after a fallback). */
