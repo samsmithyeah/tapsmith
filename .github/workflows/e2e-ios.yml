@@ -250,10 +250,7 @@ jobs:
             packages/tapsmith/package-lock.json
             e2e/package-lock.json
 
-      # Kick the boot off early and don't wait: the simulator reaches Booted
-      # (~1-3 min on these runners) while the download/npm/build steps below
-      # run. "Wait for simulator boot" gates on it just before the tests.
-      - name: Select Xcode and start simulator boot
+      - name: Select Xcode and resolve simulator
         id: xcode
         run: |
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
@@ -272,9 +269,7 @@ jobs:
                 print(dev['udid']); sys.exit()
           ")
           if [ -n "$UDID" ]; then
-            echo "Booting $SIM ($UDID)"
             echo "TAPSMITH_IOS_UDID=$UDID" >> $GITHUB_ENV
-            xcrun simctl boot "$UDID" 2>/dev/null || true
           fi
 
       # ─── Fetch build outputs: cache first, artifact on a miss ───
@@ -344,6 +339,21 @@ jobs:
         with:
           name: sdk-dist
           path: packages/tapsmith/dist
+
+      # Kick the boot off now and don't wait: the simulator reaches Booted
+      # while the npm installs below run; "Wait for simulator boot" gates on
+      # it just before the tests. This deliberately runs AFTER the fetches
+      # above — a booting simulator starves them (5 MB restores took 57–189 s
+      # alongside the boot vs ~10 s for a much larger Cargo cache restore in
+      # build-daemon, which has no simulator).
+      - name: Start simulator boot
+        run: |
+          if [ -z "$TAPSMITH_IOS_UDID" ]; then
+            echo "No simulator UDID resolved; skipping boot."
+            exit 0
+          fi
+          echo "Booting $TAPSMITH_IOS_SIMULATOR ($TAPSMITH_IOS_UDID)"
+          xcrun simctl boot "$TAPSMITH_IOS_UDID" 2>/dev/null || true
 
       - name: Make daemon executable
         env:
