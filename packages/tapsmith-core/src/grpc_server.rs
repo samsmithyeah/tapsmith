@@ -1067,9 +1067,24 @@ impl TapsmithServiceImpl {
         uri: &str,
         force_cold: bool,
         ack_epoch_gt: Option<u64>,
-        ack_boot_before: Option<String>,
+        mut ack_boot_before: Option<String>,
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let platform = self.require_platform().await?;
+        // Plain navigation links (no reset-epoch ack) can still be positively
+        // acknowledged when the app mounts `@tapsmith/react-native` with a
+        // `nav` counter: the app bumps it for every URL it receives, so even a
+        // link to the screen already showing — which the hierarchy-change
+        // heuristic can never verify, costing the full warm window plus a cold
+        // fallback — verifies in one marker read.
+        let mut ack_nav_gt: Option<u64> = None;
+        if ack_epoch_gt.is_none() {
+            if let Some(marker) = self.current_hooks_marker(5_000).await {
+                if let Some(nav) = marker.nav {
+                    ack_nav_gt = Some(nav);
+                    ack_boot_before = marker.boot.clone();
+                }
+            }
+        }
         match platform {
             Platform::Ios => {
                 let bundle_id = self
@@ -1096,6 +1111,7 @@ impl TapsmithServiceImpl {
                         require_ui_change: false,
                         ack_epoch_gt,
                         ack_boot_before: ack_boot_before.clone(),
+                        ack_nav_gt,
                     };
                     let result = self.send_agent_command(&command).await;
                     return self.make_action_response(request_id, result).await;
@@ -1142,11 +1158,13 @@ impl TapsmithServiceImpl {
                         url: uri.to_string(),
                         package: bundle_id.clone(),
                         deliver_in_process: true,
-                        // With an epoch ack the in-app hook is the verifier;
-                        // otherwise fall back to the hierarchy-change heuristic.
-                        require_ui_change: ack_epoch_gt.is_none(),
+                        // With an epoch or nav ack the in-app hook is the
+                        // verifier; otherwise fall back to the hierarchy-change
+                        // heuristic (older app builds without the nav counter).
+                        require_ui_change: ack_epoch_gt.is_none() && ack_nav_gt.is_none(),
                         ack_epoch_gt,
                         ack_boot_before: ack_boot_before.clone(),
+                        ack_nav_gt,
                     };
                     let warm_result = self
                         .send_agent_command_with_timeout(
@@ -1295,6 +1313,7 @@ impl TapsmithServiceImpl {
                         require_ui_change: false,
                         ack_epoch_gt,
                         ack_boot_before: ack_boot_before.clone(),
+                        ack_nav_gt,
                     };
                     let result = self
                         .send_agent_command_with_timeout(
@@ -1379,8 +1398,8 @@ impl TapsmithServiceImpl {
                     tokio::time::sleep(ANDROID_DEEP_LINK_POLL).await;
                     let elapsed = started.elapsed();
 
-                    let satisfied = match ack_epoch_gt {
-                        Some(before) => match self.current_hooks_marker(5_000).await {
+                    let satisfied = match (ack_epoch_gt, ack_nav_gt) {
+                        (Some(before), _) => match self.current_hooks_marker(5_000).await {
                             Some(marker)
                                 if app_reset::hooks_acknowledged(
                                     before,
@@ -1401,7 +1420,20 @@ impl TapsmithServiceImpl {
                             }
                             _ => false,
                         },
-                        None => match (&target_package, self.get_current_component().await) {
+                        // Navigation link into an app with the nav counter:
+                        // the app bumping it is positive proof of delivery —
+                        // "resumed activity" can't tell a delivered same-screen
+                        // link from a dropped one.
+                        (None, Some(nav_before)) => match self.current_hooks_marker(5_000).await {
+                            Some(marker) => app_reset::nav_acknowledged(
+                                nav_before,
+                                ack_boot_before.as_deref(),
+                                &marker,
+                            ),
+                            None => false,
+                        },
+                        (None, None) => match (&target_package, self.get_current_component().await)
+                        {
                             (Some(target), Ok(Some((pkg, _)))) => &pkg == target,
                             // No target to judge against: the intent was
                             // accepted, that is all we can know.

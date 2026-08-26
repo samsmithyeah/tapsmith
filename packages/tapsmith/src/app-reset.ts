@@ -173,6 +173,8 @@ export const HOOKS_MARKER_PREFIX = 'tapsmith-hooks:';
 export interface HooksMarker {
   version: number;
   epoch: number;
+  /** Counts every URL the process received (navigation ack). */
+  nav?: number;
   /** URL prefix the module builds reset links from; empty when it could not determine one. */
   urlPrefix: string;
   error?: string;
@@ -193,6 +195,7 @@ export function parseHooksMarker(hierarchyXml: string): HooksMarker | undefined 
   const version = Number.parseInt(versionRaw, 10);
   if (!Number.isFinite(version)) return undefined;
   let epoch: number | undefined;
+  let nav: number | undefined;
   let urlPrefix = '';
   let error: string | undefined;
   for (const field of fields) {
@@ -201,13 +204,18 @@ export function parseHooksMarker(hierarchyXml: string): HooksMarker | undefined 
     const key = field.slice(0, eq).trim();
     const value = field.slice(eq + 1).trim();
     if (key === 'epoch') epoch = Number.parseInt(value, 10);
+    else if (key === 'nav') nav = Number.parseInt(value, 10);
     else if (key === 'url') urlPrefix = value;
     else if (key === 'err' && value) {
       try { error = decodeURIComponent(value); } catch { error = value; }
     }
   }
   if (epoch === undefined || !Number.isFinite(epoch)) return undefined;
-  return { version, epoch, urlPrefix, ...(error ? { error } : {}) };
+  return {
+    version, epoch, urlPrefix,
+    ...(nav !== undefined && Number.isFinite(nav) ? { nav } : {}),
+    ...(error ? { error } : {}),
+  };
 }
 
 function xmlUnescape(s: string): string {

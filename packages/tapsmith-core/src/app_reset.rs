@@ -44,6 +44,9 @@ pub struct HooksMarker {
     /// recognised as acknowledged (see [`hooks_acknowledged`]). `None` for
     /// modules that predate the field.
     pub boot: Option<String>,
+    /// Counts every URL the process received — the navigation ack (see
+    /// `nav_acknowledged`). Absent on markers from older app builds.
+    pub nav: Option<u64>,
 }
 
 /// Find and parse the hooks marker in a UI hierarchy dump (Android
@@ -59,6 +62,7 @@ pub fn parse_hooks_marker(hierarchy_xml: &str) -> Option<HooksMarker> {
     let mut fields = raw.split(';');
     let version: u32 = fields.next()?.trim().parse().ok()?;
     let mut epoch: Option<u64> = None;
+    let mut nav: Option<u64> = None;
     let mut url_prefix = String::new();
     let mut err: Option<String> = None;
     let mut boot: Option<String> = None;
@@ -68,6 +72,7 @@ pub fn parse_hooks_marker(hierarchy_xml: &str) -> Option<HooksMarker> {
         };
         match k.trim() {
             "epoch" => epoch = v.trim().parse().ok(),
+            "nav" => nav = v.trim().parse().ok(),
             "url" => url_prefix = v.trim().to_string(),
             "boot" => {
                 let b = v.trim();
@@ -90,6 +95,7 @@ pub fn parse_hooks_marker(hierarchy_xml: &str) -> Option<HooksMarker> {
         url_prefix,
         err,
         boot,
+        nav,
     })
 }
 
@@ -101,6 +107,20 @@ pub fn parse_hooks_marker(hierarchy_xml: &str) -> Option<HooksMarker> {
 /// the one read before, any epoch ≥ 1 (the fresh process handled its launch
 /// URL) is the acknowledgement. Without boot tokens on both sides, fall back
 /// to the strict comparison.
+/// Whether the marker read *after* delivering a plain navigation deep link
+/// acknowledges it. Mirrors `hooks_acknowledged`, over the `nav` counter:
+/// the app bumps `nav` for every URL it receives, so even a link to the
+/// screen already showing (which changes nothing else observable) advances
+/// it. A changed `boot` means a fresh process handled the link as its launch
+/// URL — any nav ≥ 1 is the ack there.
+pub fn nav_acknowledged(nav_before: u64, boot_before: Option<&str>, after: &HooksMarker) -> bool {
+    let Some(nav) = after.nav else { return false };
+    match (boot_before, after.boot.as_deref()) {
+        (Some(b), Some(a)) if a != b => nav >= 1,
+        _ => nav > nav_before,
+    }
+}
+
 pub fn hooks_acknowledged(
     epoch_before: u64,
     boot_before: Option<&str>,
@@ -566,6 +586,7 @@ mod tests {
                 epoch: 4,
                 url_prefix: "myapp://".into(),
                 err: None,
+                nav: None,
                 boot: None,
             })
         );
@@ -627,6 +648,23 @@ mod tests {
     // ── policy ──
 
     #[test]
+    fn parses_nav_counter_and_acks_navigation() {
+        let m = parse_hooks_marker(
+            r#"<node text="tapsmith-hooks:1;epoch=2;nav=5;boot=abcd1234;url=app:///" />"#,
+        )
+        .unwrap();
+        assert_eq!(m.nav, Some(5));
+        assert!(nav_acknowledged(4, Some("abcd1234"), &m));
+        assert!(!nav_acknowledged(5, Some("abcd1234"), &m));
+        // Fresh process (boot changed): any nav >= 1 acknowledges.
+        assert!(nav_acknowledged(9, Some("00000000"), &m));
+        // Marker from an older app build without nav never acknowledges.
+        let old =
+            parse_hooks_marker(r#"<node text="tapsmith-hooks:1;epoch=2;url=app:///" />"#).unwrap();
+        assert!(!nav_acknowledged(0, None, &old));
+    }
+
+    #[test]
     fn parses_boot_token() {
         let m = parse_hooks_marker(
             r#"<node text="tapsmith-hooks:1;epoch=3;boot=a1b2c3d4;url=app:///" />"#,
@@ -646,6 +684,7 @@ mod tests {
             epoch,
             url_prefix: "app:///".into(),
             err: None,
+            nav: None,
             boot: boot.map(str::to_string),
         };
         // Same process: epoch must advance.
@@ -683,6 +722,7 @@ mod tests {
             epoch: 3,
             url_prefix: "app://".into(),
             err: None,
+            nav: None,
             boot: None,
         }
     }

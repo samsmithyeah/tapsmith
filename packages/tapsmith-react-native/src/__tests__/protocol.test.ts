@@ -51,3 +51,19 @@ describe('routeOf', () => {
     expect(routeOf('https://example.com')).toBe('/');
   });
 });
+
+describe('nav counter', () => {
+  it('round-trips through the marker', () => {
+    const text = formatMarker({ epoch: 2, nav: 7, boot: 'abcd1234', urlPrefix: 'app:///' });
+    expect(text).toContain(';nav=7;');
+    const parsed = parseMarker(text);
+    expect(parsed?.nav).toBe(7);
+    expect(parsed?.epoch).toBe(2);
+  });
+
+  it('is omitted when absent (older markers still parse)', () => {
+    const text = formatMarker({ epoch: 2, boot: 'abcd1234', urlPrefix: 'app:///' });
+    expect(text).not.toContain('nav=');
+    expect(parseMarker(text)?.nav).toBeUndefined();
+  });
+});

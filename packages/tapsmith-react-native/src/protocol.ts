@@ -4,7 +4,7 @@
  * Kotlin or Swift implementation follows the same three rules.
  *
  *   marker (always-present a11y text):
- *     tapsmith-hooks:<version>;epoch=<n>;boot=<token>;url=<prefix>[;err=<urlencoded>]
+ *     tapsmith-hooks:<version>;epoch=<n>;nav=<n>;boot=<token>;url=<prefix>[;err=<urlencoded>]
  *
  *   `boot` is a random token generated once per app process. The epoch counter
  *   lives in memory and restarts at 0 after a cold relaunch, so a reset that
@@ -23,6 +23,13 @@ export const RESET_QUERY_FLAG = '__tapsmith_reset';
 
 export interface MarkerFields {
   epoch: number;
+  /**
+   * Counts every URL this process has received (reset links included).
+   * Lets Tapsmith acknowledge a plain navigation deep link — even one to the
+   * screen already showing, which the hierarchy-change heuristic can never
+   * verify — the same way resets are acknowledged by `epoch`.
+   */
+  nav?: number;
   /** URL prefix the daemon should build reset links from (ends with `/`). */
   urlPrefix: string;
   /** Per-process token (see the module comment); omitted only by pre-boot markers. */
@@ -39,6 +46,7 @@ export function formatMarker(fields: MarkerFields): string {
   const parts = [
     `${MARKER_PREFIX}${PROTOCOL_VERSION}`,
     `epoch=${fields.epoch}`,
+    ...(fields.nav !== undefined ? [`nav=${fields.nav}`] : []),
     ...(fields.boot ? [`boot=${fields.boot}`] : []),
     `url=${fields.urlPrefix}`,
   ];
@@ -55,6 +63,7 @@ export function parseMarker(text: string): (MarkerFields & { version: number }) 
   const version = Number.parseInt(versionRaw, 10);
   if (!Number.isFinite(version)) return undefined;
   let epoch: number | undefined;
+  let nav: number | undefined;
   let urlPrefix = '';
   let boot: string | undefined;
   let error: string | undefined;
@@ -64,6 +73,7 @@ export function parseMarker(text: string): (MarkerFields & { version: number }) 
     const key = field.slice(0, eq).trim();
     const value = field.slice(eq + 1).trim();
     if (key === 'epoch') epoch = Number.parseInt(value, 10);
+    else if (key === 'nav') nav = Number.parseInt(value, 10);
     else if (key === 'url') urlPrefix = value;
     else if (key === 'boot' && value) boot = value;
     else if (key === 'err' && value) {
@@ -71,7 +81,11 @@ export function parseMarker(text: string): (MarkerFields & { version: number }) 
     }
   }
   if (epoch === undefined || !Number.isFinite(epoch)) return undefined;
-  return { version, epoch, urlPrefix, error, ...(boot ? { boot } : {}) };
+  return {
+    version, epoch, urlPrefix, error,
+    ...(nav !== undefined && Number.isFinite(nav) ? { nav } : {}),
+    ...(boot ? { boot } : {}),
+  };
 }
 
 export interface ResetRequest {

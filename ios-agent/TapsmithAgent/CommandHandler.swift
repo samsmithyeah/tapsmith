@@ -161,29 +161,67 @@ class CommandHandler {
     /// Parse the `@tapsmith/react-native` marker
     /// (`tapsmith-hooks:<v>;epoch=<n>;url=<prefix>[;err=<msg>]`) out of a
     /// snapshot, if the app renders one.
-    private func hooksMarker(in snapshot: XCUIElementSnapshot) -> (epoch: UInt64, boot: String?, err: String?)? {
+    private func hooksMarker(
+        in snapshot: XCUIElementSnapshot
+    ) -> (epoch: UInt64, nav: UInt64?, boot: String?, err: String?)? {
         let candidates = [snapshot.label, snapshot.identifier, String(describing: snapshot.value ?? "")]
         for text in candidates {
             guard let range = text.range(of: "tapsmith-hooks:") else { continue }
             let body = text[range.upperBound...]
             var epoch: UInt64?
+            var nav: UInt64?
             var boot: String?
             var err: String?
             for field in body.split(separator: ";") {
                 let parts = field.split(separator: "=", maxSplits: 1).map(String.init)
                 guard parts.count == 2 else { continue }
                 if parts[0] == "epoch" { epoch = UInt64(parts[1]) }
+                if parts[0] == "nav" { nav = UInt64(parts[1]) }
                 if parts[0] == "boot", !parts[1].isEmpty { boot = parts[1] }
                 if parts[0] == "err", !parts[1].isEmpty {
                     err = parts[1].removingPercentEncoding ?? parts[1]
                 }
             }
-            if let epoch { return (epoch, boot, err) }
+            if let epoch { return (epoch, nav, boot, err) }
         }
         for child in snapshot.children {
             if let found = hooksMarker(in: child) { return found }
         }
         return nil
+    }
+
+    /// The in-app hooks acknowledged a plain navigation deep link when the
+    /// marker's `nav` counter (bumped for every URL the process receives)
+    /// advanced past the value read before delivery — or, on a fresh process
+    /// (`boot` changed), reports any nav ≥ 1 (the launch URL was handled).
+    private func waitForHooksNav(
+        _ app: XCUIApplication,
+        greaterThan navBefore: UInt64,
+        bootBefore: String?,
+        timeout: TimeInterval
+    ) -> Bool {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            if self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.0) {
+                // Dialog accepted — re-check on the next iteration.
+            } else {
+                var acknowledged = false
+                _ = ObjCExceptionCatcher.catchException {
+                    guard let snapshot = try? app.snapshot(),
+                          let marker = self.hooksMarker(in: snapshot),
+                          let nav = marker.nav else { return }
+                    if let bootBefore, let boot = marker.boot, boot != bootBefore {
+                        acknowledged = nav >= 1
+                    } else {
+                        acknowledged = nav > navBefore
+                    }
+                }
+                if acknowledged { return true }
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return false
     }
 
     /// Wait until the in-app hooks marker reports an epoch greater than
@@ -1547,6 +1585,10 @@ class CommandHandler {
             // hierarchy-change heuristic (which cannot tell a same-screen reset
             // from a dropped Linking event).
             let ackEpochGreaterThan = (params["ackEpochGreaterThan"] as? NSNumber)?.uint64Value
+            // Plain navigation links are acknowledged by the marker's `nav`
+            // counter — even a link to the screen already showing advances it,
+            // where the hierarchy-change heuristic can only time out.
+            let ackNavGreaterThan = (params["ackNavGreaterThan"] as? NSNumber)?.uint64Value
             let ackBootBefore = params["ackBootBefore"] as? String
             let targetApp = XCUIApplication(bundleIdentifier: bundleId)
             _ = safeAppState(targetApp)
@@ -1606,6 +1648,23 @@ class CommandHandler {
                     }
                 }
 
+                if let navBefore = ackNavGreaterThan {
+                    if waitForHooksNav(targetApp, greaterThan: navBefore, bootBefore: ackBootBefore, timeout: 8.0) {
+                        if displayAppearsBlack() {
+                            throw AgentError.actionFailed(
+                                "openDeepLink: display is not rendering after warm "
+                                    + "in-process delivery of \(urlString)"
+                            )
+                        }
+                        _ = rebindApp(bundleId: bundleId)
+                        return ["success": true]
+                    }
+                    throw AgentError.actionFailed(
+                        "openDeepLink: navigation was not acknowledged (nav > \(navBefore)) "
+                            + "after warm in-process delivery of \(urlString)"
+                    )
+                }
+
                 if let before = preOpenHierarchy {
                     if waitForDeepLinkNavigation(targetApp, before: before, timeout: 5.0) {
                         // The hierarchy check can pass against a display that
@@ -1657,6 +1716,13 @@ class CommandHandler {
                                 + "after cold delivery of \(urlString)"
                         )
                     }
+                }
+                if let navBefore = ackNavGreaterThan,
+                   !waitForHooksNav(targetApp, greaterThan: navBefore, bootBefore: ackBootBefore, timeout: 8.0) {
+                    throw AgentError.actionFailed(
+                        "openDeepLink: navigation was not acknowledged (nav > \(navBefore)) "
+                            + "after cold delivery of \(urlString)"
+                    )
                 }
                 _ = rebindApp(bundleId: bundleId)
                 return ["success": true]

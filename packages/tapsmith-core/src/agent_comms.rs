@@ -526,6 +526,9 @@ pub enum AgentCommand {
         /// agent recognise the ack after a cold relaunch (see
         /// `app_reset::hooks_acknowledged`).
         ack_boot_before: Option<String>,
+        /// Acknowledge a plain navigation link by the marker's `nav` counter
+        /// advancing past this value (same-screen links verify instantly).
+        ack_nav_gt: Option<u64>,
     },
     AcceptOpenInAppDialog {
         timeout_ms: Option<u64>,
@@ -924,6 +927,7 @@ impl AgentCommand {
                 require_ui_change,
                 ack_epoch_gt,
                 ack_boot_before,
+                ack_nav_gt,
             } => {
                 let mut p = json!({
                     "url": url,
@@ -936,6 +940,9 @@ impl AgentCommand {
                 }
                 if let Some(boot) = ack_boot_before {
                     p["ackBootBefore"] = json!(boot);
+                }
+                if let Some(nav) = ack_nav_gt {
+                    p["ackNavGreaterThan"] = json!(nav);
                 }
                 ("openDeepLink", p)
             }
@@ -1892,6 +1899,7 @@ mod tests {
             require_ui_change: false,
             ack_epoch_gt: None,
             ack_boot_before: None,
+            ack_nav_gt: None,
         };
         let j = cmd.to_json("dl1");
         assert_eq!(j["method"], "openDeepLink");
@@ -1910,6 +1918,7 @@ mod tests {
             require_ui_change: true,
             ack_epoch_gt: None,
             ack_boot_before: None,
+            ack_nav_gt: None,
         };
         let j = cmd.to_json("dl2");
         assert_eq!(j["method"], "openDeepLink");
@@ -1927,6 +1936,7 @@ mod tests {
             require_ui_change: false,
             ack_epoch_gt: Some(4),
             ack_boot_before: None,
+            ack_nav_gt: None,
         };
         let j = cmd.to_json("dl3");
         assert_eq!(j["params"]["ackEpochGreaterThan"], 4);
@@ -1937,10 +1947,27 @@ mod tests {
             require_ui_change: false,
             ack_epoch_gt: Some(4),
             ack_boot_before: Some("c0ffee42".into()),
+            ack_nav_gt: None,
         };
         let j = with_boot.to_json("dl3");
         assert_eq!(j["params"]["ackEpochGreaterThan"], 4);
         assert_eq!(j["params"]["ackBootBefore"], "c0ffee42");
+    }
+
+    #[test]
+    fn open_deep_link_serialises_nav_ack() {
+        let cmd = AgentCommand::OpenDeepLink {
+            url: "app:///gestures".into(),
+            package: "com.example".into(),
+            deliver_in_process: true,
+            require_ui_change: false,
+            ack_epoch_gt: None,
+            ack_boot_before: Some("c0ffee42".into()),
+            ack_nav_gt: Some(7),
+        };
+        let j = cmd.to_json("id-1");
+        assert_eq!(j["params"]["ackNavGreaterThan"], 7);
+        assert!(j["params"].get("ackEpochGreaterThan").is_none());
         assert_eq!(j["params"]["requireUiChange"], false);
     }
 

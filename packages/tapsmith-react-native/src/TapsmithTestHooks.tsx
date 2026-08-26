@@ -43,6 +43,7 @@ export interface TapsmithTestHooksProps {
 export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enabled }: TapsmithTestHooksProps) {
   const active = enabled ?? hooksEnabledByDefault();
   const [epoch, setEpoch] = useState(0);
+  const [nav, setNav] = useState(0);
   const [error, setError] = useState<string | undefined>(undefined);
   const seenNonces = useRef(new Set<string>());
   const latest = useRef({ onReset, clear });
@@ -56,6 +57,9 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
 
     const handle = async (url: string | null) => {
       if (!url || disposed) return;
+      // Every received URL bumps `nav` — the ack for plain navigation deep
+      // links (a same-screen link changes nothing else observable).
+      setNav((n) => n + 1);
       const request = parseResetRequest(url);
       if (!request) return;
       // A dropped-and-refired intent must not reset twice.
@@ -94,7 +98,7 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
   return (
     <View pointerEvents="none" style={styles.marker} accessibilityElementsHidden={false} importantForAccessibility="yes">
       <Text testID="tapsmith-hooks" style={styles.text}>
-        {formatMarker({ epoch, boot: BOOT_TOKEN, urlPrefix: prefix, error })}
+        {formatMarker({ epoch, nav, boot: BOOT_TOKEN, urlPrefix: prefix, error })}
       </Text>
     </View>
   );
