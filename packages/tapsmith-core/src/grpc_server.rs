@@ -68,6 +68,14 @@ const ANDROID_DEEP_LINK_SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
 const ANDROID_DEEP_LINK_REFIRE_AFTER: Duration = Duration::from_millis(1500);
 const ANDROID_DEEP_LINK_POLL: Duration = Duration::from_millis(250);
 const ANDROID_DEEP_LINK_IDLE_TIMEOUT_MS: u64 = 2_000;
+/// After a restart/cold relaunch, how long to wait for the app to draw real
+/// content before handing it back. A React Native app's window exists (and
+/// `WaitForIdle` returns) seconds before the JS bundle renders or registers
+/// its deep-link listener; a deep link fired into that gap is silently
+/// dropped. Bounded and best-effort — a genuinely text-free first screen just
+/// falls through.
+const ANDROID_RENDER_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const ANDROID_RENDER_READY_POLL: Duration = Duration::from_millis(250);
 
 pub struct TapsmithServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
@@ -1499,6 +1507,59 @@ impl TapsmithServiceImpl {
                     .await
             }
             Platform::Android => {
+                self.android_clean_relaunch(serial, package_name, wait_for_idle, idle_timeout_ms)
+                    .await
+            }
+        }
+    }
+
+    /// Relaunch an Android app from a clean task, then wait for it to render.
+    ///
+    /// A restart is a reset primitive: callers expect the app back at its
+    /// initial route, ready for input. `am force-stop` + a plain `LAUNCHER`
+    /// intent resumes the persisted task, so Android restores the previous
+    /// Activity's saved instance state — the old navigation route and even
+    /// scroll positions come back. `--activity-clear-task` discards that saved
+    /// state so the app starts fresh at its launcher route. When the launcher
+    /// activity can't be resolved, fall back to the old force-stop + monkey
+    /// path (better a stale route than no relaunch).
+    async fn android_clean_relaunch(
+        &self,
+        serial: &str,
+        package_name: &str,
+        wait_for_idle: bool,
+        idle_timeout_ms: u64,
+    ) -> Result<(), String> {
+        match self
+            .resolve_launcher_activity(serial, package_name)
+            .await
+            .ok()
+            .flatten()
+        {
+            Some(activity) => {
+                let cmd = format!(
+                    "am start -S -a android.intent.action.MAIN                      -c android.intent.category.LAUNCHER                      --activity-clear-task -n {package_name}/{activity}"
+                );
+                adb::shell(serial, &cmd)
+                    .await
+                    .map_err(|e| format!("clean relaunch failed: {e}"))?;
+                if wait_for_idle {
+                    let timeout = if idle_timeout_ms > 0 {
+                        idle_timeout_ms
+                    } else {
+                        10_000
+                    };
+                    let _ = self
+                        .send_agent_command_with_timeout(
+                            &AgentCommand::WaitForIdle {
+                                timeout_ms: Some(timeout),
+                            },
+                            timeout,
+                        )
+                        .await;
+                }
+            }
+            None => {
                 adb::shell(serial, &format!("am force-stop {}", package_name))
                     .await
                     .map_err(|e| format!("force-stop failed: {e}"))?;
@@ -1513,12 +1574,32 @@ impl TapsmithServiceImpl {
                     .await
                     .map_err(|e| e.message().to_string())?
                     .into_inner();
-                if resp.success {
-                    Ok(())
-                } else {
-                    Err(resp.error_message)
+                if !resp.success {
+                    return Err(resp.error_message);
                 }
             }
+        }
+        self.wait_for_android_rendered_content(serial, package_name)
+            .await;
+        Ok(())
+    }
+
+    /// Poll the hierarchy until the app has drawn real content (a node of its
+    /// own package carrying text or a content description), so a deep link or
+    /// interaction issued right after a relaunch isn't lost into a booting RN
+    /// app. Bounded and best-effort.
+    async fn wait_for_android_rendered_content(&self, _serial: &str, package_name: &str) {
+        let started = tokio::time::Instant::now();
+        loop {
+            if let Some(xml) = self.current_hierarchy_xml(5_000).await {
+                if android_hierarchy_has_rendered_content(&xml, package_name) {
+                    return;
+                }
+            }
+            if started.elapsed() >= ANDROID_RENDER_READY_TIMEOUT {
+                return;
+            }
+            tokio::time::sleep(ANDROID_RENDER_READY_POLL).await;
         }
     }
 
@@ -7513,6 +7594,31 @@ fn parse_component_name(dumpsys_output: &str) -> Option<(String, String)> {
     None
 }
 
+/// True when the UIAutomator hierarchy has at least one node belonging to
+/// `package_name` that carries text or a content description — i.e. the app
+/// has drawn real UI, not just its bare Activity/splash window.
+fn android_hierarchy_has_rendered_content(xml: &str, package_name: &str) -> bool {
+    let needle = format!("package=\"{package_name}\"");
+    for node in xml.split("<node").skip(1) {
+        let end = node.find('>').map(|i| &node[..i]).unwrap_or(node);
+        if !end.contains(&needle) {
+            continue;
+        }
+        let has_text = end
+            .split_once("text=\"")
+            .map(|(_, rest)| !rest.starts_with('"'))
+            .unwrap_or(false);
+        let has_desc = end
+            .split_once("content-desc=\"")
+            .map(|(_, rest)| !rest.starts_with('"'))
+            .unwrap_or(false);
+        if has_text || has_desc {
+            return true;
+        }
+    }
+    false
+}
+
 fn parse_resolved_activity(output: &str, package_name: &str) -> Option<String> {
     let (pkg, activity) = parse_component_name(output)?;
     if pkg == package_name {
@@ -8280,6 +8386,32 @@ mod tests {
         let (pkg, act) = parse_component_name(output).unwrap();
         assert_eq!(pkg, "com.foo");
         assert_eq!(act, ".Bar");
+    }
+
+    #[test]
+    fn android_rendered_content_needs_app_text_or_desc() {
+        let splash = r#"<hierarchy><node package="com.example.app" class="android.widget.FrameLayout" text="" content-desc=""/></hierarchy>"#;
+        assert!(!android_hierarchy_has_rendered_content(
+            splash,
+            "com.example.app"
+        ));
+        let rendered = r#"<hierarchy><node package="com.example.app" text="Home"/></hierarchy>"#;
+        assert!(android_hierarchy_has_rendered_content(
+            rendered,
+            "com.example.app"
+        ));
+        let desc =
+            r#"<hierarchy><node package="com.example.app" content-desc="Menu"/></hierarchy>"#;
+        assert!(android_hierarchy_has_rendered_content(
+            desc,
+            "com.example.app"
+        ));
+        // System UI text does not count as the app rendering.
+        let system_only = r#"<hierarchy><node package="com.android.systemui" text="10:06"/><node package="com.example.app" text=""/></hierarchy>"#;
+        assert!(!android_hierarchy_has_rendered_content(
+            system_only,
+            "com.example.app"
+        ));
     }
 
     #[test]
