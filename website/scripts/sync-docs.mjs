@@ -61,6 +61,8 @@ const FILES = [
   {
     src: 'warm-reset.md',
     dest: 'guides/warm-reset.md',
+    title: 'Warm App Reset',
+    desc: 'Reset app state in under a second with @tapsmith/react-native and automatic per-test isolation.',
   },
   {
     src: 'watch-mode.md',
