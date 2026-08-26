@@ -390,20 +390,6 @@ jobs:
         working-directory: e2e
         run: npm ci
 
-      # Boot only once everything is fetched and installed. Overlapping the
-      # boot with other work looks free but isn't on these runners: whatever
-      # runs alongside it is starved (5 MB cache restores took 57–189 s next to
-      # a booting simulator, and `npm ci` went from ~15–35 s to 71–181 s), so
-      # the boot runs alone and "Wait for simulator boot" pays its true cost.
-      - name: Start simulator boot
-        run: |
-          if [ -z "$TAPSMITH_IOS_UDID" ]; then
-            echo "No simulator UDID resolved; skipping boot."
-            exit 0
-          fi
-          echo "Booting $TAPSMITH_IOS_SIMULATOR ($TAPSMITH_IOS_UDID)"
-          xcrun simctl boot "$TAPSMITH_IOS_UDID" 2>/dev/null || true
-
       # Exact-key match only: a stale login state for a different test-app
       # build must fall through to a fresh auth.setup run, never be reused.
       - name: Restore cached auth state
@@ -415,6 +401,22 @@ jobs:
             hashFiles('test-app/app/**', 'test-app/assets/**',
             'test-app/package-lock.json', 'test-app/app.json') }}-${{
             hashFiles('e2e/tests/auth.setup.ts', 'e2e/fixtures.ts', 'e2e/screens/**') }}
+
+      # Boot only once everything is fetched and installed — this must stay
+      # the last step before the wait. Overlapping the boot with other work
+      # looks free but isn't on these runners: whatever runs alongside it is
+      # starved (5 MB cache restores took 57–189 s next to a booting
+      # simulator, `npm ci` went from ~15–35 s to 71–181 s, and a 2 KB cache
+      # restore took 44–138 s), so the boot runs alone and "Wait for simulator
+      # boot" pays its true cost (~45–180 s).
+      - name: Start simulator boot
+        run: |
+          if [ -z "$TAPSMITH_IOS_UDID" ]; then
+            echo "No simulator UDID resolved; skipping boot."
+            exit 0
+          fi
+          echo "Booting $TAPSMITH_IOS_SIMULATOR ($TAPSMITH_IOS_UDID)"
+          xcrun simctl boot "$TAPSMITH_IOS_UDID" 2>/dev/null || true
 
       - name: Wait for simulator boot
         run: |
