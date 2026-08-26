@@ -235,6 +235,7 @@ const LINK_MAP = {
   'watch-and-ui-mode.md': '/guides/watch-mode/',
   'watch-mode.md': '/guides/watch-mode/',
   'ui-mode.md': '/guides/ui-mode/',
+  'warm-reset.md': '/guides/warm-reset/',
   'parallel-and-sharding.md': '/guides/parallel-and-sharding/',
   'debugging.md': '/guides/debugging/',
   'mcp-server.md': '/guides/mcp-server/',

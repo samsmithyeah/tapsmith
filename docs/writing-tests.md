@@ -200,7 +200,7 @@ describe("without auth", () => {
 |---|---|
 | Tests are independent, app has little persistent state | `appReset: "restart"` |
 | Tests modify persistent storage | default (`clear`), or `appResetScope: "test"` for per-test hermeticity |
-| App exposes a reset hook | `resetAppDeepLink` (→ `warm`) — see [Configuration](configuration.md#warm-app-reset-via-deep-link) |
+| App exposes a reset hook | `resetAppDeepLink` (→ `warm`) — see [Configuration](configuration.md#warm-app-reset) |
 | Many tests need the same complex starting state | Setup project with `saveAppState()` + `test.use({ appState })` |
 | One specific scope needs different state | `test.use({ appState: "" })` or `test.use({ appState: "other.tar.gz" })` |
 | Tests intentionally build on each other | `test.use({ appReset: "none" })` in that scope |
