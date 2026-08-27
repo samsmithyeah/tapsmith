@@ -27,6 +27,8 @@ const mockedExistsSync = vi.mocked(fs.existsSync);
 // Import after mocks are set up
 import {
   listSimulators,
+  tryListSimulators,
+  listSimulatorsWithRetry,
   listBootedSimulators,
   listCompatibleBootedSimulators,
   bootSimulator,
@@ -266,30 +268,108 @@ describe('provisionSimulator', () => {
       return '' as unknown as Buffer;
     });
 
-    const udid = provisionSimulator('iPhone 16', '/app.app');
+    const udid = provisionSimulator('iPhone 16', { appPath: '/app.app' });
     expect(udid).toBe('A');
     expect(calls.some((c) => c.includes('boot'))).toBe(true);
     expect(calls.some((c) => c.includes('install'))).toBe(true);
   });
 
-  it('throws when no simulator matches after exhausting lookup retries', () => {
+  it('does not install when no appPath is given', () => {
+    const calls: string[][] = [];
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      const a = args as string[];
+      calls.push([cmd as string, ...a]);
+      if (cmd === 'xcrun' && a?.[0] === 'simctl' && a?.[1] === 'list') {
+        return makeSimctlOutput([{ udid: 'A', name: 'iPhone 16', state: 'Booted' }]) as unknown as Buffer;
+      }
+      return '' as unknown as Buffer;
+    });
+
+    expect(provisionSimulator('iPhone 16')).toBe('A');
+    expect(calls.some((c) => c.includes('install'))).toBe(false);
+  });
+
+  it('uses a caller-supplied device set instead of listing again', () => {
+    let listCalls = 0;
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') listCalls++;
+      return makeSimctlOutput([]) as unknown as Buffer;
+    });
+
+    const udid = provisionSimulator('iPhone 16', {
+      simulators: [
+        { udid: 'A', name: 'iPhone 16', state: 'Booted', isAvailable: true, runtime: 'iOS 26.0', deviceType: '' },
+      ],
+    });
+    expect(udid).toBe('A');
+    expect(listCalls).toBe(0);
+  });
+
+  it('fails fast, without retrying, when a populated list has no match', () => {
+    // The everyday "wrong name in the config" case: the device set is
+    // readable and this simulator is not in it. Looking again cannot help.
     let listCalls = 0;
     mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') {
         listCalls++;
+        return makeSimctlOutput([{ udid: 'A', name: 'iPhone 16', state: 'Booted' }]) as unknown as Buffer;
+      }
+      return '' as unknown as Buffer;
+    });
+    expect(() => provisionSimulator('iPhone 99', { retry: { attempts: 3, delayMs: 1 } }))
+      .toThrow(/No iOS simulator found matching 'iPhone 99'/);
+    expect(listCalls).toBe(1);
+  });
+
+  it('keeps retrying an empty device set, which CoreSimulator returns when busy', () => {
+    // The original failure this retry exists for: a busy CoreSimulator
+    // answers with no devices at all, and the simulator reappears on a later
+    // list. Treating that as "does not exist" would fail a recoverable run.
+    let listCalls = 0;
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') {
+        listCalls++;
+        if (listCalls < 3) return makeSimctlOutput([]) as unknown as Buffer;
+        return makeSimctlOutput([{ udid: 'B', name: 'iPhone 17', state: 'Booted' }]) as unknown as Buffer;
+      }
+      return '' as unknown as Buffer;
+    });
+
+    expect(provisionSimulator('iPhone 17', { retry: { attempts: 4, delayMs: 1 } })).toBe('B');
+    expect(listCalls).toBe(3);
+  });
+
+  it('reports a persistently empty list as unreadable, not as a missing simulator', () => {
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') {
         return makeSimctlOutput([]) as unknown as Buffer;
       }
       return '' as unknown as Buffer;
     });
-    expect(() => provisionSimulator('iPhone 99', undefined, { attempts: 3, delayMs: 1 }))
-      .toThrow(/No iOS simulator found/);
+    expect(() => provisionSimulator('iPhone 17', { retry: { attempts: 2, delayMs: 1 } }))
+      .toThrow(/reported no available simulators/);
+  });
+
+  it('reports a failing simctl as such, not as a missing simulator', () => {
+    // The old code flattened a failed list to `[]`, so a busy CoreSimulator
+    // was reported as "No iOS simulator found matching 'iPhone 17'" moments
+    // after CI had booted that exact simulator (PILOT-303).
+    let listCalls = 0;
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') {
+        listCalls++;
+        throw new Error('Failed to load CoreSimulatorService');
+      }
+      return '' as unknown as Buffer;
+    });
+    expect(() => provisionSimulator('iPhone 17', { retry: { attempts: 3, delayMs: 1 } }))
+      .toThrow(/Could not read the iOS simulator list/);
     expect(listCalls).toBe(3);
   });
 
-  it('retries the lookup when simctl transiently returns no devices', () => {
-    // CoreSimulator under load can fail or return an empty set for a beat —
-    // the simulator "reappears" on the next list (seen on CI as a fatal
-    // "No iOS simulator found" minutes after that exact sim was booted).
+  it('retries the lookup when simctl transiently fails', () => {
+    // CoreSimulator under load can fail for a beat — the simulator
+    // "reappears" on the next list.
     let listCalls = 0;
     mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') {
@@ -300,9 +380,70 @@ describe('provisionSimulator', () => {
       return '' as unknown as Buffer;
     });
 
-    const udid = provisionSimulator('iPhone 17', undefined, { attempts: 4, delayMs: 1 });
+    const udid = provisionSimulator('iPhone 17', { retry: { attempts: 4, delayMs: 1 } });
     expect(udid).toBe('B');
     expect(listCalls).toBe(2);
+  });
+});
+
+// ─── tryListSimulators / listSimulatorsWithRetry ───
+
+describe('tryListSimulators', () => {
+  it('distinguishes an empty device set from a failing simctl', () => {
+    mockedExecFileSync.mockReturnValue(makeSimctlOutput([]) as unknown as Buffer);
+    expect(tryListSimulators()).toEqual({ simulators: [], failed: false });
+
+    mockedExecFileSync.mockImplementation(() => {
+      throw new Error('timed out');
+    });
+    const failure = tryListSimulators();
+    expect(failure.failed).toBe(true);
+    expect(failure.simulators).toEqual([]);
+    expect(failure.error?.message).toBe('timed out');
+  });
+});
+
+describe('listSimulatorsWithRetry', () => {
+  it('retries only while simctl fails, and reports each retry', () => {
+    let listCalls = 0;
+    mockedExecFileSync.mockImplementation(() => {
+      listCalls++;
+      if (listCalls < 3) throw new Error('busy');
+      return makeSimctlOutput([{ udid: 'A', name: 'iPhone 16', state: 'Booted' }]) as unknown as Buffer;
+    });
+
+    const retries: number[] = [];
+    const result = listSimulatorsWithRetry({ attempts: 4, delayMs: 1 }, (attempt) => retries.push(attempt));
+
+    expect(result.failed).toBe(false);
+    expect(result.simulators.map((s) => s.udid)).toEqual(['A']);
+    expect(retries).toEqual([1, 2]);
+  });
+
+  it('retries an empty device set too, and reports it as not failed', () => {
+    // Empty is inconclusive, not authoritative — but if it stays empty the
+    // result is still `failed: false`, because simctl did answer.
+    let listCalls = 0;
+    mockedExecFileSync.mockImplementation(() => {
+      listCalls++;
+      return makeSimctlOutput([]) as unknown as Buffer;
+    });
+
+    const result = listSimulatorsWithRetry({ attempts: 4, delayMs: 1 });
+    expect(result.failed).toBe(false);
+    expect(result.simulators).toEqual([]);
+    expect(listCalls).toBe(4);
+  });
+
+  it('stops as soon as a populated list comes back', () => {
+    let listCalls = 0;
+    mockedExecFileSync.mockImplementation(() => {
+      listCalls++;
+      return makeSimctlOutput([{ udid: 'A', name: 'iPhone 16', state: 'Booted' }]) as unknown as Buffer;
+    });
+
+    expect(listSimulatorsWithRetry({ attempts: 4, delayMs: 1 }).simulators).toHaveLength(1);
+    expect(listCalls).toBe(1);
   });
 });
 

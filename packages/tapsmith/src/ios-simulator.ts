@@ -16,6 +16,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { withFileLockSync } from './file-lock.js';
+import { timeSync } from './timing.js';
+
+/** How many times to re-ask `simctl` for the device set when the call itself
+ *  fails. Small: each attempt already waits out a long timeout. */
+const LIST_SIMULATORS_ATTEMPTS = 3;
+const LIST_SIMULATORS_RETRY_DELAY_MS = 2000;
 
 export interface SimulatorInfo {
   udid: string
@@ -26,16 +32,54 @@ export interface SimulatorInfo {
   deviceType: string
 }
 
+/** `simctl list` is the SDK's only view of the device set, and on a busy
+ *  CoreSimulator (a simulator mid-boot saturates it) it can block for a long
+ *  time. Generous enough to outlast a settling simulator; a genuine hang is
+ *  caught by the caller's own retry budget. */
+const LIST_SIMULATORS_TIMEOUT_MS = 60_000;
+
+export interface ListSimulatorsResult {
+  simulators: SimulatorInfo[]
+  /** True when `simctl` failed or timed out — i.e. `simulators` is "unknown",
+   *  not "none". Callers that decide "no such simulator" MUST check this. */
+  failed: boolean
+  error?: Error
+}
+
 /**
- * List all available iOS simulators.
- * Returns only simulators marked as available by Xcode.
+ * Whether a list result is too weak to conclude a simulator does not exist.
+ *
+ * Two ways to learn nothing: `simctl` failed, or it answered with an empty
+ * device set while CoreSimulator was busy — both observed on CI runners, and
+ * both used to be indistinguishable from "this machine has no simulators".
+ * An empty set counts as inconclusive because a machine with zero available
+ * simulators is not a machine anyone is running iOS tests on, so one more
+ * cheap look is always the better bet.
  */
-export function listSimulators(): SimulatorInfo[] {
+function isInconclusive(result: ListSimulatorsResult): boolean {
+  return result.failed || result.simulators.length === 0;
+}
+
+/**
+ * List all available iOS simulators, reporting whether `simctl` actually
+ * answered.
+ *
+ * The distinction matters: a timed-out or failing `simctl list` used to be
+ * flattened to an empty list, which is indistinguishable from "this machine
+ * has no simulators". On CI that silently cost the already-booted-simulator
+ * fast path and sent provisioning into its retry budget instead — ~3 minutes
+ * per shard — and in the worst case surfaced as a fatal "No iOS simulator
+ * found matching 'iPhone 17'" moments after the workflow booted that exact
+ * simulator (PILOT-303).
+ */
+export function tryListSimulators(): ListSimulatorsResult {
   try {
-    const output = execFileSync('xcrun', ['simctl', 'list', 'devices', '--json'], {
-      encoding: 'utf-8',
-      timeout: 30_000,
-    });
+    const output = timeSync('provision', 'simctl_list', () =>
+      execFileSync('xcrun', ['simctl', 'list', 'devices', '--json'], {
+        encoding: 'utf-8',
+        timeout: LIST_SIMULATORS_TIMEOUT_MS,
+      }),
+    );
 
     const parsed = JSON.parse(output) as {
       devices: Record<string, Array<{
@@ -63,10 +107,41 @@ export function listSimulators(): SimulatorInfo[] {
       }
     }
 
-    return simulators;
-  } catch {
-    return [];
+    return { simulators, failed: false };
+  } catch (err) {
+    return { simulators: [], failed: true, error: err as Error };
   }
+}
+
+/**
+ * List all available iOS simulators.
+ * Returns only simulators marked as available by Xcode.
+ *
+ * Returns `[]` both when there are no simulators and when `simctl` failed.
+ * Use {@link tryListSimulators} wherever those two need telling apart.
+ */
+export function listSimulators(): SimulatorInfo[] {
+  return tryListSimulators().simulators;
+}
+
+/**
+ * List simulators, retrying while the answer is inconclusive
+ * (see {@link isInconclusive}). A populated device set returns immediately.
+ */
+export function listSimulatorsWithRetry(
+  retry: { attempts: number; delayMs: number } = {
+    attempts: LIST_SIMULATORS_ATTEMPTS,
+    delayMs: LIST_SIMULATORS_RETRY_DELAY_MS,
+  },
+  onRetry?: (attempt: number, error?: Error) => void,
+): ListSimulatorsResult {
+  let result = tryListSimulators();
+  for (let attempt = 1; isInconclusive(result) && attempt < retry.attempts; attempt++) {
+    onRetry?.(attempt, result.error);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retry.delayMs);
+    result = tryListSimulators();
+  }
+  return result;
 }
 
 /**
@@ -266,67 +341,108 @@ export function installedAppMatches(udid: string, bundleId: string, appPath: str
 }
 
 /**
- * Find a simulator matching the given name (or UDID).
- * Prefers booted simulators. Returns undefined if no match found.
+ * Pick the simulator matching a name (or UDID) out of an already-listed device
+ * set. Prefers booted simulators. Returns undefined if no match found.
  */
-export function findSimulator(nameOrUdid: string): SimulatorInfo | undefined {
-  const all = listSimulators();
-
+export function matchSimulator(
+  simulators: SimulatorInfo[],
+  nameOrUdid: string,
+): SimulatorInfo | undefined {
   // Try exact UDID match first
-  const byUdid = all.find((s) => s.udid === nameOrUdid);
+  const byUdid = simulators.find((s) => s.udid === nameOrUdid);
   if (byUdid) return byUdid;
 
   // Try name match, preferring booted ones
-  const byName = all.filter((s) => s.name === nameOrUdid);
+  const byName = simulators.filter((s) => s.name === nameOrUdid);
   const booted = byName.find((s) => s.state === 'Booted');
   if (booted) return booted;
 
   return byName[0];
 }
 
+/**
+ * Find a simulator matching the given name (or UDID).
+ * Prefers booted simulators. Returns undefined if no match found.
+ */
+export function findSimulator(nameOrUdid: string): SimulatorInfo | undefined {
+  return matchSimulator(listSimulators(), nameOrUdid);
+}
+
 const FIND_SIMULATOR_ATTEMPTS = 4;
 const FIND_SIMULATOR_RETRY_DELAY_MS = 3000;
 
+export interface ProvisionSimulatorOptions {
+  /** Install this app bundle before returning. Omit when a later setup step
+   *  installs it — the install blocks provisioning for as long as it takes,
+   *  and on a freshly booted simulator that is tens of seconds. */
+  appPath?: string
+  /** A device set the caller has already listed, to save a `simctl list`.
+   *  Only used when it actually contains a match; otherwise we re-list. */
+  simulators?: SimulatorInfo[]
+  retry?: { attempts: number; delayMs: number }
+}
+
 /**
- * Provision a simulator for testing: find by name, boot if needed, install app.
- * Returns the UDID of the booted simulator.
+ * Provision a simulator for testing: find by name, boot if needed, optionally
+ * install an app. Returns the UDID of the booted simulator.
  *
- * The lookup is retried: `simctl list` can transiently fail or return an
- * empty device set while CoreSimulator is busy (concurrent boots on CI
- * runners) — `listSimulators()` maps that to `[]`, which is
- * indistinguishable from the simulator genuinely not existing. Seen on CI
- * as a fatal "No iOS simulator found matching 'iPhone 17'" minutes after
- * the workflow booted that exact simulator.
+ * The lookup is retried because `simctl list` can transiently fail — or come
+ * back empty — while CoreSimulator is busy (concurrent boots on CI runners).
+ * What has changed is that a *populated* list with no match now fails fast:
+ * that is the everyday "wrong simulator name in the config" case, and it used
+ * to sit through the whole retry budget before saying so. An inconclusive list
+ * still gets every attempt, and a persistently unreadable one now says that
+ * rather than blaming a missing device.
  */
 export function provisionSimulator(
   simulatorName: string,
-  appPath?: string,
-  retry: { attempts: number; delayMs: number } = {
+  options: ProvisionSimulatorOptions = {},
+): string {
+  const retry = options.retry ?? {
     attempts: FIND_SIMULATOR_ATTEMPTS,
     delayMs: FIND_SIMULATOR_RETRY_DELAY_MS,
-  },
-): string {
-  let sim = findSimulator(simulatorName);
-  for (let attempt = 1; !sim && attempt < retry.attempts; attempt++) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retry.delayMs);
-    sim = findSimulator(simulatorName);
+  };
+
+  let sim = options.simulators
+    ? matchSimulator(options.simulators, simulatorName)
+    : undefined;
+  let lastListed: ListSimulatorsResult | undefined;
+
+  for (let attempt = 0; !sim && attempt < retry.attempts; attempt++) {
+    if (attempt > 0) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retry.delayMs);
+    }
+    lastListed = tryListSimulators();
+    sim = matchSimulator(lastListed.simulators, simulatorName);
+    // A populated list without a match is a real answer: this simulator does
+    // not exist, and looking again cannot change that.
+    if (!sim && !isInconclusive(lastListed)) break;
   }
+
   if (!sim) {
     throw new Error(
-      `No iOS simulator found matching '${simulatorName}'. ` +
-        `Run 'xcrun simctl list devices' to see available simulators.`,
+      lastListed && isInconclusive(lastListed)
+        ? `Could not read the iOS simulator list to find '${simulatorName}': `
+            + `'xcrun simctl list devices' `
+            + `${lastListed.failed ? 'failed or timed out' : 'reported no available simulators'}. `
+            + `CoreSimulator is usually busy (a simulator mid-boot) or wedged; `
+            + `retry, or 'sudo pkill -9 -f CoreSimulator' to reset it.`
+        : `No iOS simulator found matching '${simulatorName}'. `
+            + `Run 'xcrun simctl list devices' to see available simulators.`,
     );
   }
 
-  if (sim.state !== 'Booted') {
-    bootSimulator(sim.udid);
+  const resolved = sim;
+  if (resolved.state !== 'Booted') {
+    timeSync('provision', 'simctl_boot', () => bootSimulator(resolved.udid));
   }
 
+  const { appPath } = options;
   if (appPath) {
-    installApp(sim.udid, appPath);
+    timeSync('provision', 'simctl_install', () => installApp(resolved.udid, appPath));
   }
 
-  return sim.udid;
+  return resolved.udid;
 }
 
 /**
@@ -715,6 +831,7 @@ export interface CleanupStaleSimulatorsResult {
  */
 export function cleanupStaleSimulators(
   simulatorName: string,
+  options: { simulators?: SimulatorInfo[] } = {},
 ): CleanupStaleSimulatorsResult {
   const reusable: string[] = [];
   const killed: string[] = [];
@@ -778,8 +895,13 @@ export function cleanupStaleSimulators(
     return { reusable, killed };
   }
 
-  // Phase 2: heuristic cleanup — delete orphaned "Tapsmith Worker" sims
-  const allSims = listSimulators();
+  // Phase 2: heuristic cleanup — delete orphaned "Tapsmith Worker" sims.
+  // A caller-supplied device set is reused: `simctl list` is the expensive
+  // call on a busy CoreSimulator, and the only entries phase 2 acts on are
+  // clones named "… (Tapsmith Worker N)", which the caller's own lookup never
+  // targets. Anything created since the snapshot is re-checked against the
+  // manifest below before it is deleted.
+  const allSims = options.simulators ?? listSimulators();
   const tapsmithWorkerPattern = /\(Tapsmith Worker \d+\)$/;
 
   for (const sim of allSims) {
@@ -872,7 +994,24 @@ export function provisionSimulators(opts: {
   // Determine the primary simulator's runtime so we only reuse/boot
   // simulators on the same OS version. Mismatched runtimes cause
   // xcodebuild test-without-building to fail.
-  const allSims = listSimulators();
+  //
+  // Retried, and a persistent failure is said out loud: an unreadable device
+  // set here reads as "nothing to reuse or boot", so this path would silently
+  // clone fresh simulators instead of reusing the ones already sitting there.
+  const listed = listSimulatorsWithRetry(undefined, (attempt, error) =>
+    logProgress(
+      `Could not read the simulator list (attempt ${attempt}): ${error?.message ?? 'unknown error'}. Retrying.`,
+      'warning',
+    ),
+  );
+  if (listed.failed) {
+    logProgress(
+      `Could not read the simulator list: ${listed.error?.message ?? 'unknown error'}. `
+      + 'Existing simulators cannot be reused; cloning fresh ones instead.',
+      'warning',
+    );
+  }
+  const allSims = listed.simulators;
   const primarySim = existingUdids.length > 0
     ? allSims.find((s) => s.udid === existingUdids[0])
     : undefined;
