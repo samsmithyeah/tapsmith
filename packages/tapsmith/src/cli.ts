@@ -56,6 +56,7 @@ import {
   type LaunchProgressSink,
 } from './launch-progress.js';
 import { killAgentRunnersForSimulators } from './ios-simulator.js';
+import { timeAsync } from './timing.js';
 
 // ─── ANSI helpers ───
 
@@ -523,7 +524,9 @@ async function setupSequentialDevice(
   progress?: LaunchProgressSink,
 ): Promise<SequentialDeviceState> {
   progress?.start('primary-device');
-  const target = await ensureSequentialTargetDevice(cfg, progress);
+  const target = await timeAsync('provision', 'ensure_target_device', () =>
+    ensureSequentialTargetDevice(cfg, progress),
+  );
   const launchedEmulators = target.launched;
 
   if (!target.selectedSerial) {
@@ -546,7 +549,9 @@ async function setupSequentialDevice(
     await checkDeviceHealth(cfg.device);
   }
 
-  const client = await ensureDaemonRunning(cfg.daemonAddress, cfg.daemonBin, cfg.platform, progress);
+  const client = await timeAsync('provision', 'daemon_start', () =>
+    ensureDaemonRunning(cfg.daemonAddress, cfg.daemonBin, cfg.platform, progress),
+  );
   const device = new Device(client, cfg);
 
   // Tell the daemon whether this session intends to capture network traffic.
@@ -563,10 +568,10 @@ async function setupSequentialDevice(
   const deviceSerial = cfg.device;
   try {
     progress?.update('primary-device', { state: 'running', detail: `selecting ${deviceSerial}` });
-    await retryDeviceSelection(
+    await timeAsync('provision', 'set_device', () => retryDeviceSelection(
       () => device.setDevice(deviceSerial, networkTracingEnabled, pacNetworkHosts, passthroughHosts),
       () => progress?.update('primary-device', { state: 'running', detail: `selection failed transiently, retrying ${deviceSerial}` }),
-    );
+    ));
     if (!progress) console.log(dim(`Using device: ${cfg.device}`));
   } catch (err) {
     progress?.fail('primary-device', `failed to select ${cfg.device}`);
@@ -1004,7 +1009,7 @@ async function ensureSequentialTargetDevice(
   progress?: LaunchProgressSink,
 ): Promise<{ selectedSerial?: string; launched: LaunchedEmulator[] }> {
   if (config.device) {
-    // If the device is an iOS simulator that's already booted, log reuse
+    // If the device is an iOS simulator that's already booted, log reuse.
     if (config.platform === 'ios') {
       const { listBootedSimulators } = await import('./ios-simulator.js');
       const booted = listBootedSimulators();
@@ -1023,7 +1028,7 @@ async function ensureSequentialTargetDevice(
 
   // ─── iOS: use simulator instead of ADB device ───
   if (config.platform === 'ios') {
-    const { listBootedSimulators, provisionSimulator, cleanupStaleSimulators } = await import('./ios-simulator.js');
+    const { listSimulatorsWithRetry, provisionSimulator, cleanupStaleSimulators } = await import('./ios-simulator.js');
     // If no simulator is configured, try to auto-resolve a single paired
     // physical device. Mirrors how simulators are picked by name — the
     // user should not have to hand-parse `devicectl` JSON in their config.
@@ -1047,8 +1052,19 @@ async function ensureSequentialTargetDevice(
     }
     const simulatorName = config.simulator;
 
+    // One `simctl list` for the whole block. It is the expensive call here —
+    // a simulator mid-boot saturates CoreSimulator, and each list against it
+    // can take the better part of a minute — and the stale sweep, the
+    // already-booted check and provisioning all used to make their own
+    // (PILOT-303).
+    const listed = listSimulatorsWithRetry(undefined, (attempt, error) => {
+      const message = `Could not read the simulator list (attempt ${attempt}): ${error?.message ?? 'unknown error'}. Retrying.`;
+      if (progress) progress.update('primary-device', { state: 'running', detail: `simulator list failed, retrying (${attempt})` });
+      else process.stderr.write(`${YELLOW}${message}${RESET}\n`);
+    });
+
     // Clean up stale clones from previous runs
-    const staleResult = cleanupStaleSimulators(simulatorName);
+    const staleResult = cleanupStaleSimulators(simulatorName, { simulators: listed.simulators });
     if (staleResult.killed.length > 0) {
       const message = `Cleaned up ${staleResult.killed.length} stale simulator(s).`;
       if (progress) progress.note(message);
@@ -1056,8 +1072,9 @@ async function ensureSequentialTargetDevice(
     }
 
     // Check for already-booted simulators
-    const booted = listBootedSimulators();
-    const matching = booted.find((s) => s.name === simulatorName || s.udid === simulatorName);
+    const matching = listed.simulators.find(
+      (s) => s.state === 'Booted' && (s.name === simulatorName || s.udid === simulatorName),
+    );
     if (matching) {
       const message = `Reusing already-booted simulator ${matching.udid} (${matching.name}).`;
       if (progress) progress.update('primary-device', { state: 'running', detail: `reusing already-booted ${matching.name}` });
@@ -1065,9 +1082,13 @@ async function ensureSequentialTargetDevice(
       return { selectedSerial: matching.udid, launched: [] };
     }
 
-    // Boot the simulator
+    // Boot the simulator. No `appPath`: the App install step right after this
+    // one installs it, and does it better — it compares the installed build
+    // and installs asynchronously, overlapping with agent startup, where an
+    // install here blocks the whole launch for as long as `simctl install`
+    // takes on a freshly booted simulator.
     try {
-      const udid = provisionSimulator(simulatorName, config.app);
+      const udid = provisionSimulator(simulatorName, { simulators: listed.simulators });
       return { selectedSerial: udid, launched: [] };
     } catch (e) {
       console.error(red(`Failed to provision iOS simulator: ${(e as Error).message}`));
