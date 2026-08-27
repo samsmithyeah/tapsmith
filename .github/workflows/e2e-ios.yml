@@ -490,8 +490,8 @@ jobs:
           {
             echo "### iOS timing — shard ${{ matrix.shard }}/${{ env.SHARD_TOTAL }}"
             echo '```'
-            echo "Boot / reset:"
-            grep -E "kind=boot|kind=reset" "$LOG" || true
+            echo "Provision / boot / reset:"
+            grep -E "kind=provision|kind=boot|kind=reset" "$LOG" || true
             echo
             echo "Per-command (count / total_ms / avg_ms), sorted by total:"
             grep "kind=cmd" "$LOG" \
