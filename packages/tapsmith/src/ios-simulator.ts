@@ -38,6 +38,13 @@ export interface SimulatorInfo {
  *  caught by the caller's own retry budget. */
 const LIST_SIMULATORS_TIMEOUT_MS = 60_000;
 
+/** UDID → device name, recorded by every successful listing in this process.
+ *  A UDID's name is fixed for the life of a run, and this spares consumers
+ *  that only need the name (see {@link getSimulatorScreenScale}) a `simctl
+ *  list` of their own — which costs 0.75–10 s depending on how loaded
+ *  CoreSimulator is. */
+const knownSimulatorNames = new Map<string, string>();
+
 export interface ListSimulatorsResult {
   simulators: SimulatorInfo[]
   /** True when `simctl` failed or timed out — i.e. `simulators` is "unknown",
@@ -107,6 +114,7 @@ export function tryListSimulators(): ListSimulatorsResult {
       }
     }
 
+    for (const sim of simulators) knownSimulatorNames.set(sim.udid, sim.name);
     return { simulators, failed: false };
   } catch (err) {
     return { simulators: [], failed: true, error: err as Error };
@@ -148,12 +156,25 @@ export function listSimulatorsWithRetry(
  * Get the screen scale (device pixel ratio) for an iOS simulator.
  * iPads are @2x, all modern iPhones are @3x.
  * Falls back to 3 if the device is unknown.
+ *
+ * Answered from {@link knownSimulatorNames} when this process has already
+ * listed the device set, which the launch path always has by the time a trace
+ * is built. Only a cold cache — a worker process that never provisioned —
+ * pays for a listing, and it is the same listing as before. Worth the cache:
+ * this is one number for a trace's metadata, and on a loaded CoreSimulator
+ * the listing behind it was measured at 10 s (PILOT-303).
  */
 export function getSimulatorScreenScale(udid: string): number {
-  const sim = listSimulators().find((s) => s.udid === udid);
-  if (sim && /iPad/i.test(sim.name)) return 2;
-  if (sim && /iPhone (6|7|8|SE|XR|11)(?!.*Plus|.*Max|.*Pro)/i.test(sim.name)) return 2;
+  const name = knownSimulatorNames.get(udid)
+    ?? listSimulators().find((s) => s.udid === udid)?.name;
+  if (name && /iPad/i.test(name)) return 2;
+  if (name && /iPhone (6|7|8|SE|XR|11)(?!.*Plus|.*Max|.*Pro)/i.test(name)) return 2;
   return 3;
+}
+
+/** Forget the cached UDID → name mappings. Tests only. */
+export function _resetKnownSimulatorNamesForTests(): void {
+  knownSimulatorNames.clear();
 }
 
 /**

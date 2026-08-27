@@ -47,6 +47,7 @@ import {
   unrecordSimulators,
   provisionSimulators,
   getSimulatorScreenScale,
+  _resetKnownSimulatorNamesForTests,
 } from '../ios-simulator.js';
 import type { SimulatorInfo } from '../ios-simulator.js';
 
@@ -79,6 +80,7 @@ function mockListSimulators(sims: Array<Partial<SimulatorInfo>>): void {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  _resetKnownSimulatorNamesForTests();
   // Default: manifest doesn't exist (readFileSync throws), but pretend the
   // file exists on disk so ensureManifestFile() skips its initialization
   // write — keeping the first writeFileSync call as the actual data write
@@ -944,5 +946,33 @@ describe('getSimulatorScreenScale', () => {
   it('returns 3 for unknown UDIDs', () => {
     mockListSimulators([]);
     expect(getSimulatorScreenScale('UNKNOWN')).toBe(3);
+  });
+
+  it('answers from an earlier listing without running simctl again', () => {
+    // The launch path always lists before a trace is built, so this number
+    // should cost nothing. The listing behind it was measured at 10 s on a
+    // loaded CoreSimulator (PILOT-303).
+    let listCalls = 0;
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') listCalls++;
+      return makeSimctlOutput([{ udid: 'PAD-1', name: 'iPad Pro (13-inch)' }]) as unknown as Buffer;
+    });
+
+    expect(listSimulators()).toHaveLength(1);
+    expect(listCalls).toBe(1);
+
+    expect(getSimulatorScreenScale('PAD-1')).toBe(2);
+    expect(listCalls).toBe(1);
+  });
+
+  it('falls back to a listing when this process has not listed yet', () => {
+    let listCalls = 0;
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') listCalls++;
+      return makeSimctlOutput([{ udid: 'PAD-1', name: 'iPad Pro (13-inch)' }]) as unknown as Buffer;
+    });
+
+    expect(getSimulatorScreenScale('PAD-1')).toBe(2);
+    expect(listCalls).toBe(1);
   });
 });
