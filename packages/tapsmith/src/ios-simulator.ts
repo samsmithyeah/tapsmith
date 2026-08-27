@@ -376,9 +376,11 @@ export interface ProvisionSimulatorOptions {
    *  installs it — the install blocks provisioning for as long as it takes,
    *  and on a freshly booted simulator that is tens of seconds. */
   appPath?: string
-  /** A device set the caller has already listed, to save a `simctl list`.
-   *  Only used when it actually contains a match; otherwise we re-list. */
-  simulators?: SimulatorInfo[]
+  /** A listing the caller has already done, to save a `simctl list`. Passed
+   *  as the whole result, not just the devices: a *conclusive* listing with no
+   *  match is as final here as one taken inside, so a wrong simulator name
+   *  fails fast instead of paying for another list first. */
+  listed?: ListSimulatorsResult
   retry?: { attempts: number; delayMs: number }
 }
 
@@ -403,20 +405,22 @@ export function provisionSimulator(
     delayMs: FIND_SIMULATOR_RETRY_DELAY_MS,
   };
 
-  let sim = options.simulators
-    ? matchSimulator(options.simulators, simulatorName)
-    : undefined;
-  let lastListed: ListSimulatorsResult | undefined;
+  let lastListed = options.listed;
+  let sim = lastListed ? matchSimulator(lastListed.simulators, simulatorName) : undefined;
 
-  for (let attempt = 0; !sim && attempt < retry.attempts; attempt++) {
+  // Look again only while there is something left to learn: no match yet, and
+  // no conclusive listing already saying this simulator is absent. A populated
+  // list without a match is a real answer — from the caller or from here.
+  for (
+    let attempt = 0;
+    !sim && attempt < retry.attempts && (!lastListed || isInconclusive(lastListed));
+    attempt++
+  ) {
     if (attempt > 0) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retry.delayMs);
     }
     lastListed = tryListSimulators();
     sim = matchSimulator(lastListed.simulators, simulatorName);
-    // A populated list without a match is a real answer: this simulator does
-    // not exist, and looking again cannot change that.
-    if (!sim && !isInconclusive(lastListed)) break;
   }
 
   if (!sim) {

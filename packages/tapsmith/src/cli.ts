@@ -1088,7 +1088,7 @@ async function ensureSequentialTargetDevice(
     // install here blocks the whole launch for as long as `simctl install`
     // takes on a freshly booted simulator.
     try {
-      const udid = provisionSimulator(simulatorName, { simulators: listed.simulators });
+      const udid = provisionSimulator(simulatorName, { listed });
       return { selectedSerial: udid, launched: [] };
     } catch (e) {
       console.error(red(`Failed to provision iOS simulator: ${(e as Error).message}`));

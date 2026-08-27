@@ -289,7 +289,7 @@ describe('provisionSimulator', () => {
     expect(calls.some((c) => c.includes('install'))).toBe(false);
   });
 
-  it('uses a caller-supplied device set instead of listing again', () => {
+  it('uses a caller-supplied listing instead of listing again', () => {
     let listCalls = 0;
     mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') listCalls++;
@@ -297,12 +297,54 @@ describe('provisionSimulator', () => {
     });
 
     const udid = provisionSimulator('iPhone 16', {
-      simulators: [
-        { udid: 'A', name: 'iPhone 16', state: 'Booted', isAvailable: true, runtime: 'iOS 26.0', deviceType: '' },
-      ],
+      listed: {
+        failed: false,
+        simulators: [
+          { udid: 'A', name: 'iPhone 16', state: 'Booted', isAvailable: true, runtime: 'iOS 26.0', deviceType: '' },
+        ],
+      },
     });
     expect(udid).toBe('A');
     expect(listCalls).toBe(0);
+  });
+
+  it('trusts a caller-supplied conclusive no-match without listing again', () => {
+    // A populated listing is as final coming from the caller as from here, so
+    // a wrong name in the config must not buy another (up to 60 s) list.
+    let listCalls = 0;
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') listCalls++;
+      return makeSimctlOutput([{ udid: 'A', name: 'iPhone 16', state: 'Booted' }]) as unknown as Buffer;
+    });
+
+    expect(() => provisionSimulator('iPhone 99', {
+      listed: {
+        failed: false,
+        simulators: [
+          { udid: 'A', name: 'iPhone 16', state: 'Booted', isAvailable: true, runtime: 'iOS 26.0', deviceType: '' },
+        ],
+      },
+      retry: { attempts: 3, delayMs: 1 },
+    })).toThrow(/No iOS simulator found matching 'iPhone 99'/);
+    expect(listCalls).toBe(0);
+  });
+
+  it('still lists when a caller-supplied listing was inconclusive', () => {
+    let listCalls = 0;
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') {
+        listCalls++;
+        return makeSimctlOutput([{ udid: 'B', name: 'iPhone 17', state: 'Booted' }]) as unknown as Buffer;
+      }
+      return '' as unknown as Buffer;
+    });
+
+    const udid = provisionSimulator('iPhone 17', {
+      listed: { failed: true, simulators: [], error: new Error('busy') },
+      retry: { attempts: 3, delayMs: 1 },
+    });
+    expect(udid).toBe('B');
+    expect(listCalls).toBe(1);
   });
 
   it('fails fast, without retrying, when a populated list has no match', () => {
