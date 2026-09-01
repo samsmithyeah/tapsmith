@@ -256,6 +256,14 @@ jobs:
         if: steps.system-image-cache.outputs.cache-hit != 'true'
         run: echo "y" | sdkmanager --install "${{ env.ANDROID_SYSTEM_IMAGE }}"
 
+      # Not preinstalled on the runner image — every run before the cache fix
+      # above was getting it as an implicit dependency of the system-image
+      # install, so the very first cache HIT skipped that install and broke
+      # `avdmanager create avd` with '"emulator" package must be installed!'.
+      # Unconditional and idempotent: ~15 s when already present.
+      - name: Install Android emulator package
+        run: echo "y" | sdkmanager --install emulator
+
       - name: Create AVD
         run: |
           echo "no" | avdmanager create avd \
