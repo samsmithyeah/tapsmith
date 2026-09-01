@@ -96,6 +96,7 @@ function makeOpts(d: ReturnType<typeof makeDevice>, config: TapsmithConfig, extr
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner double
     device: d.device as any,
     sessionContext,
+    resetCapabilities: {},
     ...extra,
   };
 }

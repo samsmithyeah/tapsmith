@@ -553,8 +553,16 @@ export interface RunOptions {
    * first reset the file would perform is skipped when this satisfies it.
    */
   preparedDevice?: PreparedState;
-  /** Runtime capabilities used to resolve `appReset: 'auto'`. */
-  resetCapabilities?: ResetCapabilities;
+  /**
+   * Runtime capabilities used to resolve `appReset: 'auto'` — deliberately
+   * REQUIRED, not optional. Every embedder (sequential CLI, worker-runner,
+   * ui-worker, watch-run — which also serves the MCP dispatcher) must thread
+   * its sticky per-device capabilities here, or `auto` silently resolves to
+   * clear · file and warm resets never engage; two embedders shipped exactly
+   * that bug because this field was optional. Pass an explicit `{}` only for
+   * contexts with no device capability probing (unit tests).
+   */
+  resetCapabilities: ResetCapabilities;
   /** @internal — shared holder so `preparedDevice` is consumed exactly once per file. */
   _prepared?: { current?: PreparedState };
   /**

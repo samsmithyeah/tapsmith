@@ -49,7 +49,9 @@ function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
 
 /** Minimal RunOptions for test execution. */
 function makeOpts(overrides: Partial<RunOptions> = {}): RunOptions {
-  return { config: makeConfig(), ...overrides };
+  // resetCapabilities is required by design (see RunOptions); unit tests have
+  // no device to probe, so an empty object is the honest value.
+  return { config: makeConfig(), resetCapabilities: {}, ...overrides };
 }
 
 describe('collectResults()', () => {

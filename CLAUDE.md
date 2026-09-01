@@ -146,6 +146,27 @@ The release workflow (`.github/workflows/release.yml`) builds and publishes:
 - **Runner** (`runner.ts`): Custom test runner with `test()`, `describe()`, `.only`, `.skip`, hooks, screenshot-on-failure.
 - **gRPC client** (`grpc-client.ts`): Dynamic proto loading via `@grpc/proto-loader` (no codegen step on TS side).
 
+## The five run paths (embedders)
+
+Tests execute through five separately-assembled paths. **Anything threaded
+per-session — capabilities, install checks, passthrough hosts, new config
+keys — must be wired through all of them**, or the missed path degrades
+silently (this class of bug has shipped more than once):
+
+1. `cli.ts` — sequential `tapsmith test` (the only path device CI exercises)
+2. `worker-runner.ts` — parallel workers (`--workers N`, dispatcher.ts)
+3. `ui-mode/ui-worker.ts` — every UI-mode session
+4. `watch-run.ts` — headless watch mode's fresh-forked child per re-run
+5. `mcp/headless-dispatcher.ts` — `tapsmith mcp-server`, which forks the same
+   `watch-run.ts` children (so 4 and 5 share child code but have separate
+   parent-side state threading)
+
+When adding a per-session concern, prefer a **required** option on
+`runTestFile` over an optional one — a compile error in every embedder beats
+a silent default (see `RunOptions.resetCapabilities` for the precedent), and
+verify degraded paths loudly (assert the trace's reset rung, not just
+pass/fail).
+
 ## Design principles
 
 - **Playwright is the bar.** The goal is to match Playwright's robustness, reliability, and developer experience for mobile. Don't cut corners -- handle edge cases, add proper error messages, implement auto-waiting correctly, and write thorough tests.
