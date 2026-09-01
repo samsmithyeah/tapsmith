@@ -100,6 +100,7 @@ const STALE_REASON: Record<string, string> = {
   'target-changed': 'the next test needs a different starting state',
   'validation-failed': 'the prepared state could not be verified',
   'run-stopped': 'the run was stopped',
+  'run-failed': 'tests failed — the app is held for inspection',
   manual: 'preparation was cancelled',
 };
 

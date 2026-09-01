@@ -60,6 +60,15 @@ test.describe("Device readiness", () => {
     await expect(runControls.workerChip("Pixel_7")).toHaveAttribute("title", /Stale: an MCP agent interacted with the device/)
   })
 
+  test("a failed run holds the device and says why", async ({ ui, runControls }) => {
+    ui.seed([...idleSeed(singleFileTree()), ONE_WORKER])
+    await ui.open()
+
+    ui.send(status({ state: "stale", reason: "run-failed", since: T0 + 20_000 }))
+    await expect(runControls.workerChip("Pixel_7")).toHaveAttribute("data-readiness", "stale")
+    await expect(runControls.workerChip("Pixel_7")).toHaveAttribute("title", /Stale: tests failed — the app is held for inspection/)
+  })
+
   test("running wins over readiness in the chip", async ({ ui, runControls }) => {
     ui.seed([...idleSeed(singleFileTree()), ONE_WORKER])
     await ui.open()

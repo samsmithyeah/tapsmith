@@ -116,9 +116,11 @@ npx tapsmith test --ui --workers 4
 
 After a run finishes (and after startup), the worker resets the app in the background to the state the next run will need — the declared `appReset` policy of the file you have selected, or the file you last ran. When you click Run, the worker only verifies the session (well under a second) and the trace records the reset as **satisfied by background preparation** instead of paying for it inline. The run summary tells you what you got: *First action after 0.6s (device was prepared)* versus *(app reset ran inline)*.
 
-The device chip in the top rail shows the state: **ready** (prepared, with what it was prepared for and how long it took in the tooltip), **preparing…**, **stale** (something touched the device since — an MCP agent's tap, a gesture on the mirror — and it will be prepared again after a short pause), or nothing when preparation between runs is off. Preparation starts as soon as a run ends (a warm reset is sub-second, and the trace keeps every post-action screenshot), but holds off while you are interacting with the mirror so the screen is not yanked away under your finger.
+The device chip in the top rail shows the state: **ready** (prepared, with what it was prepared for and how long it took in the tooltip), **preparing…**, **stale** (something touched the device since — an MCP agent's tap, a gesture on the mirror — and it will be prepared again after a short pause), or nothing when preparation between runs is off. Preparation starts as soon as a run ends (a warm reset is sub-second, and the trace keeps every post-action screenshot), but holds off while you are interacting with the mirror so the screen is not yanked away under your finger. After a run you **stopped**, or one where a test **failed** on that device, the app is held as-is so you can inspect it — preparation re-arms when you select a different file, click **Prepare device now**, or start the next run.
 
 Right-click the chip for **Prepare device now**, **Cancel preparation**, and the **Prepare device between runs** toggle (remembered in this browser). Background preparations, mirror gestures and worker recycles all appear in the **Device activity** panel alongside MCP tool calls.
+
+Teams can set the session default in the config — `ui: { prepareBetweenRuns: false }`, or `ui: { prepareDelayMs: 5000 }` for a quiet period after each run (useful when `onReset` has backend side effects, or on personal physical devices). An explicit choice in the chip menu still wins for that person.
 
 ### Fresh code on every run
 

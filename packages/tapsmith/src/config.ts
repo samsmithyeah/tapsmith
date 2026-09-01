@@ -145,6 +145,23 @@ export interface TapsmithConfig {
   appResetColdEvery?: number;
 
   /**
+   * UI-mode defaults. These seed the session; a person's explicit choice in
+   * the UI (the device chip's context menu, persisted in their browser) still
+   * wins for them.
+   */
+  ui?: {
+    /**
+     * Prepare the device (run the declared app reset) in the background
+     * between runs. Default true. Turn off at the config level when resets
+     * have side effects your team must control (backend calls in `onReset`,
+     * rate limits) or on personal physical devices.
+     */
+    prepareBetweenRuns?: boolean;
+    /** Quiet time in milliseconds after a run before the device is prepared (default 0 = immediately). */
+    prepareDelayMs?: number;
+  };
+
+  /**
    * Delay in milliseconds between keystrokes when typing text.
    * Helps prevent dropped characters on slow CI simulators/emulators.
    * Defaults to 0 (no delay).
@@ -420,7 +437,20 @@ function applyConfigDefaults(
     config.launchEmulators = true;
   }
   validateAppResetOptions(raw);
+  validateUiOptions(raw);
   return config;
+}
+
+/** Fail fast on malformed `ui` config values instead of silently ignoring them. */
+function validateUiOptions(raw: Partial<TapsmithConfig>): void {
+  if (raw.ui === undefined) return;
+  if (raw.ui.prepareBetweenRuns !== undefined && typeof raw.ui.prepareBetweenRuns !== 'boolean') {
+    throw new Error(`config: ui.prepareBetweenRuns must be a boolean (got ${JSON.stringify(raw.ui.prepareBetweenRuns)})`);
+  }
+  if (raw.ui.prepareDelayMs !== undefined
+    && (!Number.isInteger(raw.ui.prepareDelayMs) || raw.ui.prepareDelayMs < 0)) {
+    throw new Error(`config: ui.prepareDelayMs must be a non-negative integer (got ${JSON.stringify(raw.ui.prepareDelayMs)})`);
+  }
 }
 
 /**

@@ -137,6 +137,15 @@ import {
 } from '../config.js';
 
 describe('defineConfig()', () => {
+  it('accepts ui-mode preparation defaults and rejects malformed values', () => {
+    const config = defineConfig({ ui: { prepareBetweenRuns: false, prepareDelayMs: 2_000 } });
+    expect(config.ui).toEqual({ prepareBetweenRuns: false, prepareDelayMs: 2_000 });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- exercising the runtime guard against untyped config files
+    expect(() => defineConfig({ ui: { prepareBetweenRuns: 'no' as any } })).toThrow(/ui\.prepareBetweenRuns must be a boolean/);
+    expect(() => defineConfig({ ui: { prepareDelayMs: -5 } })).toThrow(/ui\.prepareDelayMs must be a non-negative integer/);
+    expect(() => defineConfig({ ui: { prepareDelayMs: 1.5 } })).toThrow(/ui\.prepareDelayMs must be a non-negative integer/);
+  });
+
   it('returns defaults when called with no arguments', () => {
     const config = defineConfig();
     expect(config.timeout).toBe(30_000);

@@ -18,6 +18,7 @@ export type StaleReason =
   | 'target-changed'
   | 'validation-failed'
   | 'run-stopped'
+  | 'run-failed'
   | 'manual';
 
 export type UnpreparedReason =
@@ -47,7 +48,7 @@ export type ReadinessEvent =
   | { type: 'worker-ready'; initialPolicy?: AppResetPolicy }
   | { type: 'dispatch'; file: string; want: AppResetPolicy }
   | { type: 'file-done' }
-  | { type: 'run-ended'; stopped: boolean }
+  | { type: 'run-ended'; stopped: boolean; failed?: boolean }
   | { type: 'grace-elapsed'; timerId: string }
   | { type: 'prepared'; prepareId: string; policy: AppResetPolicy; startedAt: number; durationMs: number; satisfiedBy?: PreparedState }
   | { type: 'prepare-failed'; prepareId: string; message: string; cancelled: boolean }
@@ -139,11 +140,12 @@ export class DeviceReadiness {
 
       case 'run-ended': {
         if (s.kind === 'retired') return [];
-        if (event.stopped) {
-          // The user stopped the run — most likely to inspect the device.
-          // Don't yank it into a background reset; preparation re-arms on the
-          // next normal trigger (selection change, prepare-now, a later run).
-          this._state = { kind: 'stale', reason: 'run-stopped', since: this.env.now() };
+        if (event.stopped || event.failed) {
+          // The user stopped the run, or a test on this device failed — either
+          // way the state on the device is worth inspecting. Don't yank it
+          // into a background reset; preparation re-arms on the next normal
+          // trigger (selection change, prepare-now, a later run).
+          this._state = { kind: 'stale', reason: event.stopped ? 'run-stopped' : 'run-failed', since: this.env.now() };
           return [{ type: 'clear-timer', timerId: this._timerId }, { type: 'broadcast' }];
         }
         this._state = { kind: 'unprepared', reason: 'grace' };
@@ -208,9 +210,9 @@ export class DeviceReadiness {
       case 'candidate-changed': {
         if (s.kind === 'ready') return this.reconcileCandidate();
         if (s.kind === 'unprepared' && s.reason !== 'grace') return this.arm();
-        // A stop-induced hold has no pending timer (unlike other stale
-        // states); picking a new target is the user moving on — re-arm.
-        if (s.kind === 'stale' && s.reason === 'run-stopped') return this.arm();
+        // A stop- or failure-induced hold has no pending timer (unlike other
+        // stale states); picking a new target is the user moving on — re-arm.
+        if (s.kind === 'stale' && (s.reason === 'run-stopped' || s.reason === 'run-failed')) return this.arm();
         return [];
       }
 

@@ -340,8 +340,10 @@ export async function startUIServer(
     lastRunEnd = final;
     for (const w of runEndWaiters.splice(0)) w(final);
     // The run is over: every worker can prepare the device for the next one.
+    // `failed` is per worker (counts reset at run start): only devices that
+    // actually saw a failure are held for inspection.
     for (const w of uiWorkers) {
-      if (!w.retired) readinessEvent(w, { type: 'run-ended', stopped: final.status === 'stopped' });
+      if (!w.retired) readinessEvent(w, { type: 'run-ended', stopped: final.status === 'stopped', failed: w.failed > 0 });
     }
     return final;
   }
@@ -635,7 +637,13 @@ export async function startUIServer(
   /** Progress label last reported by each worker (replayed to late clients). */
   const lastProgressByWorker = new Map<number, string>();
   // ─── Device readiness (background preparation) ───
-  let preferences: UIPreferences = { ...DEFAULT_UI_PREFERENCES };
+  // Config-declared defaults seed the session; a person's explicit choice in
+  // the UI (persisted in their browser and pushed via set-preferences on
+  // connect) still wins for that session.
+  const configPreferences: Partial<UIPreferences> = {};
+  if (ctx.config.ui?.prepareBetweenRuns !== undefined) configPreferences.prepareBetweenRuns = ctx.config.ui.prepareBetweenRuns;
+  if (ctx.config.ui?.prepareDelayMs !== undefined) configPreferences.prepareDelayMs = ctx.config.ui.prepareDelayMs;
+  let preferences: UIPreferences = { ...DEFAULT_UI_PREFERENCES, ...configPreferences };
   const readinessTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const deviceActivityBuffer: DeviceActivityMessage[] = [];
   const MAX_ACTIVITY_BUFFER = 200;
