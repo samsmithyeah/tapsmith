@@ -24,6 +24,14 @@ type FeedItem =
   | { kind: 'mcp'; ts: number; call: McpToolCallMessage }
   | { kind: 'activity'; ts: number; entry: DeviceActivityMessage }
 
+type FeedFilter = 'all' | 'mcp' | 'activity'
+
+const FILTER_OPTIONS: Array<{ value: FeedFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'mcp', label: 'Agent' },
+  { value: 'activity', label: 'Device' },
+];
+
 export function DeviceActivityPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls, activity = [], onClear }: DeviceActivityPanelProps) {
   // Prefer the full client list; fall back to the single-client fields for back-compat.
   const agents: McpAgent[] = clients && clients.length > 0
@@ -37,6 +45,10 @@ export function DeviceActivityPanel({ mcpUrl, clientName, clientVersion, clients
   const connected = agents.length > 0 || Boolean(clientName);
   const feedRef = useRef<HTMLDivElement>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Deliberately not persisted: the panel's value is the causal, interleaved
+  // view (an agent tap followed by the re-prepare it caused), so every
+  // session starts back at 'all'.
+  const [filter, setFilter] = useState<FeedFilter>('all');
 
   useEffect(() => {
     if (feedRef.current) {
@@ -52,6 +64,8 @@ export function DeviceActivityPanel({ mcpUrl, clientName, clientVersion, clients
     ...mergedCalls.map((call): FeedItem => ({ kind: 'mcp', ts: call.timestamp, call })),
     ...mergedActivity.map((entry): FeedItem => ({ kind: 'activity', ts: entry.timestamp, entry })),
   ].sort((a, b) => a.ts - b.ts);
+  const visibleFeed = filter === 'all' ? feed : feed.filter((item) => item.kind === filter);
+  const hiddenCount = feed.length - visibleFeed.length;
 
   const single = grouped.length === 1 && grouped[0].count === 1;
 
@@ -88,6 +102,24 @@ export function DeviceActivityPanel({ mcpUrl, clientName, clientVersion, clients
             )}
           </div>
         </div>
+        {feed.length > 0 && (
+          <div class="mcp-filter-row" role="group" aria-label="Filter activity feed">
+            {FILTER_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                class={`mcp-filter-btn${filter === opt.value ? ' active' : ''}`}
+                aria-pressed={filter === opt.value}
+                data-testid="feed-filter"
+                data-filter={opt.value}
+                onClick={() => setFilter(opt.value)}
+              >
+                {opt.label}
+              </button>
+            ))}
+            {/* Never let a filter look like data loss. */}
+            {hiddenCount > 0 && <span class="mcp-filter-hidden" data-testid="feed-hidden-count">{hiddenCount} hidden</span>}
+          </div>
+        )}
         {connected && !single && (
           <div class="mcp-agents-row" title={`${agents.length} agents connected:\n${agentsTooltip(agents)}`}>
             {grouped.map((g) => (
@@ -112,17 +144,19 @@ export function DeviceActivityPanel({ mcpUrl, clientName, clientVersion, clients
         </details>
       )}
       <div class="mcp-feed" ref={feedRef} role="log" aria-label="Device activity feed">
-        {feed.length === 0
+        {visibleFeed.length === 0
           ? (
             <div class="mcp-empty" data-testid="mcp-empty">
-              {connected
-                ? 'Waiting for tool calls...'
-                : mcpUrl
-                  ? 'No device activity yet...'
-                  : 'MCP server starting...'}
+              {feed.length > 0
+                ? `Nothing here — ${hiddenCount} ${hiddenCount === 1 ? 'entry is' : 'entries are'} hidden by the filter`
+                : connected
+                  ? 'Waiting for tool calls...'
+                  : mcpUrl
+                    ? 'No device activity yet...'
+                    : 'MCP server starting...'}
             </div>
           )
-          : feed.map((item) => item.kind === 'activity' ? <ActivityEntry key={item.entry.id} entry={item.entry} /> : (() => {
+          : visibleFeed.map((item) => item.kind === 'activity' ? <ActivityEntry key={item.entry.id} entry={item.entry} /> : (() => {
             const tc = item.call;
             const hasArgs = Object.keys(tc.args).length > 0;
             const hasResult = Boolean(tc.resultText);

@@ -45,6 +45,16 @@ export class McpPane {
     return this.page.getByTestId("mcp-setup-hint")
   }
 
+  /** Segmented source filter: "All" | "Agent" | "Device". */
+  filterButton(label: "All" | "Agent" | "Device") {
+    return this.page.getByTestId("feed-filter").filter({ hasText: label })
+  }
+
+  /** "N hidden" indicator, shown only while a filter hides rows. */
+  get hiddenCount() {
+    return this.page.getByTestId("feed-hidden-count")
+  }
+
   /** One pill per connected agent. */
   get agents() {
     return this.page.getByTestId("mcp-agent")

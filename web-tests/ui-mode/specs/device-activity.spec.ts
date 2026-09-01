@@ -64,6 +64,33 @@ test.describe("Device activity feed", () => {
     await expect(mcp.emptyState).toBeVisible()
   })
 
+  test("the source filter shows one stream at a time and never hides rows silently", async ({ app, mcp }) => {
+    const ui = app
+    await mcp.open()
+    ui.send({ type: "mcp-tool-call", id: "c1", tool: "tapsmith_tap", args: { selector: "Login" }, status: "completed", durationMs: 120, timestamp: T0 + 5_000 })
+    ui.send(prepare("completed", { durationMs: 9_800 }))
+    const rows = mcp.feed.locator("[data-testid='mcp-entry'], [data-testid='activity-entry']")
+    await expect(rows).toHaveCount(2)
+    await expect(mcp.hiddenCount).toHaveCount(0)
+
+    await mcp.filterButton("Agent").click()
+    await expect(mcp.entries).toHaveCount(1)
+    await expect(mcp.activityEntries).toHaveCount(0)
+    await expect(mcp.hiddenCount).toHaveText("1 hidden")
+
+    await mcp.filterButton("Device").click()
+    await expect(mcp.entries).toHaveCount(0)
+    await expect(mcp.activityEntries).toHaveCount(1)
+
+    await mcp.clear()
+    await expect(rows).toHaveCount(0)
+
+    // Still filtered to Device when an agent-only call arrives: the view is
+    // empty, but says why instead of looking like data loss.
+    ui.send({ type: "mcp-tool-call", id: "c2", tool: "tapsmith_tap", args: {}, status: "completed", durationMs: 50, timestamp: T0 + 9_000 })
+    await expect(mcp.emptyState).toContainText("1 entry is hidden by the filter")
+  })
+
   test("the feed survives a reconnect when the server replays it", async ({ ui, mcp }) => {
     ui.seed([{ type: "test-tree", files: [] }, { type: "run-state", isRunning: false }, prepare("completed", { durationMs: 1_000 })])
     await ui.open()

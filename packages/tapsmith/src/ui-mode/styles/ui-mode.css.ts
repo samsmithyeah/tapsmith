@@ -2318,6 +2318,34 @@ html, body, #app {
 .mcp-setup {
   text-align: left;
 }
+/* Segmented source filter (All | Agent | Device) for the merged feed. */
+.mcp-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+.mcp-filter-btn {
+  font-size: 10px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.mcp-filter-btn:hover { color: var(--fg); }
+.mcp-filter-btn.active {
+  background: var(--bg-active);
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+.mcp-filter-hidden {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+
 /* The connect hint pinned between the header and the feed while no agent is
    attached — the feed itself is rarely empty (background preparation writes
    rows), so the hint cannot live in the empty state alone. Collapsed to a
