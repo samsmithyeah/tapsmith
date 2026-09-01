@@ -2404,7 +2404,13 @@ async function main(): Promise<void> {
       // single worker adopts the primary daemon/agent set up above, so the
       // server always gets a serial list to build workers from.
       if (!uiDeviceSerials || uiDeviceSerials.length === 0) {
-        uiDeviceSerials = [config.device!];
+        if (!config.device) {
+          throw new Error(
+            'UI mode: no device selected after setup — the primary device setup should have set config.device. ' +
+              'Re-run with a --device/serial, or report this as a bug.',
+          );
+        }
+        uiDeviceSerials = [config.device];
         uiWorkersOverride = 1;
       }
 

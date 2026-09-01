@@ -85,6 +85,20 @@ function buildContainerSummary(node: TestTreeNode): ContainerSummary {
 
 // ─── App ───
 
+// Extract the project name from a tree node id, or undefined if the id has
+// no project prefix. The name is used as-is: the server only builds project
+// nodes for projects the config declared, and tags trace events with the
+// same names, so a node named "default" is a real project. Stripping that
+// name here mismatched the trace lookup key and left the Actions tab empty
+// for every test in it. Mirrors the server's `project::<name>::<rest>` id
+// construction via indexOf, so names containing a single ':' survive.
+function extractProject(id: string): string | undefined {
+  if (!id.startsWith('project::')) return undefined;
+  const afterProject = id.slice('project::'.length);
+  const sep = afterProject.indexOf('::');
+  return sep === -1 ? afterProject : afterProject.slice(0, sep);
+}
+
 function App() {
   const [connected, setConnected] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
@@ -275,19 +289,6 @@ function App() {
     const afterProject = id.slice('project::'.length);
     const sep = afterProject.indexOf('::');
     return sep === -1 ? afterProject : afterProject.slice(sep + 2);
-  };
-
-  // Extract the project name from a tree node id, or undefined if the id has
-  // no project prefix. The name is used as-is: the server only builds project
-  // nodes for projects the config declared, and tags trace events with the
-  // same names, so a node named "default" is a real project. Stripping that
-  // name here mismatched the trace lookup key and left the Actions tab empty
-  // for every test in it.
-  const extractProject = (id: string): string | undefined => {
-    if (!id.startsWith('project::')) return undefined;
-    const afterProject = id.slice('project::'.length);
-    const sep = afterProject.indexOf('::');
-    return sep === -1 ? afterProject : afterProject.slice(0, sep);
   };
 
   // Composite key for trace storage. Trace data is stored per (project, test)
@@ -1657,11 +1658,10 @@ function App() {
             // The selection is the server's best hint for what runs next, so
             // it can prepare the device for that file's isolation policy.
             const node = id ? findTreeNode(tree.files, id) : undefined;
-            const projectMatch = id?.match(/^project::([^:]+)::/);
             send({
               type: 'select-node',
               filePath: node && node.type !== 'project' ? node.filePath : undefined,
-              projectName: node?.type === 'project' ? node.name : projectMatch?.[1],
+              projectName: node?.type === 'project' ? node.name : id ? extractProject(id) : undefined,
             });
           }, [tree, send])}
           onSetNameFilter={tree.setNameFilter}

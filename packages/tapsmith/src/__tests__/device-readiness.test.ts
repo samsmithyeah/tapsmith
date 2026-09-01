@@ -127,6 +127,24 @@ describe('DeviceReadiness', () => {
     expect(r.preparedFor(CLEAR)?.durationMs).toBe(9_800);
   });
 
+  it('a stopped run goes stale (run-stopped) with no timer, and re-arms on selection change', () => {
+    const env = makeEnv();
+    const r = new DeviceReadiness(0, env);
+    r.handle({ type: 'worker-ready', initialPolicy: CLEAR });
+    r.handle({ type: 'dispatch', file: '/t/a.test.ts', want: CLEAR });
+
+    // The user stopped the run — don't yank the device into a reset.
+    const ended = r.handle({ type: 'run-ended', stopped: true });
+    expect(types(ended)).toEqual(['clear-timer', 'broadcast']);
+    expect(r.state).toMatchObject({ kind: 'stale', reason: 'run-stopped' });
+    expect(timer(ended)).toBeUndefined();
+
+    // Picking a new target is the user moving on — preparation re-arms.
+    const rearmed = r.handle({ type: 'candidate-changed' });
+    expect(sendPrepare(rearmed)).toBeDefined();
+    expect(r.state).toMatchObject({ kind: 'preparing' });
+  });
+
   it('holds arming while the mirror is being interacted with', () => {
     const env = makeEnv();
     env.interacted = true;

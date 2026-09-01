@@ -145,4 +145,9 @@ describe('parseHooksMarker', () => {
     expect(parseHooksMarker('<node text="tapsmith-hooks:1;url=x"/>')).toBeUndefined();
     expect(parseHooksMarker('<node text="tapsmith-hooks:abc;epoch=1"/>')).toBeUndefined();
   });
+
+  it('treats an unknown protocol version as no marker', () => {
+    expect(parseHooksMarker('<node text="tapsmith-hooks:2;epoch=3;url=a:///"/>')).toBeUndefined();
+    expect(parseHooksMarker('<node text="tapsmith-hooks:0;epoch=3;url=a:///"/>')).toBeUndefined();
+  });
 });

@@ -130,8 +130,9 @@ export interface TapsmithConfig {
 
   /**
    * Whether the reset runs once per test file or before every test.
-   * `'auto'` (default) is `'file'`, or `'test'` when a warm in-app reset hook
-   * is available (per-test isolation is then cheap enough to be the default).
+   * `'auto'` (default) resolves to `'file'`: one reset on scope entry. Files
+   * that need a fresh app before every test opt in with
+   * `test.use({ appResetScope: 'test' })` — still warm when hooks are present.
    */
   appResetScope?: AppResetScope;
 

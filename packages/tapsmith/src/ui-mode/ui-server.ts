@@ -228,6 +228,8 @@ interface UIWorkerHandle {
   currentFile?: TaggedFile
   currentTest?: string
   retired?: boolean
+  /** A dispatch's exit handler is attached — it owns crash handling (requeue). */
+  dispatchAttached?: boolean
   passed: number
   failed: number
   skipped: number
@@ -1775,6 +1777,21 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     // messages live for the worker's whole life (dispatch listeners come and go
     // per run).
     child.on('message', (msg: UIWorkerChildMessage) => handleIdleWorkerMessage(worker, msg));
+    // A worker that dies while idle used to stay unretired — ensureWorkersReady
+    // never respawned it, and the next dispatch threw at process.send(). The
+    // per-dispatch exit handler owns crashes during a run (it requeues the
+    // in-flight file), so this fallback only acts outside a dispatch.
+    child.on('exit', (code, signal) => {
+      if (worker.retired || worker.dispatchAttached) return;
+      worker.retired = true;
+      worker.busy = false;
+      worker.currentFile = undefined;
+      worker.currentTest = undefined;
+      console.error(`${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) exited while idle (${signal ?? code}); it will be respawned before the next run.${RESET}`);
+      readinessEvent(worker, { type: 'worker-retired' });
+      broadcastWorkerStatus(worker, 'error');
+      releaseWorkerResources(worker);
+    });
     attachReadiness(worker);
     broadcastWorkerStatus(worker, 'idle');
     readinessEvent(worker, { type: 'worker-ready', initialPolicy: worker.initialPolicy });
@@ -1830,6 +1847,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         for (const { worker, messageHandler, exitHandler } of dispatchListeners) {
           worker.process.removeListener('message', messageHandler);
           worker.process.removeListener('exit', exitHandler);
+          worker.dispatchAttached = false;
         }
         resolve();
       }
@@ -1926,7 +1944,19 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
           testFilter: next.testFilter,
           preparedFor,
         };
-        worker.process.send(msg);
+        // A worker can die between exit-event delivery and this dispatch; an
+        // unguarded send would throw ERR_IPC_CHANNEL_CLOSED out of the
+        // dispatch promise. Retiring requeues `next` (it is this worker's
+        // currentFile) onto a sibling instead.
+        if (!worker.process.connected) {
+          retireWorker(worker, 'worker process is not connected');
+          return;
+        }
+        try {
+          worker.process.send(msg);
+        } catch (err) {
+          retireWorker(worker, `failed to send run-file: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
 
       function drainUnservableFiles(remaining: UIWorkerHandle[]): TaggedFile[] {
@@ -2184,6 +2214,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         };
 
         dispatchListeners.push({ worker, messageHandler, exitHandler });
+        worker.dispatchAttached = true;
         worker.process.on('message', messageHandler);
         worker.process.on('exit', exitHandler);
 
@@ -2475,6 +2506,10 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     const agentPort = baseAgentPort + 100 + worker.id;
 
     // Make sure the old process is gone before a new one joins its daemon.
+    // The old handle is done — retire it first so the idle-exit fallback
+    // doesn't treat this deliberate termination as a crash (and release the
+    // daemon an adopting respawn is about to reuse).
+    worker.retired = true;
     readinessEvent(worker, { type: 'worker-retired' });
     await terminateWorkerProcess(worker);
     // A worker that adopted the primary keeps adopting while that daemon is
@@ -2532,7 +2567,12 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
   }
 
   async function recycleStaleWorkers(reason: string): Promise<void> {
-    const stale = uiWorkers.filter((w) => w.codeStale && !w.retired && !w.busy);
+    // A worker mid-background-prepare is deliberately skipped: killing it now
+    // wastes the preparation for nothing — it stays codeStale and
+    // ensureWorkersReady recycles it before the next run anyway.
+    const stale = uiWorkers.filter(
+      (w) => w.codeStale && !w.retired && !w.busy && w.readiness?.state.kind !== 'preparing',
+    );
     await Promise.allSettled(stale.map((w) => recycleWorker(w, reason)));
   }
 
@@ -4144,6 +4184,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       // shutdown message may never be flushed — signal the child as well so
       // no worker outlives the server (its tsx wrapper forwards the signal).
       for (const worker of uiWorkers) {
+        worker.retired = true; // deliberate shutdown, not an idle crash
         void terminateWorkerProcess(worker);
         try { worker.process.kill('SIGTERM'); } catch { /* already dead */ }
         releaseWorkerResources(worker);

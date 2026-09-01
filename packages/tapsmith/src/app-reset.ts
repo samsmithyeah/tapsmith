@@ -193,7 +193,10 @@ export function parseHooksMarker(hierarchyXml: string): HooksMarker | undefined 
   const raw = xmlUnescape(end < 0 ? rest : rest.slice(0, end));
   const [versionRaw, ...fields] = raw.split(';');
   const version = Number.parseInt(versionRaw, 10);
-  if (!Number.isFinite(version)) return undefined;
+  // Only protocol version 1 is understood. A future version may change field
+  // semantics, so treat it as "no marker" — detection degrades to cold resets
+  // instead of misreading acks.
+  if (version !== 1) return undefined;
   let epoch: number | undefined;
   let nav: number | undefined;
   let urlPrefix = '';
