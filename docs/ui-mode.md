@@ -66,6 +66,8 @@ To connect an agent:
 claude mcp add tapsmith --transport http http://localhost:<port>/mcp
 ```
 
+The **Device activity** panel (the "MCP" button in the top rail) keeps these connect instructions — endpoint URL and the `claude mcp add` one-liner, both copyable — pinned above the feed whenever no agent is attached.
+
 Both the UI user and the MCP agent share the same test session. Runs triggered by either side appear in the UI, and mutual exclusion ensures only one test run happens at a time.
 
 See [MCP Server](mcp-server.md) for the full list of tools and usage patterns.

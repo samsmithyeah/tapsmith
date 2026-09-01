@@ -150,6 +150,39 @@ test.describe("MCP panel", () => {
     await expect(mcp.emptyState).toBeVisible()
   })
 
+  test("the connect hint stays pinned while device activity flows, until an agent attaches", async ({ app, mcp }) => {
+    const ui = app
+    ui.send({ type: "mcp-status", running: true, mcpUrl: "http://127.0.0.1:9274/mcp" })
+    await mcp.open()
+
+    const hint = mcp.setupHint
+    await expect(hint).toContainText("Connect your AI agent")
+
+    // Background preparation keeps the feed non-empty; the hint must survive it.
+    ui.send({
+      type: "device-activity",
+      id: "prepare-0-1",
+      workerId: 0,
+      kind: "prepare",
+      status: "completed",
+      label: "Prepared device (warm)",
+      timestamp: 1_700_000_000_000,
+      durationMs: 1_200,
+    })
+    await expect(mcp.activityEntries).toHaveCount(1)
+    await expect(hint).toBeVisible()
+
+    // An attached agent is the hint's job done.
+    ui.send({
+      type: "mcp-status",
+      running: true,
+      mcpUrl: "http://127.0.0.1:9274/mcp",
+      connectedCount: 1,
+      clients: [{ name: "claude-code", version: "1.0.0" }],
+    })
+    await expect(hint).toHaveCount(0)
+  })
+
   test("expands a call to show its full result", async ({ app, mcp }) => {
     const ui = app
     await mcp.open()

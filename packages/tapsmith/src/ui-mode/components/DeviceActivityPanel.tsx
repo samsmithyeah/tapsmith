@@ -101,6 +101,14 @@ export function DeviceActivityPanel({ mcpUrl, clientName, clientVersion, clients
         )}
       </div>
 
+      {/* Pinned outside the scrolling feed: device activity (a prepare after
+          every run) keeps the feed non-empty, so an empty-state-only hint
+          would never be seen. Disappears the moment an agent connects. */}
+      {!connected && mcpUrl && (
+        <div class="mcp-setup-pinned" data-testid="mcp-setup-hint">
+          <McpSetupHint mcpUrl={mcpUrl} />
+        </div>
+      )}
       <div class="mcp-feed" ref={feedRef} role="log" aria-label="Device activity feed">
         {feed.length === 0
           ? (
@@ -108,7 +116,7 @@ export function DeviceActivityPanel({ mcpUrl, clientName, clientVersion, clients
               {connected
                 ? 'Waiting for tool calls...'
                 : mcpUrl
-                  ? <McpSetupHint mcpUrl={mcpUrl} />
+                  ? 'No device activity yet...'
                   : 'MCP server starting...'}
             </div>
           )

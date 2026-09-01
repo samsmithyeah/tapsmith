@@ -2314,6 +2314,15 @@ html, body, #app {
 .mcp-setup {
   text-align: left;
 }
+/* The connect hint pinned between the header and the feed while no agent is
+   attached — the feed itself is rarely empty (background preparation writes
+   rows), so the hint cannot live in the empty state alone. */
+.mcp-setup-pinned {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  flex-shrink: 0;
+}
 .mcp-setup-title {
   font-weight: 600;
   color: var(--fg);

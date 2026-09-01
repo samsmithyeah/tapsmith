@@ -40,6 +40,11 @@ export class McpPane {
     return this.page.getByTestId("mcp-empty")
   }
 
+  /** The connect-your-agent hint, pinned above the feed while no agent is attached. */
+  get setupHint() {
+    return this.page.getByTestId("mcp-setup-hint")
+  }
+
   /** One pill per connected agent. */
   get agents() {
     return this.page.getByTestId("mcp-agent")
