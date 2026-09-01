@@ -26,6 +26,8 @@ use std::time::Instant;
 use async_trait::async_trait;
 
 pub const HOOKS_MARKER_PREFIX: &str = "tapsmith-hooks:";
+/// The one marker protocol version this daemon understands.
+pub const HOOKS_MARKER_VERSION: u32 = 1;
 pub const RESET_QUERY_FLAG: &str = "__tapsmith_reset=1";
 
 /// Parsed `@tapsmith/react-native` marker.
@@ -61,6 +63,12 @@ pub fn parse_hooks_marker(hierarchy_xml: &str) -> Option<HooksMarker> {
 
     let mut fields = raw.split(';');
     let version: u32 = fields.next()?.trim().parse().ok()?;
+    // Only protocol version 1 is understood. A future version may change
+    // field semantics, so treat it as "no marker" — the ladder then degrades
+    // to restart/clear instead of misreading the ack.
+    if version != HOOKS_MARKER_VERSION {
+        return None;
+    }
     let mut epoch: Option<u64> = None;
     let mut nav: Option<u64> = None;
     let mut url_prefix = String::new();
@@ -99,14 +107,6 @@ pub fn parse_hooks_marker(hierarchy_xml: &str) -> Option<HooksMarker> {
     })
 }
 
-/// Whether the marker read *after* a reset request acknowledges it.
-///
-/// Normally the ack is the epoch advancing past the value read before the
-/// request. A cold delivery relaunches the app, which restarts the in-memory
-/// counter at 0 — so when the marker's per-process `boot` token differs from
-/// the one read before, any epoch ≥ 1 (the fresh process handled its launch
-/// URL) is the acknowledgement. Without boot tokens on both sides, fall back
-/// to the strict comparison.
 /// Whether the marker read *after* delivering a plain navigation deep link
 /// acknowledges it. Mirrors `hooks_acknowledged`, over the `nav` counter:
 /// the app bumps `nav` for every URL it receives, so even a link to the
@@ -121,6 +121,14 @@ pub fn nav_acknowledged(nav_before: u64, boot_before: Option<&str>, after: &Hook
     }
 }
 
+/// Whether the marker read *after* a reset request acknowledges it.
+///
+/// Normally the ack is the epoch advancing past the value read before the
+/// request. A cold delivery relaunches the app, which restarts the in-memory
+/// counter at 0 — so when the marker's per-process `boot` token differs from
+/// the one read before, any epoch ≥ 1 (the fresh process handled its launch
+/// URL) is the acknowledgement. Without boot tokens on both sides, fall back
+/// to the strict comparison.
 pub fn hooks_acknowledged(
     epoch_before: u64,
     boot_before: Option<&str>,
@@ -171,7 +179,12 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+            // `get` (not slicing): i+1..i+3 may fall inside a multibyte char
+            // in a hand-rolled marker, and this input is app-controlled.
+            if let Some(v) = s
+                .get(i + 1..i + 3)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            {
                 out.push(v);
                 i += 3;
                 continue;
@@ -612,6 +625,29 @@ mod tests {
             parse_hooks_marker("<node text=\"tapsmith-hooks:abc;epoch=1\"/>"),
             None
         );
+    }
+
+    #[test]
+    fn unknown_marker_version_is_none() {
+        // A future v2 may change field semantics — it must degrade to
+        // "no hooks", never be misparsed under v1 rules.
+        assert_eq!(
+            parse_hooks_marker("<node text=\"tapsmith-hooks:2;epoch=4;url=myapp://\"/>"),
+            None
+        );
+        assert_eq!(
+            parse_hooks_marker("<node text=\"tapsmith-hooks:0;epoch=4;url=myapp://\"/>"),
+            None
+        );
+    }
+
+    #[test]
+    fn err_percent_decode_survives_multibyte_input() {
+        // A hand-rolled marker can put a multibyte char right after `%`;
+        // decoding must pass the `%` through instead of panicking.
+        let xml = "<node text=\"tapsmith-hooks:1;epoch=2;url=myapp://;err=%aé%2‰x\"/>";
+        let m = parse_hooks_marker(xml).unwrap();
+        assert_eq!(m.err.as_deref(), Some("%aé%2‰x"));
     }
 
     #[test]

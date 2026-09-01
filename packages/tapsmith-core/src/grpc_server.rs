@@ -141,6 +141,13 @@ pub struct TapsmithServiceImpl {
     /// dump); knowing hooks exist lets `ResetApp` re-read before concluding
     /// the app has none and falling back to a 4 s restart.
     last_hooks_marker: Arc<RwLock<Option<app_reset::HooksMarker>>>,
+    /// Whether a plain-navigation deep link's nav-counter probe has already
+    /// concluded the app renders no hooks marker. Skips the per-link hierarchy
+    /// pre-fetch for hook-less apps (an extra agent round-trip per
+    /// `openDeepLink`, seconds on a cold CI emulator). Cleared wherever
+    /// `last_hooks_marker` is, and whenever the app process is (re)launched —
+    /// a mid-session reinstall can newly expose hooks.
+    nav_probe_found_no_marker: Arc<RwLock<bool>>,
     /// iproxy USB tunnel for the physical iOS device, if any. Held for the
     /// lifetime of the XCUITest runner session; dropped when a new agent is
     /// started or the session is torn down.
@@ -305,6 +312,7 @@ impl TapsmithServiceImpl {
             android_launcher_activity: Arc::new(RwLock::new(None)),
             reset_policy: Arc::new(RwLock::new(app_reset::ResetPolicyState::default())),
             last_hooks_marker: Arc::new(RwLock::new(None)),
+            nav_probe_found_no_marker: Arc::new(RwLock::new(false)),
             ios_iproxy: Arc::new(RwLock::new(None)),
             network_tracing_enabled: Arc::new(RwLock::new(false)),
             passthrough_hosts: Arc::new(RwLock::new(Vec::new())),
@@ -1055,8 +1063,33 @@ impl TapsmithServiceImpl {
             .map(|d| d.platform)
     }
 
-    /// Require the active device's platform, returning a gRPC error if
-    /// no device has been selected.
+    /// An agent that honours `ackEpochGreaterThan` always reports the epoch it
+    /// verified as `epochAfter` in its data (warm and cold paths alike). A
+    /// successful response without it means the agent build predates the ack
+    /// parameter and delivered without verifying — downgrade it to a failure
+    /// so the reset ladder escalates instead of trusting a reset that may
+    /// never have run.
+    fn require_epoch_ack_echo(
+        ack_epoch_gt: Option<u64>,
+        result: Result<AgentResponse, Status>,
+    ) -> Result<AgentResponse, Status> {
+        match (ack_epoch_gt, result) {
+            (Some(_), Ok(resp)) if resp.success && resp.data.get("epochAfter").is_none() => {
+                Ok(AgentResponse {
+                    success: false,
+                    error: Some(
+                        "agent did not report epochAfter for an epoch-acknowledged deep link \
+                         (agent build predates ackEpochGreaterThan?)"
+                            .to_string(),
+                    ),
+                    error_type: Some("ACTION_FAILED".to_string()),
+                    data: resp.data,
+                })
+            }
+            (_, result) => result,
+        }
+    }
+
     /// Deliver a deep link on the active device. Shared by the `OpenDeepLink`
     /// RPC (plain navigation, `ack_epoch_gt = None`) and the `ResetApp`
     /// ladder (declared in-app reset, acknowledged by the hooks marker's
@@ -1076,12 +1109,28 @@ impl TapsmithServiceImpl {
         // link to the screen already showing — which the hierarchy-change
         // heuristic can never verify, costing the full warm window plus a cold
         // fallback — verifies in one marker read.
+        // The pre-fetch is an agent round-trip per link, so it is skipped once
+        // a probe has concluded this app renders no marker (the conclusion is
+        // dropped on device/agent change and on every app (re)launch); a
+        // session that has seen the marker always re-reads — the nav value
+        // must be fresh, and hooks compiled into an app cannot vanish.
         let mut ack_nav_gt: Option<u64> = None;
         if ack_epoch_gt.is_none() {
-            if let Some(marker) = self.current_hooks_marker(5_000).await {
-                if let Some(nav) = marker.nav {
-                    ack_nav_gt = Some(nav);
-                    ack_boot_before = marker.boot.clone();
+            let hooks_seen = self.last_hooks_marker.read().await.is_some();
+            let known_absent = *self.nav_probe_found_no_marker.read().await;
+            if hooks_seen || !known_absent {
+                match self.current_hooks_marker(5_000).await {
+                    Some(marker) => {
+                        if let Some(nav) = marker.nav {
+                            ack_nav_gt = Some(nav);
+                            ack_boot_before = marker.boot.clone();
+                        }
+                        *self.last_hooks_marker.write().await = Some(marker);
+                    }
+                    None if !hooks_seen => {
+                        *self.nav_probe_found_no_marker.write().await = true;
+                    }
+                    None => {}
                 }
             }
         }
@@ -1113,7 +1162,10 @@ impl TapsmithServiceImpl {
                         ack_boot_before: ack_boot_before.clone(),
                         ack_nav_gt,
                     };
-                    let result = self.send_agent_command(&command).await;
+                    let result = Self::require_epoch_ack_echo(
+                        ack_epoch_gt,
+                        self.send_agent_command(&command).await,
+                    );
                     return self.make_action_response(request_id, result).await;
                 }
 
@@ -1166,12 +1218,14 @@ impl TapsmithServiceImpl {
                         ack_boot_before: ack_boot_before.clone(),
                         ack_nav_gt,
                     };
-                    let warm_result = self
-                        .send_agent_command_with_timeout(
+                    let warm_result = Self::require_epoch_ack_echo(
+                        ack_epoch_gt,
+                        self.send_agent_command_with_timeout(
                             &warm_command,
                             IOS_OPEN_DEEP_LINK_WARM_TIMEOUT_MS,
                         )
-                        .await;
+                        .await,
+                    );
                     match &warm_result {
                         Ok(resp) if resp.success => {
                             return self.make_action_response(request_id, warm_result).await;
@@ -1315,12 +1369,14 @@ impl TapsmithServiceImpl {
                         ack_boot_before: ack_boot_before.clone(),
                         ack_nav_gt,
                     };
-                    let result = self
-                        .send_agent_command_with_timeout(
+                    let result = Self::require_epoch_ack_echo(
+                        ack_epoch_gt,
+                        self.send_agent_command_with_timeout(
                             &command,
                             IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS,
                         )
-                        .await;
+                        .await,
+                    );
                     if matches!(&result, Ok(resp) if resp.success) {
                         verify_result = Some(result);
                         break;
@@ -1536,6 +1592,9 @@ impl TapsmithServiceImpl {
         wait_for_idle: bool,
         idle_timeout_ms: u64,
     ) -> Result<(), String> {
+        // The relaunched process may render a marker an earlier probe missed
+        // (see `nav_probe_found_no_marker`).
+        *self.nav_probe_found_no_marker.write().await = false;
         match self
             .require_platform()
             .await
@@ -1584,48 +1643,58 @@ impl TapsmithServiceImpl {
                 resolved
             }
         };
-        match activity {
-            Some(activity) => {
-                let cmd = format!(
-                    "am start -S -a android.intent.action.MAIN                      -c android.intent.category.LAUNCHER                      --activity-clear-task -n {package_name}/{activity}"
-                );
-                adb::shell(serial, &cmd)
-                    .await
-                    .map_err(|e| format!("clean relaunch failed: {e}"))?;
-                if wait_for_idle {
-                    let timeout = if idle_timeout_ms > 0 {
-                        idle_timeout_ms
-                    } else {
-                        10_000
-                    };
-                    let _ = self
-                        .send_agent_command_with_timeout(
-                            &AgentCommand::WaitForIdle {
-                                timeout_ms: Some(timeout),
-                            },
-                            timeout,
-                        )
-                        .await;
+        let mut clean_started = false;
+        if let Some(activity) = activity {
+            let cmd = format!(
+                "am start -S -a android.intent.action.MAIN -c android.intent.category.LAUNCHER --activity-clear-task -n {package_name}/{activity}"
+            );
+            match adb::shell(serial, &cmd).await {
+                Ok(out) if !out.contains("Error") => {
+                    clean_started = true;
+                    if wait_for_idle {
+                        let timeout = if idle_timeout_ms > 0 {
+                            idle_timeout_ms
+                        } else {
+                            10_000
+                        };
+                        let _ = self
+                            .send_agent_command_with_timeout(
+                                &AgentCommand::WaitForIdle {
+                                    timeout_ms: Some(timeout),
+                                },
+                                timeout,
+                            )
+                            .await;
+                    }
+                }
+                Ok(out) => {
+                    warn!(%activity, output = %out.trim(), "clean-task relaunch rejected; falling back to force-stop + launcher intent");
+                }
+                Err(e) => {
+                    warn!(%activity, error = %e, "clean-task relaunch failed; falling back to force-stop + launcher intent");
                 }
             }
-            None => {
-                adb::shell(serial, &format!("am force-stop {}", package_name))
-                    .await
-                    .map_err(|e| format!("force-stop failed: {e}"))?;
-                let resp = self
-                    .launch_package(
-                        serial,
-                        Uuid::new_v4().to_string(),
-                        package_name,
-                        wait_for_idle,
-                        idle_timeout_ms,
-                    )
-                    .await
-                    .map_err(|e| e.message().to_string())?
-                    .into_inner();
-                if !resp.success {
-                    return Err(resp.error_message);
-                }
+        }
+        if !clean_started {
+            // No resolvable activity, or the explicit start failed: the old
+            // force-stop + launcher-intent path resumes the persisted task
+            // (stale route possible), but a stale route beats no relaunch.
+            adb::shell(serial, &format!("am force-stop {}", package_name))
+                .await
+                .map_err(|e| format!("force-stop failed: {e}"))?;
+            let resp = self
+                .launch_package(
+                    serial,
+                    Uuid::new_v4().to_string(),
+                    package_name,
+                    wait_for_idle,
+                    idle_timeout_ms,
+                )
+                .await
+                .map_err(|e| e.message().to_string())?
+                .into_inner();
+            if !resp.success {
+                return Err(resp.error_message);
             }
         }
         self.wait_for_android_rendered_content(serial, package_name)
@@ -1722,6 +1791,8 @@ impl TapsmithServiceImpl {
         }
     }
 
+    /// Require the active device's platform, returning a gRPC error if
+    /// no device has been selected.
     async fn require_platform(&self) -> Result<Platform, Status> {
         self.active_platform()
             .await
@@ -2155,6 +2226,9 @@ impl TapsmithServiceImpl {
         wait_for_idle: bool,
         idle_timeout_ms: u64,
     ) -> Result<Response<proto::ActionResponse>, Status> {
+        // The relaunched process may render a marker an earlier probe missed
+        // (see `nav_probe_found_no_marker`).
+        *self.nav_probe_found_no_marker.write().await = false;
         let monkey_cmd = format!(
             "monkey -p {} -c android.intent.category.LAUNCHER 1",
             package_name
@@ -3263,6 +3337,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     *self.android_launcher_activity.write().await = None;
                     *self.reset_policy.write().await = app_reset::ResetPolicyState::default();
                     *self.last_hooks_marker.write().await = None;
+                    *self.nav_probe_found_no_marker.write().await = false;
                     // Drop the previous device's pre-installed CA marker so the
                     // Android CA pre-install below runs for the newly-selected
                     // device rather than short-circuiting on stale state. The
@@ -3388,6 +3463,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         // A fresh agent session starts a fresh warm window.
         *self.reset_policy.write().await = app_reset::ResetPolicyState::default();
         *self.last_hooks_marker.write().await = None;
+        *self.nav_probe_found_no_marker.write().await = false;
 
         match platform {
             Platform::Ios => {
@@ -3911,6 +3987,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let platform = self.require_platform().await?;
 
         Self::validate_package_name(&req.package_name)?;
+
+        // A (re)launched process can newly expose the hooks marker (e.g. a
+        // reinstalled build) — let the next navigation link re-probe.
+        *self.nav_probe_found_no_marker.write().await = false;
 
         match platform {
             Platform::Ios => {
@@ -7926,8 +8006,11 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
                 }
             }
             Some(_) => Err("in-app reset did not advance its epoch".to_string()),
-            // The agent already verified the ack; the hierarchy may just be
-            // mid-transition. Trust the delivery.
+            // The ack was already positively verified — Android's settle loop
+            // enforces the epoch daemon-side, and an iOS success without an
+            // echoed `epochAfter` is downgraded to a failure
+            // (`require_epoch_ack_echo`) — so a missed read here is just a
+            // mid-transition hierarchy. Trust the delivery.
             None => Ok(marker.epoch + 1),
         }
     }
