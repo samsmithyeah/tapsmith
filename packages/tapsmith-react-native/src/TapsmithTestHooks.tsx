@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Linking, StyleSheet, Text, View } from 'react-native';
-import { formatMarker, parseResetRequest, BOOT_TOKEN } from './protocol.js';
+import { formatMarker, parseResetRequest, resetDedupeKey, BOOT_TOKEN } from './protocol.js';
 import { publishResetEpoch } from './epoch.js';
 import { hooksEnabledByDefault } from './enabled.js';
 import { registeredHandlers, runResetPipeline, type Clearable, type ResetHandler } from './reset.js';
@@ -46,6 +46,7 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
   const [nav, setNav] = useState(0);
   const [error, setError] = useState<string | undefined>(undefined);
   const seenNonces = useRef(new Set<string>());
+  const initialUrlHandled = useRef(false);
   const latest = useRef({ onReset, clear });
   latest.current = { onReset, clear };
 
@@ -62,9 +63,14 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
       setNav((n) => n + 1);
       const request = parseResetRequest(url);
       if (!request) return;
-      // A dropped-and-refired intent must not reset twice.
-      if (request.nonce && seenNonces.current.has(request.nonce)) return;
-      if (request.nonce) seenNonces.current.add(request.nonce);
+      // A dropped-and-refired intent must not reset twice. Bounded: only
+      // recent entries matter for redelivery.
+      const dedupeKey = resetDedupeKey(request, url);
+      if (seenNonces.current.has(dedupeKey)) return;
+      seenNonces.current.add(dedupeKey);
+      while (seenNonces.current.size > 64) {
+        seenNonces.current.delete(seenNonces.current.values().next().value as string);
+      }
       try {
         const handlers: ResetHandler[] = [...(latest.current.onReset ? [latest.current.onReset] : []), ...registeredHandlers()];
         await runResetPipeline(request, latest.current.clear, handlers);
@@ -80,8 +86,13 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
     };
 
     const sub = Linking.addEventListener('url', ({ url }) => { void handle(url); });
-    // A cold launch delivers the URL before any listener exists.
-    Linking.getInitialURL().then((url) => { void handle(url); }, () => { /* ignore */ });
+    // A cold launch delivers the URL before any listener exists. Count it
+    // once: a re-run of this effect (`enabled` toggled) re-reads the same
+    // initial URL, which must not bump `nav` again.
+    if (!initialUrlHandled.current) {
+      initialUrlHandled.current = true;
+      Linking.getInitialURL().then((url) => { void handle(url); }, () => { /* ignore */ });
+    }
     return () => {
       disposed = true;
       sub.remove();

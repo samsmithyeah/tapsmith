@@ -38,10 +38,16 @@ export interface MarkerFields {
   error?: string;
 }
 
-/** Render the marker text. Keep it a single line with no quotes — it lives in an XML attribute. */
 /** Random per-process token; regenerated only when the app process restarts. */
 export const BOOT_TOKEN: string = Math.random().toString(16).slice(2, 10).padStart(8, '0');
 
+/**
+ * `err=` cap: the marker is rendered into every accessibility snapshot until
+ * the next clean reset, so a runaway handler error must not inflate them.
+ */
+const MAX_ERROR_LENGTH = 200;
+
+/** Render the marker text. Keep it a single line with no quotes — it lives in an XML attribute. */
 export function formatMarker(fields: MarkerFields): string {
   const parts = [
     `${MARKER_PREFIX}${PROTOCOL_VERSION}`,
@@ -50,7 +56,10 @@ export function formatMarker(fields: MarkerFields): string {
     ...(fields.boot ? [`boot=${fields.boot}`] : []),
     `url=${fields.urlPrefix}`,
   ];
-  if (fields.error) parts.push(`err=${encodeURIComponent(fields.error).replace(/'/g, '%27').replace(/"/g, '%22')}`);
+  if (fields.error) {
+    const error = fields.error.length > MAX_ERROR_LENGTH ? `${fields.error.slice(0, MAX_ERROR_LENGTH)}…` : fields.error;
+    parts.push(`err=${encodeURIComponent(error).replace(/'/g, '%27').replace(/"/g, '%22')}`);
+  }
   return parts.join(';');
 }
 
@@ -61,7 +70,10 @@ export function parseMarker(text: string): (MarkerFields & { version: number }) 
   const body = text.slice(start + MARKER_PREFIX.length);
   const [versionRaw, ...rest] = body.split(';');
   const version = Number.parseInt(versionRaw, 10);
-  if (!Number.isFinite(version)) return undefined;
+  // A different protocol version has unknown semantics — safer to report "no
+  // marker" (Tapsmith falls back to cold resets) than to misparse it. The
+  // daemon and agents apply the same rule.
+  if (version !== PROTOCOL_VERSION) return undefined;
   let epoch: number | undefined;
   let nav: number | undefined;
   let urlPrefix = '';
@@ -113,6 +125,16 @@ export function parseResetRequest(url: string): ResetRequest | undefined {
   }
   if (!params.has(RESET_QUERY_FLAG)) return undefined;
   return { target: routeOf(url.slice(0, q)), nonce: params.get('nonce') ?? '' };
+}
+
+/**
+ * Key a redelivered reset request dedupes on. Tapsmith always sends a fresh
+ * nonce per reset; a hand-crafted link without one dedupes on the URL itself,
+ * so a double delivery (initial URL + listener, or a refired intent) resets
+ * once either way.
+ */
+export function resetDedupeKey(request: ResetRequest, url: string): string {
+  return request.nonce || url;
 }
 
 /**

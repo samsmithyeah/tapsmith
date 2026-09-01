@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatMarker, parseMarker, parseResetRequest, routeOf } from '../protocol.js';
+import { formatMarker, parseMarker, parseResetRequest, resetDedupeKey, routeOf } from '../protocol.js';
 
 describe('marker', () => {
   it('round-trips, including an error message', () => {
@@ -14,6 +14,17 @@ describe('marker', () => {
 
   it('parses when embedded in surrounding text and rejects non-markers', () => {
     expect(parseMarker('label: tapsmith-hooks:1;epoch=2;url=a:///')?.epoch).toBe(2);
+  });
+
+  it('treats an unknown protocol version as no marker', () => {
+    expect(parseMarker('tapsmith-hooks:2;epoch=3;url=a:///')).toBeUndefined();
+    expect(parseMarker('tapsmith-hooks:;epoch=3;url=a:///')).toBeUndefined();
+  });
+
+  it('caps a runaway error message so the marker stays small', () => {
+    const text = formatMarker({ epoch: 1, urlPrefix: 'a:///', error: 'x'.repeat(5000) });
+    expect(text.length).toBeLessThan(400);
+    expect(parseMarker(text)?.error).toBe(`${'x'.repeat(200)}…`);
   });
 
   it('carries the per-process boot token so a relaunch is recognisable', () => {
@@ -38,6 +49,14 @@ describe('reset requests', () => {
   it('ignores ordinary deep links', () => {
     expect(parseResetRequest('myapp:///login')).toBeUndefined();
     expect(parseResetRequest('myapp:///login?tab=2')).toBeUndefined();
+  });
+
+  it('dedupes a nonce-less link on the URL itself', () => {
+    const url = 'myapp:///login?__tapsmith_reset=1';
+    const request = parseResetRequest(url)!;
+    expect(resetDedupeKey(request, url)).toBe(url);
+    const withNonce = parseResetRequest(`${url}&nonce=abc`)!;
+    expect(resetDedupeKey(withNonce, `${url}&nonce=abc`)).toBe('abc');
   });
 });
 

@@ -168,11 +168,15 @@ class CommandHandler {
         for text in candidates {
             guard let range = text.range(of: "tapsmith-hooks:") else { continue }
             let body = text[range.upperBound...]
+            let fields = body.split(separator: ";")
+            // A different protocol version has unknown semantics — treat it as
+            // no marker (same rule as the daemon and SDK parsers).
+            guard let version = fields.first, version == "1" else { continue }
             var epoch: UInt64?
             var nav: UInt64?
             var boot: String?
             var err: String?
-            for field in body.split(separator: ";") {
+            for field in fields.dropFirst() {
                 let parts = field.split(separator: "=", maxSplits: 1).map(String.init)
                 guard parts.count == 2 else { continue }
                 if parts[0] == "epoch" { epoch = UInt64(parts[1]) }
