@@ -89,6 +89,14 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private _lastRunEnd: TestRunResult | null = null;
   private readonly _runEndWaiters: Array<(r: TestRunResult) => void> = [];
   private _activeChild: ChildProcess | null = null;
+  /**
+   * Sticky reset capabilities per device serial. Runs go through fresh
+   * watch-run children, so without this store every `tapsmith_run_tests`
+   * started undetected and `appReset: 'auto'` resolved to clear · file even
+   * when the app supports warm in-app resets. Detection only ever upgrades
+   * (compiled-in hooks do not vanish mid-session).
+   */
+  private readonly _resetCapabilities = new Map<string, import('../app-reset.js').ResetCapabilities>();
   /** Escalation from the cooperative abort to a signal (see `stop`). */
   private _stopEscalationTimer: ReturnType<typeof setTimeout> | null = null;
   private _initialized = false;
@@ -928,6 +936,13 @@ export class HeadlessTestDispatcher implements TestDispatcher {
             break;
           }
           case 'file-done': {
+            // Fold what the child learned into the sticky per-device store,
+            // so the next fresh child starts already-detected.
+            if (response.resetCapabilities) {
+              const store = this._resetCapabilities.get(target.deviceSerial) ?? {};
+              Object.assign(store, response.resetCapabilities);
+              this._resetCapabilities.set(target.deviceSerial, store);
+            }
             const results = response.results.map(deserializeTestResult);
             const suite = deserializeSuiteResult(response.suite);
             resolveOnce({ results, suite });
@@ -966,6 +981,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         // These runs are `tapsmith_run_tests`, not watch mode, whatever child
         // script they happen to share.
         label: 'Run',
+        resetCapabilities: this._resetCapabilities.get(target.deviceSerial),
       };
 
       child.send(msg);

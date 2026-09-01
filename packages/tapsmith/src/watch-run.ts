@@ -13,7 +13,8 @@ import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults } from './runner.js';
 import type { TapsmithConfig } from './config.js';
-import { type SessionPreflightContext } from './session-preflight.js';
+import { probeResetCapabilities, type SessionPreflightContext } from './session-preflight.js';
+import type { ResetCapabilities } from './app-reset.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
 import {
@@ -61,6 +62,14 @@ export interface WatchRunMessage {
    * plain `tapsmith_run_tests` — naming a mode the caller was not using.
    */
   label?: string
+  /**
+   * The parent's sticky reset-capability knowledge for this device (in-app
+   * hooks detected, …). This child is forked fresh per run, so without it
+   * every run would start undetected and `appReset: 'auto'` would resolve to
+   * clear · file even when the app supports warm resets. The child reports
+   * what it learned back on `file-done`.
+   */
+  resetCapabilities?: ResetCapabilities
 }
 
 export interface WatchRunTestEndMessage {
@@ -73,6 +82,9 @@ export interface WatchRunFileDoneMessage {
   filePath: string
   results: import('./worker-protocol.js').SerializedTestResult[]
   suite: import('./worker-protocol.js').SerializedSuiteResult
+  /** What this run learned about the device's reset capabilities — the parent
+   * folds it into its sticky per-device store (detection only ever upgrades). */
+  resetCapabilities?: ResetCapabilities
 }
 
 export interface WatchRunErrorMessage {
@@ -164,6 +176,15 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
 
   const label = msg.label ?? 'Watch';
   const ctx = buildSessionContext(config, device, client, msg.deviceSerial, label);
+  // Seed with the parent's sticky knowledge, then probe once if hooks were
+  // never seen — one hierarchy read, and detection only ever upgrades, so a
+  // hooked app pays it exactly once per watch/MCP session (the parent stores
+  // the result). Without this every fresh child resolved `auto` to
+  // clear · file and warm resets silently never engaged.
+  ctx.capabilities = { ...(msg.resetCapabilities ?? {}) };
+  if (!ctx.capabilities.hooksDetected) {
+    await probeResetCapabilities(ctx);
+  }
 
   // Created BEFORE preflight so a stop that lands during wake/unlock/app-reset
   // is honoured rather than being a no-op that runs the whole file anyway.
@@ -202,6 +223,7 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
       screenshotDir,
       reporter: reporterProxy,
       sessionContext: ctx,
+      resetCapabilities: ctx.capabilities,
       projectUseOptions: msg.projectUseOptions,
       projectName: msg.projectName,
       testFilter: msg.testFilter,
@@ -217,6 +239,7 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
       filePath: msg.filePath,
       results: results.map((r) => serializeTestResult(r, 0)),
       suite: serializeSuiteResult(suiteResult, 0),
+      resetCapabilities: ctx.capabilities,
     });
   } finally {
     disposeActionProgressPrinter();

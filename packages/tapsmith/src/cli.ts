@@ -2492,6 +2492,10 @@ async function main(): Promise<void> {
         testFiles,
         screenshotDir: watchScreenshotDir,
         launchedEmulators,
+        // The startup launch already probed for in-app hooks into this shared
+        // object; watch-run children seed from it and report back, so warm
+        // per-policy resets survive the fresh-child-per-run boundary.
+        resetCapabilities: currentSequentialState?.capabilities ?? {},
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
         workers: watchWorkersOverride,
