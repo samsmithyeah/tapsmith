@@ -1,0 +1,229 @@
+name: Simulator settle probe
+
+# THROWAWAY DIAGNOSTIC — delete this file once PILOT-303 item 2 is answered.
+#
+# Question: an iOS simulator on macos-latest reports `Booted` after 36–67 s but
+# is not usable for another 2–3 minutes. What is it doing in that window, can
+# any of it be skipped, and is `simctl bootstatus` a usable gate for "ready"?
+#
+# Deliberately a standalone job: it boots the simulator with the whole runner
+# to itself, which is the condition the e2e shards hit and the only one where
+# the settle is measurable rather than smeared across competing steps. It runs
+# no tests and needs no build artifacts, so it costs one macOS runner for a few
+# minutes and cannot perturb the e2e workflows.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+    paths: [ '.github/workflows/sim-settle-probe.yml' ]
+
+jobs:
+  probe:
+    name: Settle probe
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Select Xcode and resolve a simulator
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          SIM=$(xcrun simctl list devices available | grep -oE "iPhone [0-9]+ " | head -1 | xargs)
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          for devs in d['devices'].values():
+            for dev in devs:
+              if dev['name']=='$SIM' and dev['isAvailable']:
+                print(dev['udid']); sys.exit()
+          ")
+          if [ -z "$UDID" ]; then echo "::error::no available iPhone simulator"; exit 1; fi
+          echo "SIM=$SIM" >> "$GITHUB_ENV"
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          echo "Probing $SIM ($UDID)"
+          sysctl -n hw.ncpu hw.memsize
+          xcrun simctl list runtimes
+
+      - name: Probe the settle
+        run: |
+          set -u
+          OUT="$RUNNER_TEMP/probe"
+          mkdir -p "$OUT"
+          DEV="$HOME/Library/Developer/CoreSimulator/Devices/$UDID"
+
+          # ── samplers ───────────────────────────────────────────────────────
+          # Host-side `ps`: simulator daemons run as real host processes, so
+          # this names the services actually burning CPU during the settle —
+          # the whole point, since a service we never need is a service we can
+          # try to disable.
+          sample_ps() {
+            while :; do
+              ts=$(( $(date +%s) - T0 ))
+              ps -Ao pcpu=,comm= | sort -rn | head -25 | while read -r cpu cmd; do
+                printf '%s %s %s\n' "$ts" "$cpu" "$(basename "$cmd")"
+              done >> "$OUT/ps-samples.log"
+              sleep 2
+            done
+          }
+
+          # How long `simctl list` takes over time. This is exactly what the
+          # SDK contends with (PILOT-303: one list cost 41.7 s mid-settle), and
+          # it doubles as a proxy for when CoreSimulator itself calms down.
+          # Every 10 s, not 2 s, so the probe does not become the load.
+          # Timed in python, not `date +%s%N`: %N is not portable across the
+          # macOS images and silently yields a literal "N" where it is missing.
+          sample_list() {
+            while :; do
+              ts=$(( $(date +%s) - T0 ))
+              ms=$(python3 -c "
+          import subprocess,time
+          t=time.time()
+          subprocess.run(['xcrun','simctl','list','devices','--json'],capture_output=True)
+          print(int((time.time()-t)*1000))
+          ")
+              printf '%s %s\n' "$ts" "$ms" >> "$OUT/list-latency.log"
+              sleep 10
+            done
+          }
+
+          # First observation of state==Booted, i.e. when the flag the e2e
+          # workflow currently gates on flips.
+          watch_flag() {
+            while :; do
+              st=$(xcrun simctl list devices -j 2>/dev/null | python3 -c "
+          import json,sys
+          try: d=json.load(sys.stdin)
+          except Exception: sys.exit()
+          for devs in d['devices'].values():
+            for dev in devs:
+              if dev['udid']=='$UDID': print(dev['state']); sys.exit()
+          " || true)
+              if [ "$st" = "Booted" ]; then
+                echo "$(( $(date +%s) - T0 ))" > "$OUT/t-flag-booted"
+                return
+              fi
+              sleep 1
+            done
+          }
+
+          run_bootstatus() {
+            local label=$1
+            local start=$(date +%s)
+            # No `timeout` on macOS runners; guard with a background killer so a
+            # hung bootstatus cannot eat the job's 45 min.
+            ( sleep 600; pkill -f "simctl bootstatus $UDID" 2>/dev/null ) &
+            local guard=$!
+            # -b: boot if needed. -d: print data-migration information, which is
+            # one of the things this probe exists to read.
+            script -q "$OUT/bootstatus-$label.raw" \
+              xcrun simctl bootstatus "$UDID" -b -d >/dev/null 2>&1 || true
+            kill "$guard" 2>/dev/null || true
+            echo $(( $(date +%s) - start )) > "$OUT/t-bootstatus-$label"
+            # perl, not sed: BSD sed's \x1b support varies across the macOS
+            # images. \004 is the EOT that `script` leaves behind.
+            tr -d '\r\004' < "$OUT/bootstatus-$label.raw" \
+              | perl -pe 's/\e\[[0-9;]*[a-zA-Z]//g' > "$OUT/bootstatus-$label.txt"
+          }
+
+          # ── phase A: never-booted baseline ─────────────────────────────────
+          xcrun simctl shutdown "$UDID" 2>/dev/null || true
+          du -sk "$DEV" 2>/dev/null | awk '{print $1}' > "$OUT/du-before-kb" || echo 0 > "$OUT/du-before-kb"
+          echo "baseline device dir: $(cat "$OUT/du-before-kb") KB"
+
+          # ── phase B: first boot, fully instrumented ────────────────────────
+          export T0=$(date +%s)
+          sample_ps & PS_PID=$!
+          sample_list & LIST_PID=$!
+          watch_flag & FLAG_PID=$!
+
+          run_bootstatus first
+          echo "bootstatus(first) returned after $(cat "$OUT/t-bootstatus-first") s"
+          echo "state==Booted first seen at $(cat "$OUT/t-flag-booted" 2>/dev/null || echo '?') s"
+
+          # ── phase C: keep watching after "ready" ───────────────────────────
+          # If CPU is still pegged here, bootstatus returning is NOT the same as
+          # the simulator being usable — which decides whether it is a usable
+          # gate for the e2e workflow.
+          sleep 120
+          kill "$PS_PID" "$LIST_PID" "$FLAG_PID" 2>/dev/null || true
+
+          # ── phase D: what ran, and what it wrote ───────────────────────────
+          xcrun simctl spawn "$UDID" launchctl print system > "$OUT/launchctl-system.txt" 2>&1 || true
+          grep -cE '^[[:space:]]+[0-9-]+[[:space:]]+[0-9-]+[[:space:]]+[a-zA-Z]' \
+            "$OUT/launchctl-system.txt" > "$OUT/service-count" 2>/dev/null \
+            || echo '?' > "$OUT/service-count"
+          du -sk "$DEV" 2>/dev/null | awk '{print $1}' > "$OUT/du-after-kb" || echo 0 > "$OUT/du-after-kb"
+          du -sk "$DEV/data"/*/ 2>/dev/null | sort -rn | head -20 > "$OUT/du-subtrees.txt" || true
+          du -sk "$DEV/data/private/var/MobileAsset" "$DEV/data/var/db/diagnostics" \
+                 "$DEV/data/Library/Caches" "$DEV/data/var/db/uuidtext" 2>/dev/null \
+            > "$OUT/du-suspects.txt" || true
+
+          # ── phase E: second boot — first-boot-only vs every-boot ───────────
+          # If boot 2 is much faster, the settle is first-boot work in principle
+          # reusable; if not, it is paid on every boot and no pre-warm can help.
+          xcrun simctl shutdown "$UDID" 2>/dev/null || true
+          sleep 10
+          export T0=$(date +%s)
+          run_bootstatus second
+          echo "bootstatus(second) returned after $(cat "$OUT/t-bootstatus-second") s"
+          xcrun simctl shutdown "$UDID" 2>/dev/null || true
+
+      - name: Summarize
+        if: always()
+        run: |
+          OUT="$RUNNER_TEMP/probe"
+          [ -d "$OUT" ] || { echo "probe produced no output"; exit 0; }
+          {
+            echo "## iOS simulator settle probe — $SIM"
+            echo
+            echo "Runner: \`$(sysctl -n hw.ncpu)\` cores, \`$(( $(sysctl -n hw.memsize) / 1073741824 ))\` GB"
+            echo
+            echo '### Timings'
+            echo
+            echo '| event | seconds |'
+            echo '| --- | --- |'
+            echo "| \`state == Booted\` (what the e2e workflow waits for) | $(cat "$OUT/t-flag-booted" 2>/dev/null || echo '?') |"
+            echo "| \`bootstatus -b -d\` returned (first boot) | $(cat "$OUT/t-bootstatus-first" 2>/dev/null || echo '?') |"
+            echo "| \`bootstatus -b -d\` returned (second boot) | $(cat "$OUT/t-bootstatus-second" 2>/dev/null || echo '?') |"
+            echo
+            echo "Loaded launchd services after boot: $(cat "$OUT/service-count" 2>/dev/null || echo '?')"
+            echo
+            echo '### bootstatus output (first boot)'
+            echo '```'
+            head -40 "$OUT/bootstatus-first.txt" 2>/dev/null || echo '(none)'
+            echo '```'
+            echo
+            echo '### simctl list latency over time (s since boot → ms)'
+            echo '```'
+            awk '{printf "  t=%-5s %s ms\n", $1, $2}' "$OUT/list-latency.log" 2>/dev/null | head -40 || echo '(none)'
+            echo '```'
+            echo
+            echo '### Top CPU consumers during the settle'
+            echo 'cpu_sum is summed %CPU across 2 s samples — a ranking, not core-seconds.'
+            echo '```'
+            awk '{c[$3]+=$2; n[$3]++} END {for (k in c) printf "%.0f %s %d\n", c[k], k, n[k]}' \
+              "$OUT/ps-samples.log" 2>/dev/null \
+              | sort -rn | head -25 \
+              | awk '{printf "  %-34s cpu_sum=%-8s samples=%s\n", $2, $1, $3}' || echo '(none)'
+            echo '```'
+            echo
+            echo '### Device data written by the boot'
+            echo '```'
+            echo "  before: $(cat "$OUT/du-before-kb" 2>/dev/null) KB"
+            echo "  after:  $(cat "$OUT/du-after-kb" 2>/dev/null) KB"
+            echo
+            echo "  largest subtrees (KB):"
+            awk '{printf "    %-10s %s\n", $1, $2}' "$OUT/du-subtrees.txt" 2>/dev/null | head -20
+            echo
+            echo "  suspects (KB):"
+            awk '{printf "    %-10s %s\n", $1, $2}' "$OUT/du-suspects.txt" 2>/dev/null
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload probe output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-settle-probe
+          retention-days: 7
+          path: ${{ runner.temp }}/probe/
