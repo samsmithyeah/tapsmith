@@ -477,6 +477,27 @@ pub async fn run_ladder(
     let warm_fallback = plan.warm_fallback;
     let mut reasons: Vec<String> = plan.reason.into_iter().collect();
 
+    // The caller asked for exactly a warm reset and the plan already degraded
+    // (no hook, or a platform that must honour the cold bound with a
+    // restart): fail instead of quietly running the heavier rung. Honouring
+    // `allow_fallback` only after a warm step had *run* let
+    // `resetApp({ mode: 'warm', fallback: false })` silently restart hook-less
+    // apps — caught by the hook-less CI suite on its first run.
+    if fell_back && !allow_fallback {
+        return ResetOutcome {
+            mode_used: ResetMode::Warm,
+            fell_back: false,
+            cold_launch: false,
+            reason: join(&reasons),
+            steps,
+            epoch_after: None,
+            error: Some(match reasons.last() {
+                Some(r) => format!("warm reset could not run and fallback is disabled: {r}"),
+                None => "warm reset could not run and fallback is disabled".to_string(),
+            }),
+        };
+    }
+
     async fn timed<T>(
         steps: &mut Vec<ResetStep>,
         name: &str,
@@ -824,6 +845,24 @@ mod tests {
             supports_cold_delivery: true,
             fallback_to_clear: false,
         }
+    }
+
+    #[tokio::test]
+    async fn warm_that_cannot_start_fails_when_fallback_is_disabled() {
+        // resetApp({ mode: 'warm', fallback: false }) on a hook-less app must
+        // throw, not quietly restart — "exactly a warm, or throw".
+        let ops = MockOps::new();
+        let plan = decide(
+            &ResetPolicyState::default(),
+            &input(ResetMode::Warm, None, ""),
+        );
+        let out = run_ladder(&ops, plan, false).await;
+        assert!(out
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("fallback is disabled"));
+        assert!(ops.calls().is_empty(), "no rung may run: {:?}", ops.calls());
     }
 
     #[test]
