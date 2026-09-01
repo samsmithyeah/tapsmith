@@ -127,10 +127,10 @@ Two options control it, at any level — config, `projects[].use`, or `test.use(
 |---|---|---|
 | `clear` | Wipe app data and cold-launch — fully hermetic | 7–13 s on iOS simulators, 1–3 s on Android emulators |
 | `restart` | Terminate and relaunch, keeping persisted data (AsyncStorage, databases) | 1–3 s |
-| `warm` | In-app reset through the app's reset hook (`resetAppDeepLink`); no process restart | < 1 s |
+| `warm` | In-app reset through detected [`@tapsmith/react-native`](warm-reset.md) hooks (or the legacy `resetAppDeepLink`); no process restart | < 1 s |
 | `none` | No reset — only verify the session is healthy | ~0 |
 
-`'auto'` picks the fastest hermetic option the app supports: `warm` when a reset hook is configured, otherwise `clear`. The scope is per-file — one reset at file entry (and at a nested `describe` that declares a different policy). Even a warm reset costs ~1-2 s, so resetting before every test roughly doubles a suite that navigates per test anyway; scopes that genuinely need it opt in with `appResetScope: "test"` (each of those resets is warm when the app mounts the hooks). With no configuration at all you get a clean app once per file, and nothing to write.
+`'auto'` picks the fastest hermetic option the app supports: `warm` when in-app hooks are detected (or `resetAppDeepLink` is set), otherwise `clear`. An explicit `appReset: 'warm'` on an app with neither falls down the ladder to `restart` — which keeps persisted data; declare `clear` when you need the wipe. The scope is per-file — one reset at file entry (and at a nested `describe` that declares a different policy). Even a warm reset costs ~1-2 s, so resetting before every test roughly doubles a suite that navigates per test anyway; scopes that genuinely need it opt in with `appResetScope: "test"` (each of those resets is warm when the app mounts the hooks). With no configuration at all you get a clean app once per file, and nothing to write.
 
 ```typescript
 // tapsmith.config.ts — restart between files instead of wiping data
