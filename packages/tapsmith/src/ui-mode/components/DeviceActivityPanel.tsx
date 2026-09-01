@@ -28,7 +28,7 @@ type FeedFilter = 'all' | 'mcp' | 'activity'
 
 const FILTER_OPTIONS: Array<{ value: FeedFilter; label: string }> = [
   { value: 'all', label: 'All' },
-  { value: 'mcp', label: 'Agent' },
+  { value: 'mcp', label: 'MCP' },
   { value: 'activity', label: 'Device' },
 ];
 
@@ -148,7 +148,7 @@ export function DeviceActivityPanel({ mcpUrl, clientName, clientVersion, clients
           ? (
             <div class="mcp-empty" data-testid="mcp-empty">
               {feed.length > 0
-                ? `Nothing here — ${hiddenCount} ${hiddenCount === 1 ? 'entry is' : 'entries are'} hidden by the filter`
+                ? `${hiddenCount} ${hiddenCount === 1 ? 'entry is' : 'entries are'} hidden by the filter`
                 : connected
                   ? 'Waiting for tool calls...'
                   : mcpUrl

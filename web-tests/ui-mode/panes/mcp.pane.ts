@@ -45,8 +45,8 @@ export class McpPane {
     return this.page.getByTestId("mcp-setup-hint")
   }
 
-  /** Segmented source filter: "All" | "Agent" | "Device". */
-  filterButton(label: "All" | "Agent" | "Device") {
+  /** Segmented source filter: "All" | "MCP" | "Device". */
+  filterButton(label: "All" | "MCP" | "Device") {
     return this.page.getByTestId("feed-filter").filter({ hasText: label })
   }
 

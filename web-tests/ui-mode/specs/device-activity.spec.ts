@@ -73,7 +73,7 @@ test.describe("Device activity feed", () => {
     await expect(rows).toHaveCount(2)
     await expect(mcp.hiddenCount).toHaveCount(0)
 
-    await mcp.filterButton("Agent").click()
+    await mcp.filterButton("MCP").click()
     await expect(mcp.entries).toHaveCount(1)
     await expect(mcp.activityEntries).toHaveCount(0)
     await expect(mcp.hiddenCount).toHaveText("1 hidden")
