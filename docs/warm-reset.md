@@ -90,3 +90,15 @@ const result = await device.resetApp({ target: "/settings" })
 
 See [`device.resetApp`](api-reference.md#deviceresetappoptions-promiseappresetresult).
 
+
+## How this compares to other frameworks
+
+Every mobile testing tool has to answer the same question — how does a test start from a known state? — and the answers differ mainly in where the cost and the complexity live. (Comparisons as of early 2026; check each project's current docs.)
+
+**Maestro** resets by wiping app data at the device level (`launchApp` with `clearState: true`) — the equivalent of Tapsmith's `clear` rung, typically paid cold at the top of every flow. There is no warm concept, no in-app cooperation, and no per-test granularity below the flow; keeping suites fast means clearing less and managing test order yourself. Tapsmith without the hooks module behaves much like this (`clear · per file`, with auto-waiting); the hooks are what remove the trade-off.
+
+**Appium** exposes reset as session-scoped capabilities — `fullReset` (uninstall + reinstall), the default reset, or `noReset` — chosen once per session. Isolation between individual tests is left to the test author via manual `terminateApp`/`activateApp`, all of it cold and unacknowledged.
+
+**Detox** is the closest relative: `device.reloadReactNative()` reloads the JS bundle without relaunching the process, and it is fast enough to run per test. Three differences matter. A JS reload keeps persisted storage, so it corresponds to Tapsmith's `restart` rung — isolation-grade cleanup (the `clear`/`onReset` work the hooks do) remains a manual, per-suite job. Integration is gray-box: Detox links native code into your app on both platforms and is React Native-only, where `@tapsmith/react-native` is one JavaScript component over the standard UIAutomator/XCUITest channel. And synchronization differs in scope: Detox waits for the whole app to go idle (which can hang on screens that never idle — endless animations, spinners), while Tapsmith's acknowledgement answers exactly one question — *did the reset finish?* — via the marker epoch, from outside the process.
+
+What has no counterpart elsewhere, to our knowledge, is the machinery *around* the reset: automatic detection (no config), the declared isolation policy whose satisfaction lattice lets a startup launch or a background preparation absorb a reset entirely, positive acknowledgement as a protocol (epoch, boot token, nav counter), and UI mode preparing the device before you press Run. These are deliberately Playwright's ideas mapped to mobile — `appReset` is the closest thing a device has to a fresh browser context, prepared devices are pre-warmed contexts — because a one-line `clearState: true` is simple, but paying 5–13 seconds for it before every flow is the tax this page exists to remove.
