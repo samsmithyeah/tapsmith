@@ -90,8 +90,8 @@ what is deliberately not covered.
 
 ## CI
 
-GitHub Actions runs 8 parallel jobs: `proto-lint`, `typescript`, `rust`, `rust-macos`, `android`,
-`website`, `test-app`, `ui-web`. All must pass. See `.github/workflows/ci.yml`.
+GitHub Actions runs 9 parallel jobs: `proto-lint`, `typescript`, `rust`, `rust-macos`, `android`,
+`website`, `test-app`, `react-native`, `ui-web`. All must pass. See `.github/workflows/ci.yml`.
 
 Device E2E runs separately on every PR: `e2e-android.yml` (ubuntu + KVM emulator, 5 shards) and
 `e2e-ios.yml` (macOS simulators, 5 shards).

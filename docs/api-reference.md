@@ -375,6 +375,8 @@ Bring the app to a known state — the same reset the runner performs for the de
 2. **restart** — terminate and relaunch, data kept;
 3. **clear** — wipe app data and relaunch.
 
+Note that on an app with no in-app reset hook, the default warm request falls back to **restart, which keeps app data** — pass `mode: "clear"` when you need an isolation-grade wipe.
+
 ```typescript
 const result = await device.resetApp()                       // warm, falling back as needed
 await device.resetApp({ mode: "clear", fallback: false })     // exactly a clear, or throw
@@ -1504,7 +1506,7 @@ describe("custom config", () => {
 | `video`      | `VideoMode \| Partial<VideoConfig>`         | Video recording configuration. See the [Video recording](#video-recording) section below. |
 | `appState`   | `string`                                    | Path to saved app state archive to restore; `""` means clear |
 | `appReset`   | `'auto' \| 'clear' \| 'restart' \| 'warm' \| 'none'` | How the app is reset before tests in this scope. See [Test isolation](./writing-tests.md#test-isolation). |
-| `appResetScope` | `'auto' \| 'file' \| 'test'`            | Reset once per file or before every test (`auto`: per test with in-app hooks, per file in scopes with `beforeAll`) |
+| `appResetScope` | `'auto' \| 'file' \| 'test'`            | Reset once per file or before every test (`auto` resolves to per file; opt into per-test with `'test'`) |
 | `appResetColdEvery` | `number`                               | Cold-relaunch every N warm resets (default 10; 0 = off) |
 
 The following device-shaping fields may **only** be set on a project's

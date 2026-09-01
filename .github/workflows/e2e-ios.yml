@@ -183,6 +183,7 @@ jobs:
           path: e2e/fixtures/TapsmithTestApp.app
           key: test-app-ios-${{ hashFiles('test-app/app/**', 'test-app/assets/**',
             'test-app/package-lock.json', 'test-app/app.json',
+            'test-app/metro.config.js',
             'packages/tapsmith-react-native/src/**',
             'packages/tapsmith-react-native/package.json') }}
 
@@ -338,7 +339,10 @@ jobs:
         with:
           path: e2e/fixtures/TapsmithTestApp.app
           key: test-app-ios-${{ hashFiles('test-app/app/**', 'test-app/assets/**',
-            'test-app/package-lock.json', 'test-app/app.json') }}
+            'test-app/package-lock.json', 'test-app/app.json',
+            'test-app/metro.config.js',
+            'packages/tapsmith-react-native/src/**',
+            'packages/tapsmith-react-native/package.json') }}
 
       - name: Download test app
         if: steps.test-app-cache.outputs.cache-hit != 'true'
@@ -424,7 +428,9 @@ jobs:
           path: ${{ env.AUTH_STATE_ARCHIVE }}
           key: auth-state-ios-${{ env.AUTH_STATE_CACHE_VERSION }}-${{
             hashFiles('test-app/app/**', 'test-app/assets/**',
-            'test-app/package-lock.json', 'test-app/app.json') }}-${{
+            'test-app/package-lock.json', 'test-app/app.json',
+            'test-app/metro.config.js', 'packages/tapsmith-react-native/src/**',
+            'packages/tapsmith-react-native/package.json') }}-${{
             hashFiles('e2e/tests/auth.setup.ts', 'e2e/fixtures.ts', 'e2e/screens/**') }}
 
       - name: Wait for simulator boot

@@ -39,7 +39,9 @@ That is the whole integration. **No Tapsmith config changes**: `appReset: 'auto'
 
 ### Release builds for e2e
 
-Release builds strip `__DEV__`. Set `EXPO_PUBLIC_TAPSMITH_HOOKS=1` in the environment of the build that your tests run against (the repo's own e2e workflows do this). Never ship a build with the flag to users: a reset link can clear local storage and navigate the app.
+Release builds strip `__DEV__`. Set `EXPO_PUBLIC_TAPSMITH_HOOKS=1` in the environment of the build that your tests run against (the repo's own e2e workflows do this).
+
+> **Warning: never ship a build with the flag to users.** With the hooks compiled in, anything that can open your app's URL scheme — another app, a webpage — can wipe its local storage and navigate it. The flag is inlined at build time, so the only guard is the build pipeline itself: set `EXPO_PUBLIC_TAPSMITH_HOOKS=1` only in the job that produces your test build, and make sure store/production release jobs never export it (a shared CI environment or `.env` file is the classic leak).
 
 
 ## What a warm reset does not clear

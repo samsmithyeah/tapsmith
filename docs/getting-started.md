@@ -81,7 +81,7 @@ If anything is missing, `tapsmith doctor` prints the exact command to fix it. Ru
 
 ## Make runs faster (optional, one line)
 
-Tapsmith resets your app between test files by wiping its data and cold-launching — several seconds per file. React Native / Expo apps can do far better: mount `@tapsmith/react-native` once at the root and Tapsmith resets the app **in-process, before every test, in well under a second** — no config changes.
+Tapsmith resets your app between test files by wiping its data and cold-launching — several seconds per file. React Native / Expo apps can do far better: mount `@tapsmith/react-native` once at the root and Tapsmith resets the app **in-process, in well under a second** — no config changes. Files that need a fresh app before every test opt in with one more line: `test.use({ appResetScope: "test" })` — still warm, still sub-second.
 
 ```tsx
 import { TapsmithTestHooks } from "@tapsmith/react-native"
@@ -89,7 +89,7 @@ import { TapsmithTestHooks } from "@tapsmith/react-native"
 <TapsmithTestHooks urlPrefix={Linking.createURL("/")} clear={[AsyncStorage]} />
 ```
 
-See the [Warm app reset guide](warm-reset.md).
+See the [Warm app reset guide](warm-reset.md) — including why the hooks must only ever be compiled into test builds, never a store release.
 
 ## Manual Configuration
 

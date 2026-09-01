@@ -7,9 +7,10 @@ describe("getByLabel", () => {
   describe("text fields", () => {
     beforeAll(async ({ device }) => {
       // Deep link rather than tapping the home card: after a background
-      // preparation on Android the home list's top items can be missing from
-      // the accessibility tree until the next gesture (see the "Android:
-      // stale tree after idle prepare" note in docs/warm-reset.md).
+      // preparation on Android the home list's top items were once seen
+      // missing from the accessibility tree until the next gesture (not
+      // reproducible with current builds, but the deep link is also how
+      // every other file enters its screen).
       await openScreen(device, "/login")
     })
 
