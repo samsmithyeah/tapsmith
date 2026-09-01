@@ -2316,13 +2316,22 @@ html, body, #app {
 }
 /* The connect hint pinned between the header and the feed while no agent is
    attached — the feed itself is rarely empty (background preparation writes
-   rows), so the hint cannot live in the empty state alone. */
+   rows), so the hint cannot live in the empty state alone. Collapsed to a
+   single disclosure line so the feed keeps the panel's height. */
 .mcp-setup-pinned {
-  padding: 10px;
+  padding: 5px 10px;
   border-bottom: 1px solid var(--border);
   font-size: 11px;
   flex-shrink: 0;
 }
+.mcp-setup-pinned > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-weight: 600;
+  user-select: none;
+}
+.mcp-setup-pinned > summary:hover { color: var(--fg); }
+.mcp-setup-pinned[open] > summary { margin-bottom: 8px; }
 .mcp-setup-title {
   font-weight: 600;
   color: var(--fg);

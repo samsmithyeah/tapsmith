@@ -103,11 +103,13 @@ export function DeviceActivityPanel({ mcpUrl, clientName, clientVersion, clients
 
       {/* Pinned outside the scrolling feed: device activity (a prepare after
           every run) keeps the feed non-empty, so an empty-state-only hint
-          would never be seen. Disappears the moment an agent connects. */}
+          would never be seen. Collapsed to one line so the feed keeps the
+          room; disappears the moment an agent connects. */}
       {!connected && mcpUrl && (
-        <div class="mcp-setup-pinned" data-testid="mcp-setup-hint">
-          <McpSetupHint mcpUrl={mcpUrl} />
-        </div>
+        <details class="mcp-setup-pinned" data-testid="mcp-setup-hint">
+          <summary>Connect your AI agent</summary>
+          <McpSetupHint mcpUrl={mcpUrl} title={false} />
+        </details>
       )}
       <div class="mcp-feed" ref={feedRef} role="log" aria-label="Device activity feed">
         {feed.length === 0
@@ -239,12 +241,12 @@ function CopyableCommand({ label, command }: { label: string; command: string })
   );
 }
 
-function McpSetupHint({ mcpUrl }: { mcpUrl: string }) {
+function McpSetupHint({ mcpUrl, title = true }: { mcpUrl: string; title?: boolean }) {
   const claudeCommand = `claude mcp add tapsmith-ui --transport http ${mcpUrl}`;
 
   return (
     <div class="mcp-setup">
-      <div class="mcp-setup-title">Connect your AI agent</div>
+      {title && <div class="mcp-setup-title">Connect your AI agent</div>}
       <CopyableCommand label="MCP endpoint" command={mcpUrl} />
       <CopyableCommand label="Claude Code" command={claudeCommand} />
     </div>

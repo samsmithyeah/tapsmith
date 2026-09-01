@@ -157,6 +157,10 @@ test.describe("MCP panel", () => {
 
     const hint = mcp.setupHint
     await expect(hint).toContainText("Connect your AI agent")
+    // Collapsed to one line by default; the copyable commands are a click away.
+    await expect(hint.getByText("MCP endpoint")).toBeHidden()
+    await hint.locator("summary").click()
+    await expect(hint.getByText("http://127.0.0.1:9274/mcp", { exact: true })).toBeVisible()
 
     // Background preparation keeps the feed non-empty; the hint must survive it.
     ui.send({
