@@ -94,7 +94,9 @@ GitHub Actions runs 9 parallel jobs: `proto-lint`, `typescript`, `rust`, `rust-m
 `website`, `test-app`, `react-native`, `ui-web`. All must pass. See `.github/workflows/ci.yml`.
 
 Device E2E runs separately on every PR: `e2e-android.yml` (ubuntu + KVM emulator, 5 shards) and
-`e2e-ios.yml` (macOS simulators, 5 shards).
+`e2e-ios.yml` (macOS simulators, 5 shards). `e2e-android-hookless.yml` covers the hook-less reset
+path (test app built without `EXPO_PUBLIC_TAPSMITH_HOOKS`) weekly, on manual dispatch, and on PRs
+touching the reset-path sources.
 
 ## npm packaging & releases
 
