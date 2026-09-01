@@ -1,5 +1,6 @@
 import { defineConfig } from "tapsmith"
 import { RESET_APP_DEEP_LINK } from "./reset-app-deep-link.mjs"
+import { ciProjects } from "./ci-projects.mjs"
 
 export default defineConfig({
   apk: "./fixtures/app-release.apk",
@@ -21,21 +22,7 @@ export default defineConfig({
   agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",
   agentTestApk:
     "../agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
-  projects: [
-    {
-      name: "authentication",
-      testMatch: ["**/auth.setup.ts"],
-    },
-    {
-      name: "default",
-      testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts", "**/*.ios.test.ts"],
-    },
-    {
-      name: "authenticated",
-      dependencies: ["authentication"],
-      use: { appState: "./tapsmith-results/auth-state-authentication.tar.gz" },
-      testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
-    },
-  ],
+  // authentication → default → authenticated; see ci-projects.mjs for how the
+  // auth setup is skipped when the workflow restored a cached auth archive.
+  projects: ciProjects({ testIgnore: ["**/*.ios.test.ts"] }),
 })
