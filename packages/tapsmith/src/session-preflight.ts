@@ -307,6 +307,11 @@ export async function executeAppReset(
         resetDeepLink: ctx.config.resetAppDeepLink,
         forceCold: options.forceCold,
         coldEveryNResets: ctx.config.appResetColdEvery ?? DEFAULT_APP_RESET_COLD_EVERY,
+        // A declared warm policy promises state-clearing; when warm cannot
+        // run (or land), a restart keeps persisted data and does not deliver
+        // it — fall to clear. Explicit device.resetApp() calls keep the
+        // gentler restart fallback.
+        fallbackToClear: action.kind === 'warm',
       });
       for (const s of result.steps) {
         steps.push({ name: s.name, durationMs: s.durationMs, ok: s.ok, ...(s.detail ? { detail: s.detail } : {}) });

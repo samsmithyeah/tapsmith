@@ -233,6 +233,13 @@ export interface ResetAppRequestOptions {
   idleTimeoutMs?: number;
   /** Route the reset should land on (default "/"). */
   targetPath?: string;
+  /**
+   * When warm cannot run (or land), fall back to clear instead of restart.
+   * Set by the runner's declared isolation policy — its promise is
+   * state-clearing, and a restart keeps persisted data. Explicit
+   * `device.resetApp()` calls keep the gentler restart fallback.
+   */
+  fallbackToClear?: boolean;
 }
 
 export interface ResetAppStep {
@@ -781,6 +788,7 @@ export class TapsmithGrpcClient {
       waitForIdle: options.waitForIdle ?? true,
       idleTimeoutMs: options.idleTimeoutMs ?? 0,
       targetPath: options.targetPath ?? '/',
+      fallbackToClear: options.fallbackToClear ?? false,
     }, 600_000);
   }
 

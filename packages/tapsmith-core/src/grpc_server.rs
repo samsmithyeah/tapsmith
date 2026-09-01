@@ -4260,15 +4260,24 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     }
                 }
                 if marker.is_none() && self.app_is_running(&req.package_name).await == Some(false) {
-                    no_hook_reason = Some(
+                    no_hook_reason =
+                        Some(format!(
                         "warm reset requested but the app is not running (nothing to acknowledge \
-                         the hook); restarted instead"
-                            .to_string(),
-                    );
+                         the hook); {} instead",
+                        if req.fallback_to_clear { "cleared" } else { "restarted" }
+                    ));
                 }
             }
         }
-        let epoch_before = marker.as_ref().map(|m| m.epoch).unwrap_or(0);
+        // The remembered marker only stands in when the live read missed AND
+        // the app is (as far as we can tell) still running — a dead app has
+        // nothing to acknowledge the hook, and the plan says so instead.
+        let remembered =
+            if mode == app_reset::ResetMode::Warm && marker.is_none() && no_hook_reason.is_none() {
+                self.last_hooks_marker.read().await.clone()
+            } else {
+                None
+            };
 
         let mut plan = {
             let state = self.reset_policy.read().await;
@@ -4277,13 +4286,19 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 &app_reset::PlanInput {
                     mode,
                     marker: marker.as_ref(),
+                    remembered_marker: remembered.as_ref(),
                     reset_deep_link: &req.reset_deep_link,
                     force_cold: req.force_cold,
                     cold_every_n: req.cold_every_n_resets,
                     supports_cold_delivery: platform == Platform::Ios && !is_physical,
+                    fallback_to_clear: req.fallback_to_clear,
                 },
             )
         };
+        // The rungs acknowledge against whichever baseline the plan used: the
+        // live marker, or the remembered epoch/boot when the read missed.
+        let marker = marker.or(remembered);
+        let epoch_before = marker.as_ref().map(|m| m.epoch).unwrap_or(0);
         if let (Some(reason), app_reset::FirstStep::Restart | app_reset::FirstStep::Clear) =
             (no_hook_reason, &plan.first)
         {

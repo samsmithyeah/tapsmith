@@ -69,7 +69,7 @@ export default function HomeScreen() {
 2. To reset, Tapsmith opens `<prefix><route>?__tapsmith_reset=1&nonce=…` — a normal deep link, so your router lands on `route` while the hooks clear the stores and run `onReset`.
 3. The hooks bump `epoch`. Tapsmith waits for the epoch to advance — that is the **acknowledgement**; no fixed sleeps. If your handler throws, the epoch still advances and the marker carries `err=…`, so Tapsmith reports the failure and falls back instead of hanging.
 
-The whole ladder — warm → restart → clear — runs in the daemon (`ResetApp`), and the trace records which rung ran and why: *"warm reset via @tapsmith/react-native (epoch 4→5), 0.4s"*, or *"warm reset via in-app hooks failed (…); fell back to restart"*.
+The whole ladder — warm → restart → clear — runs in the daemon (`ResetApp`), and the trace records which rung ran and why: *"warm reset via @tapsmith/react-native (epoch 4→5), 0.4s"*, or *"warm reset via in-app hooks failed (…); fell back to restart"*. Two robustness details: a marker read that misses mid-transition (a busy screen, heavy trace capture) does not downgrade the reset — once hooks have been seen in a session, the daemon acknowledges against the last epoch it saw, since the epoch only advances when a reset is delivered and the `boot` token covers an unnoticed relaunch. And when a *declared* warm policy genuinely cannot run warm, it falls back to a **clear**, not a restart — the policy promised state-clearing (only the explicit `device.resetApp()` API uses the gentler restart fallback).
 
 ### Bounding the warm window on iOS simulators
 

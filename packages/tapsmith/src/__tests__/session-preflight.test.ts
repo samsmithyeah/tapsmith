@@ -222,6 +222,7 @@ describe('session-preflight', () => {
       resetDeepLink: 'app:///__reset',
       forceCold: true,
       coldEveryNResets: 4,
+      fallbackToClear: false,
     });
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
     expect(report).toMatchObject({ origin: 'inline', modeUsed: 'restart', fellBack: false });
@@ -289,6 +290,24 @@ describe('session-preflight', () => {
     } finally {
       stderr.mockRestore();
     }
+  });
+
+  it('a warm policy asks the daemon to fall back to clear, not restart', async () => {
+    // The declared policy's promise is state-clearing; a restart keeps
+    // persisted data. Explicit device.resetApp() calls are unaffected — this
+    // flag is set only on the runner's policy path.
+    const ctx = makeContext();
+    await executeAppReset(ctx, WARM_TEST, { phase: 'before test' });
+    expect(ctx.device._resetApp).toHaveBeenCalledWith(
+      'com.example.app',
+      expect.objectContaining({ mode: 'warm', fallbackToClear: true }),
+    );
+
+    await executeAppReset(ctx, CLEAR_FILE, { phase: 'file reset' });
+    expect(ctx.device._resetApp).toHaveBeenLastCalledWith(
+      'com.example.app',
+      expect.objectContaining({ mode: 'clear', fallbackToClear: false }),
+    );
   });
   it('propagates a daemon reset failure', async () => {
     const ctx = makeContext();

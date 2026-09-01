@@ -605,6 +605,7 @@ export class Device {
       coldEveryNResets: options.coldEveryNResets,
       waitForIdle: options.waitForIdle,
       targetPath: options.target,
+      fallbackToClear: options.fallbackToClear,
     };
     if (mode !== 'warm') await this._disposeWebViewManager();
     await withActionProgress('resetApp', packageName,
@@ -1761,6 +1762,12 @@ export interface InternalAppResetOptions extends AppResetOptions {
   forceCold?: boolean;
   coldEveryNResets?: number;
   waitForIdle?: boolean;
+  /**
+   * Warm falls back to clear instead of restart. Set by the runner's declared
+   * isolation policy (its promise is state-clearing; a restart keeps data);
+   * public `device.resetApp()` keeps the gentler restart fallback.
+   */
+  fallbackToClear?: boolean;
 }
 
 export interface AppResetResult {

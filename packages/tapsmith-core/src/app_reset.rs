@@ -311,12 +311,23 @@ pub struct ResetPlan {
     /// Explanation attached when the requested mode could not be honoured
     /// as asked (e.g. warm requested, no hook available).
     pub reason: Option<String>,
+    /// The rung a failed warm step falls to. Restart for explicit
+    /// `device.resetApp()` calls (gentle: data kept); Clear for the runner's
+    /// declared isolation policy, whose promise is state-clearing.
+    pub warm_fallback: ResetMode,
 }
 
 /// Inputs the daemon has when planning a reset.
 pub struct PlanInput<'a> {
     pub mode: ResetMode,
+    /// Marker read from the live hierarchy just now (None = read missed).
     pub marker: Option<&'a HooksMarker>,
+    /// Marker seen earlier this session, kept because compiled-in hooks
+    /// cannot vanish: when the live read misses (mid-transition tree, capture
+    /// load), warm is still attempted against this remembered epoch/boot
+    /// baseline — the epoch only advances when a reset is delivered, and the
+    /// boot token covers an app that restarted unnoticed.
+    pub remembered_marker: Option<&'a HooksMarker>,
     pub reset_deep_link: &'a str,
     pub force_cold: bool,
     pub cold_every_n: u32,
@@ -324,50 +335,87 @@ pub struct PlanInput<'a> {
     /// "cold" decision maps to a restart step so the bounded warm window
     /// still exists on every platform.
     pub supports_cold_delivery: bool,
+    /// See [`ResetPlan::warm_fallback`].
+    pub fallback_to_clear: bool,
 }
 
 pub fn decide(state: &ResetPolicyState, input: &PlanInput<'_>) -> ResetPlan {
+    let warm_fallback = if input.fallback_to_clear {
+        ResetMode::Clear
+    } else {
+        ResetMode::Restart
+    };
+    let fallback_first = if input.fallback_to_clear {
+        FirstStep::Clear
+    } else {
+        FirstStep::Restart
+    };
+    let fallback_verb = if input.fallback_to_clear {
+        "cleared"
+    } else {
+        "restarted"
+    };
     match input.mode {
         ResetMode::Restart => ResetPlan {
             first: FirstStep::Restart,
             reason: None,
+            warm_fallback,
         },
         ResetMode::Clear => ResetPlan {
             first: FirstStep::Clear,
             reason: None,
+            warm_fallback,
         },
         ResetMode::Warm => {
             let cold = state.cold_reason(input.force_cold, input.cold_every_n);
-            let hook_available = input
-                .marker
-                .map(|m| !m.url_prefix.is_empty())
-                .unwrap_or(false)
-                || !input.reset_deep_link.is_empty();
+            let has_url = |m: &&HooksMarker| !m.url_prefix.is_empty();
+            let live_hooks = input.marker.filter(has_url).is_some();
+            let remembered_hooks = input.remembered_marker.filter(has_url).is_some();
+            let hook_available =
+                live_hooks || remembered_hooks || !input.reset_deep_link.is_empty();
             if !hook_available {
                 return ResetPlan {
-                    first: FirstStep::Restart,
-                    reason: Some(
+                    first: fallback_first,
+                    reason: Some(format!(
                         "warm reset requested but the app exposes no reset hook \
-                         (@tapsmith/react-native or resetAppDeepLink); restarted instead"
-                            .to_string(),
-                    ),
+                         (@tapsmith/react-native or resetAppDeepLink); {fallback_verb} instead"
+                    )),
+                    warm_fallback,
                 };
             }
             if let (Some(reason), false) = (&cold, input.supports_cold_delivery) {
-                // No cold delivery on this platform: honour the bound with a restart.
+                // No cold delivery on this platform: honour the bound with a restart
+                // (or a clear, when the caller's fallback promises state-clearing).
                 return ResetPlan {
-                    first: FirstStep::Restart,
+                    first: fallback_first,
                     reason: Some(reason.describe()),
+                    warm_fallback,
                 };
             }
-            if input
-                .marker
-                .map(|m| !m.url_prefix.is_empty())
-                .unwrap_or(false)
-            {
+            if live_hooks || remembered_hooks {
+                let mut reasons: Vec<String> = Vec::new();
+                if !live_hooks {
+                    // The live read missed but the hooks were seen earlier this
+                    // session: attempt warm against the remembered epoch/boot
+                    // baseline instead of giving up (the miss is a transient
+                    // hierarchy gap, not a vanished hook).
+                    reasons.push(
+                        "live marker read missed; acknowledging against the epoch seen \
+                         earlier this session"
+                            .to_string(),
+                    );
+                }
+                if let Some(c) = &cold {
+                    reasons.push(c.describe());
+                }
                 ResetPlan {
                     first: FirstStep::WarmHooks { cold: cold.clone() },
-                    reason: cold.map(|c| c.describe()),
+                    reason: if reasons.is_empty() {
+                        None
+                    } else {
+                        Some(reasons.join("; "))
+                    },
+                    warm_fallback,
                 }
             } else {
                 ResetPlan {
@@ -376,6 +424,7 @@ pub fn decide(state: &ResetPolicyState, input: &PlanInput<'_>) -> ResetPlan {
                         cold: cold.clone(),
                     },
                     reason: cold.map(|c| c.describe()),
+                    warm_fallback,
                 }
             }
         }
@@ -425,6 +474,7 @@ pub async fn run_ladder(
     // hook or link available) is already a fallback before any step runs.
     let mut fell_back =
         plan.reason.is_some() && matches!(plan.first, FirstStep::Restart | FirstStep::Clear);
+    let warm_fallback = plan.warm_fallback;
     let mut reasons: Vec<String> = plan.reason.into_iter().collect();
 
     async fn timed<T>(
@@ -461,7 +511,7 @@ pub async fn run_ladder(
                 }
                 Err(e) => {
                     reasons.push(format!("warm reset via in-app hooks failed ({e})"));
-                    Some(ResetMode::Restart)
+                    Some(warm_fallback)
                 }
             }
         }
@@ -487,7 +537,7 @@ pub async fn run_ladder(
                 }
                 Err(e) => {
                     reasons.push(format!("warm reset via resetAppDeepLink failed ({e})"));
-                    Some(ResetMode::Restart)
+                    Some(warm_fallback)
                 }
             }
         }
@@ -767,11 +817,73 @@ mod tests {
         PlanInput {
             mode,
             marker,
+            remembered_marker: None,
             reset_deep_link: link,
             force_cold: false,
             cold_every_n: 10,
             supports_cold_delivery: true,
+            fallback_to_clear: false,
         }
+    }
+
+    #[test]
+    fn missed_live_read_still_plans_warm_against_the_remembered_baseline() {
+        // A mid-transition hierarchy misses the marker; hooks seen earlier
+        // this session must keep warm alive (epoch only advances when a reset
+        // is delivered; a relaunch is covered by the boot token), instead of
+        // silently downgrading isolation to a restart.
+        let m = marker();
+        let plan = decide(
+            &ResetPolicyState::default(),
+            &PlanInput {
+                remembered_marker: Some(&m),
+                ..input(ResetMode::Warm, None, "")
+            },
+        );
+        assert_eq!(plan.first, FirstStep::WarmHooks { cold: None });
+        assert!(plan
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("live marker read missed"));
+    }
+
+    #[test]
+    fn policy_resets_fall_back_to_clear_not_restart() {
+        // The runner's warm policy promises state-clearing; when warm cannot
+        // run, a restart (data kept) does not deliver it — clear does.
+        let plan = decide(
+            &ResetPolicyState::default(),
+            &PlanInput {
+                fallback_to_clear: true,
+                ..input(ResetMode::Warm, None, "")
+            },
+        );
+        assert_eq!(plan.first, FirstStep::Clear);
+        assert_eq!(plan.warm_fallback, ResetMode::Clear);
+        assert!(plan
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("cleared instead"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_warm_delivery_falls_to_clear_when_the_policy_asks() {
+        let mut ops = MockOps::new();
+        ops.warm = Err("epoch did not advance".into());
+        let m = marker();
+        let plan = decide(
+            &ResetPolicyState::default(),
+            &PlanInput {
+                fallback_to_clear: true,
+                ..input(ResetMode::Warm, Some(&m), "")
+            },
+        );
+        let out = run_ladder(&ops, plan, true).await;
+        assert_eq!(out.mode_used, ResetMode::Clear);
+        assert!(out.fell_back);
+        assert_eq!(ops.calls(), vec!["warm_hooks(cold=false)", "clear"]);
     }
 
     #[test]
@@ -972,6 +1084,7 @@ mod tests {
         ResetPlan {
             first,
             reason: None,
+            warm_fallback: ResetMode::Restart,
         }
     }
 
@@ -1018,6 +1131,7 @@ mod tests {
                     cold: Some(ColdReason::RetryAttempt),
                 },
                 reason: Some("cold relaunch: retry attempt".into()),
+                warm_fallback: ResetMode::Restart,
             },
             true,
         )
