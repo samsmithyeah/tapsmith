@@ -2087,6 +2087,10 @@ html, body, #app {
   color: var(--fg);
   font-weight: 500;
 }
+.rc-mcp-client.listening {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
 
 /* ─── MCP Panel ─── */
 

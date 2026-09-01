@@ -324,9 +324,12 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
           aria-expanded={mcpPanelOpen}
           title={mcpConnected ? `MCP agents:\n${agentsTooltip(mcpAgents)}\n(click to toggle the device activity panel)` : 'MCP: listening (click to toggle the device activity panel)'}
         >
+          {/* A status chip, not the panel's name: it reports the agent
+              connection ("MCP · Listening" / "MCP · claude-code") and clicking
+              a status for its details is the familiar pattern. */}
           <span class={`mcp-dot ${mcpConnected ? 'connected' : 'listening'}`} />
           MCP
-          {mcpConnected && <span class="rc-mcp-client">{mcpLabel}</span>}
+          <span class={`rc-mcp-client${mcpConnected ? '' : ' listening'}`}>· {mcpConnected ? mcpLabel : 'Listening'}</span>
         </button>
         <span class="rc-divider" />
         <select
