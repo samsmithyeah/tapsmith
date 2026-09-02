@@ -202,19 +202,23 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
 
   // Adopting the primary device: the CLI already installed the app, started
   // the agent and cold-launched. Resolve the artifact paths recovery needs,
-  // verify the session, and hand that launch to the first file as its
-  // prepared state.
+  // verify the session, and — on the initial spawn only — hand that launch
+  // to the first file as its prepared state. A respawned worker re-adopts a
+  // daemon whose app has run tests since; claiming `clear · file` there
+  // would skip the first file's reset over the previous run's state.
   if (msg.adoptPrimary) {
     await resolveArtifactPaths(msg);
     sendProgress('attaching to the primary device session');
     await ensureSessionReady(sessionContext(msg.deviceSerial), 'UI worker adopt');
     await probeResetCapabilities(sessionContext(msg.deviceSerial));
-    preparedDevice = {
-      policy: { mode: 'clear', scope: 'file' },
-      preparedAt: Date.now(),
-      durationMs: 0,
-      source: 'startup launch',
-    };
+    preparedDevice = msg.adoptPrepared
+      ? {
+        policy: { mode: 'clear', scope: 'file' },
+        preparedAt: Date.now(),
+        durationMs: 0,
+        source: 'startup launch',
+      }
+      : undefined;
     finishInit();
     return;
   }

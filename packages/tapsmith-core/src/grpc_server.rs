@@ -44,11 +44,13 @@ const IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS: u64 = 300;
 // command timeout while the agent is still (legitimately) waiting.
 const IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS: u64 = 21_000;
 // Budget for the warm in-process delivery attempt on simulators: must exceed
-// the agent-side warm navigation window (5s) plus the pre-open hierarchy
-// snapshot, activate + open, and gRPC round-trip. Deliberately tight — when
+// the agent's own wait — the hierarchy-change window (5s), or the hooks
+// epoch/nav acknowledgement wait (8s) — plus the pre-open hierarchy snapshot,
+// activate + open, and gRPC round-trip; otherwise a slow-but-successful ack
+// times out daemon-side and is recorded as a warm failure. Still tight — when
 // warm delivery doesn't land, this whole budget is pure overhead added in
 // front of the cold terminate -> openurl path.
-const IOS_OPEN_DEEP_LINK_WARM_TIMEOUT_MS: u64 = 8_000;
+const IOS_OPEN_DEEP_LINK_WARM_TIMEOUT_MS: u64 = 11_000;
 // How many times to (re-)deliver a real iOS simulator deep link (the whole
 // terminate -> openurl -> verify cycle) before giving up. Covers BOTH failure
 // modes — a transient `simctl openurl` error (e.g. NSPOSIXErrorDomain code=60)
@@ -64,6 +66,12 @@ const IOS_OPEN_DEEP_LINK_MAX_ATTEMPTS: u32 = 3;
 // waiting for a hierarchy diff that never came; navigation is now judged by
 // the foreground component, like Playwright's `goto` judges commit, not paint.
 const ANDROID_DEEP_LINK_SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
+// Declared resets wait for the in-app hook's epoch acknowledgement instead.
+// Each poll is a full UIAutomator dump, which alone costs 1-3s on a cold
+// software-GPU emulator, and the reset pipeline (storage clear + navigation)
+// runs before the epoch bumps — 3s guaranteed a miss under load and sent
+// every warm reset down the clear rung. Aligned with the iOS agent's 8s.
+const ANDROID_HOOK_ACK_TIMEOUT: Duration = Duration::from_secs(8);
 // Re-fire the intent once if the target still isn't resumed after this long
 // — a busy Activity on a slow emulator can silently drop the first one.
 const ANDROID_DEEP_LINK_REFIRE_AFTER: Duration = Duration::from_millis(1500);
@@ -1501,7 +1509,12 @@ impl TapsmithServiceImpl {
                     if satisfied {
                         break;
                     }
-                    if elapsed >= ANDROID_DEEP_LINK_SETTLE_TIMEOUT {
+                    let deadline = if ack_epoch_gt.is_some() {
+                        ANDROID_HOOK_ACK_TIMEOUT
+                    } else {
+                        ANDROID_DEEP_LINK_SETTLE_TIMEOUT
+                    };
+                    if elapsed >= deadline {
                         if ack_epoch_gt.is_some() {
                             return Ok(self
                                 .action_error(
@@ -1509,7 +1522,7 @@ impl TapsmithServiceImpl {
                                     "ACTION_FAILED",
                                     format!(
                                         "in-app reset did not acknowledge within {}ms",
-                                        ANDROID_DEEP_LINK_SETTLE_TIMEOUT.as_millis()
+                                        deadline.as_millis()
                                     ),
                                 )
                                 .await);
@@ -1753,6 +1766,10 @@ impl TapsmithServiceImpl {
                     tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
                     return Ok(());
                 }
+                // Terminate first (as launch_app's own clear path does): a
+                // running process flushes UserDefaults / caches on exit, which
+                // would resurrect state deleted from under it.
+                let _ = ios::device::terminate_app(serial, package_name).await;
                 match self.get_app_container_cached(serial, package_name).await {
                     Ok(ref container) => {
                         if let Err(e) = ios::device::clear_container(container).await {
@@ -8061,9 +8078,19 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
             // (`require_epoch_ack_echo`) — so a missed read here is just a
             // mid-transition hierarchy. Trust the delivery.
             None => {
-                let mut remembered = marker.clone();
-                remembered.epoch += 1;
-                *self.svc.last_hooks_marker.write().await = Some(remembered);
+                if cold {
+                    // A cold delivery relaunched the process: its boot token is
+                    // new and unknown here. Remembering the old boot with a
+                    // bumped epoch would make the next missed live read accept
+                    // any epoch >= 1 in the new process ("boot changed") before
+                    // that reset ran. Forget the baseline; the next reset's
+                    // live read re-establishes it.
+                    *self.svc.last_hooks_marker.write().await = None;
+                } else {
+                    let mut remembered = marker.clone();
+                    remembered.epoch += 1;
+                    *self.svc.last_hooks_marker.write().await = Some(remembered);
+                }
                 Ok(marker.epoch + 1)
             }
         }

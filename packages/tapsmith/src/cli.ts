@@ -402,11 +402,13 @@ async function ensureDaemonRunning(
   // free port instead; the resolved address is threaded to every consumer via
   // the config. A listener that does not answer is a stale daemon: kill it and
   // reuse the port so the --platform flag is always the current one.
+  let sharingWithLiveSession = false;
   try {
     const probe = new TapsmithGrpcClient(address);
     const alive = await probe.waitForReady(1_000);
     probe.close();
     if (alive) {
+      sharingWithLiveSession = true;
       const freePort = await pickFreePort();
       const requestedPort = requestedAddress.split(':').pop() ?? port;
       address = `localhost:${freePort}`;
@@ -430,7 +432,12 @@ async function ensureDaemonRunning(
   // <remote>" — match `local === tcp:18700` exactly so we don't try to remove
   // forwards whose remote side happens to be 18700 but whose host port is not
   // (which would print "listener 'tcp:18700' not found").
-  try {
+  //
+  // Skipped entirely when another live Tapsmith session owns the requested
+  // port: its agent forward and agent process are not stale, they are that
+  // session's — sweeping them would cut it off from its device, which is
+  // exactly what starting on a free port above set out to avoid.
+  if (!sharingWithLiveSession) try {
     const fwdList = execFileSync('adb', ['forward', '--list'], { encoding: 'utf-8' }).trim();
     for (const line of fwdList.split('\n')) {
       const [serial, local] = line.split(/\s+/);
@@ -448,12 +455,14 @@ async function ensureDaemonRunning(
   // listener squatting on this port, the new daemon's `adb forward` is
   // shadowed by the stale socket and every command silently routes to the
   // wrong device — see freeStaleAgentPort for the full rationale.
-  freeStaleAgentPort(18700, progress
-    ? ({ port, pid }) => progress.update('daemon', {
-      state: 'running',
-      detail: `cleared stale agent port ${port} (pid ${pid})`,
-    })
-    : undefined);
+  if (!sharingWithLiveSession) {
+    freeStaleAgentPort(18700, progress
+      ? ({ port, pid }) => progress.update('daemon', {
+        state: 'running',
+        detail: `cleared stale agent port ${port} (pid ${pid})`,
+      })
+      : undefined);
+  }
 
   // Start a fresh daemon
   const resolvedBin = process.env.TAPSMITH_DAEMON_BIN ?? daemonBin ?? findDaemonBin();

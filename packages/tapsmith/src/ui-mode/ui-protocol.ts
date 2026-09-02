@@ -755,6 +755,13 @@ export interface UIWorkerInitMessage {
    * prepared state for the first file.
    */
   adoptPrimary?: boolean
+  /**
+   * With `adoptPrimary`: the CLI's startup launch has not been consumed by
+   * any test yet, so it is this worker's `clear · file` prepared state. Only
+   * the initial spawn sets this — a respawned worker re-adopts a daemon whose
+   * app has run tests since, and must not claim a reset that never ran.
+   */
+  adoptPrepared?: boolean
 }
 
 /** Server → UI worker: run a test file. */

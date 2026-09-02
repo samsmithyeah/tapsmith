@@ -1542,6 +1542,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
             },
           },
           adopt,
+          true,
         ),
       );
     }
@@ -1651,6 +1652,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       onReady?: () => void
     },
     adopt?: AdoptTarget,
+    /** The adopted primary's startup launch is still unconsumed (initial spawn only). */
+    adoptPrepared = false,
   ): Promise<UIWorkerHandle> {
     // Kill any stale daemon on this port from a previous run or another
     // Tapsmith instance so we always get a fresh daemon with the correct
@@ -1801,6 +1804,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         config: workerConfig,
         screenshotDir: ctx.screenshotDir,
         adoptPrimary: !!adopt,
+        adoptPrepared: !!adopt && adoptPrepared,
       };
       child.send(initMsg);
     });

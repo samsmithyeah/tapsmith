@@ -22,6 +22,9 @@ describe('marker', () => {
   });
 
   it('caps a runaway error message so the marker stays small', () => {
+    // Truncation must not split a surrogate pair (encodeURIComponent would throw mid-render).
+    const emoji = formatMarker({ epoch: 1, urlPrefix: 'a:///', error: 'x'.repeat(199) + '💥'.repeat(10) });
+    expect(parseMarker(emoji)?.error).toBe('x'.repeat(199) + '💥…');
     const text = formatMarker({ epoch: 1, urlPrefix: 'a:///', error: 'x'.repeat(5000) });
     expect(text.length).toBeLessThan(400);
     expect(parseMarker(text)?.error).toBe(`${'x'.repeat(200)}…`);

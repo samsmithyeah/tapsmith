@@ -57,7 +57,10 @@ export function formatMarker(fields: MarkerFields): string {
     `url=${fields.urlPrefix}`,
   ];
   if (fields.error) {
-    const error = fields.error.length > MAX_ERROR_LENGTH ? `${fields.error.slice(0, MAX_ERROR_LENGTH)}…` : fields.error;
+    // Truncate by code point, not UTF-16 unit: a cut through a surrogate pair
+    // makes encodeURIComponent throw, and this runs during render.
+    const chars = Array.from(fields.error);
+    const error = chars.length > MAX_ERROR_LENGTH ? `${chars.slice(0, MAX_ERROR_LENGTH).join('')}…` : fields.error;
     parts.push(`err=${encodeURIComponent(error).replace(/'/g, '%27').replace(/"/g, '%22')}`);
   }
   return parts.join(';');
