@@ -394,9 +394,13 @@ async function handleRunFile(
   if (!config || !device) {
     throw new Error(`UI Worker ${workerId}: Not initialized`);
   }
-  // A background preparation that the server judged to satisfy this file's
-  // policy replaces whatever launch-time prepared state was pending.
-  if (preparedFor) preparedDevice = preparedFor;
+  // The server owns the prepared-state claim: it mirrors the startup launch
+  // into its readiness state and hands it back (or a background preparation)
+  // when it still satisfies this file's policy. It omits `preparedFor` when
+  // that claim was invalidated — a mirror gesture before the first run, a
+  // stale launch — so the launch-time record here must go too, or the runner
+  // would skip the file reset over a device the user has already touched.
+  preparedDevice = preparedFor;
 
   // Created BEFORE the between-files preflight so a stop that lands during
   // wake/unlock/app-reset is honored too — otherwise the abort IPC would be

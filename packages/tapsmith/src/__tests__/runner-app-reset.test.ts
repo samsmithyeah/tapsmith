@@ -274,6 +274,52 @@ describe('runner app reset (declared isolation)', () => {
     expect(d.device.restoreAppState).toHaveBeenCalledWith('com.example.app', path.resolve('/proj', './auth.tar.gz'));
   });
 
+  it('a nested describe inherits its parent appState instead of resetting to clear on entry', async () => {
+    const d = makeDevice();
+    pushContext();
+    tapsmithDescribe('authenticated', () => {
+      tapsmithTest.use({ appState: './auth.tar.gz' });
+      tapsmithTest('profile', async () => {});
+      tapsmithDescribe('settings', () => {
+        // Declares nothing: Playwright `use` semantics — the restored state
+        // is still what these tests run against.
+        tapsmithTest('notifications', async () => {});
+        tapsmithDescribe('deeper', () => {
+          tapsmithTest('theme', async () => {});
+        });
+      });
+      tapsmithDescribe('signed out', () => {
+        // An explicit empty appState still overrides the inherited archive.
+        tapsmithTest.use({ appState: '' });
+        tapsmithTest('landing', async () => {});
+      });
+    });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig()));
+
+    expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed', 'passed', 'passed']);
+    expect(resetCalls(d)).toEqual([
+      'resetApp:clear',                  // root
+      'restoreAppState', 'restartApp',   // authenticated: restore once
+      'resetApp:clear',                  // signed out: explicit appState ''
+    ]);
+  });
+
+  it('project-level appState cascades to nested describes (no clear on describe entry)', async () => {
+    const d = makeDevice();
+    pushContext();
+    tapsmithDescribe('dashboard', () => {
+      tapsmithTest('widgets', async () => {});
+    });
+    const ctx = popContext();
+    ctx.useOptions = { appState: './auth.tar.gz' };
+
+    await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig()));
+
+    expect(resetCalls(d)).toEqual(['restoreAppState', 'restartApp']);
+  });
+
   it('appState "" in a nested describe clears again; the same policy does not re-reset', async () => {
     const d = makeDevice();
     pushContext();

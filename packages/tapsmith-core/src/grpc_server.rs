@@ -4337,6 +4337,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             wait_for_idle: req.wait_for_idle,
             idle_timeout_ms,
         };
+        let consumes_streak = plan.consumes_warm_failure_streak;
         let outcome = app_reset::run_ladder(&ops, plan, req.allow_fallback).await;
 
         {
@@ -4350,6 +4351,9 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             }
             if outcome.error.is_none() {
                 state.record(&outcome);
+                if consumes_streak {
+                    state.consume_streak_valve();
+                }
             }
         }
 

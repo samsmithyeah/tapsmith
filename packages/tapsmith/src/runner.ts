@@ -897,15 +897,22 @@ async function runSuiteContext(
   // Apply test.use() overrides for this scope (cascading from parent).
   // `timeout` is handled separately via the device — it should only affect
   // assertion/action auto-wait, not the test-level safety timeout.
-  // `appState` is scope-local (not cascaded) and folded into the reset policy.
+  // `appState` is folded into the reset policy (and cascades through it).
   const { timeout: scopeTimeout, appState: scopeAppState, ...configOverrides } = ctx.useOptions ?? {};
   const opts: RunOptions = Object.keys(configOverrides).length > 0
     ? { ...parentOpts, config: { ...parentOpts.config, ...configOverrides } }
     : parentOpts;
 
   // The declared isolation policy for this scope. `appReset`/`appResetScope`
-  // cascade through `opts.config`; `appState` is this scope's own.
-  const policy = resolveAppResetPolicy({ appState: scopeAppState }, opts.config, opts.resetCapabilities);
+  // cascade through `opts.config`; `appState` cascades through the parent's
+  // resolved policy (Playwright `test.use` semantics), so a nested describe
+  // that declares nothing keeps its parent's restored state instead of
+  // resetting to clear on entry. An explicit `appState: ''` still overrides.
+  const policy = resolveAppResetPolicy(
+    { appState: scopeAppState ?? parentPolicy?.appState },
+    opts.config,
+    opts.resetCapabilities,
+  );
   const isRoot = parentPrefix === '';
   const policyChanged = !isRoot && !appResetPolicyEquals(policy, parentPolicy);
   const canReset = !!opts.sessionContext && !!opts.config.package && !!opts.device;

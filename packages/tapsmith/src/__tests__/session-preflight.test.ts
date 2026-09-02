@@ -160,7 +160,7 @@ describe('session-preflight', () => {
   it('startup launch clears + launches and reports a `clear` prepared state', async () => {
     const ctx = makeContext();
 
-    const prepared = await launchConfiguredApp(ctx, 'startup launch');
+    const prepared = await launchConfiguredApp(ctx, 'startup launch', { hooksProbeMs: 0 });
 
     expect(ctx.device.terminateApp).toHaveBeenCalledWith('com.example.app');
     expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
@@ -174,7 +174,7 @@ describe('session-preflight', () => {
   it('startup launch after a fresh install only launches (nothing to clear)', async () => {
     const ctx = makeContext();
 
-    const prepared = await launchConfiguredApp(ctx, 'worker startup launch', { freshInstall: true });
+    const prepared = await launchConfiguredApp(ctx, 'worker startup launch', { freshInstall: true, hooksProbeMs: 0 });
 
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
     expect(ctx.device.terminateApp).not.toHaveBeenCalled();
@@ -321,7 +321,7 @@ describe('session-preflight', () => {
       config: { package: undefined, activity: undefined },
     });
 
-    await expect(launchConfiguredApp(ctx, 'startup')).resolves.toMatchObject({ policy: CLEAR_FILE });
+    await expect(launchConfiguredApp(ctx, 'startup', { hooksProbeMs: 0 })).resolves.toMatchObject({ policy: CLEAR_FILE });
     expect(ctx.device.launchApp).not.toHaveBeenCalled();
 
     const report = await executeAppReset(ctx, CLEAR_FILE, { phase: 'file reset' });
@@ -405,7 +405,7 @@ describe('session-preflight', () => {
         .mockResolvedValueOnce(marker)
         .mockResolvedValue(marker);
 
-      await launchConfiguredApp(ctx, 'startup', { freshInstall: true });
+      await launchConfiguredApp(ctx, 'startup', { freshInstall: true, hooksProbeMs: 0 });
 
       expect((ctx as { capabilities?: { hooksDetected?: boolean } }).capabilities?.hooksDetected).toBe(true);
     });
@@ -526,7 +526,7 @@ describe('session-preflight', () => {
     });
     vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue(iosHierarchy);
 
-    await launchConfiguredApp(ctx, 'recovery');
+    await launchConfiguredApp(ctx, 'recovery', { hooksProbeMs: 0 });
 
     expect(ctx.device.openDeepLink).not.toHaveBeenCalled();
     expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
@@ -541,7 +541,7 @@ describe('session-preflight', () => {
       .mockResolvedValueOnce({ requestId: '1', hierarchyXml: '  ', errorMessage: '' })
       .mockResolvedValueOnce({ requestId: '1', hierarchyXml: '<hierarchy><node /></hierarchy>', errorMessage: '' });
 
-    await launchConfiguredApp(ctx, 'startup');
+    await launchConfiguredApp(ctx, 'startup', { hooksProbeMs: 0 });
 
     // 3 hierarchy calls (2 empty + 1 non-empty) + the reset-capabilities probe
     expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(4);
@@ -587,7 +587,7 @@ describe('session-preflight', () => {
         errorMessage: '',
       });
 
-      await launchConfiguredApp(ctx, 'startup launch', { freshInstall: true });
+      await launchConfiguredApp(ctx, 'startup launch', { freshInstall: true, hooksProbeMs: 0 });
 
       expect(ctx.capabilities).toEqual({ hooksDetected: true });
     });
@@ -637,6 +637,36 @@ describe('session-preflight', () => {
       await executeAppReset(ctx, WARM_TEST, { phase: 'before test' });
 
       expect((ctx as { capabilities?: { hooksDetected?: boolean } }).capabilities?.hooksDetected).toBe(true);
+    });
+
+    it('a session-level probe keeps looking for the marker while the app is still mounting', async () => {
+      const ctx = makeContext();
+      vi.mocked(ctx.client.getUiHierarchy)
+        .mockResolvedValueOnce({ requestId: '1', hierarchyXml: '<hierarchy><node package="com.example.app" text="splash" /></hierarchy>', errorMessage: '' })
+        .mockRejectedValueOnce(new Error('agent busy'))
+        .mockResolvedValueOnce({
+          requestId: '3',
+          hierarchyXml: '<hierarchy><node package="com.example.app" text="tapsmith-hooks:1;epoch=0;url=exp://x/" /></hierarchy>',
+          errorMessage: '',
+        });
+
+      expect(await probeResetCapabilities(ctx, { pollMs: 5_000 })).toEqual({ hooksDetected: true });
+      expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(3);
+    });
+
+    it('the probe gives up on the marker at the poll budget and records false once', async () => {
+      const ctx = makeContext();
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue({
+        requestId: '1', hierarchyXml: '<hierarchy><node package="com.example.app" text="no marker" /></hierarchy>', errorMessage: '',
+      });
+
+      expect(await probeResetCapabilities(ctx, { pollMs: 600 })).toEqual({ hooksDetected: false });
+      const polled = vi.mocked(ctx.client.getUiHierarchy).mock.calls.length;
+      expect(polled).toBeGreaterThan(1);
+
+      // Already concluded: a later probe is single-shot (watch/MCP re-probe per file).
+      await probeResetCapabilities(ctx, { pollMs: 5_000 });
+      expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(polled + 1);
     });
 
     it('a probe failure leaves the capabilities as they were', async () => {

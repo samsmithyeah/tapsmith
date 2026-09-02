@@ -298,6 +298,15 @@ impl ResetPolicyState {
     pub fn record_warm_failure(&mut self) {
         self.consecutive_warm_failures += 1;
     }
+
+    /// The streak valve fired and its stand-in relaunch (restart/clear on a
+    /// platform without cold delivery) completed: the app has a fresh
+    /// process, so the next reset may try the hook again. Without this the
+    /// streak stays at the limit and the valve fires on every reset for the
+    /// rest of the session — a permanent downgrade off two transient misses.
+    pub fn consume_streak_valve(&mut self) {
+        self.consecutive_warm_failures = 0;
+    }
 }
 
 // ─── Plan & ladder ───
@@ -334,6 +343,12 @@ pub struct ResetPlan {
     /// `device.resetApp()` calls (gentle: data kept); Clear for the runner's
     /// declared isolation policy, whose promise is state-clearing.
     pub warm_fallback: ResetMode,
+    /// The `WarmFailureStreak` valve fired on a platform without cold hook
+    /// delivery, so `first` is the restart/clear that stands in for it. That
+    /// relaunch consumes the streak (see [`ResetPolicyState::consume_streak_valve`]):
+    /// nothing warm runs in this reset, so [`ResetPolicyState::record`] alone
+    /// would leave the streak at the limit and never try the hook again.
+    pub consumes_warm_failure_streak: bool,
 }
 
 /// Inputs the daemon has when planning a reset.
@@ -379,11 +394,13 @@ pub fn decide(state: &ResetPolicyState, input: &PlanInput<'_>) -> ResetPlan {
             first: FirstStep::Restart,
             reason: None,
             warm_fallback,
+            consumes_warm_failure_streak: false,
         },
         ResetMode::Clear => ResetPlan {
             first: FirstStep::Clear,
             reason: None,
             warm_fallback,
+            consumes_warm_failure_streak: false,
         },
         ResetMode::Warm => {
             let cold = state.cold_reason(input.force_cold, input.cold_every_n);
@@ -401,6 +418,7 @@ pub fn decide(state: &ResetPolicyState, input: &PlanInput<'_>) -> ResetPlan {
                          (@tapsmith/react-native or resetAppDeepLink); {fallback_verb} instead"
                     )),
                     warm_fallback,
+                    consumes_warm_failure_streak: false,
                 };
             }
             if let (Some(reason), false) = (&cold, input.supports_cold_delivery) {
@@ -410,6 +428,10 @@ pub fn decide(state: &ResetPolicyState, input: &PlanInput<'_>) -> ResetPlan {
                     first: fallback_first,
                     reason: Some(reason.describe()),
                     warm_fallback,
+                    consumes_warm_failure_streak: matches!(
+                        reason,
+                        ColdReason::WarmFailureStreak(_)
+                    ),
                 };
             }
             if live_hooks || remembered_hooks {
@@ -436,6 +458,7 @@ pub fn decide(state: &ResetPolicyState, input: &PlanInput<'_>) -> ResetPlan {
                         Some(reasons.join("; "))
                     },
                     warm_fallback,
+                    consumes_warm_failure_streak: false,
                 }
             } else {
                 ResetPlan {
@@ -445,6 +468,7 @@ pub fn decide(state: &ResetPolicyState, input: &PlanInput<'_>) -> ResetPlan {
                     },
                     reason: cold.map(|c| c.describe()),
                     warm_fallback,
+                    consumes_warm_failure_streak: false,
                 }
             }
         }
@@ -1042,6 +1066,43 @@ mod tests {
     }
 
     #[test]
+    fn streak_valve_without_cold_delivery_is_consumed_by_its_relaunch() {
+        // Android / physical iOS: the valve's stand-in is a restart (or clear),
+        // which runs nothing warm — so `record` alone would leave the streak at
+        // the limit and re-fire the valve on every reset for the session.
+        let m = marker();
+        let no_cold = |force_cold: bool| {
+            let mut i = input(ResetMode::Warm, Some(&m), "");
+            i.supports_cold_delivery = false;
+            i.force_cold = force_cold;
+            i
+        };
+        let mut s = ResetPolicyState::default();
+        s.record_warm_failure();
+        s.record_warm_failure();
+        let plan = decide(&s, &no_cold(false));
+        assert_eq!(plan.first, FirstStep::Restart);
+        assert!(plan.consumes_warm_failure_streak);
+        // Only the streak valve consumes; a retry or warm-window bound does not.
+        assert!(!decide(&ResetPolicyState::default(), &no_cold(true)).consumes_warm_failure_streak);
+        let bound = ResetPolicyState {
+            warm_resets_since_cold: 10,
+            consecutive_warm_failures: 0,
+        };
+        assert!(!decide(&bound, &no_cold(false)).consumes_warm_failure_streak);
+        // With cold delivery the hook itself is exercised (and its success
+        // clears the streak), so nothing extra is consumed.
+        assert!(!decide(&s, &input(ResetMode::Warm, Some(&m), "")).consumes_warm_failure_streak);
+
+        s.consume_streak_valve();
+        assert_eq!(s.cold_reason(false, 10), None);
+        assert_eq!(
+            decide(&s, &no_cold(false)).first,
+            FirstStep::WarmHooks { cold: None }
+        );
+    }
+
+    #[test]
     fn explicit_restart_and_clear_ignore_hooks() {
         let m = marker();
         assert_eq!(
@@ -1245,6 +1306,7 @@ mod tests {
             first,
             reason: None,
             warm_fallback: ResetMode::Restart,
+            consumes_warm_failure_streak: false,
         }
     }
 
@@ -1292,6 +1354,7 @@ mod tests {
                 },
                 reason: Some("cold relaunch: retry attempt".into()),
                 warm_fallback: ResetMode::Restart,
+                consumes_warm_failure_streak: false,
             },
             true,
         )

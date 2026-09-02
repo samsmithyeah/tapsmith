@@ -278,6 +278,14 @@ export async function startUIServer(
     runStartedAt = Date.now();
     runFirstActionAt = undefined;
     runPreflightOrigin = undefined;
+    // Per-worker counters are per run: `run-ended` reads `failed` to decide
+    // whether to hold a device for inspection, so a failure must not stick
+    // to the worker across later (single-file) runs.
+    for (const w of uiWorkers) {
+      w.passed = 0;
+      w.failed = 0;
+      w.skipped = 0;
+    }
     // A new run clears any previous stop request. Multi-file loops check
     // stopRequested BEFORE starting the next file, so a stop still ends the
     // whole user-initiated run — this reset only ever runs for files the
@@ -2260,13 +2268,6 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     clearRunBuffers();
     screenPollActive = true;
     parallelRunAborted = false;
-
-    // Reset worker counters
-    for (const w of uiWorkers) {
-      w.passed = 0;
-      w.failed = 0;
-      w.skipped = 0;
-    }
 
     broadcast({ type: 'run-start', fileCount: ctx.testFiles.length });
 

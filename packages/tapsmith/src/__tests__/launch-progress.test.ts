@@ -97,7 +97,10 @@ describe('createUiLaunchSteps', () => {
     expect(steps[0]!.detail).toContain('android + ios');
     expect(steps.map((s) => s.id)).toContain('primary-device');
     expect(steps.map((s) => s.id)).toContain('worker-devices');
-    expect(steps.map((s) => s.id)).toContain('ui-workers');
+    // Exactly one workers row: the single-device "attach a worker" step must
+    // not double up with the multi-device one (steps are keyed by id).
+    expect(steps.filter((s) => s.id === 'ui-workers')).toHaveLength(1);
+    expect(steps.find((s) => s.id === 'ui-workers')!.label).toBe('UI workers');
     expect(steps.find((s) => s.id === 'worker-devices')!.detail).toContain('across 2 targets');
   });
 
