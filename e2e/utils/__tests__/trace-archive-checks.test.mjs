@@ -1,0 +1,407 @@
+/**
+ * Tests for the trace-archive content checks used by
+ * `verify-trace-archive.mjs`.
+ *
+ * The verifier's whole job is to fail when a real-device trace is wrong, so its
+ * risk is a check that can never fire. Each case here starts from a synthetic
+ * archive that passes everything, breaks exactly one thing, and asserts the
+ * matching failure is reported — the same discipline as reverting a fix to
+ * prove a regression test works.
+ */
+
+import { test } from "node:test"
+import assert from "node:assert/strict"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import * as zlib from "node:zlib"
+import { zipSync } from "fflate"
+
+import { checkArchive, readArchive } from "../trace-archive-checks.mjs"
+
+const encode = (s) => new TextEncoder().encode(s)
+
+// ─── A synthetic archive that should pass every check ───
+
+/** A solid-colour PNG at a plausible device resolution. */
+function screenPng(rgb, width = 1080, height = 2400) {
+  // One filter byte per row plus 3 bytes per pixel, all one colour, so the
+  // deflate stream stays tiny even at phone resolution.
+  const raw = Buffer.alloc((width * 3 + 1) * height)
+  for (let y = 0; y < height; y++) {
+    const row = y * (width * 3 + 1)
+    raw[row] = 0 // filter type: none
+    for (let x = 0; x < width; x++) {
+      raw[row + 1 + x * 3] = rgb[0]
+      raw[row + 2 + x * 3] = rgb[1]
+      raw[row + 3 + x * 3] = rgb[2]
+    }
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(width, 0)
+  ihdr.writeUInt32BE(height, 4)
+  ihdr[8] = 8 // bit depth
+  ihdr[9] = 2 // colour type: truecolour
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlib.deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ])
+}
+
+function pngChunk(type, data) {
+  const len = Buffer.alloc(4)
+  len.writeUInt32BE(data.length, 0)
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data])
+  const crc = Buffer.alloc(4)
+  crc.writeUInt32BE(crc32(body), 0)
+  return Buffer.concat([len, body, crc])
+}
+
+function crc32(buf) {
+  let crc = 0xffffffff
+  for (const byte of buf) {
+    crc ^= byte
+    for (let i = 0; i < 8; i++) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+const T0 = 1_700_000_000_000
+
+/** Android-shaped hierarchy dump containing the given labels, as archive bytes. */
+function hierarchy(...labels) {
+  const nodes = labels
+    .map((l, i) => `<node index="${i}" class="android.widget.Button" text="${l}" />`)
+    .join("")
+  return encode(`<?xml version="1.0" encoding="UTF-8"?><hierarchy rotation="0">${nodes}</hierarchy>`)
+}
+
+/**
+ * Build a passing archive. `mutate` receives the loose parts before they are
+ * zipped so a case can break exactly one thing.
+ */
+function buildArchive(mutate = () => {}) {
+  const parts = {
+    metadata: {
+      version: 1,
+      tapsmithVersion: "0.4.1",
+      testFile: "tests/api-calls.test.ts",
+      testName: "API Calls screen > fetches and displays user",
+      testStatus: "passed",
+      testDuration: 4200,
+      startTime: T0,
+      endTime: T0 + 4200,
+      device: {
+        serial: "emulator-5554",
+        isEmulator: true,
+        model: "sdk_gphone64_arm64",
+        osVersion: "16",
+      },
+      traceConfig: {
+        screenshots: true,
+        snapshots: true,
+        sources: true,
+        network: true,
+        deviceLogs: true,
+        daemonLogs: true,
+      },
+      actionCount: 3,
+      screenshotCount: 4,
+    },
+    events: [
+      {
+        type: "action",
+        actionIndex: 0,
+        timestamp: T0 + 100,
+        category: "navigation",
+        action: "openDeepLink",
+        duration: 900,
+        success: true,
+        hasScreenshotBefore: true,
+        hasHierarchyBefore: true,
+      },
+      {
+        type: "assertion",
+        actionIndex: 1,
+        timestamp: T0 + 1100,
+        assertion: "toBeVisible",
+        selector: JSON.stringify({ text: "API Calls" }),
+        duration: 120,
+        passed: true,
+        hasScreenshotBefore: true,
+        hasHierarchyBefore: true,
+      },
+      {
+        type: "action",
+        actionIndex: 2,
+        timestamp: T0 + 1400,
+        category: "tap",
+        action: "tap",
+        selector: JSON.stringify({ role: { role: "button", name: "Fetch User" } }),
+        bounds: { left: 40, top: 300, right: 320, bottom: 380 },
+        duration: 210,
+        success: true,
+        hasScreenshotBefore: true,
+        hasHierarchyBefore: true,
+      },
+    ],
+    screenshots: {
+      // Distinct frames: the screen changes as the test navigates and taps.
+      "screenshots/action-000-before.png": screenPng([10, 10, 10]),
+      "screenshots/action-001-before.png": screenPng([20, 20, 20]),
+      "screenshots/action-002-before.png": screenPng([30, 30, 30]),
+      // Trailing terminal-state capture past the last action.
+      "screenshots/action-003-before.png": screenPng([40, 40, 40]),
+    },
+    hierarchies: {
+      "hierarchy/action-000-before.xml": hierarchy("Home"),
+      "hierarchy/action-001-before.xml": hierarchy("API Calls", "Fetch User"),
+      "hierarchy/action-002-before.xml": hierarchy("API Calls", "Fetch User"),
+      "hierarchy/action-003-before.xml": hierarchy("API Calls", "User"),
+    },
+    network: [
+      {
+        index: 0,
+        actionIndex: 2,
+        startTime: T0 + 1500,
+        endTime: T0 + 1900,
+        method: "GET",
+        url: "https://jsonplaceholder.typicode.com/users/1",
+        status: 200,
+        contentType: "application/json; charset=utf-8",
+        requestSize: 0,
+        responseSize: 220,
+        duration: 400,
+        responseBodyPath: "network/res-0.bin",
+        requestHeaders: {},
+        responseHeaders: { "content-type": "application/json" },
+      },
+    ],
+    bodies: {
+      "network/res-0.bin": encode(JSON.stringify({ id: 1, name: "Leanne Graham" })),
+    },
+  }
+
+  mutate(parts)
+
+  const files = {
+    "metadata.json": encode(JSON.stringify(parts.metadata, null, 2)),
+    "trace.json": encode(parts.events.map((e) => JSON.stringify(e)).join("\n") + "\n"),
+    ...parts.screenshots,
+    ...parts.hierarchies,
+    ...parts.bodies,
+  }
+  if (parts.network.length > 0) {
+    files["network.json"] = encode(parts.network.map((e) => JSON.stringify(e)).join("\n") + "\n")
+  }
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tapsmith-archive-checks-"))
+  const zipPath = path.join(dir, "trace.zip")
+  fs.writeFileSync(zipPath, zipSync(files))
+  return zipPath
+}
+
+/** Failures reported for an archive built with the given mutation. */
+function failuresFor(mutate) {
+  const zipPath = buildArchive(mutate)
+  try {
+    return checkArchive(readArchive(zipPath)).failures
+  } finally {
+    fs.rmSync(path.dirname(zipPath), { recursive: true, force: true })
+  }
+}
+
+function assertFails(mutate, pattern) {
+  const failures = failuresFor(mutate)
+  assert.ok(
+    failures.some((f) => pattern.test(f)),
+    `expected a failure matching ${pattern}\ngot:\n${failures.map((f) => `  - ${f}`).join("\n") || "  (none)"}`,
+  )
+}
+
+// ─── The baseline has to pass, or nothing below proves anything ───
+
+test("a well-formed real-device archive passes every check", () => {
+  const zipPath = buildArchive()
+  try {
+    const { failures, notes } = checkArchive(readArchive(zipPath))
+    assert.deepEqual(failures, [])
+    // The checks that could silently no-op must report they found material.
+    assert.ok(notes.some((n) => /1 cross-checked/.test(n)), notes.join("\n"))
+    assert.ok(notes.some((n) => /1 element boxes checked/.test(n)), notes.join("\n"))
+    assert.ok(notes.some((n) => /4 screenshots at 1080x2400, 4 distinct/.test(n)), notes.join("\n"))
+  } finally {
+    fs.rmSync(path.dirname(zipPath), { recursive: true, force: true })
+  }
+})
+
+// ─── metadata ───
+
+test("catches a trace recorded with a sub-channel disabled", () => {
+  assertFails((p) => { p.metadata.traceConfig.network = false }, /trace\.network was not enabled/)
+  assertFails((p) => { p.metadata.traceConfig.snapshots = false }, /trace\.snapshots was not enabled/)
+})
+
+test("catches an unresolved device identity", () => {
+  assertFails((p) => { p.metadata.device.serial = "unknown" }, /device\.serial should name the device/)
+  assertFails((p) => {
+    delete p.metadata.device.osVersion
+    delete p.metadata.device.model
+  }, /neither model nor osVersion/)
+})
+
+test("catches a failed or empty test being passed off as verified", () => {
+  assertFails((p) => { p.metadata.testStatus = "failed" }, /testStatus should be "passed"/)
+  assertFails((p) => { p.metadata.actionCount = 0 }, /actionCount should be > 0/)
+})
+
+// ─── event stream ───
+
+test("catches a gap in the action index space", () => {
+  assertFails((p) => { p.events[2].actionIndex = 5 }, /action indices are not contiguous/)
+})
+
+test("catches actionCount disagreeing with the recorded steps", () => {
+  assertFails((p) => { p.metadata.actionCount = 9 }, /actionCount \(9\) should equal the recorded step count/)
+})
+
+test("catches steps recorded out of chronological order", () => {
+  assertFails((p) => { p.events[2].timestamp = T0 }, /timestamp before its predecessor/)
+})
+
+// ─── screenshots ───
+
+test("catches a claimed screenshot with no member behind it", () => {
+  assertFails(
+    (p) => { delete p.screenshots["screenshots/action-002-before.png"] },
+    /step 2 \(tap\) claims a screenshot but screenshots\/action-002-before\.png is missing/,
+  )
+})
+
+test("catches a screenshot member no step claims", () => {
+  assertFails(
+    (p) => { p.screenshots["screenshots/action-007-before.png"] = screenPng([9, 9, 9]) },
+    /screenshot members no step claims: screenshots\/action-007-before\.png/,
+  )
+})
+
+test("catches captures that are not decodable images", () => {
+  assertFails(
+    (p) => { p.screenshots["screenshots/action-001-before.png"] = encode("not a png") },
+    /screenshots\/action-001-before\.png is not a PNG/,
+  )
+})
+
+test("catches a placeholder-sized capture", () => {
+  assertFails(
+    (p) => { p.screenshots["screenshots/action-001-before.png"] = screenPng([1, 1, 1], 1, 1) },
+    /is 1x1 — too small to be a device screenshot/,
+  )
+})
+
+test("catches captures that disagree on the screen size", () => {
+  assertFails(
+    (p) => { p.screenshots["screenshots/action-001-before.png"] = screenPng([2, 2, 2], 720, 1280) },
+    /screenshots disagree on screen size/,
+  )
+})
+
+test("catches a run where every capture is the same frame", () => {
+  assertFails((p) => {
+    const frame = screenPng([50, 50, 50])
+    for (const key of Object.keys(p.screenshots)) p.screenshots[key] = frame
+  }, /screenshots are byte-identical/)
+})
+
+test("catches element bounds that cannot fit the captured frame", () => {
+  assertFails(
+    (p) => { p.events[2].bounds = { left: 40, top: 300, right: 4000, bottom: 380 } },
+    /element box outside the 1080x2400 frame/,
+  )
+  assertFails(
+    (p) => { p.events[2].bounds = { left: 40, top: 300, right: 40, bottom: 300 } },
+    /degenerate element box/,
+  )
+})
+
+// ─── hierarchy snapshots ───
+
+test("catches a claimed hierarchy snapshot with no member behind it", () => {
+  assertFails(
+    (p) => { delete p.hierarchies["hierarchy/action-001-before.xml"] },
+    /step 1 claims a hierarchy snapshot but hierarchy\/action-001-before\.xml is missing/,
+  )
+})
+
+test("catches a dump with no UI nodes in it", () => {
+  assertFails(
+    (p) => { p.hierarchies["hierarchy/action-000-before.xml"] = encode("<hierarchy></hierarchy>") },
+    /holds no recognisable UI nodes/,
+  )
+})
+
+test("catches a truncated dump", () => {
+  assertFails((p) => {
+    const xml = new TextDecoder().decode(p.hierarchies["hierarchy/action-000-before.xml"])
+    // Cut mid-tag, the way a dropped read truncates a dump.
+    p.hierarchies["hierarchy/action-000-before.xml"] = encode(xml.slice(0, xml.length - 6))
+  }, /unbalanced angle brackets/)
+})
+
+test("catches a snapshot paired with the wrong action", () => {
+  // Action 2 tapped "Fetch User"; give its slot the snapshot from before the
+  // screen was reached, as a mis-indexed capture would.
+  assertFails(
+    (p) => { p.hierarchies["hierarchy/action-002-before.xml"] = hierarchy("Home") },
+    /action 2 \(tap\) resolved an element named "Fetch User", but its own hierarchy snapshot/,
+  )
+})
+
+test("reports when no action had a named selector to cross-check", () => {
+  assertFails((p) => { delete p.events[2].selector }, /capture\/step pairing could not be cross-checked/)
+})
+
+test("does not cross-check an auto-waiting assertion against its own snapshot", () => {
+  // An assertion captures before it polls, so its target may legitimately be
+  // absent from its snapshot. Only the action's pairing is enforced.
+  const failures = failuresFor((p) => {
+    p.hierarchies["hierarchy/action-001-before.xml"] = hierarchy("Fetch User")
+  })
+  assert.deepEqual(failures, [])
+})
+
+// ─── network ───
+
+test("catches traffic that was never captured", () => {
+  assertFails((p) => { p.network = []; p.bodies = {} }, /network\.json is missing or empty/)
+})
+
+test("catches transient body buffers leaking into network.json", () => {
+  assertFails(
+    (p) => { p.network[0].responseBody = { type: "Buffer", data: [1, 2, 3] } },
+    /serialized its transient body buffers/,
+  )
+})
+
+test("catches an entry pointing at a body that is not in the archive", () => {
+  assertFails((p) => { p.bodies = {} }, /points at network\/res-0\.bin, which is not in the archive/)
+})
+
+test("catches an entry attributed to a step that does not exist", () => {
+  assertFails((p) => { p.network[0].actionIndex = 42 }, /attributed to step 42, outside the recorded steps/)
+})
+
+test("catches a response body stored still compressed", () => {
+  assertFails(
+    (p) => { p.bodies["network/res-0.bin"] = zlib.gzipSync(Buffer.from('{"id":1}')) },
+    /is not JSON \(still compressed or chunk-framed\?\)/,
+  )
+})
+
+test("catches a capture session that saw no https traffic", () => {
+  assertFails((p) => {
+    p.network[0].url = "http://127.0.0.1:8081/symbolicate"
+  }, /no https:\/\/ entry captured/)
+})

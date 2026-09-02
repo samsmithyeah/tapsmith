@@ -277,7 +277,11 @@ Deliberately out of scope, so nobody assumes otherwise:
 - **Anything server-side.** The harness replaces `ui-server.ts` and
   `show-trace-server.ts`, so bugs in those are invisible here. Both have their
   own vitest coverage.
-- **The real socket, and a real archive on disk.** Both are intercepted.
+- **The real socket, and a real archive on disk.** Both are intercepted. What a
+  *generated* archive contains is covered instead by
+  `packages/tapsmith/src/__tests__/trace-archive-contents.test.ts` (the whole
+  record-and-package path, mocked device) and `e2e/verify-trace-archive.mjs`
+  (one archive recorded against a live emulator/simulator in CI).
 - **Visual regression.** The mirror is a `<canvas>` and the CSS is oklch- and
   webfont-heavy, so stable snapshots would need a pinned docker image. Worth
   revisiting once it is clear which surfaces are worth pinning.

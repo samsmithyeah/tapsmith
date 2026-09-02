@@ -42,7 +42,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: packages/tapsmith/package-lock.json
+          cache-dependency-path: |
+            packages/tapsmith/package-lock.json
+            e2e/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -61,6 +63,17 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # The E2E helper scripts (trace-archive content checks, xctestrun
+      # discovery) are plain Node with their own node:test suites and need no
+      # device. They ran nowhere before; the trace-archive checks in particular
+      # are what the device workflows rely on to fail loudly, so a check that
+      # silently stops firing has to be caught here.
+      - name: E2E helper tests
+        working-directory: e2e
+        run: |
+          npm ci
+          npm test
 
   rust:
     name: Rust
