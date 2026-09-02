@@ -764,10 +764,12 @@ async function setupSequentialDevice(
 
     if (cfg.apk) {
       progress?.start('app-install', `checking ${path.basename(cfg.apk)}`);
-      const isInstalled = !deviceJustLaunched
-        && cfg.package
-        && cfg.device
-        && isPackageInstalled(cfg.device, cfg.package);
+      // Whether a data container may already exist is a different question
+      // from whether to (re)install: a freshly-launched AVD snapshot may hold
+      // a stale build *with* data, so it is always reinstalled — but that
+      // reinstall keeps the data, and only a true first install is "fresh".
+      const wasInstalled = !!cfg.package && !!cfg.device && isPackageInstalled(cfg.device, cfg.package);
+      const isInstalled = !deviceJustLaunched && wasInstalled;
       // A rebuilt APK must replace the installed one — matching the iOS
       // "installed build differs" check.
       const buildDiffers = isInstalled && cfg.package && cfg.device
@@ -787,7 +789,7 @@ async function setupSequentialDevice(
             progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApk)}` });
           }
           await device.installApk(resolvedApk);
-          freshInstall = !isInstalled;
+          freshInstall = !wasInstalled;
           if (cfg.package && cfg.device) {
             await waitForPackageIndexed(cfg.device, cfg.package);
           }
@@ -2414,7 +2416,10 @@ async function main(): Promise<void> {
         device,
         client,
         deviceSerial: config.device!,
-        daemonAddress: config.daemonAddress,
+        // The primary setup may have moved the daemon to a free port; that
+        // landed on the project's effective config (a copy when any project
+        // declares `use`), not on `config`.
+        daemonAddress: currentSequentialState?.effectiveConfig.daemonAddress ?? config.daemonAddress,
         testFiles,
         screenshotDir: uiScreenshotDir,
         launchedEmulators,
@@ -2482,7 +2487,10 @@ async function main(): Promise<void> {
         device,
         client,
         deviceSerial: config.device!,
-        daemonAddress: config.daemonAddress,
+        // The primary setup may have moved the daemon to a free port; that
+        // landed on the project's effective config (a copy when any project
+        // declares `use`), not on `config`.
+        daemonAddress: currentSequentialState?.effectiveConfig.daemonAddress ?? config.daemonAddress,
         testFiles,
         screenshotDir: watchScreenshotDir,
         launchedEmulators,

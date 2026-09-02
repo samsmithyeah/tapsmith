@@ -386,6 +386,11 @@ pub struct PlanInput<'a> {
     pub supports_cold_delivery: bool,
     /// See [`ResetPlan::warm_fallback`].
     pub fallback_to_clear: bool,
+    /// Whether the caller allows a heavier rung than warm at all. With it
+    /// off, cold bounds on a platform without cold delivery are ignored
+    /// (warm in place) rather than degraded to a restart the ladder would
+    /// then have to refuse.
+    pub allow_fallback: bool,
 }
 
 pub fn decide(state: &ResetPolicyState, input: &PlanInput<'_>) -> ResetPlan {
@@ -436,19 +441,34 @@ pub fn decide(state: &ResetPolicyState, input: &PlanInput<'_>) -> ResetPlan {
                     consumes_warm_failure_streak: false,
                 };
             }
-            if let (Some(reason), false) = (&cold, input.supports_cold_delivery) {
-                // No cold delivery on this platform: honour the bound with a restart
-                // (or a clear, when the caller's fallback promises state-clearing).
-                return ResetPlan {
-                    first: fallback_first,
-                    reason: Some(reason.describe()),
-                    warm_fallback,
-                    consumes_warm_failure_streak: matches!(
-                        reason,
-                        ColdReason::WarmFailureStreak(_)
-                    ),
-                };
-            }
+            let cold = match (cold, input.supports_cold_delivery) {
+                // A retry asks for cold *delivery* of the hook — the render-surface
+                // recovery that matters on iOS simulators. Without cold delivery
+                // there is nothing to force: deliver warm in place rather than
+                // turning the retry into a restart/clear, which would change the
+                // mode an explicit resetApp() reports between attempts.
+                (Some(ColdReason::RetryAttempt), false) => None,
+                (Some(reason), false) if input.allow_fallback => {
+                    // No cold delivery on this platform: honour the bound with a
+                    // restart (or a clear, when the caller's fallback promises
+                    // state-clearing).
+                    return ResetPlan {
+                        first: fallback_first,
+                        reason: Some(reason.describe()),
+                        warm_fallback,
+                        consumes_warm_failure_streak: matches!(
+                            reason,
+                            ColdReason::WarmFailureStreak(_)
+                        ),
+                    };
+                }
+                // Fallback disabled: the caller asked for exactly a warm reset.
+                // The cold bounds are perf/recovery heuristics, not part of that
+                // promise, and this platform's only stand-in for them is the
+                // rung the caller ruled out — so deliver warm in place.
+                (Some(_), false) => None,
+                (cold, _) => cold,
+            };
             if live_hooks || remembered_hooks {
                 let mut reasons: Vec<String> = Vec::new();
                 if !live_hooks {
@@ -903,6 +923,7 @@ mod tests {
             cold_every_n: 10,
             supports_cold_delivery: true,
             fallback_to_clear: false,
+            allow_fallback: true,
         }
     }
 
@@ -954,6 +975,7 @@ mod tests {
             &ResetPolicyState::default(),
             &PlanInput {
                 fallback_to_clear: true,
+                allow_fallback: true,
                 ..input(ResetMode::Warm, None, "")
             },
         );
@@ -975,6 +997,7 @@ mod tests {
             &ResetPolicyState::default(),
             &PlanInput {
                 fallback_to_clear: true,
+                allow_fallback: true,
                 ..input(ResetMode::Warm, Some(&m), "")
             },
         );
@@ -1073,13 +1096,27 @@ mod tests {
 
     #[test]
     fn cold_without_cold_delivery_maps_to_restart() {
+        // Health-driven bounds (window, streak) stand in a restart for the
+        // missing cold delivery ...
         let m = marker();
         let mut i = input(ResetMode::Warm, Some(&m), "");
-        i.force_cold = true;
         i.supports_cold_delivery = false;
-        let plan = decide(&ResetPolicyState::default(), &i);
+        let bound = ResetPolicyState {
+            warm_resets_since_cold: 10,
+            consecutive_warm_failures: 0,
+            valve_relaunches: 0,
+        };
+        let plan = decide(&bound, &i);
         assert_eq!(plan.first, FirstStep::Restart);
-        assert_eq!(plan.reason.as_deref(), Some("cold relaunch: retry attempt"));
+        assert_eq!(
+            plan.reason.as_deref(),
+            Some("cold relaunch: warm-window bound reached (10 resets)")
+        );
+        // ... but a retry only asks for cold delivery, so it stays warm in place.
+        i.force_cold = true;
+        let plan = decide(&ResetPolicyState::default(), &i);
+        assert_eq!(plan.first, FirstStep::WarmHooks { cold: None });
+        assert_eq!(plan.reason, None);
     }
 
     #[test]
@@ -1149,6 +1186,41 @@ mod tests {
         assert_eq!(s.consecutive_warm_failures, 0);
         assert_eq!(s.valve_relaunches, 0);
         assert_eq!(s.cold_reason(false, 10), None);
+    }
+
+    #[test]
+    fn fallback_disabled_ignores_cold_bounds_without_cold_delivery() {
+        // `resetApp({ mode: 'warm', fallback: false })` on Android: the warm
+        // window bound / retry / streak have no cold delivery to force, and
+        // their stand-in restart is exactly what the caller ruled out. Warm in
+        // place instead of an error on the tenth call.
+        let m = marker();
+        let mut i = input(ResetMode::Warm, Some(&m), "");
+        i.supports_cold_delivery = false;
+        i.allow_fallback = false;
+        i.force_cold = true;
+        let plan = decide(&ResetPolicyState::default(), &i);
+        assert_eq!(plan.first, FirstStep::WarmHooks { cold: None });
+        assert_eq!(plan.reason, None);
+        i.force_cold = false;
+        let bound = ResetPolicyState {
+            warm_resets_since_cold: 10,
+            consecutive_warm_failures: 2,
+            valve_relaunches: 0,
+        };
+        assert_eq!(
+            decide(&bound, &i).first,
+            FirstStep::WarmHooks { cold: None }
+        );
+        // With cold delivery the bound is honoured as a cold-delivered hook,
+        // which is still a warm reset.
+        i.supports_cold_delivery = true;
+        assert_eq!(
+            decide(&bound, &i).first,
+            FirstStep::WarmHooks {
+                cold: Some(ColdReason::WarmFailureStreak(2))
+            }
+        );
     }
 
     #[test]

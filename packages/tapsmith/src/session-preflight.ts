@@ -10,7 +10,7 @@ type SessionClient = Pick<TapsmithGrpcClient, 'ping' | 'getUiHierarchy'>
 
 export interface SessionPreflightContext {
   label: string
-  config: Pick<TapsmithConfig, 'package' | 'activity' | 'platform' | 'resetAppDeepLink' | 'resetAppWaitMs' | 'appResetColdEvery' | 'device'>
+  config: Pick<TapsmithConfig, 'package' | 'activity' | 'platform' | 'resetAppDeepLink' | 'resetAppWaitMs' | 'appReset' | 'appResetColdEvery' | 'device'>
   device: SessionDevice
   client: SessionClient
   agentApkPath?: string
@@ -393,6 +393,18 @@ export async function executeAppReset(
     // app is silently lost. An acknowledged warm reset needs none of this —
     // the marker epoch is the proof of rendering.
     await step('waitForAppReady', () => waitForAppReady(ctx));
+  }
+  if (
+    action.kind !== 'warm'
+    && (ctx.config.appReset ?? 'auto') === 'auto'
+    && ctx.capabilities?.hooksDetected === false
+  ) {
+    // `auto` resolved to clear because the session-level probe never saw the
+    // marker (the app may have taken longer than its budget to mount). The
+    // app is freshly relaunched and rendering now: one read here is the
+    // upgrade path — the next scope resolves warm. A hookless app pays one
+    // hierarchy read per clear reset; a hooked one upgrades on the first.
+    await probeResetCapabilities(ctx, { pollMs: 0 });
   }
   return finish({ origin: 'inline', modeUsed, fellBack, ...(reason ? { reason } : {}) });
 }

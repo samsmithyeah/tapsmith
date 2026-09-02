@@ -38,10 +38,11 @@ const KEYBOARD_STATE_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBVIEW_ADB_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const IOS_OPEN_URL_PROMPT_TIMEOUT: Duration = Duration::from_secs(28);
 const IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS: u64 = 300;
-// Must exceed the agent-side `waitForDeepLinkDestination` ceiling (10s) plus
-// gRPC round-trip, so each verify returns a verdict rather than tripping this
-// command timeout.
-const IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS: u64 = 13_000;
+// Must exceed the agent-side cold path's worst case — `waitForDeepLinkDestination`
+// (10s) followed by the hooks epoch/nav acknowledgement wait (8s) — plus gRPC
+// round-trip, so each verify returns a verdict rather than tripping this
+// command timeout while the agent is still (legitimately) waiting.
+const IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS: u64 = 21_000;
 // Budget for the warm in-process delivery attempt on simulators: must exceed
 // the agent-side warm navigation window (5s) plus the pre-open hierarchy
 // snapshot, activate + open, and gRPC round-trip. Deliberately tight — when
@@ -4302,6 +4303,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     cold_every_n: req.cold_every_n_resets,
                     supports_cold_delivery: platform == Platform::Ios && !is_physical,
                     fallback_to_clear: req.fallback_to_clear,
+                    allow_fallback: req.allow_fallback,
                 },
             )
         };
@@ -8038,10 +8040,15 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
             return Err(Self::response_error(&resp));
         }
         // Read back the acknowledged epoch (and any error the hook reported).
+        // Either way the remembered marker moves to the post-reset epoch: the
+        // next reset's live read can miss, and acknowledging against a
+        // baseline one reset behind would pass on the epoch this reset
+        // already produced — success for a reset that never ran.
         match self.svc.current_hooks_marker(5_000).await {
             Some(after)
                 if app_reset::hooks_acknowledged(marker.epoch, marker.boot.as_deref(), &after) =>
             {
+                *self.svc.last_hooks_marker.write().await = Some(after.clone());
                 match after.err {
                     Some(err) => Err(format!("in-app reset reported an error: {err}")),
                     None => Ok(after.epoch),
@@ -8053,7 +8060,12 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
             // echoed `epochAfter` is downgraded to a failure
             // (`require_epoch_ack_echo`) — so a missed read here is just a
             // mid-transition hierarchy. Trust the delivery.
-            None => Ok(marker.epoch + 1),
+            None => {
+                let mut remembered = marker.clone();
+                remembered.epoch += 1;
+                *self.svc.last_hooks_marker.write().await = Some(remembered);
+                Ok(marker.epoch + 1)
+            }
         }
     }
 

@@ -603,6 +603,10 @@ export class Device {
       mode,
       allowFallback: options.fallback ?? true,
       resetDeepLink: options.resetDeepLink,
+      // Retry attempts force cold *delivery* of the hook (see
+      // _setForceColdDeepLinks). On platforms without cold delivery the
+      // daemon delivers warm in place rather than downgrading to a restart,
+      // so an explicit resetApp() reports the same modeUsed on every attempt.
       forceCold: (options.forceCold ?? false) || this._forceColdDeepLinks,
       // Mid-test resetApp() calls share the daemon's warm-window state with
       // the runner's resets, so they honour the same `appResetColdEvery`

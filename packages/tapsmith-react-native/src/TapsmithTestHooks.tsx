@@ -56,8 +56,13 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
     if (!active) return;
     let disposed = false;
 
-    const handle = async (url: string | null) => {
-      if (!url || disposed) return;
+    // `initial`: the cold-launch URL. It is read once for the component's
+    // lifetime (see below) but resolves asynchronously — under StrictMode
+    // (and any `enabled` toggle) this effect's first pass is already disposed
+    // by then, so that URL must be honoured regardless of `disposed` or a
+    // cold-delivered reset is silently dropped.
+    const handle = async (url: string | null, initial = false) => {
+      if (!url || (disposed && !initial)) return;
       // Every received URL bumps `nav` — the ack for plain navigation deep
       // links (a same-screen link changes nothing else observable).
       setNav((n) => n + 1);
@@ -74,10 +79,10 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
       try {
         const handlers: ResetHandler[] = [...(latest.current.onReset ? [latest.current.onReset] : []), ...registeredHandlers()];
         await runResetPipeline(request, latest.current.clear, handlers);
-        if (disposed) return;
+        if (disposed && !initial) return;
         setError(undefined);
       } catch (err) {
-        if (disposed) return;
+        if (disposed && !initial) return;
         setError(err instanceof Error ? err.message : String(err));
       }
       // Always advance the epoch so Tapsmith never waits on a failed reset;
@@ -91,7 +96,7 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
     // initial URL, which must not bump `nav` again.
     if (!initialUrlHandled.current) {
       initialUrlHandled.current = true;
-      Linking.getInitialURL().then((url) => { void handle(url); }, () => { /* ignore */ });
+      Linking.getInitialURL().then((url) => { void handle(url, true); }, () => { /* ignore */ });
     }
     return () => {
       disposed = true;

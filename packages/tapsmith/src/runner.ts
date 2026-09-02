@@ -795,6 +795,13 @@ interface ScopeSetupRecording {
 interface InheritedScopeSetup {
   announced?: string;
   recordings: ScopeSetupRecording[];
+  /**
+   * Scope setup time (app reset + beforeAll) not yet attributed to a test.
+   * Shared down the tree so the first test to run anywhere below consumes
+   * it — a file whose tests all live inside describes still counts the root
+   * reset in its first test's duration, the way Playwright counts fixtures.
+   */
+  setup?: { pendingMs: number };
 }
 
 function replayBeforeAllEvents(
@@ -985,8 +992,12 @@ async function runSuiteContext(
       // may already have announced that same test; announcing it again
       // would make the UI reset the test's trace.
       beforeAllFirstFullName = firstRunnable;
-      if (beforeAllFirstFullName !== inherited.announced && opts.onTestStart) {
-        await opts.onTestStart(beforeAllFirstFullName);
+      if (beforeAllFirstFullName !== inherited.announced) {
+        // Both listeners: the per-test loop skips its own announcement for
+        // this test (it would reset the UI trace), so the reporter must hear
+        // about it here or never.
+        if (opts.onTestStart) await opts.onTestStart(beforeAllFirstFullName);
+        opts.reporter?.onTestStart?.(beforeAllFirstFullName, opts.testFilePath, { project: opts.projectName });
       }
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-ba-'));
       // Trigger _startManaged to fire the monkey-patch (ui-run.ts sets up
@@ -1144,7 +1155,8 @@ async function runSuiteContext(
 
   // Scope setup time (app reset + beforeAll) is attributed to the first test
   // that runs in this scope, the way Playwright counts fixture setup.
-  let pendingSetupMs = Date.now() - suiteStart;
+  const setupHolder = inherited.setup ?? { pendingMs: 0 };
+  setupHolder.pendingMs += Date.now() - suiteStart;
 
   // Save beforeAll events for replay into each test's trace.
   const savedBeforeAllEvents = beforeAllCollector ? beforeAllCollector.events.slice() : [];
@@ -1999,8 +2011,8 @@ async function runSuiteContext(
       videoPath = firstFailure.videoPath ?? videoPath;
     }
 
-    const setupMs = pendingSetupMs;
-    pendingSetupMs = 0;
+    const setupMs = setupHolder.pendingMs;
+    setupHolder.pendingMs = 0;
     const testResult: TestResult = {
       name: entry.name,
       fullName,
@@ -2047,6 +2059,7 @@ async function runSuiteContext(
     const prefix = parentPrefix ? `${parentPrefix} > ${suiteEntry.name}` : suiteEntry.name;
     const childInherited: InheritedScopeSetup = {
       announced: beforeAllFirstFullName ?? inherited.announced,
+      setup: setupHolder,
       // This scope's recording already contains the inherited setup, so it
       // replaces the inherited list rather than extending it.
       recordings: beforeAllCollector

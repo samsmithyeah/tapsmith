@@ -276,6 +276,39 @@ describe('runner app reset (declared isolation)', () => {
     expect(d.device.restoreAppState).toHaveBeenCalledWith('com.example.app', path.resolve('/proj', './auth.tar.gz'));
   });
 
+  it('root setup time is attributed to the first test even when it lives inside a describe', async () => {
+    const d = makeDevice();
+    pushContext();
+    tapsmithBeforeAll(async () => { await new Promise((r) => setTimeout(r, 60)); });
+    tapsmithDescribe('nested', () => {
+      tapsmithTest('first', async () => {});
+      tapsmithTest('second', async () => {});
+    });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig()));
+
+    const [first, second] = collectResults(result);
+    expect(first.durationMs).toBeGreaterThanOrEqual(60);
+    expect(second.durationMs).toBeLessThan(60);
+  });
+
+  it('the reporter hears onTestStart for the test the scope reset was announced under', async () => {
+    const d = makeDevice();
+    pushContext();
+    tapsmithTest('one', async () => {});
+    tapsmithTest('two', async () => {});
+    const ctx = popContext();
+    const onTestStart = vi.fn();
+
+    await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), {
+      onTestStart: async () => {},
+      reporter: { onTestStart } as unknown as RunOptions['reporter'],
+    }));
+
+    expect(onTestStart.mock.calls.map((c) => c[0])).toEqual(['one', 'two']);
+  });
+
   it('a nested describe inherits its parent appState instead of resetting to clear on entry', async () => {
     const d = makeDevice();
     pushContext();

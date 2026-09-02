@@ -2520,7 +2520,20 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
   }
 
   /** Start a replacement process for the worker at `index` (retired or recycled). */
-  async function respawnWorkerAt(index: number): Promise<void> {
+  // One respawn per slot at a time. `respawnWorkerAtNow` retires the old
+  // handle synchronously and then awaits; `ensureWorkersReady` reads
+  // `retired` as "needs a respawn", so a run request landing mid-respawn
+  // would otherwise fork a second child (and daemon) onto the same device.
+  const respawnsInFlight = new Map<number, Promise<void>>();
+  function respawnWorkerAt(index: number): Promise<void> {
+    const inFlight = respawnsInFlight.get(index);
+    if (inFlight) return inFlight;
+    const p = respawnWorkerAtNow(index).finally(() => respawnsInFlight.delete(index));
+    respawnsInFlight.set(index, p);
+    return p;
+  }
+
+  async function respawnWorkerAtNow(index: number): Promise<void> {
     const worker = uiWorkers[index];
     const baseDaemonPort = Number.parseInt(
       (ctx.daemonAddress ?? ctx.config.daemonAddress).split(':').pop() ?? '50051',
