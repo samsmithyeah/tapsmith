@@ -51,6 +51,17 @@ pub struct HooksMarker {
     pub nav: Option<u64>,
 }
 
+impl HooksMarker {
+    /// Whether the marker advertises an in-app reset hook the daemon can
+    /// drive. A module that could not determine its URL scheme renders an
+    /// empty `url=`: the marker still carries `epoch`/`nav`/`boot` (so it is
+    /// useful for navigation acks), but there is no link to deliver a reset
+    /// through, and every "hooks detected" decision must treat it as absent.
+    pub fn has_reset_hook(&self) -> bool {
+        !self.url_prefix.is_empty()
+    }
+}
+
 /// Find and parse the hooks marker in a UI hierarchy dump (Android
 /// `text="…"`, iOS `label="…"` / `name="…"` / `value="…"`). The marker may be
 /// XML-escaped; `&amp;` etc. are decoded before parsing.
@@ -254,28 +265,36 @@ impl ResetPolicyState {
     }
 
     /// Fold a completed reset back into the counters.
+    ///
+    /// The warm window (`warm_resets_since_cold`) restarts on any relaunch —
+    /// restart, clear, or a cold-delivered hook — and grows by one per warm
+    /// reset delivered in place. The failure streak is different: only a warm
+    /// step that actually *succeeded* proves the hook works again and clears
+    /// it. A ladder that recovered from a failed warm step with a restart or
+    /// clear did not exercise the hook successfully, so the streak recorded by
+    /// [`Self::record_warm_failure`] must survive that recovery — otherwise,
+    /// with fallback allowed (the default), the counter is wiped on every reset
+    /// and the `WarmFailureStreak` cold valve can never fire.
     pub fn record(&mut self, outcome: &ResetOutcome) {
+        let warm_succeeded = outcome.mode_used == ResetMode::Warm && !outcome.fell_back;
         if outcome.cold_launch {
             // Any restart / clear / cold delivery starts a fresh warm window.
             self.warm_resets_since_cold = 0;
-            self.consecutive_warm_failures = 0;
-            return;
+        } else if warm_succeeded {
+            self.warm_resets_since_cold += 1;
+        } else {
+            self.warm_resets_since_cold = 0;
         }
-        match outcome.mode_used {
-            ResetMode::Warm => {
-                self.warm_resets_since_cold += 1;
-                self.consecutive_warm_failures = 0;
-            }
-            _ => {
-                self.warm_resets_since_cold = 0;
-                self.consecutive_warm_failures = 0;
-            }
+        if warm_succeeded {
+            self.consecutive_warm_failures = 0;
         }
     }
 
-    /// A warm attempt failed verification (whether or not the ladder then
-    /// recovered with a restart/clear — that recovery resets the counters via
-    /// [`Self::record`], so callers record the failure first).
+    /// A warm attempt failed verification. Recorded whether or not the ladder
+    /// then recovered with a restart/clear: [`Self::record`] leaves the streak
+    /// alone on such recoveries, so two failures in a row reach
+    /// [`WARM_FAILURE_STREAK_LIMIT`] even when every reset ends up succeeding
+    /// through its fallback rung.
     pub fn record_warm_failure(&mut self) {
         self.consecutive_warm_failures += 1;
     }
@@ -368,9 +387,10 @@ pub fn decide(state: &ResetPolicyState, input: &PlanInput<'_>) -> ResetPlan {
         },
         ResetMode::Warm => {
             let cold = state.cold_reason(input.force_cold, input.cold_every_n);
-            let has_url = |m: &&HooksMarker| !m.url_prefix.is_empty();
-            let live_hooks = input.marker.filter(has_url).is_some();
-            let remembered_hooks = input.remembered_marker.filter(has_url).is_some();
+            let live_hooks = input.marker.is_some_and(HooksMarker::has_reset_hook);
+            let remembered_hooks = input
+                .remembered_marker
+                .is_some_and(HooksMarker::has_reset_hook);
             let hook_available =
                 live_hooks || remembered_hooks || !input.reset_deep_link.is_empty();
             if !hook_available {
@@ -1059,6 +1079,19 @@ mod tests {
         assert_eq!(s.warm_resets_since_cold, 2);
         s.record_warm_failure();
         assert_eq!(s.consecutive_warm_failures, 1);
+        // A restart recovery restarts the warm window but does not clear the
+        // failure streak — nothing warm succeeded.
+        let restart = ResetOutcome {
+            mode_used: ResetMode::Restart,
+            fell_back: true,
+            cold_launch: true,
+            ..warm.clone()
+        };
+        s.record(&restart);
+        assert_eq!(s.warm_resets_since_cold, 0);
+        assert_eq!(s.consecutive_warm_failures, 1);
+        // A cold-delivered hook that acknowledged is a warm success: it
+        // clears the streak and (being a relaunch) restarts the window.
         let cold = ResetOutcome {
             cold_launch: true,
             mode_used: ResetMode::Warm,
@@ -1066,6 +1099,94 @@ mod tests {
         };
         s.record(&cold);
         assert_eq!(s, ResetPolicyState::default());
+    }
+
+    /// The daemon records a warm failure and then the ladder's final outcome
+    /// on every reset. Two warm failures each recovered by a restart (the
+    /// default `allowFallback: true` path) must still trip the streak valve.
+    #[test]
+    fn warm_failure_streak_survives_fallback_recovery() {
+        let mut s = ResetPolicyState::default();
+        let recovered = ResetOutcome {
+            mode_used: ResetMode::Restart,
+            fell_back: true,
+            cold_launch: true,
+            reason: Some("warm reset via in-app hooks failed (timeout)".to_string()),
+            steps: vec![
+                ResetStep {
+                    name: "warm-hooks".to_string(),
+                    duration_ms: 3000,
+                    ok: false,
+                    detail: "timeout".to_string(),
+                },
+                ResetStep {
+                    name: "restart".to_string(),
+                    duration_ms: 900,
+                    ok: true,
+                    detail: String::new(),
+                },
+            ],
+            epoch_after: None,
+            error: None,
+        };
+        s.record_warm_failure();
+        s.record(&recovered);
+        assert_eq!(s.cold_reason(false, 10), None);
+        s.record_warm_failure();
+        s.record(&recovered);
+        assert_eq!(
+            s.cold_reason(false, 10),
+            Some(ColdReason::WarmFailureStreak(2))
+        );
+        // The same through a clear recovery.
+        let cleared = ResetOutcome {
+            mode_used: ResetMode::Clear,
+            ..recovered.clone()
+        };
+        s.record_warm_failure();
+        s.record(&cleared);
+        assert_eq!(
+            s.cold_reason(false, 10),
+            Some(ColdReason::WarmFailureStreak(3))
+        );
+        // One acknowledged warm reset (cold-delivered, as the valve requests)
+        // clears the streak so the next reset is warm again.
+        let acked = ResetOutcome {
+            mode_used: ResetMode::Warm,
+            fell_back: false,
+            cold_launch: true,
+            reason: None,
+            steps: vec![],
+            epoch_after: Some(1),
+            error: None,
+        };
+        s.record(&acked);
+        assert_eq!(s, ResetPolicyState::default());
+        assert_eq!(s.cold_reason(false, 10), None);
+    }
+
+    #[test]
+    fn empty_url_marker_is_not_a_reset_hook() {
+        let m = parse_hooks_marker("<node text=\"tapsmith-hooks:1;epoch=3;url=\"/>").unwrap();
+        assert!(!m.has_reset_hook());
+        // With a legacy link configured the plan falls to the deep-link rung
+        // (no epoch acknowledgement); without one it cannot start warm at all.
+        assert!(matches!(
+            decide(
+                &ResetPolicyState::default(),
+                &input(ResetMode::Warm, Some(&m), "myapp://reset")
+            )
+            .first,
+            FirstStep::WarmDeepLink { .. }
+        ));
+        assert_eq!(
+            decide(
+                &ResetPolicyState::default(),
+                &input(ResetMode::Warm, Some(&m), "")
+            )
+            .first,
+            FirstStep::Restart
+        );
     }
 
     // ── ladder ──

@@ -1159,6 +1159,20 @@ describe('Device action progress events', () => {
 // ─── resetApp ───
 
 describe('Device.resetApp()', () => {
+  it('sends the configured appResetColdEvery (0 = off) with mid-test resets', async () => {
+    const resetApp = vi.fn(async () => ({
+      requestId: '1', success: true, errorType: '', errorMessage: '', screenshot: Buffer.alloc(0),
+      modeRequested: 'APP_RESET_MODE_WARM', modeUsed: 'APP_RESET_MODE_WARM', fellBack: false, coldLaunch: false,
+      reason: '', durationMs: 10, hooksDetected: true, epochBefore: 1, epochAfter: 2, steps: [],
+    }));
+    const client = makeMockClient({ resetApp } as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app', appResetColdEvery: 0 });
+
+    await device.resetApp();
+
+    expect(resetApp).toHaveBeenCalledWith('com.example.app', expect.objectContaining({ coldEveryNResets: 0 }));
+  });
+
   it('runs the daemon ladder and maps the structured outcome', async () => {
     const resetApp = vi.fn(async () => ({
       requestId: '1', success: true, errorType: '', errorMessage: '', screenshot: Buffer.alloc(0),
@@ -1177,7 +1191,9 @@ describe('Device.resetApp()', () => {
 
     expect(resetApp).toHaveBeenCalledWith('com.example.app', {
       mode: 'warm', allowFallback: true, resetDeepLink: undefined, forceCold: false,
-      coldEveryNResets: undefined, waitForIdle: undefined, targetPath: '/login',
+      // Honours the configured warm-window bound (default 10) like the
+      // runner's own resets — never "unbounded" for lack of an option.
+      coldEveryNResets: 10, waitForIdle: undefined, targetPath: '/login',
     });
     expect(result).toEqual({
       modeRequested: 'warm', modeUsed: 'restart', fellBack: true, coldLaunch: true,

@@ -4241,11 +4241,21 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         // Why a warm request could not start warm, when the plan's own reason
         // ("exposes no reset hook") would be misleading.
         let mut no_hook_reason: Option<String> = None;
+        // Only a marker with a URL prefix is a reset hook. A module that could
+        // not determine its scheme still renders a marker (empty `url=`), and
+        // remembering that one would make every later reset claim hooks the
+        // ladder never uses (the nav-ack path keeps its own copy for `nav`).
+        let has_hook = |m: &app_reset::HooksMarker| m.has_reset_hook();
         if mode == app_reset::ResetMode::Warm {
-            if marker.is_some() {
+            if marker.as_ref().is_some_and(has_hook) {
                 *self.last_hooks_marker.write().await = marker.clone();
             } else {
-                let seen_before = self.last_hooks_marker.read().await.is_some();
+                let seen_before = self
+                    .last_hooks_marker
+                    .read()
+                    .await
+                    .as_ref()
+                    .is_some_and(has_hook);
                 if seen_before {
                     // Hooks were seen earlier in this session: one missed read
                     // is far more likely a transient hierarchy gap than a
@@ -4253,7 +4263,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     for _ in 0..2 {
                         tokio::time::sleep(Duration::from_millis(250)).await;
                         marker = self.current_hooks_marker(5_000).await;
-                        if marker.is_some() {
+                        if marker.as_ref().is_some_and(has_hook) {
                             *self.last_hooks_marker.write().await = marker.clone();
                             break;
                         }
@@ -4296,8 +4306,13 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             )
         };
         // The rungs acknowledge against whichever baseline the plan used: the
-        // live marker, or the remembered epoch/boot when the read missed.
-        let marker = marker.or(remembered);
+        // live marker, or the remembered epoch/boot when the read missed. A
+        // marker without a reset hook is dropped here so that the response's
+        // `hooks_detected` / `epoch_before` describe what `decide` actually
+        // planned — with an empty `url=` the plan is the legacy deep-link rung
+        // (or restart/clear), and the SDK must not skip its settle wait or pin
+        // the hooks capability on the strength of a marker the ladder ignored.
+        let marker = marker.or(remembered).filter(has_hook);
         let epoch_before = marker.as_ref().map(|m| m.epoch).unwrap_or(0);
         if let (Some(reason), app_reset::FirstStep::Restart | app_reset::FirstStep::Clear) =
             (no_hook_reason, &plan.first)
@@ -4379,7 +4394,15 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             // proves the app has hooks even when this reset's own read missed
             // it (the SDK demoting `auto` policies off one missed read was
             // silently downgrading whole files to clear resets under load).
-            hooks_detected: marker.is_some() || self.last_hooks_marker.read().await.is_some(),
+            // Only markers with a reset hook count — the deep-link nav probe
+            // may have remembered an empty-`url=` marker.
+            hooks_detected: marker.is_some()
+                || self
+                    .last_hooks_marker
+                    .read()
+                    .await
+                    .as_ref()
+                    .is_some_and(has_hook),
             epoch_before,
             epoch_after: outcome.epoch_after.unwrap_or(0),
             steps: outcome

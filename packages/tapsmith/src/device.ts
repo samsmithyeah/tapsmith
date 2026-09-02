@@ -32,7 +32,7 @@ import {
 import * as nodePath from 'node:path';
 import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
 import { withActionProgress } from './action-progress.js';
-import type { TapsmithConfig } from './config.js';
+import { DEFAULT_APP_RESET_COLD_EVERY, type TapsmithConfig } from './config.js';
 import { Tracing } from './trace/tracing.js';
 import { type TraceCollector, getActiveTraceCollector, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory, ConsoleLevel } from './trace/types.js';
@@ -137,6 +137,7 @@ export class Device {
   /** @internal */
   readonly _client: TapsmithGrpcClient;
   private _defaultTimeoutMs: number;
+  private _appResetColdEvery: number;
   private readonly defaultPackageName?: string;
   /** @internal */
   readonly _platform: Platform;
@@ -176,9 +177,10 @@ export class Device {
   private _typingDelayMs: number;
   private _doubleTapIntervalMs: number;
 
-  constructor(client: TapsmithGrpcClient, config?: Partial<Pick<TapsmithConfig, 'timeout' | 'package' | 'platform' | 'simulator' | 'typingDelay' | 'doubleTapInterval'>>) {
+  constructor(client: TapsmithGrpcClient, config?: Partial<Pick<TapsmithConfig, 'timeout' | 'package' | 'platform' | 'simulator' | 'typingDelay' | 'doubleTapInterval' | 'appResetColdEvery'>>) {
     this._client = client;
     this._defaultTimeoutMs = config?.timeout ?? 30_000;
+    this._appResetColdEvery = config?.appResetColdEvery ?? DEFAULT_APP_RESET_COLD_EVERY;
     this._typingDelayMs = config?.typingDelay ?? 0;
     this._doubleTapIntervalMs = config?.doubleTapInterval ?? 0;
     this.defaultPackageName = config?.package;
@@ -602,7 +604,10 @@ export class Device {
       allowFallback: options.fallback ?? true,
       resetDeepLink: options.resetDeepLink,
       forceCold: (options.forceCold ?? false) || this._forceColdDeepLinks,
-      coldEveryNResets: options.coldEveryNResets,
+      // Mid-test resetApp() calls share the daemon's warm-window state with
+      // the runner's resets, so they honour the same `appResetColdEvery`
+      // (0 = off) — sending nothing would mean "never bound the window".
+      coldEveryNResets: options.coldEveryNResets ?? this._appResetColdEvery,
       waitForIdle: options.waitForIdle,
       targetPath: options.target,
       fallbackToClear: options.fallbackToClear,
@@ -619,7 +624,10 @@ export class Device {
           return response;
         },
         'App reset failed',
-        { detail: () => (response ? describeAppResetResponse(mode, response) : undefined) }));
+        {
+          detail: () => (response ? describeAppResetResponse(mode, response) : undefined),
+          skipBeforeCapture: options.skipTraceCapture,
+        }));
     return toAppResetResult(mode, response!);
   }
 
@@ -1762,6 +1770,12 @@ export interface InternalAppResetOptions extends AppResetOptions {
   forceCold?: boolean;
   coldEveryNResets?: number;
   waitForIdle?: boolean;
+  /**
+   * Skip the trace's before-action capture (screenshot + hierarchy) for this
+   * reset. The runner sets it for fixture-setup resets, where the pre-reset
+   * screen is the previous test's leftover state.
+   */
+  skipTraceCapture?: boolean;
   /**
    * Warm falls back to clear instead of restart. Set by the runner's declared
    * isolation policy (its promise is state-clearing; a restart keeps data);

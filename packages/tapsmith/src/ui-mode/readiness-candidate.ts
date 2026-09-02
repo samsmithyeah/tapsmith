@@ -112,3 +112,26 @@ export function nextCandidate(input: CandidateInput): Candidate | undefined {
       return undefined;
     })();
 }
+
+/**
+ * Merge a worker's newly reported reset capabilities into the server's
+ * snapshot. Capabilities only ever upgrade: `true` wins over `false`/unset,
+ * because a probe that missed the marker (hierarchy lag, app not yet
+ * rendered) must not downgrade a capability an earlier reset positively
+ * verified — the same never-downgrade rule the worker applies locally.
+ */
+export function mergeResetCapabilities(
+  previous: ResetCapabilities | undefined,
+  next: ResetCapabilities | undefined,
+): ResetCapabilities | undefined {
+  if (!previous) return next;
+  if (!next) return previous;
+  const merged: ResetCapabilities = { ...previous };
+  for (const key of Object.keys(next) as Array<keyof ResetCapabilities>) {
+    const value = next[key];
+    if (value === undefined) continue;
+    if (merged[key] === true) continue;
+    merged[key] = value;
+  }
+  return merged;
+}

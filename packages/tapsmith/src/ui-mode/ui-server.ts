@@ -61,7 +61,7 @@ import type {
 import { encodeScreenFrame, type TestNodeStatus } from './ui-protocol.js';
 import { RunQueue } from '../watch-queue.js';
 import { DeviceReadiness, toWireReadiness, type Candidate, type ReadinessCommand, type ReadinessEvent, type StaleReason } from './device-readiness.js';
-import { nextCandidate as pickCandidate, policyForFile, type CandidateProject } from './readiness-candidate.js';
+import { mergeResetCapabilities, nextCandidate as pickCandidate, policyForFile, type CandidateProject } from './readiness-candidate.js';
 import type { AppResetPolicy, PreparedState, ResetCapabilities } from '../app-reset.js';
 import { DEFAULT_UI_PREFERENCES, type DeviceActivityMessage, type UIPreferences } from './ui-protocol.js';
 import {
@@ -488,9 +488,25 @@ export async function startUIServer(
     broadcast(msg);
   }
 
+  /**
+   * A worker learned something new about its device (a reset detected hooks
+   * the startup probe missed). Upgrade-only merge, then let readiness
+   * re-evaluate: a `ready` prepared under the old resolution may no longer
+   * be what the likely-next file wants.
+   */
+  function upgradeWorkerCapabilities(worker: UIWorkerHandle, capabilities: ResetCapabilities): void {
+    const merged = mergeResetCapabilities(worker.capabilities, capabilities);
+    if (JSON.stringify(merged) === JSON.stringify(worker.capabilities)) return;
+    worker.capabilities = merged;
+    if (!worker.retired) readinessEvent(worker, { type: 'candidate-changed' });
+  }
+
   /** Messages a worker sends outside a run dispatch (background preparation). */
   function handleIdleWorkerMessage(worker: UIWorkerHandle, msg: UIWorkerChildMessage): void {
     switch (msg.type) {
+      case 'capabilities':
+        upgradeWorkerCapabilities(worker, msg.capabilities);
+        break;
       case 'prepared': {
         const started = worker.readiness?.state;
         readinessEvent(worker, { type: 'prepared', prepareId: msg.prepareId, policy: msg.policy, startedAt: msg.startedAt, durationMs: msg.durationMs, satisfiedBy: msg.satisfiedBy });
@@ -2198,6 +2214,9 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
               }
               break;
             }
+            case 'capabilities':
+              upgradeWorkerCapabilities(worker, msg.capabilities);
+              break;
             case 'progress':
               // Slow-device-action progress during the between-file preflight
               // (PILOT-232). Empty string = the preflight finished, clear it.
@@ -2532,6 +2551,12 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     );
     // Preserve the friendly display name from before respawn.
     newWorker.displayName = worker.displayName;
+    // The device did not change, so nothing it was known to support went
+    // away: carry the old capabilities forward and only let the fresh
+    // startup probe upgrade them, never downgrade (a probe that misses the
+    // marker on a slow relaunch must not turn a verified hooks app into a
+    // clear+relaunch one for the rest of the session).
+    newWorker.capabilities = mergeResetCapabilities(worker.capabilities, newWorker.capabilities);
     uiWorkers[index] = newWorker;
   }
 

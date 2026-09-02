@@ -171,10 +171,10 @@ describe('session-preflight', () => {
     expect(prepared).toMatchObject({ policy: { mode: 'clear', scope: 'file' }, source: 'startup launch' });
   });
 
-  it('startup launch with skipAppReset only launches (fresh install has nothing to clear)', async () => {
+  it('startup launch after a fresh install only launches (nothing to clear)', async () => {
     const ctx = makeContext();
 
-    const prepared = await launchConfiguredApp(ctx, 'worker startup launch', { skipAppReset: true });
+    const prepared = await launchConfiguredApp(ctx, 'worker startup launch', { freshInstall: true });
 
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
     expect(ctx.device.terminateApp).not.toHaveBeenCalled();
@@ -222,6 +222,7 @@ describe('session-preflight', () => {
       resetDeepLink: 'app:///__reset',
       forceCold: true,
       coldEveryNResets: 4,
+      skipTraceCapture: true,
       fallbackToClear: false,
     });
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
@@ -404,7 +405,7 @@ describe('session-preflight', () => {
         .mockResolvedValueOnce(marker)
         .mockResolvedValue(marker);
 
-      await launchConfiguredApp(ctx, 'startup', { skipAppReset: true });
+      await launchConfiguredApp(ctx, 'startup', { freshInstall: true });
 
       expect((ctx as { capabilities?: { hooksDetected?: boolean } }).capabilities?.hooksDetected).toBe(true);
     });
@@ -586,7 +587,7 @@ describe('session-preflight', () => {
         errorMessage: '',
       });
 
-      await launchConfiguredApp(ctx, 'startup launch', { skipAppReset: true });
+      await launchConfiguredApp(ctx, 'startup launch', { freshInstall: true });
 
       expect(ctx.capabilities).toEqual({ hooksDetected: true });
     });

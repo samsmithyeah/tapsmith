@@ -9,7 +9,6 @@
  *   tapsmith --version                 Print version
  */
 
-import * as net from 'node:net';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, EXPLICIT_WORKERS, isExplicitWorkers, type TapsmithConfig } from './config.js';
@@ -51,7 +50,7 @@ import {
   ensureAdbRoot,
 } from './emulator.js';
 import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeConfig } from './worker-protocol.js';
-import { findPidsOnPort, freeStaleAgentPort } from './port-utils.js';
+import { findPidsOnPort, freeStaleAgentPort, pickFreePort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
 import {
   createUiLaunchSteps,
@@ -365,20 +364,6 @@ function installSequentialFatalHandlers(
   process.on('unhandledRejection', (reason) => runFatalTeardown('rejection', reason));
 }
 
-/** An OS-assigned free TCP port on localhost. */
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      const port = typeof addr === 'object' && addr ? addr.port : 0;
-      server.close(() => resolve(port));
-    });
-  });
-}
-
 /**
  * Start (or attach to) the daemon and return the client together with the
  * address actually used — which differs from the requested one when another
@@ -422,7 +407,7 @@ async function ensureDaemonRunning(
     const alive = await probe.waitForReady(1_000);
     probe.close();
     if (alive) {
-      const freePort = await findFreePort();
+      const freePort = await pickFreePort();
       const requestedPort = requestedAddress.split(':').pop() ?? port;
       address = `localhost:${freePort}`;
       port = String(freePort);
@@ -542,6 +527,10 @@ interface SequentialDeviceState {
    * One object per device, shared into every file's sessionContext so the
    * runner resolves `appReset: 'auto'` from it and warm resets refresh it. */
   capabilities: ResetCapabilities
+  /** What the startup launch left the app in — consumed by the first file's
+   * reset so it can skip work the launch already did. Absent when there is
+   * no package to launch. */
+  prepared?: PreparedState
 }
 
 /**
@@ -610,7 +599,11 @@ async function setupSequentialDevice(
   }
 
   const deviceJustLaunched = launchedEmulators.some((e) => e.serial === cfg.device);
-  let skipAppReset = false;
+  // Whether the startup launch may skip its clear: only when the app was
+  // installed onto a device that did not have it. A reinstall (`adb install
+  // -r`, `simctl install`, devicectl) keeps the data container.
+  let freshInstall = false;
+  let simulatorHadApp = false;
   let pendingSimulatorInstall: Promise<void> | undefined;
   let pendingInstallError: unknown;
 
@@ -701,15 +694,14 @@ async function setupSequentialDevice(
               progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)} on device` });
             }
             await installAppOnDevice(cfg.device, resolvedApp);
-            skipAppReset = true;
+            freshInstall = !alreadyInstalled;
             if (progress) progress.complete('app-install', `installed ${path.basename(resolvedApp)} on ${cfg.device}`);
             else console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS device ${cfg.device}.`));
           }
         } else {
           const { installAppAsync, isAppInstalled, installedAppMatches } = await import('./ios-simulator.js');
-          const alreadyInstalled = !deviceJustLaunched
-            && cfg.package
-            && isAppInstalled(cfg.device, cfg.package);
+          simulatorHadApp = !!cfg.package && isAppInstalled(cfg.device, cfg.package);
+          const alreadyInstalled = !deviceJustLaunched && simulatorHadApp;
           // Skip only when the installed bundle is byte-identical — simulator
           // state can outlive a run (reused CI runner device sets, local app
           // rebuilds), and a presence-only skip silently tests a stale build.
@@ -795,7 +787,7 @@ async function setupSequentialDevice(
             progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApk)}` });
           }
           await device.installApk(resolvedApk);
-          skipAppReset = true;
+          freshInstall = !isInstalled;
           if (cfg.package && cfg.device) {
             await waitForPackageIndexed(cfg.device, cfg.package);
           }
@@ -906,7 +898,7 @@ async function setupSequentialDevice(
       progress?.fail('app-install', `failed to install ${path.basename(resolvedIosAppPath ?? cfg.app!)}`);
       throw new Error(`Failed to install iOS app: ${pendingInstallError}`);
     }
-    skipAppReset = true;
+    freshInstall = !simulatorHadApp;
     if (progress) progress.complete('app-install', `installed ${path.basename(resolvedIosAppPath!)}`);
     else console.log(dim(`Installed ${path.basename(resolvedIosAppPath!)} on iOS simulator.`));
     if (cfg.package && cfg.device) {
@@ -984,10 +976,11 @@ async function setupSequentialDevice(
   // launch below) fills it, and it is shared into every file's sessionContext
   // so `appReset: 'auto'` resolves from the detected in-app hooks.
   const capabilities: ResetCapabilities = {};
+  let prepared: PreparedState | undefined;
   if (cfg.package) {
     try {
       progress?.start('app-launch', `launching ${cfg.package}`);
-      await launchConfiguredApp({
+      prepared = await launchConfiguredApp({
         label: `Device ${cfg.device}`,
         config: cfg,
         device,
@@ -999,7 +992,7 @@ async function setupSequentialDevice(
         deviceSerial: cfg.device,
         networkTracingEnabled,
         capabilities,
-      }, 'startup launch', { readinessAttempts: 3, skipAppReset });
+      }, 'startup launch', { readinessAttempts: 3, freshInstall });
       if (progress) progress.complete('app-launch', `launched ${cfg.package}`);
       else console.log(dim(`Launched ${cfg.package}`));
     } catch (err) {
@@ -1022,6 +1015,7 @@ async function setupSequentialDevice(
     resolvedIosAppPath,
     signature,
     capabilities,
+    prepared,
   };
 }
 
@@ -2603,9 +2597,10 @@ async function main(): Promise<void> {
         for (const file of project.testFiles) {
           // The between-file app reset is the runner's job (declared policy,
           // recorded in the trace as fixture setup). The first file after a
-          // device launch inherits that launch as its prepared state.
+          // device launch inherits what that launch actually did as its
+          // prepared state — never a hand-built claim.
           const preparedDevice: PreparedState | undefined = fileIndex === 0
-            ? { policy: { mode: 'clear', scope: 'file' }, preparedAt: Date.now(), durationMs: 0, source: 'startup launch' }
+            ? currentSequentialState?.prepared
             : undefined;
 
           reporter.onTestFileStart(file);

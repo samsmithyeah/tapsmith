@@ -161,8 +161,10 @@ export async function ensureSessionReady(
 /**
  * Startup / recovery launch. Brings the configured app to a fresh, ready
  * state without any policy involvement:
- *  - `skipAppReset`: the app was just installed (nothing to clear) — launch
- *    and verify only.
+ *  - `freshInstall`: the app was installed onto a device that did not have
+ *    it, so there is no data container to clear — launch and verify only.
+ *    A reinstall over an existing bundle (`adb install -r`, `simctl
+ *    install`) keeps the data container and must NOT claim this.
  *  - otherwise: hard clear + relaunch (the `clear` action).
  *
  * Between-file and per-test resets are NOT this function's job any more —
@@ -171,12 +173,14 @@ export async function ensureSessionReady(
 export async function launchConfiguredApp(
   ctx: SessionPreflightContext,
   phase: string,
-  options: { readinessAttempts?: number; skipAppReset?: boolean } = {},
+  options: { readinessAttempts?: number; freshInstall?: boolean } = {},
 ): Promise<PreparedState> {
   const readinessAttempts = options.readinessAttempts;
   const started = Date.now();
   // Both paths leave the app in fresh-install state, i.e. they satisfy the
-  // `clear` policy — the runner can skip the first file's reset.
+  // `clear` policy — the runner can skip the first file's reset. The
+  // `freshInstall` path only holds that promise because the caller vouched
+  // that no data container pre-existed.
   const prepared = (): PreparedState => ({
     policy: { mode: 'clear', scope: 'file' },
     preparedAt: Date.now(),
@@ -189,8 +193,8 @@ export async function launchConfiguredApp(
     return prepared();
   }
 
-  if (options.skipAppReset) {
-    // Fresh install / startup: there's no state to clear. On Android,
+  if (options.freshInstall) {
+    // Fresh install: there's no state to clear. On Android,
     // explicitly launch the app (iOS auto-launches via the XCUITest agent
     // during startAgent), then go straight to ensuring the session is ready.
     if (ctx.config.platform !== 'ios') {
@@ -214,8 +218,9 @@ export interface ExecuteAppResetOptions {
   phase: string
   /**
    * Force a cold (terminate + relaunch) delivery of the warm reset hook.
-   * Retries set this; file-boundary resets set it today to bound the warm
-   * window on iOS simulators (PILOT-249) until the daemon owns that policy.
+   * Only retries set this: the daemon owns the warm-window policy
+   * (`appResetColdEvery`, warm-failure streak), so file-boundary resets no
+   * longer force cold from here.
    */
   forceCold?: boolean
   /**
@@ -307,6 +312,10 @@ export async function executeAppReset(
         resetDeepLink: ctx.config.resetAppDeepLink,
         forceCold: options.forceCold,
         coldEveryNResets: ctx.config.appResetColdEvery ?? DEFAULT_APP_RESET_COLD_EVERY,
+        // Fixture setup: the pre-reset screen is the previous test's leftover
+        // state, not evidence for this test — skip the before-capture that
+        // every traced action otherwise pays (screenshot + hierarchy dump).
+        skipTraceCapture: true,
         // A declared warm policy promises state-clearing; when warm cannot
         // run (or land), a restart keeps persisted data and does not deliver
         // it — fall to clear. Explicit device.resetApp() calls keep the

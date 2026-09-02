@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nextCandidate, policyForFile, type CandidateInput, type CandidateProject } from '../ui-mode/readiness-candidate.js';
+import { mergeResetCapabilities, nextCandidate, policyForFile, type CandidateInput, type CandidateProject } from '../ui-mode/readiness-candidate.js';
 import type { TapsmithConfig } from '../config.js';
 
 function config(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
@@ -82,5 +82,32 @@ describe('nextCandidate', () => {
 
   it('returns undefined with no files at all', () => {
     expect(nextCandidate(input({ treeFiles: [] }))).toBeUndefined();
+  });
+});
+
+describe('mergeResetCapabilities', () => {
+  it('returns whichever side exists when the other is unset', () => {
+    expect(mergeResetCapabilities(undefined, undefined)).toBeUndefined();
+    expect(mergeResetCapabilities({ hooksDetected: true }, undefined)).toEqual({ hooksDetected: true });
+    expect(mergeResetCapabilities(undefined, { hooksDetected: false })).toEqual({ hooksDetected: false });
+  });
+
+  it('upgrades a missed probe to a later positive detection', () => {
+    expect(mergeResetCapabilities({ hooksDetected: false }, { hooksDetected: true })).toEqual({ hooksDetected: true });
+    expect(mergeResetCapabilities({}, { hooksDetected: true, isPhysical: false })).toEqual({ hooksDetected: true, isPhysical: false });
+  });
+
+  it('never downgrades a verified capability (respawn probe missing the marker)', () => {
+    expect(mergeResetCapabilities({ hooksDetected: true, isPhysical: false }, { hooksDetected: false })).toEqual({ hooksDetected: true, isPhysical: false });
+    expect(mergeResetCapabilities({ hooksDetected: true }, {})).toEqual({ hooksDetected: true });
+    expect(mergeResetCapabilities({ hooksDetected: true }, { hooksDetected: undefined })).toEqual({ hooksDetected: true });
+  });
+
+  it('does not mutate its inputs', () => {
+    const previous = { hooksDetected: false };
+    const next = { hooksDetected: true };
+    mergeResetCapabilities(previous, next);
+    expect(previous).toEqual({ hooksDetected: false });
+    expect(next).toEqual({ hooksDetected: true });
   });
 });

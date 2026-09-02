@@ -9,11 +9,12 @@
  * @see PILOT-120
  */
 
+import * as path from 'node:path';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults } from './runner.js';
 import type { TapsmithConfig } from './config.js';
-import { probeResetCapabilities, type SessionPreflightContext } from './session-preflight.js';
+import { ensureSessionReady, probeResetCapabilities, type SessionPreflightContext } from './session-preflight.js';
 import type { ResetCapabilities } from './app-reset.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
@@ -185,6 +186,13 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
   if (!ctx.capabilities.hooksDetected) {
     await probeResetCapabilities(ctx);
   }
+  // Without a package the runner performs no reset (and so no readiness
+  // check of its own): verify the agent is alive here, recovering it if it
+  // died while watch idled — the other run paths do the same in their
+  // startup launch.
+  if (!config.package) {
+    await ensureSessionReady(ctx, `${label} preflight for ${path.basename(msg.filePath)}`);
+  }
 
   // Created BEFORE preflight so a stop that lands during wake/unlock/app-reset
   // is honoured rather than being a no-op that runs the whole file anyway.
@@ -222,6 +230,12 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
       device,
       screenshotDir,
       reporter: reporterProxy,
+      // Per-test readiness check, as in every other run path. Watch has no
+      // file-retry loop, so a recovery here simply relaunches the app and
+      // lets the test proceed rather than surfacing a raw transport error.
+      beforeEachTest: async (fullName) => {
+        await ensureSessionReady(ctx, `before test ${fullName}`);
+      },
       sessionContext: ctx,
       resetCapabilities: ctx.capabilities,
       projectUseOptions: msg.projectUseOptions,

@@ -77,6 +77,25 @@ function sendProgress(message: string): void {
 let preparedDevice: PreparedState | undefined;
 /** Runtime reset capabilities (in-app hooks detected?), shared by every context this worker builds. */
 const sharedCapabilities: ResetCapabilities = {};
+/** What the server last heard (`ready` / `capabilities`); diffed after each device op. */
+let publishedCapabilities: ResetCapabilities = {};
+
+/**
+ * Tell the server when a run or preparation upgraded the shared capabilities
+ * (a reset detecting hooks the startup probe missed). The server's copy
+ * drives policy resolution for background preparation; without this it would
+ * stay a stale snapshot of `ready` and keep preparing with the wrong mode.
+ */
+function publishCapabilities(): void {
+  const keys = new Set([...Object.keys(sharedCapabilities), ...Object.keys(publishedCapabilities)]) as Set<keyof ResetCapabilities>;
+  let changed = false;
+  for (const key of keys) {
+    if (sharedCapabilities[key] !== publishedCapabilities[key]) { changed = true; break; }
+  }
+  if (!changed) return;
+  publishedCapabilities = { ...sharedCapabilities };
+  send({ type: 'capabilities', workerId, capabilities: { ...sharedCapabilities } });
+}
 function consumePreparedDevice(): PreparedState | undefined {
   const p = preparedDevice;
   preparedDevice = undefined;
@@ -346,6 +365,7 @@ async function resolveArtifactPaths(msg: UIWorkerInitMessage): Promise<{
 
 function finishInit(): void {
   sendProgress('ready');
+  publishedCapabilities = { ...sharedCapabilities };
   send({ type: 'ready', workerId, policy: preparedDevice?.policy, capabilities: { ...sharedCapabilities } });
 
   // From here on, stream slow-device-action progress (between-file preflight,
@@ -453,6 +473,9 @@ async function handleRunFile(
 
   const results = collectResults(suiteResult);
 
+  // Before file-done so the server resolves the next dispatch's policy with
+  // whatever this run learned about the device.
+  publishCapabilities();
   send({
     type: 'file-done',
     workerId,
@@ -611,13 +634,18 @@ async function handlePrepare(msg: UIWorkerPrepareMessage): Promise<void> {
   try {
     await device.wake();
     await device.unlock();
+    // The reset below mutates the device, so whatever the startup launch left
+    // behind is gone the moment it starts — cancelled or failed included. Drop
+    // the local record now; a successful preparation comes back from the
+    // server with run-file, and a failed one must not let the next run
+    // consume a stale clear·file claim over a half-restored app.
+    preparedDevice = undefined;
     // Project-level use (appState etc.) is folded into the policy by the
     // server; the effective config is the worker's own.
     const report = await executeAppReset(sessionContext(undefined), msg.policy, {
       phase: `background preparation${msg.forFile ? ` for ${path.basename(msg.forFile)}` : ''}`,
     });
     if (abort.signal.aborted) throw new Error('preparation cancelled');
-    preparedDevice = undefined; // the server hands the prepared state back with run-file
     send({
       type: 'prepared',
       workerId,
@@ -640,6 +668,7 @@ async function handlePrepare(msg: UIWorkerPrepareMessage): Promise<void> {
   } finally {
     device._client._setAbortSignal(undefined);
     if (currentPrepare?.prepareId === msg.prepareId) currentPrepare = undefined;
+    publishCapabilities();
   }
 }
 

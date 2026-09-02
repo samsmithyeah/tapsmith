@@ -1410,6 +1410,9 @@ function toTreeEntry(node: TestTreeNode): TestTreeEntry {
   if (node.children && node.children.length > 0) {
     entry.children = node.children.map(toTreeEntry);
   }
+  // Declared isolation (appReset / appResetScope / appState) — the MCP client
+  // uses it to explain why a test resets the way it does.
+  if (node.use) entry.use = { ...node.use };
   return entry;
 }
 

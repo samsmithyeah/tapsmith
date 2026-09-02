@@ -209,7 +209,9 @@ describe('worker-runner IPC reporting', () => {
         1,
         expect.any(Object),
         'worker startup launch',
-        { skipAppReset: true },
+        // The app was already installed (nothing installed, nothing cleared),
+        // so the startup launch must not claim a fresh-install state.
+        { freshInstall: false },
       );
 
       const done = waitForMessage((msg) => msg.type === 'file-done');

@@ -125,11 +125,15 @@ async function handleInit(msg: InitMessage): Promise<void> {
   // the app baked in (so `pm list packages` says installed, but the bytes are
   // out of date). Always reinstall on fresh emulators to be safe — the cost
   // is small and the alternative is silent failures with stale UI.
+  // Whether the startup launch may skip its clear: only when the app was
+  // installed onto a device that did not have it. A reinstall (`adb install
+  // -r`) keeps the data container, and "already installed" installs nothing.
+  let freshInstall = false;
   if (config.apk) {
-    const alreadyInstalled = !msg.freshEmulator
-      && config.package
-      && msg.deviceSerial
+    const wasInstalled = !!config.package
+      && !!msg.deviceSerial
       && isPackageInstalled(msg.deviceSerial, config.package);
+    const alreadyInstalled = !msg.freshEmulator && wasInstalled;
 
     if (alreadyInstalled) {
       sendProgress(`app ${config.package} already installed, skipping APK install`);
@@ -137,6 +141,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
       const resolvedApk = path.resolve(config.rootDir, config.apk);
       sendProgress(`installing app APK ${path.basename(resolvedApk)}`);
       await device.installApk(resolvedApk);
+      freshInstall = !wasInstalled;
       // Wait for package manager to index the new app
       if (config.package && msg.deviceSerial) {
         await waitForPackageIndexed(msg.deviceSerial, config.package);
@@ -161,21 +166,23 @@ async function handleInit(msg: InitMessage): Promise<void> {
       } else {
         sendProgress(`installing ${path.basename(resolvedApp)} on device`);
         await installAppOnDevice(msg.deviceSerial, resolvedApp);
+        freshInstall = true;
         sendProgress('app install complete');
       }
     } else {
       // Skip only when the installed bundle is byte-identical — simulator
       // state can outlive a run (reused CI runner device sets, local app
       // rebuilds), and a presence-only skip silently tests a stale build.
+      const wasInstalled = !!config.package && isAppInstalled(msg.deviceSerial, config.package);
       const alreadyInstalled = !msg.freshEmulator
-        && config.package
-        && isAppInstalled(msg.deviceSerial, config.package)
-        && installedAppMatches(msg.deviceSerial, config.package, resolvedApp);
+        && wasInstalled
+        && installedAppMatches(msg.deviceSerial, config.package!, resolvedApp);
       if (alreadyInstalled) {
         sendProgress(`app ${config.package} already installed (matching build), skipping app install`);
       } else {
         sendProgress(`installing ${path.basename(resolvedApp)}`);
         installApp(msg.deviceSerial, resolvedApp);
+        freshInstall = !wasInstalled;
         sendProgress('app install complete');
       }
     }
@@ -260,7 +267,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
       preparedDevice = await launchConfiguredApp(
         sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun, resolvedIosAppPath),
         'worker startup launch',
-        { skipAppReset: true },
+        { freshInstall },
       );
       sendProgress('app launched');
     } else {

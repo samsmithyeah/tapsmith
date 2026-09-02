@@ -127,6 +127,37 @@ describe('DeviceReadiness', () => {
     expect(r.preparedFor(CLEAR)?.durationMs).toBe(9_800);
   });
 
+  it('run-ended leaves a worker that sat the run out ready (the run is broadcast to every worker)', () => {
+    const env = makeEnv();
+    const r = new DeviceReadiness(0, env);
+    r.handle({ type: 'worker-ready', initialPolicy: CLEAR });
+    expect(r.state).toMatchObject({ kind: 'ready', policy: CLEAR });
+
+    // Another worker ran the file; this one was never dispatched.
+    expect(r.handle({ type: 'run-ended', stopped: false })).toEqual([]);
+    expect(r.state).toMatchObject({ kind: 'ready', policy: CLEAR, source: 'startup launch' });
+    // Same for a stopped/failed run elsewhere: nothing on this device to inspect.
+    expect(r.handle({ type: 'run-ended', stopped: true, failed: true })).toEqual([]);
+    expect(r.state).toMatchObject({ kind: 'ready', policy: CLEAR });
+  });
+
+  it('run-ended does not interrupt a preparation on a worker that sat the run out', () => {
+    const env = makeEnv({ candidate: { file: '/t/a.test.ts', policy: RESTART } });
+    const r = new DeviceReadiness(0, env);
+    r.handle({ type: 'worker-ready', initialPolicy: CLEAR });
+    r.handle({ type: 'grace-elapsed', timerId: 'readiness-0' });
+    const prep = sendPrepare(r.handle({ type: 'prepare-now' }))!;
+    expect(r.state).toMatchObject({ kind: 'preparing', prepareId: prep.prepareId });
+
+    expect(r.handle({ type: 'run-ended', stopped: false })).toEqual([]);
+    expect(r.state).toMatchObject({ kind: 'preparing', prepareId: prep.prepareId });
+
+    // The in-flight prepare still lands — it was never orphaned or redone.
+    const done = r.handle({ type: 'prepared', prepareId: prep.prepareId, policy: RESTART, startedAt: env.now(), durationMs: 500 });
+    expect(types(done)).toEqual(['broadcast']);
+    expect(r.state).toMatchObject({ kind: 'ready', policy: RESTART, prepareId: prep.prepareId });
+  });
+
   it('a stopped run goes stale (run-stopped) with no timer, and re-arms on selection change', () => {
     const env = makeEnv();
     const r = new DeviceReadiness(0, env);

@@ -811,6 +811,18 @@ export interface UIWorkerReadyMessage {
   capabilities?: import('../app-reset.js').ResetCapabilities
 }
 
+/**
+ * UI worker → server: the worker's runtime reset capabilities changed since
+ * `ready` (e.g. a reset detected in-app hooks the startup probe missed). The
+ * server merges it into its per-worker snapshot so policy resolution for
+ * background preparation agrees with the runner's own.
+ */
+export interface UIWorkerCapabilitiesMessage {
+  type: 'capabilities'
+  workerId: number
+  capabilities: import('../app-reset.js').ResetCapabilities
+}
+
 /** UI worker → server: a background preparation finished. */
 export interface UIWorkerPreparedMessage {
   type: 'prepared'
@@ -920,3 +932,4 @@ export type UIWorkerChildMessage =
   | UIWorkerErrorMessage
   | UIWorkerPreparedMessage
   | UIWorkerPrepareFailedMessage
+  | UIWorkerCapabilitiesMessage

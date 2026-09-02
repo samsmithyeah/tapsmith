@@ -1004,6 +1004,11 @@ async function runSuiteContext(
 
   const suiteRegistry = getFixtureRegistry();
 
+  // Set when the file-entry reset itself (not a user hook) threw. A
+  // recoverable infrastructure error there is the embedder's to handle —
+  // see the catch below.
+  let fileEntryResetError: Error | undefined;
+
   try {
     const runScopeSetup = async (): Promise<void> => {
       if (needsScopeReset) {
@@ -1016,15 +1021,20 @@ async function runSuiteContext(
         // nested describe reached before anything touched the app can use it
         // just as the root scope would; later scopes find it already spent.
         const prepared = opts._prepared?.current;
-        await runTracedAppReset(beforeAllCollector, resetContext(), policy, {
-          phase: isRoot
-            ? `file reset for ${path.basename(opts.testFilePath ?? '')}`
-            : `reset for ${parentPrefix}`,
-          // Cold vs warm delivery of the hook is the daemon's policy
-          // (appResetColdEvery); only retries force it from here.
-          forceCold: false,
-          prepared,
-        });
+        try {
+          await runTracedAppReset(beforeAllCollector, resetContext(), policy, {
+            phase: isRoot
+              ? `file reset for ${path.basename(opts.testFilePath ?? '')}`
+              : `reset for ${parentPrefix}`,
+            // Cold vs warm delivery of the hook is the daemon's policy
+            // (appResetColdEvery); only retries force it from here.
+            forceCold: false,
+            prepared,
+          });
+        } catch (err) {
+          if (isRoot) fileEntryResetError = err instanceof Error ? err : new Error(String(err));
+          throw err;
+        }
         if (opts._prepared) opts._prepared.current = undefined;
       }
       // The hooks group holds only the user's beforeAll code.
@@ -1047,6 +1057,17 @@ async function runSuiteContext(
       beforeAllCollector?.cleanup();
       result.durationMs = Date.now() - suiteStart;
       return result;
+    }
+
+    // The file-entry reset hit a recoverable infrastructure error (agent
+    // socket drop, ADB hiccup) before any test ran. Embedders that opt into
+    // recovery (`abortFileOnError`) recover the session and re-run the file;
+    // surfacing it as failed results here would record a failed attempt and
+    // then flag every test in the file as flaky — main's between-file reset
+    // recovered transparently, and so does this.
+    if (fileEntryResetError && opts.abortFileOnError?.(fileEntryResetError)) {
+      beforeAllCollector?.cleanup();
+      throw fileEntryResetError;
     }
 
     // beforeAll failed — mark all tests in this context as failed and bail out.

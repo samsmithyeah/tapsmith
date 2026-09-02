@@ -140,6 +140,12 @@ export class DeviceReadiness {
 
       case 'run-ended': {
         if (s.kind === 'retired') return [];
+        // The run is broadcast to every worker, but only a worker that ran a
+        // file touched its device (dispatch moved it to `running`). A worker
+        // still `ready` or mid-`preparing` sat the run out — its preparation
+        // is as valid as it was, so keep it rather than discard it and redo
+        // the same reset after the grace period.
+        if (s.kind === 'ready' || s.kind === 'preparing') return [];
         if (event.stopped || event.failed) {
           // The user stopped the run, or a test on this device failed — either
           // way the state on the device is worth inspecting. Don't yank it

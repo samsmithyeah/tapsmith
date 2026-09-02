@@ -372,6 +372,39 @@ describe('runner app reset (declared isolation)', () => {
     expect(flat[0].error?.message).toContain('pm clear failed');
   });
 
+  it('a recoverable infrastructure error in the file-entry reset propagates to an embedder that opted into recovery', async () => {
+    // worker-runner / cli / ui-worker pass abortFileOnError and recover the
+    // session themselves; recording failed results here would make the retry
+    // flag every test in the file as flaky although none ran.
+    const d = makeDevice();
+    d.device._resetApp.mockRejectedValue(new Error('UNAVAILABLE: agent socket closed'));
+    pushContext();
+    tapsmithTest('one', async () => {});
+    tapsmithTest('two', async () => {});
+    const ctx = popContext();
+    const onTestEnd = vi.fn();
+
+    await expect(runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), {
+      abortFileOnError: (err) => err.message.includes('UNAVAILABLE'),
+      reporter: { onTestEnd },
+    }))).rejects.toThrow('agent socket closed');
+    expect(onTestEnd).not.toHaveBeenCalled();
+  });
+
+  it('a non-recoverable file-entry reset error still fails the scope even when the embedder opted into recovery', async () => {
+    const d = makeDevice();
+    d.device._resetApp.mockRejectedValue(new Error('pm clear failed'));
+    pushContext();
+    tapsmithTest('one', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), {
+      abortFileOnError: (err) => err.message.includes('UNAVAILABLE'),
+    }));
+
+    expect(collectResults(result).map((t) => t.status)).toEqual(['failed']);
+  });
+
   it('test.use() rejects unknown appReset values', () => {
     pushContext();
     expect(() => tapsmithTest.use({ appReset: 'bogus' as never })).toThrow(/appReset must be one of/);
