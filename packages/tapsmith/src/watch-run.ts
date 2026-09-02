@@ -177,11 +177,12 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
 
   const label = msg.label ?? 'Watch';
   const ctx = buildSessionContext(config, device, client, msg.deviceSerial, label);
-  // Seed with the parent's sticky knowledge, then probe once if hooks were
-  // never seen — one hierarchy read, and detection only ever upgrades, so a
-  // hooked app pays it exactly once per watch/MCP session (the parent stores
-  // the result). Without this every fresh child resolved `auto` to
-  // clear · file and warm resets silently never engaged.
+  // Seed with the parent's sticky knowledge, then probe if hooks were never
+  // seen. Detection only ever upgrades and the parent stores the result, so a
+  // hooked app pays one hierarchy read per watch/MCP session, and a hookless
+  // one pays the probe's poll budget once (a session that already concluded
+  // "no hooks" re-reads exactly once). Without this every fresh child
+  // resolved `auto` to clear · file and warm resets silently never engaged.
   ctx.capabilities = { ...(msg.resetCapabilities ?? {}) };
   if (!ctx.capabilities.hooksDetected) {
     await probeResetCapabilities(ctx);

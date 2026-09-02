@@ -566,6 +566,14 @@ export interface RunOptions {
   /** @internal — shared holder so `preparedDevice` is consumed exactly once per file. */
   _prepared?: { current?: PreparedState };
   /**
+   * @internal — the policy most recently applied to the device within this
+   * file (by any scope's entry reset or a per-test reset). Scope-entry
+   * resets compare against it, not the lexical parent: after a sibling
+   * describe restored its own appState, the device holds that state, and a
+   * scope inheriting the parent's policy must reset back to it.
+   */
+  _applied?: { current?: AppResetPolicy };
+  /**
    * Run only tests whose fullName contains this value (case-insensitive
    * substring match). All other tests are skipped. May match several tests.
    */
@@ -914,7 +922,10 @@ async function runSuiteContext(
     opts.resetCapabilities,
   );
   const isRoot = parentPrefix === '';
-  const policyChanged = !isRoot && !appResetPolicyEquals(policy, parentPolicy);
+  // Compare against what the device actually holds (the last policy applied
+  // in this file), falling back to the lexical parent before anything ran.
+  const appliedPolicy = opts._applied?.current ?? parentPolicy;
+  const policyChanged = !isRoot && !appResetPolicyEquals(policy, appliedPolicy);
   const canReset = !!opts.sessionContext && !!opts.config.package && !!opts.device;
   // File-scope policies reset on entering the file and whenever a nested
   // describe declares a different policy (e.g. test.use({ appState })).
@@ -1043,6 +1054,7 @@ async function runSuiteContext(
           throw err;
         }
         if (opts._prepared) opts._prepared.current = undefined;
+        if (opts._applied) opts._applied.current = policy;
       }
       // The hooks group holds only the user's beforeAll code.
       beforeAllCollector?.startGroup('beforeAll Hooks');
@@ -1406,6 +1418,7 @@ async function runSuiteContext(
               prepared,
             });
             if (opts._prepared) opts._prepared.current = undefined;
+            if (opts._applied) opts._applied.current = policy;
           }
 
           if (hasBeforeEachWork) {
@@ -2302,6 +2315,7 @@ export async function runTestFile(
     workerFixtures,
     testFilePath: filePath,
     _prepared: { current: opts.preparedDevice },
+    _applied: {},
     _abortFileController: abortFileController,
     abortSignal: abortFileController
       ? (opts.abortSignal

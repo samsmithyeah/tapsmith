@@ -221,6 +221,9 @@ pub struct ResetPolicyState {
     pub warm_resets_since_cold: u32,
     /// Warm resets in a row whose verification failed.
     pub consecutive_warm_failures: u32,
+    /// Streak-valve relaunches (restart/clear standing in for cold delivery)
+    /// since the last warm success. Bounds how often the valve re-arms.
+    pub valve_relaunches: u32,
 }
 
 /// Why a reset that could have been warm is being delivered cold.
@@ -246,6 +249,10 @@ impl ColdReason {
 }
 
 pub const WARM_FAILURE_STREAK_LIMIT: u32 = 2;
+/// How many streak-valve relaunches may re-arm the hook without a warm
+/// success in between. Past this the streak stays latched for the session:
+/// a hook that keeps failing after fresh processes is broken, not wedged.
+pub const MAX_STREAK_VALVE_RELAUNCHES: u32 = 3;
 
 impl ResetPolicyState {
     /// Decide whether the next warm reset must be delivered cold.
@@ -287,6 +294,7 @@ impl ResetPolicyState {
         }
         if warm_succeeded {
             self.consecutive_warm_failures = 0;
+            self.valve_relaunches = 0;
         }
     }
 
@@ -304,8 +312,15 @@ impl ResetPolicyState {
     /// process, so the next reset may try the hook again. Without this the
     /// streak stays at the limit and the valve fires on every reset for the
     /// rest of the session — a permanent downgrade off two transient misses.
+    /// Bounded by [`MAX_STREAK_VALVE_RELAUNCHES`]: a hook that fails the
+    /// streak again after that many fresh processes stays on the relaunch
+    /// rung, so a genuinely broken hook does not cost two failed warm
+    /// attempts per relaunch forever.
     pub fn consume_streak_valve(&mut self) {
-        self.consecutive_warm_failures = 0;
+        self.valve_relaunches += 1;
+        if self.valve_relaunches < MAX_STREAK_VALVE_RELAUNCHES {
+            self.consecutive_warm_failures = 0;
+        }
     }
 }
 
@@ -1028,6 +1043,7 @@ mod tests {
         let streak = ResetPolicyState {
             warm_resets_since_cold: 1,
             consecutive_warm_failures: 2,
+            valve_relaunches: 0,
         };
         let plan = decide(&streak, &input(ResetMode::Warm, Some(&m), ""));
         assert_eq!(
@@ -1040,6 +1056,7 @@ mod tests {
         let bound = ResetPolicyState {
             warm_resets_since_cold: 10,
             consecutive_warm_failures: 0,
+            valve_relaunches: 0,
         };
         let plan = decide(&bound, &input(ResetMode::Warm, Some(&m), ""));
         assert_eq!(
@@ -1088,6 +1105,7 @@ mod tests {
         let bound = ResetPolicyState {
             warm_resets_since_cold: 10,
             consecutive_warm_failures: 0,
+            valve_relaunches: 0,
         };
         assert!(!decide(&bound, &no_cold(false)).consumes_warm_failure_streak);
         // With cold delivery the hook itself is exercised (and its success
@@ -1100,6 +1118,37 @@ mod tests {
             decide(&s, &no_cold(false)).first,
             FirstStep::WarmHooks { cold: None }
         );
+
+        // Re-arming is bounded: a hook that fails the streak again after
+        // MAX_STREAK_VALVE_RELAUNCHES fresh processes stays latched ...
+        for _ in 1..MAX_STREAK_VALVE_RELAUNCHES {
+            s.record_warm_failure();
+            s.record_warm_failure();
+            s.consume_streak_valve();
+        }
+        assert_eq!(
+            s.cold_reason(false, 10),
+            Some(ColdReason::WarmFailureStreak(2))
+        );
+        s.consume_streak_valve();
+        assert_eq!(
+            s.cold_reason(false, 10),
+            Some(ColdReason::WarmFailureStreak(2))
+        );
+        // ... until a warm success (e.g. after a device change resets the
+        // state, or the hook recovers) clears both counters.
+        s.record(&ResetOutcome {
+            mode_used: ResetMode::Warm,
+            fell_back: false,
+            cold_launch: false,
+            reason: None,
+            steps: vec![],
+            epoch_after: Some(1),
+            error: None,
+        });
+        assert_eq!(s.consecutive_warm_failures, 0);
+        assert_eq!(s.valve_relaunches, 0);
+        assert_eq!(s.cold_reason(false, 10), None);
     }
 
     #[test]

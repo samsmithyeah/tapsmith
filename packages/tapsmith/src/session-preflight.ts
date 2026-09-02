@@ -53,25 +53,28 @@ export async function probeResetCapabilities(
   // context and the runner options, so a replacement would leave the runner
   // looking at a stale copy (and never switch to per-test warm resets).
   const caps: ResetCapabilities = (ctx.capabilities ??= {});
-  const deadline = Date.now() + (options.pollMs ?? 0);
+  const deadline = Date.now() + (options.pollMs ?? HOOKS_PROBE_POLL_MS);
+  let readWithoutMarker = false;
   for (;;) {
     let seen = false;
     try {
       const h = await ctx.client.getUiHierarchy();
       const marker = parseHooksMarker(h.hierarchyXml);
       seen = !!marker && marker.urlPrefix.length > 0;
+      if (!seen) readWithoutMarker = true;
     } catch {
-      // A failed read is a miss for this attempt; keep whatever we knew.
+      // A failed read says nothing about the app; it neither confirms nor
+      // rules out the hooks.
     }
     if (seen) {
       caps.hooksDetected = true;
       return caps;
     }
     // A session that already knows the answer has nothing to wait for. One
-    // that has never seen the marker keeps looking for the caller's budget:
-    // right after a cold launch the first non-empty hierarchy can be the
-    // native splash, before the React root (and the marker) has mounted, and
-    // a single-shot miss there would pin every file of a sequential run to
+    // that has never seen the marker keeps looking for the budget: right
+    // after a cold launch the first non-empty hierarchy can be the native
+    // splash, before the React root (and the marker) has mounted, and a
+    // single-shot miss there would pin every file of a sequential run to
     // clear resets with nothing to upgrade it.
     if (caps.hooksDetected !== undefined || Date.now() + HOOKS_PROBE_POLL_INTERVAL_MS > deadline) break;
     await delay(HOOKS_PROBE_POLL_INTERVAL_MS);
@@ -80,19 +83,22 @@ export async function probeResetCapabilities(
   // that misses the marker (mid-transition screen, keyboard, a slow dump
   // under load) must not demote the policy from warm — that silently
   // downgraded whole files to clear resets on loaded CI runners. Only a
-  // session that never saw the marker records false.
-  caps.hooksDetected ??= false;
+  // session that never saw the marker records false, and only on the
+  // strength of a hierarchy it actually read: a run of failed reads leaves
+  // the question open for the next probe.
+  if (readWithoutMarker) caps.hooksDetected ??= false;
   return caps;
 }
 
 /** Marker poll cadence inside {@link probeResetCapabilities}. */
 const HOOKS_PROBE_POLL_INTERVAL_MS = 250;
 /**
- * How long a session-level launch keeps looking for the hooks marker before
- * concluding the app has none. Paid once per launch, only by apps without the
- * hooks; an app with them answers on the first read.
+ * How long a probe keeps looking for the hooks marker before concluding the
+ * app has none. Only a session that has never seen the marker polls, so the
+ * budget is paid once per session (per embedder process), and only by apps
+ * without the hooks; an app with them answers on the first read.
  */
-const HOOKS_PROBE_LAUNCH_POLL_MS = 3_000;
+const HOOKS_PROBE_POLL_MS = 3_000;
 
 export interface EnsureSessionReadyOptions {
   onRecovery?: (error: unknown) => void
@@ -201,7 +207,7 @@ export async function launchConfiguredApp(
   options: { readinessAttempts?: number; freshInstall?: boolean; hooksProbeMs?: number } = {},
 ): Promise<PreparedState> {
   const readinessAttempts = options.readinessAttempts;
-  const probe = { pollMs: options.hooksProbeMs ?? HOOKS_PROBE_LAUNCH_POLL_MS };
+  const probe = { pollMs: options.hooksProbeMs ?? HOOKS_PROBE_POLL_MS };
   const started = Date.now();
   // Both paths leave the app in fresh-install state, i.e. they satisfy the
   // `clear` policy — the runner can skip the first file's reset. The

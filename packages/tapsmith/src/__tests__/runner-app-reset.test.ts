@@ -97,6 +97,8 @@ function makeOpts(d: ReturnType<typeof makeDevice>, config: TapsmithConfig, extr
     device: d.device as any,
     sessionContext,
     resetCapabilities: {},
+    // runTestFile creates this per file; these tests drive runSuiteContext directly.
+    _applied: {},
     ...extra,
   };
 }
@@ -293,16 +295,27 @@ describe('runner app reset (declared isolation)', () => {
         tapsmithTest.use({ appState: '' });
         tapsmithTest('landing', async () => {});
       });
+      tapsmithDescribe('billing', () => {
+        // Inherits the archive again, but the device now holds the sibling's
+        // cleared state — so the archive is restored once more.
+        tapsmithTest('invoices', async () => {});
+      });
+    });
+    tapsmithDescribe('guest', () => {
+      // Back at the root's policy while the device holds the archive.
+      tapsmithTest('landing', async () => {});
     });
     const ctx = popContext();
 
     const result = await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig()));
 
-    expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed', 'passed', 'passed']);
+    expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed', 'passed', 'passed', 'passed', 'passed']);
     expect(resetCalls(d)).toEqual([
       'resetApp:clear',                  // root
-      'restoreAppState', 'restartApp',   // authenticated: restore once
+      'restoreAppState', 'restartApp',   // authenticated: restore once (settings/deeper inherit)
       'resetApp:clear',                  // signed out: explicit appState ''
+      'restoreAppState', 'restartApp',   // billing: device held the cleared state
+      'resetApp:clear',                  // guest: device held the archive
     ]);
   });
 

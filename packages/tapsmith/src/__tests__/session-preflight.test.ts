@@ -599,7 +599,15 @@ describe('session-preflight', () => {
         hierarchyXml: '<hierarchy><node package="com.example.app" text="tapsmith-hooks:1;epoch=0;url=" /></hierarchy>',
         errorMessage: '',
       });
-      expect(await probeResetCapabilities(ctx)).toEqual({ hooksDetected: false });
+      expect(await probeResetCapabilities(ctx, { pollMs: 0 })).toEqual({ hooksDetected: false });
+    });
+
+    it('a probe whose every read fails records nothing (not "no hooks")', async () => {
+      const ctx = makeContext();
+      vi.mocked(ctx.client.getUiHierarchy).mockRejectedValue(new Error('agent busy'));
+
+      expect(await probeResetCapabilities(ctx, { pollMs: 300 })).toEqual({});
+      expect(vi.mocked(ctx.client.getUiHierarchy).mock.calls.length).toBeGreaterThan(1);
     });
 
     it('a warm reset refreshes hooksDetected from the daemon answer', async () => {
