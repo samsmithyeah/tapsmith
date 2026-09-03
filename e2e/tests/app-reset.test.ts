@@ -77,4 +77,21 @@ describe("App reset (declared isolation)", () => {
     await device.openDeepLink("tapsmithtest:///profile")
     await expect(device.getByText("Sign In", { exact: true })).toBeVisible()
   })
+
+  test("a warm reset onto a marker-hiding route still confirms warm", async ({ device, loginScreen }) => {
+    // A route that renders a full-screen accessibility-modal (here expo-router's
+    // not-found screen for an unknown target) hides even the always-present
+    // hooks marker from the hierarchy, so the epoch can't be read on that
+    // screen. The reset still runs; the daemon recovers by re-confirming on the
+    // readable root route rather than falling back to a relaunch.
+    await signIn(device, loginScreen)
+
+    const result = await device.resetApp({ target: "/no-such-route-xyz" })
+    expect(result.modeUsed).toBe("warm")
+    expect(result.fellBack).toBe(false)
+
+    // The reset cleared state despite the unreadable target screen.
+    await device.openDeepLink("tapsmithtest:///profile")
+    await expect(device.getByText("Sign In", { exact: true })).toBeVisible()
+  })
 })

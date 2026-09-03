@@ -8054,6 +8054,68 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
             .map_err(|e| e.message().to_string())?
             .into_inner();
         if !resp.success {
+            // The reset was delivered but its epoch could not be read back on
+            // the target screen. Some routes render an accessibility-modal that
+            // hides even the always-present marker from the hierarchy — a
+            // navigator's not-found screen (an unknown `target`), or a
+            // full-screen modal — so the epoch is invisible although the reset
+            // ran. Before paying for an expensive relaunch, navigate to the
+            // app's root route (which renders a readable screen) and re-read
+            // the epoch: if it advanced, the reset succeeded. Only for a
+            // non-root warm target — root is where we would land anyway, and a
+            // cold delivery already recreated the process.
+            if !cold && self.target_path != "/" && !marker.url_prefix.is_empty() {
+                // Re-deliver the reset to the root route. Its own ack-wait runs
+                // on the readable Home screen, so the epoch it produces is
+                // observable (the reset is idempotent — clearing state twice is
+                // harmless — and landing on root is a sane outcome for a target
+                // that would not render anyway).
+                let root_url = app_reset::build_reset_url(
+                    &marker.url_prefix,
+                    "/",
+                    &Uuid::new_v4().simple().to_string(),
+                );
+                if let Ok(retry) = self
+                    .svc
+                    .deliver_deep_link(
+                        Uuid::new_v4().to_string(),
+                        &root_url,
+                        false,
+                        Some(marker.epoch),
+                        marker.boot.clone(),
+                    )
+                    .await
+                {
+                    if retry.into_inner().success {
+                        return match self.svc.current_hooks_marker(5_000).await {
+                            Some(after)
+                                if app_reset::hooks_acknowledged(
+                                    marker.epoch,
+                                    marker.boot.as_deref(),
+                                    &after,
+                                ) =>
+                            {
+                                *self.svc.last_hooks_marker.write().await = Some(after.clone());
+                                match after.err {
+                                    Some(err) => {
+                                        Err(format!("in-app reset reported an error: {err}"))
+                                    }
+                                    None => Ok(after.epoch),
+                                }
+                            }
+                            // Delivery's settle already enforced the epoch on
+                            // root; a missed read here is just a mid-transition
+                            // hierarchy — trust it and remember the advance.
+                            _ => {
+                                let mut remembered = marker.clone();
+                                remembered.epoch += 1;
+                                *self.svc.last_hooks_marker.write().await = Some(remembered);
+                                Ok(marker.epoch + 1)
+                            }
+                        };
+                    }
+                }
+            }
             return Err(Self::response_error(&resp));
         }
         // Read back the acknowledged epoch (and any error the hook reported).

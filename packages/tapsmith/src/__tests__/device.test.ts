@@ -1233,3 +1233,47 @@ describe('Device.resetApp()', () => {
     expect(resetApp).toHaveBeenCalledWith('com.example.app', expect.objectContaining({ forceCold: true }));
   });
 });
+
+describe('Device.close() network capture teardown', () => {
+  function fakeStream() {
+    return { on: vi.fn(), write: vi.fn(), end: vi.fn() };
+  }
+
+  it('releases the proxy for real (keepRunning:false) when capture was started', async () => {
+    const stopNetworkCapture = vi.fn(async () => ({
+      requestId: '1', success: true, entries: [], errorMessage: '',
+    }));
+    const client = makeMockClient({
+      stopNetworkCapture,
+      networkRouteStream: vi.fn(() => fakeStream()),
+      close: vi.fn(),
+    } as unknown as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app' });
+
+    // The runner keeps the proxy alive across files (keepRunning:true); the
+    // session ending is where it is torn down for good.
+    await device._startNetworkCapture();
+    await device._stopNetworkCapture({ keepRunning: true });
+    stopNetworkCapture.mockClear();
+
+    await device.close();
+
+    expect(stopNetworkCapture).toHaveBeenCalledTimes(1);
+    expect(stopNetworkCapture).toHaveBeenCalledWith({ keepRunning: false });
+  });
+
+  it('does not stop capture on close when it was never started', async () => {
+    const stopNetworkCapture = vi.fn(async () => ({
+      requestId: '1', success: true, entries: [], errorMessage: '',
+    }));
+    const client = makeMockClient({
+      stopNetworkCapture,
+      close: vi.fn(),
+    } as unknown as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app' });
+
+    await device.close();
+
+    expect(stopNetworkCapture).not.toHaveBeenCalled();
+  });
+});

@@ -157,6 +157,13 @@ export class Device {
   /** @internal — Network route manager (lazily created). */
   _routeManager: NetworkRouteManager | null = null;
   private _networkCaptureActive = false;
+  /**
+   * Whether network capture was ever started this session. The runner keeps
+   * the proxy alive across files (stable port for warm-reset-persisted apps),
+   * so `close()` is the point that releases it — but only when capture was
+   * actually used, to avoid a wasted teardown RPC on non-network runs.
+   */
+  private _networkCaptureEverStarted = false;
   private _networkCaptureError: string | undefined;
   /** Set by the runner on retry attempts — see _setForceColdDeepLinks. */
   private _forceColdDeepLinks = false;
@@ -841,6 +848,7 @@ export class Device {
     }
     if (res.success) {
       this._networkCaptureActive = true;
+      this._networkCaptureEverStarted = true;
       this._networkCaptureError = undefined;
       this._ensureRouteManager().ensureEventsSubscribed();
     } else {
@@ -1720,6 +1728,18 @@ export class Device {
     // Stop device log stream (synchronous)
     this._stopDeviceLogStream();
     this._stopDaemonLogStream();
+
+    // Release the network proxy for real. The runner keeps it alive across
+    // files (a stable port so a warm-reset-persisted app keeps valid
+    // keep-alive sockets); the session ending is the point to tear it down.
+    if (this._networkCaptureEverStarted) {
+      try {
+        await this._stopNetworkCapture({ keepRunning: false });
+      } catch {
+        // Best-effort; the daemon also cleans up the proxy on shutdown.
+      }
+      this._networkCaptureEverStarted = false;
+    }
 
     // Dispose the route manager (closes gRPC stream)
     if (this._routeManager) {

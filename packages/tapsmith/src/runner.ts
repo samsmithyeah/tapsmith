@@ -2355,12 +2355,29 @@ export async function runTestFile(
       const traceConfig = resolveTraceConfig(fileOpts.config.trace);
       if (fileOpts.device && traceConfig.mode !== 'off' && traceConfig.network) {
         try {
-          await fileOpts.device._stopNetworkCapture({ keepRunning: false });
+          // Keep the proxy (and its port) alive across files, draining only.
+          // A warm reset keeps the app process between files, so its HTTP
+          // keep-alive pool holds sockets to this proxy port; tearing the
+          // proxy down per file (churning to a new port on the next file)
+          // stranded those sockets, and the app's first requests in the next
+          // file stalled ~15-25s reusing dead connections before reconnecting
+          // — long enough to blow route-mock assertions. The proxy is released
+          // for real at Device.close() (session end); the daemon also cleans
+          // up on shutdown. Mirrors the iOS macOS system-proxy session model.
+          await fileOpts.device._stopNetworkCapture({ keepRunning: true });
         } catch {
-          // Best-effort final teardown; the daemon also cleans up on shutdown.
+          // Best-effort; the daemon cleans up the proxy on shutdown regardless.
         }
       }
-      if (fileOpts.device?._disposeRouteManager) {
+      // Keep the route-decision stream open across files when the proxy is
+      // kept alive above: closing it at the boundary releases any request the
+      // proxy is holding for a decision, so the first request of the next file
+      // falls through to the real server (a ~24s stall that blows the mock
+      // assertion). Routes are already removed per-test, and Device.close()
+      // disposes the manager for real. When network is off, dispose here as
+      // before (nothing keeps it alive).
+      if (fileOpts.device?._disposeRouteManager
+        && !(traceConfig.mode !== 'off' && traceConfig.network)) {
         await fileOpts.device._disposeRouteManager();
       }
       // Hard teardown of the cross-test cached WebView connection (kept
