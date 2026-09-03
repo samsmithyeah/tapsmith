@@ -37,6 +37,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 /** The test this drives: taps a button and waits on a real HTTPS response. */
 const TEST_FILE = "tests/api-calls.test.ts"
 const TEST_GREP = "fetches and displays user"
+/**
+ * The host that test's request goes to. The network checks are pinned to it, so
+ * they cannot be satisfied by unrelated traffic — `--trace on` replaces the
+ * config's whole `trace` object with the string form (`resolveTraceConfig`
+ * returns pure defaults), which drops the iOS config's
+ * `networkHosts: ["jsonplaceholder.typicode.com", "127.0.0.1"]` allowlist. This
+ * run therefore captures a wider set of entries than the rest of the suite, and
+ * without this pin a Metro/system call could stand in for the app's own.
+ */
+const EXPECTED_HOST = "jsonplaceholder.typicode.com"
 
 const TRACES_DIR = path.join(HERE, "tapsmith-results", "traces")
 
@@ -81,7 +91,7 @@ function newestTraceSince(sinceMs) {
 function verify(zipPath) {
   const shown = zipPath.startsWith(HERE) ? path.relative(HERE, zipPath) : zipPath
   console.log(`\nVerifying ${shown} (${fs.statSync(zipPath).size} bytes)`)
-  const { failures, notes } = checkArchive(readArchive(zipPath))
+  const { failures, notes } = checkArchive(readArchive(zipPath), { expectedHost: EXPECTED_HOST })
   for (const line of notes) console.log(`  · ${line}`)
 
   if (failures.length > 0) {

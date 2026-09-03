@@ -64,6 +64,27 @@ function selectorName(serialized) {
   return typeof candidate === "string" && candidate.length >= 3 ? candidate : null
 }
 
+/**
+ * Undo XML attribute escaping so a selector name can be matched literally.
+ *
+ * Both agents escape attribute values (`ios-agent/.../HierarchyDumper.swift`,
+ * and UIAutomator's own serializer on Android) but not identically — iOS emits
+ * `&apos;` where a serializer may emit `&#39;` or nothing at all. Unescaping the
+ * dump rather than escaping the needle is therefore the portable direction: a
+ * label like `Save & Exit` or `Don't` matches whichever entity form the
+ * platform chose.
+ */
+function unescapeXml(xml) {
+  return xml
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#0*39;/g, "'")
+    .replace(/&#0*34;/g, '"')
+    .replace(/&amp;/g, "&")
+}
+
 const pad = (index) => String(index).padStart(3, "0")
 const screenshotMember = (index) => `screenshots/action-${pad(index)}-before.png`
 const hierarchyMember = (index) => `hierarchy/action-${pad(index)}-before.xml`
@@ -126,21 +147,59 @@ function checkMetadata(archive, r) {
   }
 }
 
+/**
+ * Where the runner's terminal-state captures live in an archive's index space.
+ *
+ * Actions and assertions share one counter filled from 0, and the runner adds a
+ * capture one slot past the last step so the viewer has an "after" view for it
+ * (it reads the *next* step's before-shot as a step's "after").
+ *
+ * An `afterAll` hook complicates this: by the time it runs the last test's
+ * trace is already packaged, so `appendEventsToTrace` appends the hook's events
+ * at `readTraceActionCount(...) + 1` (runner.ts) — the `+ 1` deliberately steps
+ * over that terminal slot, leaving a one-slot gap mid-stream. So an archive has
+ * a terminal capture at the gap when hook events were appended, and one past
+ * the end otherwise; both are legitimate and neither is a hole to complain
+ * about.
+ */
+function terminalCaptureIndices(steps) {
+  const indices = steps.map((s) => s.actionIndex)
+  const gaps = []
+  for (let i = 1; i < indices.length; i++) {
+    for (let missing = indices[i - 1] + 1; missing < indices[i]; missing++) gaps.push(missing)
+  }
+  return { gaps, trailing: indices.length > 0 ? indices[indices.length - 1] + 1 : 0 }
+}
+
 function checkEventStream(archive, r) {
   const { steps, metadata } = archive
   if (!r.check(steps.length > 0, "trace.json contains no action or assertion events")) return
 
-  // One index space, filled contiguously from 0. The viewer's step navigation
-  // and every capture filename depend on it.
+  // One index space, filled from 0 and strictly increasing.
   const indices = steps.map((s) => s.actionIndex)
+  r.check(indices[0] === 0, `the first step is at index ${indices[0]}, not 0`)
+  const notAscending = indices.findIndex((v, i) => i > 0 && v <= indices[i - 1])
   r.check(
-    JSON.stringify(indices) === JSON.stringify(steps.map((_, i) => i)),
-    "action indices are not contiguous from 0",
+    notAscending === -1,
+    "step indices are not strictly increasing",
     `got [${indices.join(", ")}]`,
   )
+
+  // At most one hole, exactly one slot wide: the terminal slot an afterAll
+  // amendment steps over. Anything else is a lost or mis-indexed step.
+  const { gaps, trailing } = terminalCaptureIndices(steps)
   r.check(
-    metadata.actionCount === steps.length,
-    `metadata.actionCount (${metadata.actionCount}) should equal the recorded step count (${steps.length})`,
+    gaps.length <= 1,
+    `step indices have ${gaps.length} missing slots (at ${gaps.join(", ")}); at most one is ` +
+      "legitimate (the terminal-capture slot an afterAll amendment skips)",
+  )
+
+  // The packager reports the size of the index space, not the step count — the
+  // two differ by exactly the skipped slot once hook events are appended.
+  r.check(
+    metadata.actionCount === trailing,
+    `metadata.actionCount (${metadata.actionCount}) should be one past the last step index ` +
+      `(${trailing - 1}), i.e. ${trailing}`,
   )
 
   const outOfOrder = steps.findIndex((s, i) => i > 0 && s.timestamp < steps[i - 1].timestamp)
@@ -169,23 +228,26 @@ function checkScreenshots(archive, r) {
     )
   }
 
-  // Nothing stored that no step claims — except the single trailing
-  // terminal-state capture the runner takes past the last action, so the viewer
-  // has an "after" view for it.
+  // Nothing stored that no step claims — except the terminal-state captures,
+  // which sit in slots no step occupies (see terminalCaptureIndices).
+  const claimIndex = new Map(archive.steps.map((s) => [s.actionIndex, !!s.hasScreenshotBefore]))
+  const terminal = terminalCaptureIndices(archive.steps)
+  const terminalSlots = new Set([...terminal.gaps, terminal.trailing])
   const unclaimed = members.filter((member) => {
     const index = Number(/action-(\d+)-/.exec(member)?.[1])
-    return index !== archive.metadata.actionCount && !archive.steps[index]?.hasScreenshotBefore
+    return !terminalSlots.has(index) && !claimIndex.get(index)
   })
   r.check(unclaimed.length === 0, `screenshot members no step claims: ${unclaimed.join(", ")}`)
 
-  // That trailing capture is not optional: the viewer reads the *next* step's
+  // The terminal capture is not optional: the viewer reads the *next* step's
   // before-shot as a step's "after" view, so without it the last step has no
   // after view at all. The runner takes it whenever the screenshots channel is
   // on (which checkMetadata already required), best-effort — so a missing one
   // means the capture RPC failed and the run reported success anyway.
+  const expectedTerminal = terminal.gaps.length > 0 ? terminal.gaps[0] : terminal.trailing
   r.check(
-    screenshotMember(archive.metadata.actionCount) in archive.files,
-    `no terminal-state screenshot: ${screenshotMember(archive.metadata.actionCount)} is missing, ` +
+    screenshotMember(expectedTerminal) in archive.files,
+    `no terminal-state screenshot: ${screenshotMember(expectedTerminal)} is missing, ` +
       "so the last step has no \"after\" view",
   )
 
@@ -238,10 +300,15 @@ function checkScreenshots(archive, r) {
       `step ${step.actionIndex} recorded a degenerate element box ` +
         `[${b.left},${b.top}][${b.right},${b.bottom}]`,
     )
+    // Overlap, not containment: both platforms legitimately report a negative
+    // origin (or an edge past the far side) for an element the viewport clips —
+    // a partially scrolled row is the common case. What cannot happen is a box
+    // sitting entirely off the frame, which is what a coordinate-space mismatch
+    // produces.
     r.check(
-      b.left >= 0 && b.top >= 0 && b.right <= frameWidth && b.bottom <= frameHeight,
-      `step ${step.actionIndex} recorded an element box outside the ${frame} frame: ` +
-        `[${b.left},${b.top}][${b.right},${b.bottom}]`,
+      b.right > 0 && b.bottom > 0 && b.left < frameWidth && b.top < frameHeight,
+      `step ${step.actionIndex} recorded an element box with no overlap with the ${frame} ` +
+        `frame: [${b.left},${b.top}][${b.right},${b.bottom}]`,
     )
   }
   r.note(`${checkedBoxes} element boxes checked against the ${frame} frame`)
@@ -251,15 +318,27 @@ function checkHierarchies(archive, r) {
   const members = Object.keys(archive.files).filter((f) => f.startsWith("hierarchy/")).sort()
   if (!r.check(members.length > 0, "the archive contains no hierarchy snapshots")) return
 
-  // The runner's trailing terminal-state capture takes a hierarchy dump too
-  // whenever the snapshots channel is on, so the Hierarchy tab has something to
-  // show for the last step. (The trailing capture as a whole is gated on the
-  // screenshots channel; checkMetadata required both.)
+  // The runner's terminal-state capture takes a hierarchy dump too whenever the
+  // snapshots channel is on, so the Hierarchy tab has something to show for the
+  // last step. (The capture as a whole is gated on the screenshots channel;
+  // checkMetadata required both.)
+  const terminal = terminalCaptureIndices(archive.steps)
+  const terminalSlots = new Set([...terminal.gaps, terminal.trailing])
+  const expectedTerminal = terminal.gaps.length > 0 ? terminal.gaps[0] : terminal.trailing
   r.check(
-    hierarchyMember(archive.metadata.actionCount) in archive.files,
-    `no terminal-state hierarchy snapshot: ${hierarchyMember(archive.metadata.actionCount)} ` +
+    hierarchyMember(expectedTerminal) in archive.files,
+    `no terminal-state hierarchy snapshot: ${hierarchyMember(expectedTerminal)} ` +
       "is missing, so the last step has no post-action dump",
   )
+
+  // Same unclaimed-member check the screenshots get: without it a dump filed
+  // under a bogus index is invisible here while its screenshot twin is caught.
+  const claimIndex = new Map(archive.steps.map((s) => [s.actionIndex, !!s.hasHierarchyBefore]))
+  const unclaimed = members.filter((member) => {
+    const index = Number(/action-(\d+)-/.exec(member)?.[1])
+    return !terminalSlots.has(index) && !claimIndex.get(index)
+  })
+  r.check(unclaimed.length === 0, `hierarchy members no step claims: ${unclaimed.join(", ")}`)
 
   for (const step of archive.steps) {
     if (!step.hasHierarchyBefore) continue
@@ -298,9 +377,9 @@ function checkHierarchies(archive, r) {
     if (step.type !== "action" || !step.hasHierarchyBefore) continue
     const needle = selectorName(step.selector)
     if (needle === null) continue
-    const xml = new TextDecoder().decode(
+    const xml = unescapeXml(new TextDecoder().decode(
       archive.files[hierarchyMember(step.actionIndex)] ?? new Uint8Array(),
-    )
+    ))
     if (
       r.check(
         xml.includes(needle),
@@ -322,7 +401,7 @@ function checkHierarchies(archive, r) {
   )
 }
 
-function checkNetwork(archive, r) {
+function checkNetwork(archive, r, expectedHost) {
   const entries = archive.network
   if (
     !r.check(
@@ -333,6 +412,9 @@ function checkNetwork(archive, r) {
     return
   }
 
+  // Device-captured entries and API-fixture entries are merged and renumbered
+  // by the runner before packaging; the body member names derive from these
+  // indices, so a collision or gap would orphan a body file.
   const indices = entries.map((e) => e.index)
   r.check(
     JSON.stringify(indices) === JSON.stringify(entries.map((_, i) => i)),
@@ -358,9 +440,23 @@ function checkNetwork(archive, r) {
     }
   }
 
-  // The app's own HTTPS call must be there, with a real response.
-  const https = entries.filter((e) => typeof e.url === "string" && e.url.startsWith("https://"))
-  r.check(https.length > 0, `no https:// entry captured; urls were ${entries.map((e) => e.url).join(", ")}`)
+  // The app's own HTTPS call must be there, with a real response — pinned to the
+  // host the driven test actually calls. Accepting *any* https entry would let
+  // the check that matters most pass on somebody else's traffic: `--trace on`
+  // discards the config's `trace` object wholesale (see verify-trace-archive.mjs),
+  // including the iOS `networkHosts` allowlist, so this run captures a strictly
+  // wider set than the rest of the suite — a dev-server or system-service call
+  // could stand in for the app's while its own request went missing.
+  const fromApp = (e) =>
+    typeof e.url === "string" &&
+    e.url.startsWith("https://") &&
+    (expectedHost === null || new URL(e.url).hostname === expectedHost)
+  const https = entries.filter(fromApp)
+  r.check(
+    https.length > 0,
+    `no https:// entry captured${expectedHost ? ` for ${expectedHost}` : ""}; urls were ` +
+      entries.map((e) => e.url).join(", "),
+  )
   const answered = https.filter((e) => e.status >= 200 && e.status < 400 && e.responseBodyPath)
   if (r.check(answered.length > 0, "no https entry captured a successful response with a body")) {
     // A captured JSON body must be stored decoded — the daemon sees gzipped,
@@ -383,7 +479,8 @@ function checkNetwork(archive, r) {
     }
   }
   r.note(
-    `${entries.length} network entries, ${https.length} https, ` +
+    `${entries.length} network entries, ${https.length} https` +
+      `${expectedHost ? ` from ${expectedHost}` : ""}, ` +
       `${entries.filter((e) => e.responseBodyPath).length} with response bodies`,
   )
 }
@@ -391,15 +488,19 @@ function checkNetwork(archive, r) {
 /**
  * Run every content check against a parsed archive.
  *
+ * @param archive Parsed by {@link readArchive}.
+ * @param options.expectedHost Hostname the driven test calls. The network
+ *   checks are pinned to it so they cannot pass on unrelated traffic; pass
+ *   `null` only when the caller genuinely does not know.
  * @returns `{ failures, notes }` — `failures` empty means the archive holds
  *   everything a real-device trace should.
  */
-export function checkArchive(archive) {
+export function checkArchive(archive, { expectedHost = null } = {}) {
   const r = new Report()
   checkMetadata(archive, r)
   checkEventStream(archive, r)
   checkScreenshots(archive, r)
   checkHierarchies(archive, r)
-  checkNetwork(archive, r)
+  checkNetwork(archive, r, expectedHost)
   return { failures: r.failures, notes: r.notes }
 }

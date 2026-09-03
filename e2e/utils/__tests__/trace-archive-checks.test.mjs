@@ -20,6 +20,8 @@ import { zipSync } from "fflate"
 import { checkArchive, readArchive } from "../trace-archive-checks.mjs"
 
 const encode = (s) => new TextEncoder().encode(s)
+/** Mirrors `EXPECTED_HOST` in verify-trace-archive.mjs. */
+const EXPECTED_HOST = "jsonplaceholder.typicode.com"
 
 // ─── A synthetic archive that should pass every check ───
 
@@ -69,6 +71,16 @@ function crc32(buf) {
 }
 
 const T0 = 1_700_000_000_000
+
+/** How both agents escape an attribute value before it reaches the dump. */
+function escapeXmlAttr(s) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;")
+}
 
 /** Android-shaped hierarchy dump containing the given labels, as archive bytes. */
 function hierarchy(...labels) {
@@ -207,7 +219,7 @@ function buildArchive(mutate = () => {}) {
 function failuresFor(mutate) {
   const zipPath = buildArchive(mutate)
   try {
-    return checkArchive(readArchive(zipPath)).failures
+    return checkArchive(readArchive(zipPath), { expectedHost: EXPECTED_HOST }).failures
   } finally {
     fs.rmSync(path.dirname(zipPath), { recursive: true, force: true })
   }
@@ -226,7 +238,7 @@ function assertFails(mutate, pattern) {
 test("a well-formed real-device archive passes every check", () => {
   const zipPath = buildArchive()
   try {
-    const { failures, notes } = checkArchive(readArchive(zipPath))
+    const { failures, notes } = checkArchive(readArchive(zipPath), { expectedHost: EXPECTED_HOST })
     assert.deepEqual(failures, [])
     // The checks that could silently no-op must report they found material.
     assert.ok(notes.some((n) => /1 cross-checked/.test(n)), notes.join("\n"))
@@ -259,12 +271,55 @@ test("catches a failed or empty test being passed off as verified", () => {
 
 // ─── event stream ───
 
-test("catches a gap in the action index space", () => {
-  assertFails((p) => { p.events[2].actionIndex = 5 }, /action indices are not contiguous/)
+test("catches a gap wider than the one slot an afterAll amendment skips", () => {
+  assertFails((p) => {
+    p.events[2].actionIndex = 5
+    p.metadata.actionCount = 6
+  }, /step indices have 3 missing slots \(at 2, 3, 4\)/)
 })
 
-test("catches actionCount disagreeing with the recorded steps", () => {
-  assertFails((p) => { p.metadata.actionCount = 9 }, /actionCount \(9\) should equal the recorded step count/)
+test("catches steps that do not start at 0 or do not ascend", () => {
+  assertFails((p) => { for (const e of p.events) e.actionIndex += 1 }, /first step is at index 1, not 0/)
+  assertFails((p) => { p.events[2].actionIndex = 1 }, /not strictly increasing/)
+})
+
+test("catches actionCount that is not one past the last step index", () => {
+  assertFails((p) => { p.metadata.actionCount = 9 }, /actionCount \(9\) should be one past the last step index \(2\), i\.e\. 3/)
+})
+
+/** The extra hook step an `afterAll` amendment appends, past the skipped slot. */
+function appendHookStep(p) {
+  p.events.push({
+    type: "action",
+    actionIndex: 4, // 3 is the terminal-capture slot the amendment steps over
+    timestamp: T0 + 4000,
+    category: "device",
+    action: "clearAppData",
+    duration: 300,
+    success: true,
+    hasScreenshotBefore: true,
+    hasHierarchyBefore: true,
+  })
+  p.metadata.actionCount = 5
+  p.screenshots["screenshots/action-004-before.png"] = screenPng([60, 60, 60])
+  p.hierarchies["hierarchy/action-004-before.xml"] = hierarchy("Home")
+  p.metadata.screenshotCount = 5
+}
+
+test("tolerates the one-slot gap an afterAll amendment leaves", () => {
+  // `appendEventsToTrace` appends hook events at `readTraceActionCount() + 1`,
+  // stepping over the terminal-capture slot — so a correct archive for a file
+  // with an afterAll hook has a hole at the old actionCount, the terminal
+  // capture sitting in it, and actionCount one past the appended events.
+  assert.deepEqual(failuresFor(appendHookStep), [])
+})
+
+test("still requires the terminal capture in the slot the gap marks", () => {
+  assertFails((p) => {
+    appendHookStep(p)
+    delete p.screenshots["screenshots/action-003-before.png"]
+    p.metadata.screenshotCount = 4
+  }, /no terminal-state screenshot: screenshots\/action-003-before\.png is missing/)
 })
 
 test("catches steps recorded out of chronological order", () => {
@@ -336,14 +391,23 @@ test("catches a run where every capture is the same frame", () => {
   }, /screenshots are byte-identical/)
 })
 
-test("catches element bounds that cannot fit the captured frame", () => {
+test("catches an element box with no overlap with the captured frame", () => {
   assertFails(
-    (p) => { p.events[2].bounds = { left: 40, top: 300, right: 4000, bottom: 380 } },
-    /element box outside the 1080x2400 frame/,
+    (p) => { p.events[2].bounds = { left: 2000, top: 300, right: 3000, bottom: 380 } },
+    /no overlap with the 1080x2400 frame/,
   )
   assertFails(
     (p) => { p.events[2].bounds = { left: 40, top: 300, right: 40, bottom: 300 } },
     /degenerate element box/,
+  )
+})
+
+test("tolerates a clipped element box that runs off the frame edge", () => {
+  // Both platforms report a negative origin for a partially scrolled row; that
+  // is not a coordinate-space bug.
+  assert.deepEqual(
+    failuresFor((p) => { p.events[2].bounds = { left: -20, top: -40, right: 320, bottom: 80 } }),
+    [],
   )
 })
 
@@ -377,6 +441,29 @@ test("catches a snapshot paired with the wrong action", () => {
   assertFails(
     (p) => { p.hierarchies["hierarchy/action-002-before.xml"] = hierarchy("Home") },
     /action 2 \(tap\) resolved an element named "Fetch User", but its own hierarchy snapshot/,
+  )
+})
+
+test("matches a selector name through the dump's XML escaping", () => {
+  // Agents escape attribute values, and not identically (iOS emits &apos;,
+  // serializers may emit &#39;). A label with a quotable character must still
+  // match, or the verifier cries wolf on a correct trace.
+  for (const label of ["Save & Exit", "Don't", 'The "Best" <One>']) {
+    assert.deepEqual(
+      failuresFor((p) => {
+        p.events[2].selector = JSON.stringify({ role: { role: "button", name: label } })
+        p.hierarchies["hierarchy/action-002-before.xml"] = hierarchy(escapeXmlAttr(label))
+      }),
+      [],
+      `label ${label} should match its escaped dump`,
+    )
+  }
+})
+
+test("catches a hierarchy member no step claims", () => {
+  assertFails(
+    (p) => { p.hierarchies["hierarchy/action-009-before.xml"] = hierarchy("Ghost") },
+    /hierarchy members no step claims: hierarchy\/action-009-before\.xml/,
   )
 })
 
@@ -424,5 +511,47 @@ test("catches a response body stored still compressed", () => {
 test("catches a capture session that saw no https traffic", () => {
   assertFails((p) => {
     p.network[0].url = "http://127.0.0.1:8081/symbolicate"
-  }, /no https:\/\/ entry captured/)
+  }, /no https:\/\/ entry captured for jsonplaceholder\.typicode\.com/)
+})
+
+test("will not accept another host's https traffic in place of the app's", () => {
+  // `--trace on` drops the config's networkHosts allowlist, so this run sees
+  // more than the app's own requests. An unrelated https entry must not stand
+  // in for the request the driven test actually makes.
+  assertFails((p) => {
+    p.network[0].url = "https://registry.example.com/v1/ping"
+  }, /no https:\/\/ entry captured for jsonplaceholder\.typicode\.com/)
+})
+
+test("ignores an unrelated json entry when judging the app's response body", () => {
+  // A foreign entry with an undecodable body must not fail the run: only the
+  // app's own response is judged.
+  assert.deepEqual(
+    failuresFor((p) => {
+      // Ordered *before* the app's entry, which is where an unfiltered
+      // `.find(contentType includes json)` would pick it up.
+      p.network.unshift({
+        index: 0,
+        actionIndex: 2,
+        startTime: T0 + 1500,
+        endTime: T0 + 1600,
+        method: "GET",
+        url: "https://metro.example.com/status",
+        status: 200,
+        contentType: "application/json",
+        requestSize: 0,
+        responseSize: 4,
+        duration: 100,
+        responseBodyPath: "network/res-9.bin",
+        requestHeaders: {},
+        responseHeaders: {},
+      })
+      // Not JSON, and not an encoding decodeHttpBody handles (zstd) — the
+      // foreign-entry case that would fail the run on a correct archive.
+      p.bodies["network/res-9.bin"] = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
+      // Re-number so the entries stay contiguous, as the packager guarantees.
+      p.network.forEach((e, i) => { e.index = i })
+    }),
+    [],
+  )
 })
