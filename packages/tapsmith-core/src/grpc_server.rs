@@ -60,6 +60,21 @@ const IOS_OPEN_DEEP_LINK_WARM_TIMEOUT_MS: u64 = 11_000;
 // auth deep link) have no fallback but the whole-test retry, so they re-deliver
 // persistently.
 const IOS_OPEN_DEEP_LINK_MAX_ATTEMPTS: u32 = 3;
+
+/// How far a simulator deep-link delivery may escalate. Physical iOS and
+/// Android deliver in-process only, so they treat every variant alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeepLinkDelivery {
+    /// Warm in-process first; terminate → relaunch when it does not land.
+    WarmThenCold,
+    /// Skip the warm attempt (between-file resets, retries: `force_cold_launch`).
+    Cold,
+    /// Warm in-process only: a miss is reported to the caller, never
+    /// escalated. For a reset onto a route that may hide the hooks marker —
+    /// the caller has a cheaper recovery (re-confirm on the root route) than
+    /// three relaunch cycles that cannot read the epoch there either.
+    WarmOnly,
+}
 // Android deep-link delivery: how long to wait for the target app to be the
 // resumed activity (or, for declared resets, for the in-app hook to
 // acknowledge) before moving on. Same-screen links used to burn a full 10s
@@ -1107,7 +1122,7 @@ impl TapsmithServiceImpl {
         &self,
         request_id: String,
         uri: &str,
-        force_cold: bool,
+        delivery: DeepLinkDelivery,
         ack_epoch_gt: Option<u64>,
         mut ack_boot_before: Option<String>,
     ) -> Result<Response<proto::ActionResponse>, Status> {
@@ -1214,7 +1229,7 @@ impl TapsmithServiceImpl {
                 // at file boundaries pins each file to the exact starting
                 // state it had before warm delivery existed and bounds the
                 // warm window to one file.
-                if !force_cold {
+                if delivery != DeepLinkDelivery::Cold {
                     let warm_command = AgentCommand::OpenDeepLink {
                         url: uri.to_string(),
                         package: bundle_id.clone(),
@@ -1235,6 +1250,12 @@ impl TapsmithServiceImpl {
                         )
                         .await,
                     );
+                    let warm_only = delivery == DeepLinkDelivery::WarmOnly;
+                    let next = if warm_only {
+                        "reporting the miss to the caller"
+                    } else {
+                        "falling back to cold relaunch"
+                    };
                     match &warm_result {
                         Ok(resp) if resp.success => {
                             return self.make_action_response(request_id, warm_result).await;
@@ -1243,15 +1264,18 @@ impl TapsmithServiceImpl {
                             info!(
                                 %serial, uri = %uri,
                                 error = %resp.error.as_deref().unwrap_or("unknown"),
-                                "warm in-process deep link did not land; falling back to cold relaunch"
+                                "warm in-process deep link did not land; {next}"
                             );
                         }
                         Err(status) => {
                             info!(
                                 %serial, uri = %uri, error = %status.message(),
-                                "warm in-process deep link errored; falling back to cold relaunch"
+                                "warm in-process deep link errored; {next}"
                             );
                         }
+                    }
+                    if warm_only {
+                        return self.make_action_response(request_id, warm_result).await;
                     }
                 }
 
@@ -4162,7 +4186,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             return Err(Status::invalid_argument("uri is required"));
         }
 
-        self.deliver_deep_link(request_id, &req.uri, req.force_cold_launch, None, None)
+        let delivery = if req.force_cold_launch {
+            DeepLinkDelivery::Cold
+        } else {
+            DeepLinkDelivery::WarmThenCold
+        };
+        self.deliver_deep_link(request_id, &req.uri, delivery, None, None)
             .await
     }
 
@@ -8031,7 +8060,7 @@ impl ServiceResetOps<'_> {
 
 #[async_trait::async_trait]
 impl app_reset::ResetOps for ServiceResetOps<'_> {
-    async fn warm_hooks(&self, cold: bool) -> Result<u64, String> {
+    async fn warm_hooks(&self, cold: bool) -> Result<app_reset::WarmAck, String> {
         let marker = self
             .marker
             .as_ref()
@@ -8041,12 +8070,28 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
             &self.target_path,
             &Uuid::new_v4().simple().to_string(),
         );
+        // A warm reset onto a non-root route may land on a screen that hides
+        // the marker (see below), where no amount of relaunching can read the
+        // epoch either — so deliver warm-only and keep the cheap root-route
+        // re-confirmation as the recovery, instead of three terminate →
+        // relaunch cycles (~45s) ahead of it.
+        let non_root_warm = !cold && self.target_path != "/" && !marker.url_prefix.is_empty();
+        let delivery = if cold {
+            DeepLinkDelivery::Cold
+        } else if non_root_warm {
+            DeepLinkDelivery::WarmOnly
+        } else {
+            DeepLinkDelivery::WarmThenCold
+        };
+        // The marker's per-process `boot` token tells a relaunch apart from an
+        // in-process reset — `hooks_acknowledged` already accepts either.
+        let process_recreated = |after: &app_reset::HooksMarker| matches!((marker.boot.as_deref(), after.boot.as_deref()), (Some(b), Some(a)) if a != b);
         let resp = self
             .svc
             .deliver_deep_link(
                 Uuid::new_v4().to_string(),
                 &url,
-                cold,
+                delivery,
                 Some(marker.epoch),
                 marker.boot.clone(),
             )
@@ -8059,12 +8104,12 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
             // hides even the always-present marker from the hierarchy — a
             // navigator's not-found screen (an unknown `target`), or a
             // full-screen modal — so the epoch is invisible although the reset
-            // ran. Before paying for an expensive relaunch, navigate to the
-            // app's root route (which renders a readable screen) and re-read
-            // the epoch: if it advanced, the reset succeeded. Only for a
-            // non-root warm target — root is where we would land anyway, and a
-            // cold delivery already recreated the process.
-            if !cold && self.target_path != "/" && !marker.url_prefix.is_empty() {
+            // ran. Navigate to the app's root route (which renders a readable
+            // screen) and re-read the epoch: if it advanced, the reset
+            // succeeded. Only for a non-root warm target — root is where we
+            // would land anyway, and a cold delivery already recreated the
+            // process.
+            if non_root_warm {
                 // Re-deliver the reset to the root route. Its own ack-wait runs
                 // on the readable Home screen, so the epoch it produces is
                 // observable (the reset is idempotent — clearing state twice is
@@ -8080,7 +8125,7 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
                     .deliver_deep_link(
                         Uuid::new_v4().to_string(),
                         &root_url,
-                        false,
+                        DeepLinkDelivery::WarmThenCold,
                         Some(marker.epoch),
                         marker.boot.clone(),
                     )
@@ -8095,12 +8140,16 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
                                     &after,
                                 ) =>
                             {
+                                let recreated = process_recreated(&after);
                                 *self.svc.last_hooks_marker.write().await = Some(after.clone());
                                 match after.err {
                                     Some(err) => {
                                         Err(format!("in-app reset reported an error: {err}"))
                                     }
-                                    None => Ok(after.epoch),
+                                    None => Ok(app_reset::WarmAck {
+                                        epoch: after.epoch,
+                                        process_recreated: recreated,
+                                    }),
                                 }
                             }
                             // Delivery's settle already enforced the epoch on
@@ -8110,7 +8159,10 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
                                 let mut remembered = marker.clone();
                                 remembered.epoch += 1;
                                 *self.svc.last_hooks_marker.write().await = Some(remembered);
-                                Ok(marker.epoch + 1)
+                                Ok(app_reset::WarmAck {
+                                    epoch: marker.epoch + 1,
+                                    process_recreated: false,
+                                })
                             }
                         };
                     }
@@ -8127,10 +8179,14 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
             Some(after)
                 if app_reset::hooks_acknowledged(marker.epoch, marker.boot.as_deref(), &after) =>
             {
+                let recreated = process_recreated(&after);
                 *self.svc.last_hooks_marker.write().await = Some(after.clone());
                 match after.err {
                     Some(err) => Err(format!("in-app reset reported an error: {err}")),
-                    None => Ok(after.epoch),
+                    None => Ok(app_reset::WarmAck {
+                        epoch: after.epoch,
+                        process_recreated: recreated,
+                    }),
                 }
             }
             Some(_) => Err("in-app reset did not advance its epoch".to_string()),
@@ -8153,15 +8209,25 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
                     remembered.epoch += 1;
                     *self.svc.last_hooks_marker.write().await = Some(remembered);
                 }
-                Ok(marker.epoch + 1)
+                // The boot token is unknown here; `cold` already says whether
+                // the plan relaunched.
+                Ok(app_reset::WarmAck {
+                    epoch: marker.epoch + 1,
+                    process_recreated: false,
+                })
             }
         }
     }
 
     async fn warm_deep_link(&self, link: &str, cold: bool) -> Result<(), String> {
+        let delivery = if cold {
+            DeepLinkDelivery::Cold
+        } else {
+            DeepLinkDelivery::WarmThenCold
+        };
         let resp = self
             .svc
-            .deliver_deep_link(Uuid::new_v4().to_string(), link, cold, None, None)
+            .deliver_deep_link(Uuid::new_v4().to_string(), link, delivery, None, None)
             .await
             .map_err(|e| e.message().to_string())?
             .into_inner();

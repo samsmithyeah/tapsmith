@@ -531,12 +531,24 @@ pub struct ResetOutcome {
     pub error: Option<String>,
 }
 
+/// What an acknowledged hooks reset observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WarmAck {
+    /// The epoch the marker showed after the reset ran.
+    pub epoch: u64,
+    /// The marker's per-process `boot` token changed across the delivery:
+    /// the app was relaunched on the way (the iOS simulator path falls back
+    /// to a terminate → relaunch when the in-process link does not land), so
+    /// the outcome is a cold launch even though the warm rung ran.
+    pub process_recreated: bool,
+}
+
 /// Device work the ladder sequences. Each method performs one step and
 /// returns a short human detail on success or the failure message.
 #[async_trait]
 pub trait ResetOps {
-    /// Deliver the hooks reset link; resolve with the epoch observed after the ack.
-    async fn warm_hooks(&self, cold: bool) -> Result<u64, String>;
+    /// Deliver the hooks reset link; resolve with what the ack observed.
+    async fn warm_hooks(&self, cold: bool) -> Result<WarmAck, String>;
     /// Deliver the legacy reset deep link.
     async fn warm_deep_link(&self, link: &str, cold: bool) -> Result<(), String>;
     async fn restart(&self) -> Result<(), String>;
@@ -598,14 +610,22 @@ pub async fn run_ladder(
         FirstStep::WarmHooks { cold } => {
             let is_cold = cold.is_some();
             match timed(&mut steps, "warm-hooks", ops.warm_hooks(is_cold)).await {
-                Ok(epoch) => {
+                Ok(ack) => {
+                    // A warm delivery that relaunched the app on its own is a
+                    // cold launch: the policy's warm window restarts, and the
+                    // caller learns the process is fresh.
+                    if ack.process_recreated && !is_cold {
+                        reasons.push(
+                            "warm delivery relaunched the app (its boot token changed)".to_string(),
+                        );
+                    }
                     return ResetOutcome {
                         mode_used: ResetMode::Warm,
                         fell_back: false,
-                        cold_launch: is_cold,
+                        cold_launch: is_cold || ack.process_recreated,
                         reason: join(&reasons),
                         steps,
-                        epoch_after: Some(epoch),
+                        epoch_after: Some(ack.epoch),
                         error: None,
                     };
                 }
@@ -1374,7 +1394,7 @@ mod tests {
     // ── ladder ──
 
     struct MockOps {
-        warm: Result<u64, String>,
+        warm: Result<WarmAck, String>,
         link: Result<(), String>,
         restart: Result<(), String>,
         clear: Result<(), String>,
@@ -1384,7 +1404,10 @@ mod tests {
     impl MockOps {
         fn new() -> Self {
             Self {
-                warm: Ok(5),
+                warm: Ok(WarmAck {
+                    epoch: 5,
+                    process_recreated: false,
+                }),
                 link: Ok(()),
                 restart: Ok(()),
                 clear: Ok(()),
@@ -1398,7 +1421,7 @@ mod tests {
 
     #[async_trait]
     impl ResetOps for MockOps {
-        async fn warm_hooks(&self, cold: bool) -> Result<u64, String> {
+        async fn warm_hooks(&self, cold: bool) -> Result<WarmAck, String> {
             self.calls
                 .lock()
                 .unwrap()
@@ -1483,6 +1506,34 @@ mod tests {
         assert!(out.cold_launch);
         assert_eq!(out.reason.as_deref(), Some("cold relaunch: retry attempt"));
         assert_eq!(ops.calls(), vec!["warm_hooks(cold=true)"]);
+    }
+
+    #[tokio::test]
+    async fn warm_delivery_that_recreated_the_process_counts_as_cold_launch() {
+        // The iOS simulator path can fall back to a terminate → relaunch inside
+        // a "warm" delivery; the ack sees a new boot token. The rung is still
+        // warm and did not fall back, but the process is fresh — the outcome
+        // must say so, or the warm-window valve counts a cold launch as warm.
+        let mut ops = MockOps::new();
+        ops.warm = Ok(WarmAck {
+            epoch: 1,
+            process_recreated: true,
+        });
+        let out = run_ladder(&ops, plan(FirstStep::WarmHooks { cold: None }), true).await;
+        assert_eq!(out.mode_used, ResetMode::Warm);
+        assert!(!out.fell_back && out.cold_launch && out.error.is_none());
+        assert_eq!(out.epoch_after, Some(1));
+        assert!(out
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("relaunched the app"));
+
+        // And the policy state treats it like any other cold launch.
+        let mut state = ResetPolicyState::default();
+        state.warm_resets_since_cold = 4;
+        state.record(&out);
+        assert_eq!(state.warm_resets_since_cold, 0);
     }
 
     #[tokio::test]

@@ -397,7 +397,7 @@ await device.resetApp({ target: "/settings" })                 // warm reset lan
 |---|---|---|
 | `modeRequested` / `modeUsed` | `'warm' \| 'restart' \| 'clear'` | What was asked for and what actually ran |
 | `fellBack` | `boolean` | A lower rung ran because a higher one failed |
-| `coldLaunch` | `boolean` | The process was recreated |
+| `coldLaunch` | `boolean` | The process was recreated — by a `restart`/`clear` rung, a cold-window relaunch, or a warm delivery that had to relaunch the app to land (the `reason` says which) |
 | `reason` | `string?` | Why a fallback or cold relaunch happened, e.g. `"cold relaunch: warm-window bound reached (10 resets)"` |
 | `durationMs` | `number` | Wall time of the whole ladder |
 | `hooksDetected` | `boolean` | `@tapsmith/react-native` hooks were found in the app |
