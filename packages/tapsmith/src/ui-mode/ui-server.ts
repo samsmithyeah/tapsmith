@@ -2512,6 +2512,29 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
   }
 
   /**
+   * Wait for a released daemon to actually exit. A respawn that rebinds the
+   * same port must not race the SIGTERM: spawning the replacement while the
+   * old listener is still up makes it fail to bind and exit, and nothing
+   * answers for the whole readiness window ("daemon on port N did not become
+   * ready" on every recycle of a non-adopting worker). SIGKILL if the
+   * graceful teardown overruns.
+   */
+  function awaitDaemonExit(worker: UIWorkerHandle, graceMs = 5_000): Promise<void> {
+    const daemon = worker.daemonProcess;
+    if (!daemon || worker.ownsDaemon === false) return Promise.resolve();
+    if (daemon.exitCode !== null || daemon.signalCode !== null) return Promise.resolve();
+    return new Promise((resolve) => {
+      const killTimer = setTimeout(() => {
+        try { daemon.kill('SIGKILL'); } catch { /* already dead */ }
+      }, graceMs);
+      // A daemon that ignores SIGKILL too (unkillable state) must not wedge
+      // the respawn forever — give up and let the bind attempt report it.
+      const giveUp = setTimeout(() => { clearTimeout(killTimer); resolve(); }, graceMs + 2_000);
+      daemon.once('exit', () => { clearTimeout(killTimer); clearTimeout(giveUp); resolve(); });
+    });
+  }
+
+  /**
    * End a worker's Node process: cooperative shutdown first, SIGKILL if it
    * hasn't exited shortly after. Retiring a worker used to release its daemon
    * but leave the child alive — an orphan holding the device's agent socket.
@@ -2570,26 +2593,38 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     worker.respawning = true;
     worker.retired = true;
     readinessEvent(worker, { type: 'worker-retired' });
-    await terminateWorkerProcess(worker);
-    // A worker that adopted the primary keeps adopting while that daemon is
-    // alive; otherwise (or if the primary died) it gets its own daemon.
-    let adopt = adoptTargetFor(worker.deviceSerial);
-    if (adopt && !(await adopt.client.waitForReady(2_000))) adopt = undefined;
-    if (!adopt) releaseWorkerResources(worker);
-    const daemonPort = adopt?.daemonPort ?? baseDaemonPort + 100 + worker.id;
+    try {
+      await terminateWorkerProcess(worker);
+      // A worker that adopted the primary keeps adopting while that daemon is
+      // alive; otherwise (or if the primary died) it gets its own daemon.
+      let adopt = adoptTargetFor(worker.deviceSerial);
+      if (adopt && !(await adopt.client.waitForReady(2_000))) adopt = undefined;
+      if (!adopt) {
+        // The replacement rebinds this worker's daemon port: the old daemon
+        // has to be gone first, not merely signalled.
+        releaseWorkerResources(worker);
+        await awaitDaemonExit(worker);
+      }
+      const daemonPort = adopt?.daemonPort ?? baseDaemonPort + 100 + worker.id;
 
-    const newWorker = await initializeOneWorker(
-      worker.id, worker.deviceSerial, daemonPort, agentPort, daemonBin, undefined, undefined, adopt,
-    );
-    // Preserve the friendly display name from before respawn.
-    newWorker.displayName = worker.displayName;
-    // The device did not change, so nothing it was known to support went
-    // away: carry the old capabilities forward and only let the fresh
-    // startup probe upgrade them, never downgrade (a probe that misses the
-    // marker on a slow relaunch must not turn a verified hooks app into a
-    // clear+relaunch one for the rest of the session).
-    newWorker.capabilities = mergeResetCapabilities(worker.capabilities, newWorker.capabilities);
-    uiWorkers[index] = newWorker;
+      const newWorker = await initializeOneWorker(
+        worker.id, worker.deviceSerial, daemonPort, agentPort, daemonBin, undefined, undefined, adopt,
+      );
+      // Preserve the friendly display name from before respawn.
+      newWorker.displayName = worker.displayName;
+      // The device did not change, so nothing it was known to support went
+      // away: carry the old capabilities forward and only let the fresh
+      // startup probe upgrade them, never downgrade (a probe that misses the
+      // marker on a slow relaunch must not turn a verified hooks app into a
+      // clear+relaunch one for the rest of the session).
+      newWorker.capabilities = mergeResetCapabilities(worker.capabilities, newWorker.capabilities);
+      uiWorkers[index] = newWorker;
+    } finally {
+      // The respawn is over either way. On failure the old handle stays in
+      // the slot (retired, so the next run request retries): its later
+      // readiness broadcasts must report the slot errored, not initializing.
+      worker.respawning = false;
+    }
   }
 
   /**
@@ -2615,6 +2650,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       const errMsg = err instanceof Error ? err.message : String(err);
       worker.retired = true;
       broadcastWorkerStatus(worker, 'error');
+      // Settle the activity row too, or it spins forever in Device Activity.
+      pushActivity({ type: 'device-activity', id: activityId, workerId: worker.id, kind: 'recycle', status: 'error', label: 'Recycle worker (fresh code)', detail: errMsg, timestamp: startedAt, durationMs: Date.now() - startedAt });
       broadcast({ type: 'error', message: `Worker ${worker.id} (${worker.deviceSerial}) failed to recycle: ${errMsg}` });
     }
   }

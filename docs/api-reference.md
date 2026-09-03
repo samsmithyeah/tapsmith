@@ -539,7 +539,7 @@ await device.wake();
 
 ### `device.unlock(): Promise<void>`
 
-Wake the screen and dismiss the lock screen. Works with non-secure lock screens (no PIN/pattern). Useful for CI and emulator setups.
+Wake the screen and dismiss the lock screen. Works with non-secure lock screens (no PIN/pattern). Useful for CI and emulator setups. On Android the lock screen is only dismissed when it is actually showing, so calling this on an unlocked device never sends gestures to the foreground app.
 
 ```typescript
 await device.unlock();

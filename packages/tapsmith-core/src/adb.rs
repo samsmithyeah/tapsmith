@@ -902,6 +902,36 @@ async fn run_adb_lenient(serial: &str, args: &[&str]) -> Result<Vec<u8>> {
     Ok(combined)
 }
 
+/// Whether the keyguard (lock screen) is currently showing, from the output
+/// of `dumpsys window policy`. `None` when the dump carries none of the
+/// fields we know (older/newer Android, or a failed command) — callers then
+/// fall back to the unconditional unlock sequence.
+///
+/// `KeyguardStateMonitor.mIsShowing` is the authoritative flag; the
+/// `KeyguardServiceDelegate.showing` line and `mDreamingLockscreen` back it
+/// up on releases that print only one of them.
+pub fn parse_keyguard_showing(dump: &str) -> Option<bool> {
+    let mut seen = false;
+    for token in dump.split_whitespace() {
+        for key in ["mIsShowing=", "showing=", "mDreamingLockscreen="] {
+            if let Some(rest) = token.strip_prefix(key) {
+                seen = true;
+                if rest.starts_with("true") {
+                    return Some(true);
+                }
+            }
+        }
+    }
+    seen.then_some(false)
+}
+
+/// Ask the device whether its lock screen is showing. See
+/// [`parse_keyguard_showing`] for the `None` case.
+pub async fn keyguard_showing(serial: &str) -> Option<bool> {
+    let dump = shell_lenient(serial, "dumpsys window policy").await.ok()?;
+    parse_keyguard_showing(&dump)
+}
+
 /// Execute a shell command on the device, returning stdout as a String.
 /// Unlike `shell()`, this does not fail on non-zero exit codes —
 /// it returns stdout regardless, which is needed for commands like
@@ -1155,6 +1185,42 @@ pub async fn cleanup_iptables_redirect(serial: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── Keyguard state ───
+
+    #[test]
+    fn keyguard_not_showing_on_an_unlocked_device() {
+        let dump = "    mKeyguardOccluded=false mKeyguardOccludedChanged=false\n    KeyguardServiceDelegate\n      showing=false\n      occluded=false\n      KeyguardStateMonitor\n        mIsShowing=false\n";
+        assert_eq!(parse_keyguard_showing(dump), Some(false));
+    }
+
+    #[test]
+    fn keyguard_showing_when_any_flag_is_true() {
+        assert_eq!(
+            parse_keyguard_showing("KeyguardServiceDelegate\n  showing=true\n"),
+            Some(true)
+        );
+        assert_eq!(
+            parse_keyguard_showing(
+                "  showing=false\n  KeyguardStateMonitor\n    mIsShowing=true\n"
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            parse_keyguard_showing("    mShowingDream=false mDreamingLockscreen=true\n"),
+            Some(true),
+            "flags sharing a line with others are still read"
+        );
+    }
+
+    #[test]
+    fn keyguard_state_unknown_without_the_fields() {
+        assert_eq!(parse_keyguard_showing(""), None);
+        assert_eq!(
+            parse_keyguard_showing("WINDOW MANAGER POLICY STATE\n  mAwake=true\n"),
+            None
+        );
+    }
 
     // ─── Retryable ADB transport errors ───
 

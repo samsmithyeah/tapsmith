@@ -5292,6 +5292,27 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // Wake the screen first
                 let _ = adb::shell_lenient(&serial, "input keyevent KEYCODE_WAKEUP").await;
                 tokio::time::sleep(Duration::from_millis(500)).await;
+                // Only dismiss a keyguard that is actually showing. The
+                // legacy sequence below is a MENU key plus a swipe up, and
+                // on an already-unlocked device both land on the foreground
+                // app — the swipe scrolls its root list to the bottom. UI
+                // mode unlocks right before running a file whose reset the
+                // background preparation already satisfied, so nothing
+                // undoes that scroll and the first assertions fail on a
+                // "prepared" device (headless survived only because its
+                // inline reset runs after the unlock).
+                if adb::keyguard_showing(&serial).await == Some(false) {
+                    return Ok(Self::success_action_response(request_id));
+                }
+                // `wm dismiss-keyguard` is the input-free path (API 26+). It
+                // does nothing for secure keyguards, so re-check and fall
+                // back to the gesture only while the lock screen is still up
+                // (or when the dump cannot tell).
+                let _ = adb::shell_lenient(&serial, "wm dismiss-keyguard").await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if adb::keyguard_showing(&serial).await == Some(false) {
+                    return Ok(Self::success_action_response(request_id));
+                }
                 // Dismiss non-secure lock screen (KEYCODE_MENU)
                 let _ = adb::shell_lenient(&serial, "input keyevent 82").await;
                 tokio::time::sleep(Duration::from_millis(500)).await;
