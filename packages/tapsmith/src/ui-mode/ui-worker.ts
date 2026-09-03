@@ -527,8 +527,15 @@ async function runFileWithRecovery(
         reporter: reporterProxy,
         bustImportCache: true,
         abortSignal,
-        onTestStart: async (fullName: string, options?: { attributionOnly?: boolean }) => {
-          send({ type: 'test-start', workerId, fullName, filePath, attributionOnly: options?.attributionOnly });
+        onTestStart: async (fullName, options) => {
+          const policy = options?.policy;
+          send({
+            type: 'test-start', workerId, fullName, filePath,
+            attributionOnly: options?.attributionOnly,
+            isolation: policy
+              ? { appReset: policy.mode, appResetScope: policy.scope, appState: policy.appState || undefined }
+              : undefined,
+          });
         },
         beforeEachTest: async (fullName: string) => {
           await ensureSessionReady(sessionContext(undefined), `before test ${fullName}`);

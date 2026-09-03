@@ -2125,6 +2125,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
                 workerId: worker.id,
                 projectName: worker.currentFile?.projectName,
                 attributionOnly: msg.attributionOnly,
+                isolation: msg.isolation,
               });
               break;
             }

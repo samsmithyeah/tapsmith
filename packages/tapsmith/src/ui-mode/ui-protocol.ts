@@ -116,6 +116,19 @@ export interface TestTreeUseOptions {
   appState?: string
 }
 
+/**
+ * The isolation a test actually ran under: the declared options with `auto`
+ * resolved by the runner (hooks detected → warm, …). Sent with `test-start`
+ * so UI mode's Metadata tab can show the same Isolation row as the trace
+ * viewer, which reads it from the packaged archive.
+ */
+export interface TestIsolation {
+  appReset: 'clear' | 'restart' | 'warm' | 'none'
+  appResetScope: 'file' | 'test'
+  /** Saved app state restored before the test, when the scope declared one. */
+  appState?: string
+}
+
 export type TestNodeStatus =
   | 'idle'
   | 'running'
@@ -174,6 +187,8 @@ export interface TestStartMessage {
    * that ran). The SPA must not treat it as a new execution: no status
    * reset to 'running', no clearing of the test's accumulated trace. */
   attributionOnly?: boolean
+  /** Resolved isolation for this execution (absent on attribution-only re-tags). */
+  isolation?: TestIsolation
 }
 
 export interface TestStatusMessage {
@@ -872,6 +887,8 @@ export interface UIWorkerTestStartMessage {
   filePath: string
   /** Re-tag of trace attribution for a finished test (see TestStartMessage). */
   attributionOnly?: boolean
+  /** Resolved isolation for this execution (see TestStartMessage). */
+  isolation?: TestIsolation
 }
 
 /** UI worker → server: test completed. */

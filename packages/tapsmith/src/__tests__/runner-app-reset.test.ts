@@ -309,6 +309,39 @@ describe('runner app reset (declared isolation)', () => {
     expect(onTestStart.mock.calls.map((c) => c[0])).toEqual(['one', 'two']);
   });
 
+  it('announces each test with the isolation policy it runs under, not the announcing scope\'s', async () => {
+    // The root scope resets on entry and announces the first test — inside
+    // the describe — ahead of its own setup. That test runs per-test, so the
+    // announcement must carry the test's policy, not the root's file policy.
+    const d = makeDevice();
+    pushContext();
+    tapsmithDescribe('toggles', () => {
+      tapsmithTest.use({ appResetScope: 'test' });
+      tapsmithTest('one', async () => {});
+    });
+    const onTestStart = vi.fn(async () => {});
+    await runSuiteContext(popContext(), '', [], [], makeOpts(d, makeConfig(), { onTestStart }));
+    expect(onTestStart.mock.calls).toEqual([
+      ['toggles > one', { policy: { mode: 'clear', scope: 'test', appState: undefined } }],
+    ]);
+
+    // A root-level test is announced under the file policy; the describe's
+    // own test, announced by the per-test loop, under its per-test policy.
+    const d2 = makeDevice();
+    pushContext();
+    tapsmithTest('root-level', async () => {});
+    tapsmithDescribe('toggles', () => {
+      tapsmithTest.use({ appResetScope: 'test' });
+      tapsmithTest('one', async () => {});
+    });
+    const onTestStart2 = vi.fn(async () => {});
+    await runSuiteContext(popContext(), '', [], [], makeOpts(d2, makeConfig(), { onTestStart: onTestStart2 }));
+    expect(onTestStart2.mock.calls).toEqual([
+      ['root-level', { policy: { mode: 'clear', scope: 'file', appState: undefined } }],
+      ['toggles > one', { policy: { mode: 'clear', scope: 'test', appState: undefined } }],
+    ]);
+  });
+
   it('a nested describe inherits its parent appState instead of resetting to clear on entry', async () => {
     const d = makeDevice();
     pushContext();

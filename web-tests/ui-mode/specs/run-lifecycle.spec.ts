@@ -12,6 +12,45 @@ const DOUBLE_TAP = "Gestures screen > double tap registers double tap gesture"
 const TEST_NAME = "double tap registers double tap gesture"
 
 test.describe("Run lifecycle", () => {
+  test.describe("Isolation metadata", () => {
+    // The Isolation row lives in the shared ActionsPanel, but UI mode
+    // synthesises its metadata client-side — so the row rendered in the trace
+    // viewer and never here until `test-start` began carrying the resolved
+    // policy.
+    test("shows the isolation a test ran under, resolved by the runner", async ({ app, explorer, actions }) => {
+      const ui = app
+      await explorer.expandAll()
+
+      ui.send({ type: "run-start", fileCount: 1 })
+      ui.send({
+        type: "test-start",
+        fullName: DOUBLE_TAP,
+        filePath: GESTURES_FILE,
+        isolation: { appReset: "warm", appResetScope: "test" },
+      })
+      ui.send(...action({ testFullName: DOUBLE_TAP, actionIndex: 0, action: "tap", selector: "getByRole('button')" }))
+      ui.send({ type: "test-status", fullName: DOUBLE_TAP, filePath: GESTURES_FILE, status: "passed", duration: 900 })
+
+      await explorer.node(TEST_NAME).click()
+      await actions.metadataTab.click()
+      await expect(actions.isolation).toHaveText("warm · per test")
+    })
+
+    test("shows no Isolation row when the runner sent none", async ({ app, explorer, actions }) => {
+      const ui = app
+      await explorer.expandAll()
+
+      ui.send({ type: "run-start", fileCount: 1 })
+      ui.send({ type: "test-start", fullName: DOUBLE_TAP, filePath: GESTURES_FILE })
+      ui.send({ type: "test-status", fullName: DOUBLE_TAP, filePath: GESTURES_FILE, status: "passed", duration: 900 })
+
+      await explorer.node(TEST_NAME).click()
+      await actions.metadataTab.click()
+      await expect(actions.metadataTab).toHaveClass(/active/)
+      await expect(actions.isolation).toHaveCount(0)
+    })
+  })
+
   test.describe("#103 — a hard refresh must not start a run", () => {
     // Fixed in e9ce4ef. The bare-key shortcut handler ignored modifiers, so
     // Cmd+Shift+R matched `r` and fired run-all at the daemon on its way out;

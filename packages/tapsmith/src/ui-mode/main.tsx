@@ -447,6 +447,7 @@ function App() {
     return inferDevicePlatform(viewedTestProject, testDeviceSerial) ?? devicePlatform;
   }, [viewedTestWorker, viewedTestProject, testDeviceSerial, devicePlatform]);
 
+  const viewedIsolation = currentTrace?.isolation;
   const metadata = useMemo<TraceMetadata>(() => ({
     version: 1,
     tapsmithVersion,
@@ -466,7 +467,13 @@ function App() {
     screenshotCount: screenshots.size,
     error: viewedTestNode?.error,
     project: viewedTestProject,
-  }), [viewedTestName, viewedTestFile, viewedTestNode, viewedTestProject, isRunning, actionEvents.length, screenshots.size, testDeviceSerial, deviceIsEmulator, tapsmithVersion]);
+    // The isolation this execution ran under, as the trace viewer shows it
+    // from the packaged archive — resolved by the runner, not the declared
+    // `auto`.
+    appReset: viewedIsolation?.appReset,
+    appResetScope: viewedIsolation?.appResetScope,
+    appState: viewedIsolation?.appState,
+  }), [viewedTestName, viewedTestFile, viewedTestNode, viewedTestProject, isRunning, actionEvents.length, screenshots.size, testDeviceSerial, deviceIsEmulator, tapsmithVersion, viewedIsolation]);
 
   // Prefer a real completed event at this index; fall back to a synthesized
   // one from the in-flight slot so ScreenshotPanel can render the before-
@@ -769,6 +776,7 @@ function App() {
           if (existing) revokeTraceScreenshots(existing);
           const next = new Map(prev);
           const data = emptyTraceData(msg.filePath);
+          data.isolation = msg.isolation;
           // Seed the test file from the pending pool (pre-run preview).
           const normalizedPath = msg.filePath.replace(/\\/g, '/');
           const sourceContent = pendingSourcesRef.current.get(normalizedPath);

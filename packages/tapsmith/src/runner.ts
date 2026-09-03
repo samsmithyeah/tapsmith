@@ -507,6 +507,18 @@ function resolvePlatformFixture(config: TapsmithConfig): Platform {
 
 // ─── Runner engine ───
 
+/** Details announced with a test's start (UI mode). */
+export interface TestStartOptions {
+  /** Re-tag of trace attribution to a finished test (afterAll hooks). */
+  attributionOnly?: boolean;
+  /**
+   * The isolation policy this execution runs under — `auto` resolved, and the
+   * test's own scope (a describe's `test.use({ appResetScope: 'test' })`),
+   * even when an enclosing scope announces the test ahead of its beforeAll.
+   */
+  policy?: AppResetPolicy;
+}
+
 export interface RunOptions {
   config: TapsmithConfig;
   device?: Device;
@@ -522,7 +534,7 @@ export interface RunOptions {
    * Consumers must not treat these as a new test execution — the UI would
    * otherwise flip a finished test back to 'running' and clear its trace.
    */
-  onTestStart?: (fullName: string, options?: { attributionOnly?: boolean }) => Promise<void>;
+  onTestStart?: (fullName: string, options?: TestStartOptions) => Promise<void>;
   /**
    * Setup work that runs inside the beforeEach trace group. Use this for
    * any device actions (e.g. session readiness checks) so they appear
@@ -762,18 +774,56 @@ function validateHookFixtures(
  * in which case the scope's hooks and app reset must not run either (they
  * would cost seconds and have no test to be attributed to).
  */
-function firstRunnableTestName(ctx: SuiteContext, prefix: string, opts: RunOptions): string | undefined {
+/**
+ * Apply a scope's `test.use()` overrides. `timeout` is handled separately via
+ * the device (it only affects assertion/action auto-wait, not the test-level
+ * safety timeout); `appState` is folded into the reset policy and cascades
+ * through it (Playwright `test.use` semantics), so a nested describe that
+ * declares nothing keeps its parent's restored state instead of resetting to
+ * clear on entry — an explicit `appState: ''` still overrides.
+ */
+function resolveScope(
+  useOptions: SuiteContext['useOptions'],
+  parentOpts: RunOptions,
+  parentPolicy: AppResetPolicy | undefined,
+): { opts: RunOptions; policy: AppResetPolicy; scopeTimeout: number | undefined } {
+  const { timeout: scopeTimeout, appState: scopeAppState, ...configOverrides } = useOptions ?? {};
+  const opts: RunOptions = Object.keys(configOverrides).length > 0
+    ? { ...parentOpts, config: { ...parentOpts.config, ...configOverrides } }
+    : parentOpts;
+  const policy = resolveAppResetPolicy(
+    { appState: scopeAppState ?? parentPolicy?.appState },
+    opts.config,
+    opts.resetCapabilities,
+  );
+  return { opts, policy, scopeTimeout };
+}
+
+/**
+ * The first test that will run in this scope (possibly inside a nested
+ * describe), with the policy it runs under — the enclosing scope announces
+ * that test ahead of its beforeAll, and the announcement must describe the
+ * test's own isolation, not the announcing scope's.
+ */
+function firstRunnableTest(
+  ctx: SuiteContext,
+  prefix: string,
+  opts: RunOptions,
+  policy: AppResetPolicy,
+): { fullName: string; policy: AppResetPolicy } | undefined {
   const hasOnlyTests = ctx.tests.some((t) => t.only);
   const hasOnly = hasOnlyTests || ctx.suites.some((s) => s.only);
   for (const t of ctx.tests) {
     if (t.skip || (hasOnly && !t.only)) continue;
     const fullName = prefix ? `${prefix} > ${t.name}` : t.name;
-    if (passesTestFilter(fullName, opts)) return fullName;
+    if (passesTestFilter(fullName, opts)) return { fullName, policy };
   }
   for (const s of ctx.suites) {
     if (s.skip || (hasOnly && !s.only && !hasOnlyTests)) continue;
     const childPrefix = prefix ? `${prefix} > ${s.name}` : s.name;
-    const found = firstRunnableTestName(materializeSuiteEntry(s), childPrefix, opts);
+    const child = materializeSuiteEntry(s);
+    const scoped = resolveScope(child.useOptions, opts, policy);
+    const found = firstRunnableTest(child, childPrefix, scoped.opts, scoped.policy);
     if (found) return found;
   }
   return undefined;
@@ -909,25 +959,9 @@ async function runSuiteContext(
   parentPolicy?: AppResetPolicy,
   inherited: InheritedScopeSetup = { recordings: [] },
 ): Promise<SuiteResult> {
-  // Apply test.use() overrides for this scope (cascading from parent).
-  // `timeout` is handled separately via the device — it should only affect
-  // assertion/action auto-wait, not the test-level safety timeout.
-  // `appState` is folded into the reset policy (and cascades through it).
-  const { timeout: scopeTimeout, appState: scopeAppState, ...configOverrides } = ctx.useOptions ?? {};
-  const opts: RunOptions = Object.keys(configOverrides).length > 0
-    ? { ...parentOpts, config: { ...parentOpts.config, ...configOverrides } }
-    : parentOpts;
-
-  // The declared isolation policy for this scope. `appReset`/`appResetScope`
-  // cascade through `opts.config`; `appState` cascades through the parent's
-  // resolved policy (Playwright `test.use` semantics), so a nested describe
-  // that declares nothing keeps its parent's restored state instead of
-  // resetting to clear on entry. An explicit `appState: ''` still overrides.
-  const policy = resolveAppResetPolicy(
-    { appState: scopeAppState ?? parentPolicy?.appState },
-    opts.config,
-    opts.resetCapabilities,
-  );
+  // Apply test.use() overrides for this scope (cascading from parent) and
+  // resolve the isolation policy it declares — see resolveScope.
+  const { opts, policy, scopeTimeout } = resolveScope(ctx.useOptions, parentOpts, parentPolicy);
   const isRoot = parentPrefix === '';
   // Compare against what the device actually holds (the last policy applied
   // in this file), falling back to the lexical parent before anything ran.
@@ -942,7 +976,7 @@ async function runSuiteContext(
   // no setup at all: Playwright semantics, and it keeps a filtered-out
   // describe's beforeAll from streaming trace events onto whichever test
   // happened to run last.
-  const firstRunnable = firstRunnableTestName(ctx, parentPrefix, parentOpts);
+  const firstRunnable = firstRunnableTest(ctx, parentPrefix, opts, policy);
   const scopeHasRunnable = firstRunnable !== undefined;
   // A test-scoped policy resets before every test, so its scope only needs an
   // entry reset when beforeAll hooks expect the declared state first; a mere
@@ -991,12 +1025,12 @@ async function runSuiteContext(
       // this scope — possibly inside a nested describe. An enclosing scope
       // may already have announced that same test; announcing it again
       // would make the UI reset the test's trace.
-      beforeAllFirstFullName = firstRunnable;
+      beforeAllFirstFullName = firstRunnable.fullName;
       if (beforeAllFirstFullName !== inherited.announced) {
         // Both listeners: the per-test loop skips its own announcement for
         // this test (it would reset the UI trace), so the reporter must hear
         // about it here or never.
-        if (opts.onTestStart) await opts.onTestStart(beforeAllFirstFullName);
+        if (opts.onTestStart) await opts.onTestStart(beforeAllFirstFullName, { policy: firstRunnable.policy });
         opts.reporter?.onTestStart?.(beforeAllFirstFullName, opts.testFilePath, { project: opts.projectName });
       }
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-ba-'));
@@ -1401,7 +1435,7 @@ async function runSuiteContext(
           // test slot in the UI rather than creating duplicate entries.
           const announced = beforeAllFirstFullName ?? inherited.announced;
           if (attempt === 0 && fullName !== announced) {
-            if (opts.onTestStart) await opts.onTestStart(fullName);
+            if (opts.onTestStart) await opts.onTestStart(fullName, { policy });
             opts.reporter?.onTestStart?.(fullName, opts.testFilePath, { project: opts.projectName });
           }
 

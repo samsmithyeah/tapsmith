@@ -40,6 +40,16 @@ export class ActionsPane {
     return this.items.and(this.page.locator('[aria-busy="true"]'))
   }
 
+  /** The "Metadata" header tab (tests only — files and suites have no metadata). */
+  get metadataTab() {
+    return this.page.locator(".actions-header-tab", { hasText: "Metadata" })
+  }
+
+  /** The Isolation row of the Metadata tab: the reset mode and scope the test ran under. */
+  get isolation() {
+    return this.page.getByTestId("metadata-isolation")
+  }
+
   /**
    * Stands in for the list while the device is busy outside a traced action —
    * either the generic wait or, when the server reports one, the actual

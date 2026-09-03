@@ -36,6 +36,15 @@ test.describe("Loading a trace", () => {
     await expect(filmstrip.summary).toContainText("Pixel 8")
   })
 
+  test("shows the isolation the test ran under in the Metadata tab", async ({ viewer, actions }) => {
+    await viewer.open({
+      metadata: { appReset: "warm", appResetScope: "test" },
+      events: [actionEvent({ actionIndex: 0, action: "tap" })],
+    })
+    await actions.metadataTab.click()
+    await expect(actions.isolation).toHaveText("warm · per test")
+  })
+
   test("renders one filmstrip frame per traced event", async ({ viewer, filmstrip }) => {
     await viewer.open({
       events: [
