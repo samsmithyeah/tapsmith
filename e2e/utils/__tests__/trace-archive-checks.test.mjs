@@ -287,6 +287,27 @@ test("catches a screenshot member no step claims", () => {
   )
 })
 
+test("catches a missing terminal-state screenshot", () => {
+  // The viewer reads the next step's before-shot as a step's "after" view, so
+  // dropping the trailing capture leaves the last step with no after view.
+  assertFails((p) => {
+    delete p.screenshots["screenshots/action-003-before.png"]
+    p.metadata.screenshotCount = 3
+  }, /no terminal-state screenshot: screenshots\/action-003-before\.png is missing/)
+})
+
+test("catches screenshotCount disagreeing with the members present", () => {
+  // What the packager skips on an unreadable temp file, it still counts.
+  assertFails((p) => { p.metadata.screenshotCount = 0 }, /screenshotCount \(0\) does not match the 4 screenshot member/)
+})
+
+test("catches a missing terminal-state hierarchy snapshot", () => {
+  assertFails(
+    (p) => { delete p.hierarchies["hierarchy/action-003-before.xml"] },
+    /no terminal-state hierarchy snapshot: hierarchy\/action-003-before\.xml is missing/,
+  )
+})
+
 test("catches captures that are not decodable images", () => {
   assertFails(
     (p) => { p.screenshots["screenshots/action-001-before.png"] = encode("not a png") },

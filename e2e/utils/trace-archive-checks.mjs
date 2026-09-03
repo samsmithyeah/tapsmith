@@ -178,6 +178,26 @@ function checkScreenshots(archive, r) {
   })
   r.check(unclaimed.length === 0, `screenshot members no step claims: ${unclaimed.join(", ")}`)
 
+  // That trailing capture is not optional: the viewer reads the *next* step's
+  // before-shot as a step's "after" view, so without it the last step has no
+  // after view at all. The runner takes it whenever the screenshots channel is
+  // on (which checkMetadata already required), best-effort — so a missing one
+  // means the capture RPC failed and the run reported success anyway.
+  r.check(
+    screenshotMember(archive.metadata.actionCount) in archive.files,
+    `no terminal-state screenshot: ${screenshotMember(archive.metadata.actionCount)} is missing, ` +
+      "so the last step has no \"after\" view",
+  )
+
+  // screenshotCount is what the viewer and `tapsmith_read_trace` report. The
+  // packager skips a capture whose temp file it cannot read, so a count above
+  // the members present is silent data loss.
+  r.check(
+    archive.metadata.screenshotCount === members.length,
+    `metadata.screenshotCount (${archive.metadata.screenshotCount}) does not match the ` +
+      `${members.length} screenshot member(s) in the archive`,
+  )
+
   // Real frames: decodable PNGs, all at one plausible screen size.
   const sizes = new Set()
   const digests = new Set()
@@ -230,6 +250,16 @@ function checkScreenshots(archive, r) {
 function checkHierarchies(archive, r) {
   const members = Object.keys(archive.files).filter((f) => f.startsWith("hierarchy/")).sort()
   if (!r.check(members.length > 0, "the archive contains no hierarchy snapshots")) return
+
+  // The runner's trailing terminal-state capture takes a hierarchy dump too
+  // whenever the snapshots channel is on, so the Hierarchy tab has something to
+  // show for the last step. (The trailing capture as a whole is gated on the
+  // screenshots channel; checkMetadata required both.)
+  r.check(
+    hierarchyMember(archive.metadata.actionCount) in archive.files,
+    `no terminal-state hierarchy snapshot: ${hierarchyMember(archive.metadata.actionCount)} ` +
+      "is missing, so the last step has no post-action dump",
+  )
 
   for (const step of archive.steps) {
     if (!step.hasHierarchyBefore) continue
