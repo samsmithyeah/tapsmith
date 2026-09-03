@@ -228,6 +228,12 @@ interface UIWorkerHandle {
   currentFile?: TaggedFile
   currentTest?: string
   retired?: boolean
+  /**
+   * Retired on purpose by a respawn (recycle for fresh code, or replacing a
+   * crashed handle); the slot is initializing, not errored. Set on the old
+   * handle only — the replacement starts clean.
+   */
+  respawning?: boolean
   /** A dispatch's exit handler is attached — it owns crash handling (requeue). */
   dispatchAttached?: boolean
   passed: number
@@ -433,7 +439,10 @@ export async function startUIServer(
     for (const cmd of cmds) {
       switch (cmd.type) {
         case 'broadcast':
-          broadcastWorkerStatus(worker, worker.retired ? 'error' : worker.busy ? 'running' : 'idle');
+          broadcastWorkerStatus(
+            worker,
+            worker.respawning ? 'initializing' : worker.retired ? 'error' : worker.busy ? 'running' : 'idle',
+          );
           break;
         case 'start-timer': {
           const existing = readinessTimers.get(cmd.timerId);
@@ -2553,7 +2562,11 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     // Make sure the old process is gone before a new one joins its daemon.
     // The old handle is done — retire it first so the idle-exit fallback
     // doesn't treat this deliberate termination as a crash (and release the
-    // daemon an adopting respawn is about to reuse).
+    // daemon an adopting respawn is about to reuse). A deliberate retirement
+    // is not a crash: the readiness broadcast it triggers must show the slot
+    // initializing, not errored (a genuine crash goes through `retireWorker`
+    // without this flag).
+    worker.respawning = true;
     worker.retired = true;
     readinessEvent(worker, { type: 'worker-retired' });
     await terminateWorkerProcess(worker);

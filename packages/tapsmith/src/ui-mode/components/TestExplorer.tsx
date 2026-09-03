@@ -390,7 +390,7 @@ function isolationBadge(node: TestTreeNode): { label: string; title: string } | 
   const use = node.use;
   if (!use) return undefined;
   const parts: string[] = [];
-  let label: string;
+  let label: string | undefined;
   if (use.appState) {
     label = 'state';
     parts.push(`Restores saved app state: ${use.appState}`);
@@ -400,15 +400,17 @@ function isolationBadge(node: TestTreeNode): { label: string; title: string } | 
   } else if (use.appReset && use.appReset !== 'auto') {
     label = use.appReset;
     parts.push(`appReset: ${use.appReset}`);
-  } else {
-    return undefined;
   }
+  // A scope on its own is a declaration too (`test.use({ appResetScope:
+  // 'test' })` keeps the configured mode but resets before every test).
   if (use.appResetScope === 'test') {
-    label += ' / test';
+    label = label ? `${label} / test` : 'per test';
     parts.push('Reset before every test');
   } else if (use.appResetScope === 'file') {
+    label ??= 'per file';
     parts.push('Reset once per file');
   }
+  if (!label) return undefined;
   return { label, title: parts.join('\n') };
 }
 

@@ -1050,8 +1050,9 @@ async function runSuiteContext(
         // nested describe reached before anything touched the app can use it
         // just as the root scope would; later scopes find it already spent.
         const prepared = opts._prepared?.current;
+        let report: AppResetReport;
         try {
-          await runTracedAppReset(beforeAllCollector, resetContext(), policy, {
+          report = await runTracedAppReset(beforeAllCollector, resetContext(), policy, {
             phase: isRoot
               ? `file reset for ${path.basename(opts.testFilePath ?? '')}`
               : `reset for ${parentPrefix}`,
@@ -1064,9 +1065,29 @@ async function runSuiteContext(
           if (isRoot) fileEntryResetError = err instanceof Error ? err : new Error(String(err));
           throw err;
         }
-        if (opts._prepared) opts._prepared.current = undefined;
         if (opts._applied) opts._applied.current = policy;
+        // The device now holds exactly this policy's state, and nothing has
+        // touched the app since — so the reset doubles as preparation for the
+        // next reset in the file. Without this, `test.use({ appResetScope:
+        // 'test' })` inside a describe pays twice at file entry: the root's
+        // file-scoped reset, then the first per-test reset a moment later.
+        // `satisfies()` turns that second reset into a summary row instead.
+        // A reset that was itself satisfied by a prepared device carries the
+        // original preparation forward, so the trace keeps naming its source.
+        if (opts._prepared) {
+          opts._prepared.current = appResetAction(policy).kind === 'none'
+            ? undefined
+            : report.satisfiedBy ?? {
+              policy,
+              preparedAt: Date.now(),
+              durationMs: report.durationMs,
+              source: isRoot ? 'the file-entry reset' : `the entry reset for ${parentPrefix}`,
+            };
+        }
       }
+      // User hooks may touch the app: whatever state the entry reset left is
+      // no longer known-good for a later reset to reuse.
+      if (ctx.beforeAll.length > 0 && opts._prepared) opts._prepared.current = undefined;
       // The hooks group holds only the user's beforeAll code.
       beforeAllCollector?.startGroup('beforeAll Hooks');
       for (const hook of ctx.beforeAll) {
@@ -1432,6 +1453,9 @@ async function runSuiteContext(
             if (opts._prepared) opts._prepared.current = undefined;
             if (opts._applied) opts._applied.current = policy;
           }
+          // The test (and its beforeEach hooks) is about to touch the app, so
+          // an entry reset's state is no longer reusable by a later reset.
+          if (opts._prepared) opts._prepared.current = undefined;
 
           if (hasBeforeEachWork) {
             traceCollector?.startGroup('beforeEach Hooks');

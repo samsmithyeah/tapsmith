@@ -260,5 +260,24 @@ test.describe("Test explorer", () => {
       await expect(explorer.isolationFor("gestures.test.ts")).toHaveCount(0)
       await expect(explorer.isolationFor("smoke")).toHaveCount(0)
     })
+
+    test("a scope declared on its own gets a badge too", async ({ ui, explorer }) => {
+      // The common form: `test.use({ appResetScope: "test" })` keeps the
+      // configured mode (auto) and only asks for a reset before every test.
+      const tree = singleFileTree()
+      const suite = tree[0].children!.find((n) => n.type === "suite")!
+      suite.use = { appResetScope: "test" }
+      for (const child of suite.children!) child.use = { appResetScope: "test" }
+
+      ui.seed(idleSeed(tree))
+      await ui.open()
+      await explorer.expandAllButton.click()
+
+      await expect(explorer.isolationFor("Gestures screen")).toHaveText("per test")
+      await expect(explorer.isolationFor("Gestures screen")).toHaveAttribute("title", /Reset before every test/)
+      await expect(explorer.isolationFor("swipe registers swipe")).toHaveText("per test")
+      // Undeclared nodes still get nothing.
+      await expect(explorer.isolationFor("smoke")).toHaveCount(0)
+    })
   })
 })

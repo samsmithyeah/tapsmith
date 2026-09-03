@@ -424,6 +424,79 @@ describe('runner app reset (declared isolation)', () => {
     expect(prepared.current).toBeUndefined();
   });
 
+  it('appResetScope: test inside a describe does not reset twice at file entry', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-appreset-double-'));
+    const d = makeDevice();
+    try {
+      pushContext();
+      // The exact shape of the repo's own per-test files: the root scope is
+      // file-scoped and resets on entry; the describe opts into per-test.
+      tapsmithDescribe('toggles', () => {
+        tapsmithTest.use({ appResetScope: 'test' });
+        tapsmithTest('one', async () => {});
+        tapsmithTest('two', async () => {});
+      });
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig({
+        rootDir: tempRoot,
+        trace: { mode: 'on', network: false, screenshots: false, snapshots: false, sources: false },
+      }), { _prepared: {} }));
+
+      expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed']);
+      // File entry, then one per test — minus the first per-test reset, which
+      // the entry reset already satisfied (nothing touched the app between).
+      expect(resetCalls(d)).toEqual(['resetApp:clear', 'resetApp:clear']);
+      const [one, two] = collectResults(result);
+      const rowsOf = (tracePath: string) => {
+        const zip = unzipSync(fs.readFileSync(tracePath));
+        return new TextDecoder().decode(zip['trace.json']).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l))
+          .filter((e) => e.type === 'action' && e.action === 'appReset');
+      };
+      const summary = rowsOf(one.tracePath!);
+      expect(summary).toHaveLength(1);
+      expect(summary[0]).toMatchObject({ origin: 'prepared' });
+      expect(summary[0].detail).toMatch(/satisfied by the file-entry reset/);
+      // The second test's reset is real device work again.
+      expect(rowsOf(two.tracePath!)).toEqual([]);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('a beforeAll hook between the entry reset and the first per-test reset forfeits the reuse', async () => {
+    const d = makeDevice();
+    pushContext();
+    tapsmithBeforeAll(async () => {});
+    tapsmithDescribe('toggles', () => {
+      tapsmithTest.use({ appResetScope: 'test' });
+      tapsmithTest('one', async () => {});
+    });
+    const ctx = popContext();
+
+    await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), { _prepared: {} }));
+
+    // The hook may have touched the app: entry reset, then a real per-test reset.
+    expect(resetCalls(d)).toEqual(['resetApp:clear', 'resetApp:clear']);
+  });
+
+  it('a file-scoped test running before the per-test describe forfeits the reuse', async () => {
+    const d = makeDevice();
+    pushContext();
+    tapsmithTest('root-level', async () => {});
+    tapsmithDescribe('toggles', () => {
+      tapsmithTest.use({ appResetScope: 'test' });
+      tapsmithTest('one', async () => {});
+    });
+    const ctx = popContext();
+
+    await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), { _prepared: {} }));
+
+    // Entry reset for the file, the root test dirties the app, then a real
+    // per-test reset for the describe's first test.
+    expect(resetCalls(d)).toEqual(['resetApp:clear', 'resetApp:clear']);
+  });
+
   it('a prepared device that does not satisfy the policy is ignored (appState wins)', async () => {
     const d = makeDevice();
     pushContext();

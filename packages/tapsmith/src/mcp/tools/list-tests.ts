@@ -55,20 +55,36 @@ function appendDiscoveryErrors(failures: DiscoveryError[], lines: string[]): voi
 function formatTree(nodes: TestTreeEntry[], lines: string[], depth: number): void {
   for (const node of nodes) {
     const indent = '  '.repeat(depth);
+    const iso = formatIsolation(node.use);
     switch (node.type) {
       case 'project':
-        lines.push(`${indent}[project] ${node.name}`);
+        lines.push(`${indent}[project] ${node.name}${iso}`);
         break;
       case 'file':
-        lines.push(`${indent}[file] ${node.filePath}`);
+        lines.push(`${indent}[file] ${node.filePath}${iso}`);
         break;
       case 'suite':
-        lines.push(`${indent}[suite] ${node.name}`);
+        lines.push(`${indent}[suite] ${node.name}${iso}`);
         break;
       case 'test':
-        lines.push(`${indent}[test] ${node.name}  —  "${node.fullName}"`);
+        lines.push(`${indent}[test] ${node.name}  —  "${node.fullName}"${iso}`);
         break;
     }
     if (node.children) formatTree(node.children, lines, depth + 1);
   }
+}
+
+/**
+ * The isolation a node declares (`test.use({ appReset, appResetScope,
+ * appState })`, or project-level `use`), so an MCP client can explain why a
+ * test resets the way it does. Nothing for the implicit default — the tree
+ * stays compact unless a file opts into something.
+ */
+function formatIsolation(use: TestTreeEntry['use']): string {
+  if (!use) return '';
+  const parts: string[] = [];
+  if (use.appReset !== undefined) parts.push(`appReset: ${use.appReset}`);
+  if (use.appResetScope !== undefined) parts.push(`appResetScope: ${use.appResetScope}`);
+  if (use.appState !== undefined) parts.push(`appState: ${use.appState === '' ? '"" (cleared)' : use.appState}`);
+  return parts.length > 0 ? `  {${parts.join(', ')}}` : '';
 }
