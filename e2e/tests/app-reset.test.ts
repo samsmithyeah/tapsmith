@@ -40,7 +40,12 @@ describe("App reset (declared isolation)", () => {
     // Generous bound: a warm reset takes ~1s, a clear+relaunch 5-10s even on
     // cold software-GPU CI emulators — this only has to tell the two apart.
     expect(result.durationMs).toBeLessThan(15_000)
-    expect(result.epochAfter).toBe(epochBefore + 1)
+    // The daemon's warm-window valve (appResetColdEvery) may make this very
+    // reset a cold delivery: the process is new, so its epoch restarts at 1
+    // rather than continuing from the previous process's count. Which reset
+    // in the run this is depends on the files that ran before it.
+    if (result.coldLaunch) expect(result.epochAfter).toBeGreaterThanOrEqual(1)
+    else expect(result.epochAfter).toBe(epochBefore + 1)
     // Cleared AsyncStorage + in-memory auth: the profile gate redirects to login.
     await device.openDeepLink("tapsmithtest:///profile")
     await expect(device.getByText("Sign In", { exact: true })).toBeVisible()

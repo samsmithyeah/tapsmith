@@ -377,7 +377,7 @@ Bring the app to a known state — the same reset the runner performs for the de
 
 Note that on an app with no in-app reset hook, the default warm request falls back to **restart, which keeps app data** — pass `mode: "clear"` when you need an isolation-grade wipe.
 
-Mid-test resets share the daemon's warm-window state with the runner's own resets and honour the same `appResetColdEvery` config (default 10, `0` = off), so a warm `resetApp()` can come back as a cold relaunch with `reason: "cold relaunch: warm-window bound reached (…)"`.
+Mid-test resets share the daemon's warm-window state with the runner's own resets and honour the same `appResetColdEvery` setting (default 10, `0` = off; a scope's `test.use({ appResetColdEvery })` applies to them too), so a warm `resetApp()` can come back as a cold relaunch with `reason: "cold relaunch: warm-window bound reached (…)"`.
 
 ```typescript
 const result = await device.resetApp()                       // warm, falling back as needed

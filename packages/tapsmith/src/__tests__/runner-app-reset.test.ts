@@ -72,6 +72,9 @@ function makeDevice() {
     _startDaemonLogStream: vi.fn(),
     _stopDaemonLogStream: vi.fn(),
     _setForceColdDeepLinks: vi.fn(),
+    _appResetColdEvery: 10,
+    _getAppResetColdEvery() { return this._appResetColdEvery; },
+    _setAppResetColdEvery(n: number) { this._appResetColdEvery = n; },
   };
   const client = {
     ping: vi.fn(async () => ({ version: '0.1.0', agentConnected: true })),
@@ -541,6 +544,24 @@ describe('runner app reset (declared isolation)', () => {
     await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), { _prepared: holder }));
 
     expect(resetCalls(d)).toEqual(['restoreAppState', 'restartApp']);
+  });
+
+  it('test.use({ appResetColdEvery }) reaches the device for explicit resetApp() calls, scoped', async () => {
+    const d = makeDevice();
+    const seen: number[] = [];
+    pushContext();
+    tapsmithDescribe('valve off', () => {
+      tapsmithTest.use({ appResetColdEvery: 0 });
+      tapsmithTest('inner', async () => { seen.push(d.device._getAppResetColdEvery()); });
+    });
+    tapsmithTest('outer', async () => { seen.push(d.device._getAppResetColdEvery()); });
+    const ctx = popContext();
+
+    await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig()));
+
+    // Root-level tests run first; the describe's override is restored after it.
+    expect(seen).toEqual([10, 0]);
+    expect(d.device._getAppResetColdEvery()).toBe(10);
   });
 
   it('appReset: none only verifies the session', async () => {

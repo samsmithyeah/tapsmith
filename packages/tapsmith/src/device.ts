@@ -228,6 +228,20 @@ export class Device {
     this._defaultTimeoutMs = timeoutMs;
   }
 
+  /** @internal */
+  _getAppResetColdEvery(): number {
+    return this._appResetColdEvery;
+  }
+
+  /**
+   * @internal — the runner applies a scope's `test.use({ appResetColdEvery })`
+   * here so explicit `device.resetApp()` calls inside that scope honour it
+   * like the runner's own resets do.
+   */
+  _setAppResetColdEvery(n: number): void {
+    this._appResetColdEvery = n;
+  }
+
   /** @internal — Get the active trace collector, if any. */
   private get _traceCollector(): TraceCollector | null {
     return this.tracing._currentCollector ?? getActiveTraceCollector();

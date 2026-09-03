@@ -1173,6 +1173,24 @@ describe('Device.resetApp()', () => {
     expect(resetApp).toHaveBeenCalledWith('com.example.app', expect.objectContaining({ coldEveryNResets: 0 }));
   });
 
+  it('a scope override applied by the runner changes what mid-test resets send', async () => {
+    const resetApp = vi.fn(async () => ({
+      requestId: '1', success: true, errorType: '', errorMessage: '', screenshot: Buffer.alloc(0),
+      modeRequested: 'APP_RESET_MODE_WARM', modeUsed: 'APP_RESET_MODE_WARM', fellBack: false, coldLaunch: false,
+      reason: '', durationMs: 10, hooksDetected: true, epochBefore: 1, epochAfter: 2, steps: [],
+    }));
+    const client = makeMockClient({ resetApp } as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app', appResetColdEvery: 10 });
+
+    device._setAppResetColdEvery(0);
+    await device.resetApp();
+    expect(resetApp).toHaveBeenLastCalledWith('com.example.app', expect.objectContaining({ coldEveryNResets: 0 }));
+
+    device._setAppResetColdEvery(10);
+    await device.resetApp();
+    expect(resetApp).toHaveBeenLastCalledWith('com.example.app', expect.objectContaining({ coldEveryNResets: 10 }));
+  });
+
   it('runs the daemon ladder and maps the structured outcome', async () => {
     const resetApp = vi.fn(async () => ({
       requestId: '1', success: true, errorType: '', errorMessage: '', screenshot: Buffer.alloc(0),

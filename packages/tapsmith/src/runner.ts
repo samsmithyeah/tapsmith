@@ -996,6 +996,17 @@ async function runSuiteContext(
   if (scopeTimeout && opts.device) {
     opts.device._setDefaultTimeout(scopeTimeout);
   }
+  // Likewise `appResetColdEvery`: the runner's own resets read it from
+  // `opts.config`, but a mid-test `device.resetApp()` reads the device's copy,
+  // which was set once at construction — without this a scope's override
+  // would reach the policy path and silently miss explicit resets.
+  const scopeColdEvery = ctx.useOptions?.appResetColdEvery;
+  const prevDeviceColdEvery = scopeColdEvery !== undefined && opts.device
+    ? opts.device._getAppResetColdEvery()
+    : undefined;
+  if (scopeColdEvery !== undefined && opts.device) {
+    opts.device._setAppResetColdEvery(scopeColdEvery);
+  }
 
   const result: SuiteResult = { name: parentPrefix, tests: [], suites: [], durationMs: 0 };
   const suiteStart = Date.now();
@@ -2244,6 +2255,9 @@ async function runSuiteContext(
     // Restore previous device timeout when leaving this scope
     if (prevDeviceTimeout !== undefined && opts.device) {
       opts.device._setDefaultTimeout(prevDeviceTimeout);
+    }
+    if (prevDeviceColdEvery !== undefined && opts.device) {
+      opts.device._setAppResetColdEvery(prevDeviceColdEvery);
     }
   }
 
