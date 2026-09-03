@@ -482,6 +482,36 @@ test("does not cross-check an auto-waiting assertion against its own snapshot", 
 
 // ─── network ───
 
+test("does not abandon the report when an entry's url will not parse", () => {
+  // A throw out of checkArchive would lose every failure collected so far.
+  const failures = failuresFor((p) => {
+    p.network[0].url = "https://"
+    p.metadata.testStatus = "failed"
+  })
+  assert.ok(
+    failures.some((f) => /testStatus should be "passed"/.test(f)),
+    `earlier failures must survive an unparseable url; got:\n${failures.join("\n")}`,
+  )
+  assert.ok(failures.some((f) => /no https:\/\/ entry captured for/.test(f)), failures.join("\n"))
+})
+
+test("reports only the real diagnosis for an archive with no steps", () => {
+  // A trace whose event log failed to write but which still carries capture
+  // members: every capture check is derived from the steps, so with none it has
+  // nothing to say and must not invent a terminal-capture failure at index 0
+  // on top of the real "no events" diagnosis.
+  const failures = failuresFor((p) => {
+    p.events = []
+    p.metadata.actionCount = 0
+    p.screenshots = { "screenshots/action-002-before.png": screenPng([10, 10, 10]) }
+    p.hierarchies = { "hierarchy/action-002-before.xml": hierarchy("Home") }
+    p.metadata.screenshotCount = 1
+  })
+  assert.ok(failures.some((f) => /contains no action or assertion events/.test(f)), failures.join("\n"))
+  assert.deepEqual(failures.filter((f) => /no terminal-state/.test(f)), [], failures.join("\n"))
+  assert.deepEqual(failures.filter((f) => /no step claims/.test(f)), [], failures.join("\n"))
+})
+
 test("catches traffic that was never captured", () => {
   assertFails((p) => { p.network = []; p.bodies = {} }, /network\.json is missing or empty/)
 })

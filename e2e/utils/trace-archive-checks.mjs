@@ -216,6 +216,10 @@ function checkEventStream(archive, r) {
 }
 
 function checkScreenshots(archive, r) {
+  // Every check below is derived from the steps. With none, checkEventStream
+  // owns the diagnosis — demanding action-000 captures on top of it would bury
+  // the real one under two misleading failures.
+  if (archive.steps.length === 0) return
   const members = Object.keys(archive.files).filter((f) => f.startsWith("screenshots/")).sort()
   if (!r.check(members.length > 0, "the archive contains no screenshots")) return
 
@@ -315,6 +319,8 @@ function checkScreenshots(archive, r) {
 }
 
 function checkHierarchies(archive, r) {
+  // See checkScreenshots: with no steps there is nothing to pair against.
+  if (archive.steps.length === 0) return
   const members = Object.keys(archive.files).filter((f) => f.startsWith("hierarchy/")).sort()
   if (!r.check(members.length > 0, "the archive contains no hierarchy snapshots")) return
 
@@ -364,14 +370,27 @@ function checkHierarchies(archive, r) {
     )
   }
 
-  // The strongest real-device check available: an action resolves its target
-  // before its snapshot is taken, so the name it matched on must be present in
-  // the snapshot filed under that action's own index. This fails if captures
-  // are paired with the wrong step, or if a dump is stale for its action.
+  // The strongest real-device check available: the name an action matched on
+  // must be present in the snapshot filed under that action's own index. This
+  // fails if captures are paired with the wrong step, or if a dump is stale for
+  // the action it belongs to.
   //
-  // Only actions qualify. An auto-waiting assertion captures *before* it polls
-  // — by design, so the trace shows the screen the wait started from — so its
-  // target legitimately may not be on screen yet.
+  // Why the element is guaranteed to be on screen by capture time: every
+  // ElementHandle action runs `_tracedResolve` (which awaits the auto-wait) to
+  // completion *before* calling `_tracedAction`, and only the latter takes the
+  // before-capture — so an element that appears late during its own auto-wait
+  // is still present when the snapshot is taken.
+  //
+  // Only actions qualify. An assertion's capture is taken *before* it polls, by
+  // design, so the trace shows the screen the wait started from — its target
+  // legitimately may not be on screen yet.
+  //
+  // Deliberately not gated on `step.bounds` (which the box check above does
+  // skip when absent): bounds come from a separate 100ms `findElement` lookup
+  // that races the capture and can miss under load. Gating on it would let a
+  // slow device silently drop the only cross-checkable action in a run, and the
+  // "found nothing to cross-check" guard below would then fail the build for
+  // the wrong reason.
   let verifiedPairings = 0
   for (const step of archive.steps) {
     if (step.type !== "action" || !step.hasHierarchyBefore) continue
@@ -447,10 +466,22 @@ function checkNetwork(archive, r, expectedHost) {
   // including the iOS `networkHosts` allowlist, so this run captures a strictly
   // wider set than the rest of the suite — a dev-server or system-service call
   // could stand in for the app's while its own request went missing.
+  // A throw here would escape checkArchive and take every failure already
+  // collected with it — the opposite of what Report is for. An entry the daemon
+  // synthesized from a truncated CONNECT can carry an unparseable url, and this
+  // run keeps entries the rest of the suite's allowlist filters out, so treat
+  // "cannot parse" as "not the app's".
+  const hostOf = (url) => {
+    try {
+      return new URL(url).hostname
+    } catch {
+      return null
+    }
+  }
   const fromApp = (e) =>
     typeof e.url === "string" &&
     e.url.startsWith("https://") &&
-    (expectedHost === null || new URL(e.url).hostname === expectedHost)
+    (expectedHost === null || hostOf(e.url) === expectedHost)
   const https = entries.filter(fromApp)
   r.check(
     https.length > 0,
