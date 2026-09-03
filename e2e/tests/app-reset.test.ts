@@ -90,15 +90,19 @@ describe("App reset (declared isolation)", () => {
     // screen. The reset still runs; the daemon recovers by re-confirming on the
     // readable root route. That recovery must come *instead of* the iOS
     // relaunch fallback, not after it: three terminate → relaunch cycles that
-    // cannot read the epoch either used to put this reset at ~47s.
+    // cannot read the epoch either used to put this reset at ~47s locally.
     await signIn(device, loginScreen)
 
     const startedAt = Date.now()
     const result = await device.resetApp({ target: "/no-such-route-xyz" })
     expect(result.modeUsed).toBe("warm")
     expect(result.fellBack).toBe(false)
-    // One warm window on the unreadable route plus the root re-confirmation.
-    expect(Date.now() - startedAt).toBeLessThan(40_000)
+    // Budget: the 11s warm window on the unreadable route, then the root
+    // re-confirmation — itself up to a warm window plus one cold relaunch on a
+    // slow CI simulator (observed 48s there, ~23s locally). The regression
+    // this guards adds three more relaunch cycles on top (~35-45s), so the
+    // bound only has to sit between the two.
+    expect(Date.now() - startedAt).toBeLessThan(75_000)
 
     // The reset cleared state despite the unreadable target screen.
     await device.openDeepLink("tapsmithtest:///profile")

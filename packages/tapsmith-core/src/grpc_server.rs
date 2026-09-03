@@ -8074,11 +8074,12 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
         // the marker (see below), where no amount of relaunching can read the
         // epoch either — so deliver warm-only and keep the cheap root-route
         // re-confirmation as the recovery, instead of three terminate →
-        // relaunch cycles (~45s) ahead of it.
-        let non_root_warm = !cold && self.target_path != "/" && !marker.url_prefix.is_empty();
+        // relaunch cycles (~45s) ahead of it. A cold delivery (retry attempt,
+        // warm-window valve) must still relaunch, so it keeps the cold path.
+        let non_root_target = self.target_path != "/" && !marker.url_prefix.is_empty();
         let delivery = if cold {
             DeepLinkDelivery::Cold
-        } else if non_root_warm {
+        } else if non_root_target {
             DeepLinkDelivery::WarmOnly
         } else {
             DeepLinkDelivery::WarmThenCold
@@ -8106,10 +8107,12 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
             // full-screen modal — so the epoch is invisible although the reset
             // ran. Navigate to the app's root route (which renders a readable
             // screen) and re-read the epoch: if it advanced, the reset
-            // succeeded. Only for a non-root warm target — root is where we
-            // would land anyway, and a cold delivery already recreated the
-            // process.
-            if non_root_warm {
+            // succeeded. Only for a non-root target — root is where we would
+            // land anyway. After a cold delivery the process is new and the
+            // ack compares against the old boot token, so it needs epoch >= 1
+            // in that process — a relaunch that dropped the reset URL (epoch
+            // 0) is still not mistaken for a reset that ran.
+            if non_root_target {
                 // Re-deliver the reset to the root route. Its own ack-wait runs
                 // on the readable Home screen, so the epoch it produces is
                 // observable (the reset is idempotent — clearing state twice is
@@ -8155,10 +8158,17 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
                             // Delivery's settle already enforced the epoch on
                             // root; a missed read here is just a mid-transition
                             // hierarchy — trust it and remember the advance.
+                            // After a cold delivery the boot token is new and
+                            // unknown: forget the baseline rather than remember
+                            // the old boot (see the same arm below).
                             _ => {
-                                let mut remembered = marker.clone();
-                                remembered.epoch += 1;
-                                *self.svc.last_hooks_marker.write().await = Some(remembered);
+                                if cold {
+                                    *self.svc.last_hooks_marker.write().await = None;
+                                } else {
+                                    let mut remembered = marker.clone();
+                                    remembered.epoch += 1;
+                                    *self.svc.last_hooks_marker.write().await = Some(remembered);
+                                }
                                 Ok(app_reset::WarmAck {
                                     epoch: marker.epoch + 1,
                                     process_recreated: false,
