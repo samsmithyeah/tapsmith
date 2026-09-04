@@ -162,13 +162,24 @@ function checkMetadata(archive, r) {
  * the end otherwise; both are legitimate and neither is a hole to complain
  * about.
  */
-function terminalCaptureIndices(steps) {
+function stepIndexGaps(steps) {
   const indices = steps.map((s) => s.actionIndex)
   const gaps = []
   for (let i = 1; i < indices.length; i++) {
     for (let missing = indices[i - 1] + 1; missing < indices[i]; missing++) gaps.push(missing)
   }
   return { gaps, trailing: indices.length > 0 ? indices[indices.length - 1] + 1 : 0 }
+}
+
+/**
+ * The one slot a terminal capture may occupy: the skipped slot when an
+ * `afterAll` amendment left a gap, otherwise one past the last step. Never
+ * both — the afterAll path appends hook captures but takes no terminal capture
+ * of its own, so nothing sits past the last step once a gap exists.
+ */
+function terminalCaptureIndex(steps) {
+  const { gaps, trailing } = stepIndexGaps(steps)
+  return gaps.length > 0 ? gaps[0] : trailing
 }
 
 function checkEventStream(archive, r) {
@@ -187,7 +198,7 @@ function checkEventStream(archive, r) {
 
   // At most one hole, exactly one slot wide: the terminal slot an afterAll
   // amendment steps over. Anything else is a lost or mis-indexed step.
-  const { gaps, trailing } = terminalCaptureIndices(steps)
+  const { gaps, trailing } = stepIndexGaps(steps)
   r.check(
     gaps.length <= 1,
     `step indices have ${gaps.length} missing slots (at ${gaps.join(", ")}); at most one is ` +
@@ -233,13 +244,16 @@ function checkScreenshots(archive, r) {
   }
 
   // Nothing stored that no step claims — except the terminal-state captures,
-  // which sit in slots no step occupies (see terminalCaptureIndices).
+  // which sit in a slot no step occupies (see terminalCaptureIndex).
   const claimIndex = new Map(archive.steps.map((s) => [s.actionIndex, !!s.hasScreenshotBefore]))
-  const terminal = terminalCaptureIndices(archive.steps)
-  const terminalSlots = new Set([...terminal.gaps, terminal.trailing])
+  // Exactly one slot is exempt, not both candidates: the afterAll path appends
+  // hook events and their captures but takes no terminal capture of its own
+  // (runner.ts ends the hook group, flushes, appends — no captureBeforeAction),
+  // so once a gap exists nothing legitimately sits past the last step.
+  const expectedTerminal = terminalCaptureIndex(archive.steps)
   const unclaimed = members.filter((member) => {
     const index = Number(/action-(\d+)-/.exec(member)?.[1])
-    return !terminalSlots.has(index) && !claimIndex.get(index)
+    return index !== expectedTerminal && !claimIndex.get(index)
   })
   r.check(unclaimed.length === 0, `screenshot members no step claims: ${unclaimed.join(", ")}`)
 
@@ -248,7 +262,6 @@ function checkScreenshots(archive, r) {
   // after view at all. The runner takes it whenever the screenshots channel is
   // on (which checkMetadata already required), best-effort — so a missing one
   // means the capture RPC failed and the run reported success anyway.
-  const expectedTerminal = terminal.gaps.length > 0 ? terminal.gaps[0] : terminal.trailing
   r.check(
     screenshotMember(expectedTerminal) in archive.files,
     `no terminal-state screenshot: ${screenshotMember(expectedTerminal)} is missing, ` +
@@ -328,9 +341,7 @@ function checkHierarchies(archive, r) {
   // snapshots channel is on, so the Hierarchy tab has something to show for the
   // last step. (The capture as a whole is gated on the screenshots channel;
   // checkMetadata required both.)
-  const terminal = terminalCaptureIndices(archive.steps)
-  const terminalSlots = new Set([...terminal.gaps, terminal.trailing])
-  const expectedTerminal = terminal.gaps.length > 0 ? terminal.gaps[0] : terminal.trailing
+  const expectedTerminal = terminalCaptureIndex(archive.steps)
   r.check(
     hierarchyMember(expectedTerminal) in archive.files,
     `no terminal-state hierarchy snapshot: ${hierarchyMember(expectedTerminal)} ` +
@@ -342,7 +353,7 @@ function checkHierarchies(archive, r) {
   const claimIndex = new Map(archive.steps.map((s) => [s.actionIndex, !!s.hasHierarchyBefore]))
   const unclaimed = members.filter((member) => {
     const index = Number(/action-(\d+)-/.exec(member)?.[1])
-    return !terminalSlots.has(index) && !claimIndex.get(index)
+    return index !== expectedTerminal && !claimIndex.get(index)
   })
   r.check(unclaimed.length === 0, `hierarchy members no step claims: ${unclaimed.join(", ")}`)
 

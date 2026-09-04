@@ -314,6 +314,22 @@ test("tolerates the one-slot gap an afterAll amendment leaves", () => {
   assert.deepEqual(failuresFor(appendHookStep), [])
 })
 
+test("rejects a capture in the trailing slot once an afterAll gap exists", () => {
+  // Steps 0,1,2 then a gap at 3 then 4 — the terminal capture belongs in 3.
+  // The afterAll path appends hook captures but takes no terminal capture of
+  // its own, so nothing legitimately sits at 5.
+  assertFails((p) => {
+    appendHookStep(p)
+    p.screenshots["screenshots/action-005-before.png"] = screenPng([70, 70, 70])
+    p.metadata.screenshotCount = 6
+  }, /screenshot members no step claims: screenshots\/action-005-before\.png/)
+
+  assertFails((p) => {
+    appendHookStep(p)
+    p.hierarchies["hierarchy/action-005-before.xml"] = hierarchy("Ghost")
+  }, /hierarchy members no step claims: hierarchy\/action-005-before\.xml/)
+})
+
 test("still requires the terminal capture in the slot the gap marks", () => {
   assertFails((p) => {
     appendHookStep(p)
