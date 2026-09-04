@@ -1986,9 +1986,8 @@ async function runSuiteContext(
 
         // Capture a final screenshot so the last action has an "after" view.
         // The trace viewer uses the next action's before-screenshot as "after",
-        // so this provides the terminal state. One per device, on consecutive
-        // indices (primary first) — a shared index would make the second
-        // device's frame overwrite the first's on disk.
+        // so this provides the terminal state. One per device (primary first);
+        // each capture reserves its own index, so the frames never collide.
         if (traceCollector.config.screenshots) {
           for (const d of devices) {
             try {
@@ -2000,7 +1999,6 @@ async function runSuiteContext(
               // Flush to UI mode live stream — emit a lightweight event so the
               // screenshot buffer reaches the frontend.
               traceCollector.emitPendingCaptures(finalIdx);
-              if (devices.length > 1) traceCollector.setActionIndexOffset(finalIdx + 1);
             } catch {
               // Best-effort: on a stopped run this screenshot RPC rejects with
               // TestAbortedError — letting it escape would skip the rest of

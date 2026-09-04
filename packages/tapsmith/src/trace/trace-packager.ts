@@ -27,6 +27,8 @@ export interface PackageOptions {
   endTime: number
   /** Device information. */
   device: TraceDeviceInfo
+  /** Every device of a multi-device test, primary first; written when there is more than one. */
+  devices?: TraceDeviceInfo[]
   /** Tapsmith SDK version. */
   tapsmithVersion: string
   /** Error message if test failed. */
@@ -88,6 +90,7 @@ export function packageTrace(
     startTime: options.startTime,
     endTime: options.endTime,
     device: options.device,
+    ...(options.devices && options.devices.length > 1 ? { devices: options.devices } : {}),
     traceConfig: {
       screenshots: collector.config.screenshots,
       snapshots: collector.config.snapshots,

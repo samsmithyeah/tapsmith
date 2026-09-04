@@ -201,10 +201,13 @@ export class APIRequestContext {
     // Stream a "started" lifecycle signal so UI mode shows an in-flight row
     // for the duration of the HTTP request. The matching addActionEvent on
     // either the success or failure path below carries the completed signal
-    // at the same actionIndex.
+    // at the same actionIndex — reserved here so a device action landing
+    // mid-request cannot take it.
+    let apiActionIndex: number | undefined;
     {
       const collector = getActiveTraceCollector();
       if (collector) {
+        apiActionIndex = collector._reserveActionIndex();
         collector._emitActionStarted({
           category: 'api',
           action: `request.${method.toLowerCase()}`,
@@ -214,7 +217,7 @@ export class APIRequestContext {
           log: [`${method} ${resolvedUrl.toString()}`],
           hasScreenshotBefore: false,
           hasHierarchyBefore: false,
-        });
+        }, apiActionIndex);
       }
     }
 
@@ -251,7 +254,7 @@ export class APIRequestContext {
           hasHierarchyAfter: false,
           sourceLocation,
           stack,
-        });
+        }, apiActionIndex);
 
         // Also record a NetworkEntry so failed requests appear in the Network tab
         const requestBodyBuf = body !== undefined
@@ -259,7 +262,7 @@ export class APIRequestContext {
           : undefined;
         this._networkEntries.push({
           index: this._networkEntries.length,
-          actionIndex: collector.currentActionIndex - 1,
+          actionIndex: apiActionIndex ?? collector.currentActionIndex - 1,
           startTime,
           endTime: startTime + duration,
           method,
@@ -316,14 +319,14 @@ export class APIRequestContext {
         hasHierarchyAfter: false,
         sourceLocation,
         stack,
-      });
+      }, apiActionIndex);
 
       const requestHeaders: Record<string, string> = { ...headers };
       const responseHeaders = tapsmithResponse.headersObject();
       const requestBodyBuf = APIRequestContext._bodyToBuffer(body);
       this._networkEntries.push({
         index: this._networkEntries.length,
-        actionIndex: collector.currentActionIndex - 1,
+        actionIndex: apiActionIndex ?? collector.currentActionIndex - 1,
         startTime,
         endTime,
         method,

@@ -245,7 +245,7 @@ export class WebViewHandle {
     const sourceLocation = stack[0];
     const selectorStr = selector ? `css=${selector}` : undefined;
 
-    const { captures: beforeCaptures } = await ctx.collector.captureBeforeAction(
+    const { actionIndex, captures: beforeCaptures } = await ctx.collector.captureBeforeAction(
       ctx.takeScreenshot,
       ctx.captureHierarchy,
     );
@@ -262,7 +262,7 @@ export class WebViewHandle {
       log: [`webview.${action}(${selectorStr ?? ''})`],
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
-    });
+    }, actionIndex);
 
     const start = Date.now();
     const deadline = start + this._timeoutMs;
@@ -286,7 +286,7 @@ export class WebViewHandle {
         sourceLocation,
         stack,
         deviceId: ctx.deviceId,
-      });
+      }, actionIndex);
     }, stack);
 
     try {
@@ -307,7 +307,7 @@ export class WebViewHandle {
           sourceLocation,
           stack,
           deviceId: ctx.deviceId,
-        });
+        }, actionIndex);
       }
       throw err;
     }
@@ -342,7 +342,7 @@ export class WebViewHandle {
       sourceLocation,
       stack,
       deviceId: ctx.deviceId,
-    });
+    }, actionIndex);
 
     return result;
   }

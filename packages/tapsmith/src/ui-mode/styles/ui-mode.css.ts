@@ -1529,6 +1529,7 @@ html, body, #app {
 .action-name { font-size: 12.5px; font-weight: 500; color: var(--fg); white-space: nowrap; display: flex; align-items: center; gap: 6px; }
 .action-detail { font-size: 11px; color: var(--fg-muted, var(--fg-dim, #888)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .action-origin-tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; padding: 1px 5px; border-radius: 999px; border: 1px solid var(--border, #444); color: var(--fg-muted, var(--fg-dim, #888)); }
+.action-device-tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.02em; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: var(--accent-dim, rgba(120, 140, 255, 0.18)); color: var(--fg, #ddd); vertical-align: middle; }
 .action-item.failed .action-name { color: var(--fail); }
 .action-selector-text {
   font-family: var(--font-mono);

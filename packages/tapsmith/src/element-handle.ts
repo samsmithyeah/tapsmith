@@ -1446,7 +1446,7 @@ export class ElementHandle {
     if (!trace) return;
     const stack = extractStack(new Error().stack ?? '');
     const sourceLocation = stack[0];
-    const { captures: beforeCaptures } = await trace.collector.captureBeforeAction(
+    const { actionIndex, captures: beforeCaptures } = await trace.collector.captureBeforeAction(
       trace.takeScreenshot, trace.captureHierarchy,
     );
     trace.collector.addActionEvent({
@@ -1464,7 +1464,7 @@ export class ElementHandle {
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
       log: [result],
-    });
+    }, actionIndex);
   }
 
   /**
@@ -1480,7 +1480,7 @@ export class ElementHandle {
     const sourceLocation = stack[0];
     const errMsg = err instanceof Error ? err.message : String(err);
     const errStack = err instanceof Error ? err.stack : undefined;
-    const { captures: beforeCaptures } = await trace.collector.captureBeforeAction(
+    const { actionIndex, captures: beforeCaptures } = await trace.collector.captureBeforeAction(
       trace.takeScreenshot, trace.captureHierarchy,
     );
     trace.collector.addActionEvent({
@@ -1499,8 +1499,15 @@ export class ElementHandle {
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
       log: [`${action} failed: ${errMsg}`],
-    });
+    }, actionIndex);
   }
+
+  /**
+   * @internal — Action index `_tracedResolve` reserved for the action that
+   * follows it, so the in-flight row it streamed completes in place even when
+   * another device's action lands in between. Consumed by `_tracedAction`.
+   */
+  private _resolvedActionIndex: number | undefined;
 
   /** @internal — Wrap an action with trace recording. */
   private async _tracedAction(
@@ -1511,6 +1518,8 @@ export class ElementHandle {
     extra?: { inputValue?: string },
   ): Promise<void> {
     const trace = this._traceCapture;
+    const reservedActionIndex = this._resolvedActionIndex;
+    this._resolvedActionIndex = undefined;
     const ctx = trace ? {
       collector: trace.collector,
       deviceId: trace.deviceId,
@@ -1519,7 +1528,7 @@ export class ElementHandle {
       findElement: (sel: Selector, timeout: number) => this._client.findElement(sel, timeout),
       captureTraceState: trace.captureTraceState,
     } : undefined;
-    return tracedAction(ctx, action, category, this._selector, fn, fallbackMsg, extra);
+    return tracedAction(ctx, action, category, this._selector, fn, fallbackMsg, { ...extra, reservedActionIndex });
   }
 
   /**
@@ -1548,12 +1557,18 @@ export class ElementHandle {
     const stack = extractStack(new Error().stack ?? '');
     const sourceLocation = stack[0];
     const selector = JSON.stringify(selectorToProto(this._selector));
+    // Reserve the index now: the row streams before the auto-wait, and a
+    // concurrent action on another device must not take the slot meanwhile.
+    const actionIndex = trace.collector._reserveActionIndex();
+    this._resolvedActionIndex = undefined;
     trace.collector._emitActionStarted({
       category, action, selector, sourceLocation, stack, log: [], deviceId: trace.deviceId,
       hasScreenshotBefore: false, hasHierarchyBefore: false,
-    });
+    }, actionIndex);
     try {
-      return await resolve();
+      const value = await resolve();
+      this._resolvedActionIndex = actionIndex;
+      return value;
     } catch (err) {
       const durationMs = Date.now() - start;
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -1569,7 +1584,7 @@ export class ElementHandle {
       let captures: { screenshotBefore?: unknown; hierarchyBefore?: unknown } = {};
       try {
         const res = await trace.collector.captureBeforeAction(
-          trace.takeScreenshot, trace.captureHierarchy, FAILURE_TRACE_CAPTURE_TIMEOUT_MS,
+          trace.takeScreenshot, trace.captureHierarchy, FAILURE_TRACE_CAPTURE_TIMEOUT_MS, actionIndex,
         );
         captures = res.captures;
       } catch {
@@ -1583,7 +1598,7 @@ export class ElementHandle {
           hasScreenshotBefore: !!captures.screenshotBefore, hasScreenshotAfter: false,
           hasHierarchyBefore: !!captures.hierarchyBefore, hasHierarchyAfter: false,
           log: [`${action} failed: ${errMsg}`],
-        });
+        }, actionIndex);
       } catch {
         // Swallow tracing errors; the original resolution error is rethrown below.
       }

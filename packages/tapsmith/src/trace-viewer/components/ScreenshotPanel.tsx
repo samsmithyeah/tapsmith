@@ -60,6 +60,12 @@ interface Props {
   onDisplayedVariantChange?: (variant: 'before' | 'after') => void
   /** Device pixel ratio — bounds are in logical points, screenshots in pixels. */
   devicePixelRatio?: number
+  /**
+   * Action index whose before-screenshot shows the state *after* this event.
+   * Defaults to the next index; a multi-device trace passes the next capture
+   * on the same device instead.
+   */
+  afterActionIndex?: number
   testName?: string
   testStatus?: string
   onDownloadTrace?: () => void
@@ -127,7 +133,7 @@ function handleStageKeyDown(
   (strip?.querySelectorAll('[role="tab"]')[next] as HTMLElement | undefined)?.focus();
 }
 
-export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, hierarchyBorrowedFromStep, pickUnavailable, onDisplayedVariantChange, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
+export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, hierarchyBorrowedFromStep, pickUnavailable, onDisplayedVariantChange, devicePixelRatio, afterActionIndex, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
   injectStyles();
 
   const [tab, setTab] = useState<ScreenshotTab>('action');
@@ -141,12 +147,13 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
     const beforeUrl = screenshots.get(`screenshots/action-${pad}-before.png`)
       ?? findNearestScreenshot(screenshots, event.actionIndex);
     // "After" = the next action's before-screenshot (screen state after this action).
-    // This avoids capturing 2 screenshots per action through the agent.
-    const nextPad = String(event.actionIndex + 1).padStart(3, '0');
+    // This avoids capturing 2 screenshots per action through the agent. In a
+    // multi-device trace the host names the next capture on the same device.
+    const nextPad = String(afterActionIndex ?? event.actionIndex + 1).padStart(3, '0');
     const afterUrl = screenshots.get(`screenshots/action-${nextPad}-before.png`)
       ?? screenshots.get(`screenshots/action-${pad}-after.png`); // fallback for legacy traces
     return { beforeUrl, afterUrl };
-  }, [event, screenshots]);
+  }, [event, screenshots, afterActionIndex]);
 
   // Mirrors the currentUrl resolution below: which moment does the displayed
   // screenshot show? Reported to the host so the selector playground binds to

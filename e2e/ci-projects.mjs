@@ -31,7 +31,9 @@ export function ciProjects({ testIgnore }) {
   const defaultProject = {
     name: "default",
     testMatch: ["**/*.test.ts"],
-    testIgnore: [...AUTHENTICATED_FILES, ...testIgnore],
+    // Device-group tests need two devices per test; they run under the
+    // dedicated `*-multi` configs only.
+    testIgnore: [...AUTHENTICATED_FILES, "**/multi-device/**", ...testIgnore],
   }
   const authenticated = {
     name: "authenticated",

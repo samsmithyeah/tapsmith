@@ -30,6 +30,19 @@ interface Props {
 
 type DetailTab = 'call' | 'log' | 'console' | 'source' | 'hierarchy' | 'locator' | 'errors' | 'network'
 
+/**
+ * The device an event ran on. Single-device traces have one; a `use.devices`
+ * trace names it on the event and describes each in `metadata.devices`.
+ */
+function deviceForEvent(
+  metadata: TraceMetadata,
+  event: { deviceId?: string },
+): TraceMetadata['device'] | undefined {
+  const group = metadata.devices && metadata.devices.length > 1 ? metadata.devices : undefined;
+  if (!group) return metadata.device;
+  return group.find((d) => d.name === event.deviceId) ?? metadata.device;
+}
+
 export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode, previewHighlight }: Props) {
   const testError = metadata.error;
   const [tab, setTab] = usePersistedString('tapsmith-detail-tab', 'call') as [DetailTab, (v: DetailTab) => void];
@@ -237,10 +250,13 @@ function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTrace
         <span class={`call-value ${event.success ? 'success' : 'error'}`}>
           {event.success ? 'passed' : 'failed'}
         </span>
-        {metadata.device.serial && <>
-          <span class="call-label">Device</span>
-          <span class="call-value">{metadata.device.model ? `${metadata.device.model} · ` : ''}{metadata.device.serial}</span>
-        </>}
+        {(() => {
+          const d = deviceForEvent(metadata, event);
+          return d?.serial ? <>
+            <span class="call-label">Device</span>
+            <span class="call-value">{d.name ? `${d.name} · ` : ''}{d.model ? `${d.model} · ` : ''}{d.serial}</span>
+          </> : null;
+        })()}
         {event.sourceLocation && <>
           <span class="call-label">Source</span>
           <span class="call-value mono">{event.sourceLocation.file}:{event.sourceLocation.line}</span>
@@ -285,10 +301,13 @@ function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTrace
         <span class="call-label">Gap before</span>
         <span class="call-value mono">{event.gapBefore}ms</span>
       </>}
-      {metadata.device.serial && <>
-        <span class="call-label">Device</span>
-        <span class="call-value">{metadata.device.model ? `${metadata.device.model} · ` : ''}{metadata.device.serial}</span>
-      </>}
+      {(() => {
+        const d = deviceForEvent(metadata, event);
+        return d?.serial ? <>
+          <span class="call-label">Device</span>
+          <span class="call-value">{d.name ? `${d.name} · ` : ''}{d.model ? `${d.model} · ` : ''}{d.serial}</span>
+        </> : null;
+      })()}
       {event.sourceLocation && <>
         <span class="call-label">Source</span>
         <span class="call-value mono">{event.sourceLocation.file}:{event.sourceLocation.line}</span>

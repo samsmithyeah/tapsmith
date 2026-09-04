@@ -474,9 +474,29 @@ function App() {
     );
   }, []);
 
-  const platform = inferPlatform(trace.metadata);
-
   const selectedEvent = actionEvents[selectedIndex];
+
+  // Multi-device traces (`use.devices`): every event names the device that
+  // produced it, and each device has its own pixel ratio, platform and
+  // terminal screenshot. Single-device traces fall back to `metadata.device`.
+  const groupDevices = trace.metadata.devices && trace.metadata.devices.length > 1
+    ? trace.metadata.devices
+    : undefined;
+  const selectedDevice = useMemo(() => {
+    if (!groupDevices) return trace.metadata.device;
+    return groupDevices.find((d) => d.name === selectedEvent?.deviceId) ?? trace.metadata.device;
+  }, [groupDevices, selectedEvent, trace.metadata.device]);
+  const platform = selectedDevice?.platform ?? inferPlatform(trace.metadata);
+  // "After" = the next capture on the *same* device; the next action overall
+  // may belong to the other user. Falls back to that device's terminal
+  // screenshot, which the runner records per device in group order.
+  const afterActionIndex = useMemo(() => {
+    if (!groupDevices || !selectedEvent) return undefined;
+    const next = actionEvents.find((e) => e.actionIndex > selectedEvent.actionIndex && e.deviceId === selectedEvent.deviceId);
+    if (next) return next.actionIndex;
+    const ordinal = groupDevices.findIndex((d) => d.name === selectedEvent.deviceId);
+    return trace.metadata.actionCount + Math.max(0, ordinal);
+  }, [groupDevices, selectedEvent, actionEvents, trace.metadata.actionCount]);
 
   // Which screenshot moment the ScreenshotPanel is displaying — the selector
   // playground must bind to the hierarchy captured at that same moment, or
@@ -508,7 +528,7 @@ function App() {
     [currentRoots, selectorText],
   );
 
-  const dpr = trace.metadata.device?.devicePixelRatio ?? 1;
+  const dpr = selectedDevice?.devicePixelRatio ?? 1;
 
   const handleScreenshotClick = useCallback(
     (point: { x: number; y: number }) => {
@@ -602,7 +622,8 @@ function App() {
           hierarchyBorrowedFromStep={currentHierarchy?.borrowedFromStep}
           pickUnavailable={!!selectedEvent && currentRoots.length === 0}
           onDisplayedVariantChange={setScreenshotVariant}
-          devicePixelRatio={trace.metadata.device?.devicePixelRatio}
+          devicePixelRatio={selectedDevice?.devicePixelRatio}
+          afterActionIndex={afterActionIndex}
           nodeType="test"
           hasTrace={true}
           testName={trace.metadata.testName}

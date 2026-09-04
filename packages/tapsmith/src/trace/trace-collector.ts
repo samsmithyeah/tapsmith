@@ -239,7 +239,19 @@ export type TraceEventCallback = (
 export class TraceCollector {
   readonly config: TraceConfig;
   private _events: AnyTraceEvent[] = [];
+  /**
+   * Index the next *emitted* action/assertion takes when nothing reserved one
+   * for it — also the count of recorded actions. Advances on emit only.
+   */
   private _actionIndex = 0;
+  /**
+   * Index the next before-capture reserves. Two devices acting at once each
+   * capture before emitting; without a reservation both would write their
+   * screenshot under the same index and the second would overwrite the first.
+   * Reservations run ahead of `_actionIndex`; an emit that carries its
+   * reserved index moves `_actionIndex` past it.
+   */
+  private _nextReservable = 0;
   private _timelineOrigin: number;
   private _lastTimelineTimestamp: number;
   private _lastTimedEvent: ActionTraceEvent | AssertionTraceEvent | null = null;
@@ -329,6 +341,29 @@ export class TraceCollector {
   /** @internal — Set the starting action index (used to offset for beforeAll events). */
   setActionIndexOffset(offset: number): void {
     this._actionIndex = offset;
+    this._nextReservable = offset;
+  }
+
+  /**
+   * @internal — Claim the next action index for an action whose before-capture
+   * happens before its event is emitted. The emit must pass the index back.
+   */
+  _reserveActionIndex(): number {
+    const index = Math.max(this._actionIndex, this._nextReservable);
+    this._nextReservable = index + 1;
+    return index;
+  }
+
+  /** @internal — The index the next reservation or emit would take. */
+  _peekActionIndex(): number {
+    return Math.max(this._actionIndex, this._nextReservable);
+  }
+
+  /** Consume an index for an emit: the one reserved for it, or a fresh one. */
+  private _indexForEmit(reserved: number | undefined): number {
+    const index = reserved ?? this._reserveActionIndex();
+    this._actionIndex = Math.max(this._actionIndex, index + 1);
+    return index;
   }
 
   /**
@@ -496,8 +531,10 @@ export class TraceCollector {
     takeScreenshot: () => Promise<Buffer | undefined>,
     captureHierarchy: () => Promise<string | undefined>,
     timeoutMs = TRACE_CAPTURE_TIMEOUT_MS,
+    /** An index already reserved for this action (see `_reserveActionIndex`). */
+    reservedActionIndex?: number,
   ): Promise<{ actionIndex: number; captures: Partial<CaptureBeforeAfter> }> {
-    const actionIndex = this._actionIndex;
+    const actionIndex = reservedActionIndex ?? this._reserveActionIndex();
     const captures: Partial<CaptureBeforeAfter> = {};
 
     // Fenced zombie attempt — record nothing against the live attempt.
@@ -664,43 +701,51 @@ export class TraceCollector {
   /**
    * Emit a fully-formed action event.
    */
-  addActionEvent(event: Omit<ActionTraceEvent, 'type' | 'actionIndex' | 'timestamp'>): void {
+  addActionEvent(
+    event: Omit<ActionTraceEvent, 'type' | 'actionIndex' | 'timestamp'>,
+    /** The index `captureBeforeAction` reserved for this action, when it captured. */
+    reservedActionIndex?: number,
+  ): void {
     if (isCurrentAttemptClosed()) return;
     this._flushPendingGroups();
+    const actionIndex = this._indexForEmit(reservedActionIndex);
     const now = Date.now();
     const full = {
       ...event,
       type: 'action',
-      actionIndex: this._actionIndex,
+      actionIndex,
       timestamp: now,
     } as ActionTraceEvent;
     this._applyTimelineTiming(full, now);
     this._events.push(full);
-    const pending = this._pendingCaptures.get(this._actionIndex);
-    this._pendingCaptures.delete(this._actionIndex);
+    const pending = this._pendingCaptures.get(actionIndex);
+    this._pendingCaptures.delete(actionIndex);
     this._onEvent?.(full, pending, 'completed');
-    this._actionIndex++;
   }
 
   /**
    * Emit an assertion event.
    */
-  addAssertionEvent(event: Omit<AssertionTraceEvent, 'type' | 'actionIndex' | 'timestamp'>): void {
+  addAssertionEvent(
+    event: Omit<AssertionTraceEvent, 'type' | 'actionIndex' | 'timestamp'>,
+    /** The index `captureBeforeAction` reserved for this assertion, when it captured. */
+    reservedActionIndex?: number,
+  ): void {
     if (isCurrentAttemptClosed()) return;
     this._flushPendingGroups();
+    const actionIndex = this._indexForEmit(reservedActionIndex);
     const now = Date.now();
     const full = {
       ...event,
       type: 'assertion',
-      actionIndex: this._actionIndex,
+      actionIndex,
       timestamp: now,
     } as AssertionTraceEvent;
     this._applyTimelineTiming(full, now);
     this._events.push(full);
-    const pending = this._pendingCaptures.get(this._actionIndex);
-    this._pendingCaptures.delete(this._actionIndex);
+    const pending = this._pendingCaptures.get(actionIndex);
+    this._pendingCaptures.delete(actionIndex);
     this._onEvent?.(full, pending, 'completed');
-    this._actionIndex++;
   }
 
   private _applyTimelineTiming(
@@ -756,6 +801,8 @@ export class TraceCollector {
       hasScreenshotAfter?: boolean
       hasHierarchyAfter?: boolean
     },
+    /** The index reserved for the in-flight action, when its capture already ran. */
+    reservedActionIndex?: number,
   ): void {
     if (!this._onEvent || isCurrentAttemptClosed()) return;
     // Flush any pending group-starts so UI mode renders the group header
@@ -764,17 +811,18 @@ export class TraceCollector {
     // streamed, the group is no longer eligible for the empty-group drop
     // optimization — but if a started signal fires, content is incoming.
     this._flushPendingGroups();
+    const actionIndex = reservedActionIndex ?? this._peekActionIndex();
     const full = {
       ...partial,
       type: 'action',
-      actionIndex: this._actionIndex,
+      actionIndex,
       timestamp: Date.now(),
       duration: 0,
       success: true,
       hasScreenshotAfter: partial.hasScreenshotAfter ?? false,
       hasHierarchyAfter: partial.hasHierarchyAfter ?? false,
     } as ActionTraceEvent;
-    const pending = this._pendingCaptures.get(this._actionIndex);
+    const pending = this._pendingCaptures.get(actionIndex);
     this._onEvent(full, pending, 'started');
   }
 
@@ -787,19 +835,22 @@ export class TraceCollector {
       AssertionTraceEvent,
       'type' | 'actionIndex' | 'timestamp' | 'duration' | 'attempts' | 'passed'
     >,
+    /** The index reserved for the in-flight assertion, when its capture already ran. */
+    reservedActionIndex?: number,
   ): void {
     if (!this._onEvent || isCurrentAttemptClosed()) return;
     this._flushPendingGroups();
+    const actionIndex = reservedActionIndex ?? this._peekActionIndex();
     const full = {
       ...partial,
       type: 'assertion',
-      actionIndex: this._actionIndex,
+      actionIndex,
       timestamp: Date.now(),
       duration: 0,
       attempts: 0,
       passed: true,
     } as AssertionTraceEvent;
-    const pending = this._pendingCaptures.get(this._actionIndex);
+    const pending = this._pendingCaptures.get(actionIndex);
     this._onEvent(full, pending, 'started');
   }
 

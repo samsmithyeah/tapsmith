@@ -328,6 +328,7 @@ describe('APIRequestContext', () => {
     let mockCollector: {
       addActionEvent: ReturnType<typeof vi.fn>
       _emitActionStarted: ReturnType<typeof vi.fn>
+      _reserveActionIndex: ReturnType<typeof vi.fn>
       currentActionIndex: number
     };
 
@@ -337,6 +338,9 @@ describe('APIRequestContext', () => {
           mockCollector.currentActionIndex++;
         }),
         _emitActionStarted: vi.fn(),
+        // The request reserves its index up front (see api-request.ts) so a
+        // device action landing mid-request cannot take the slot.
+        _reserveActionIndex: vi.fn(() => mockCollector.currentActionIndex),
         currentActionIndex: 0,
       };
     });

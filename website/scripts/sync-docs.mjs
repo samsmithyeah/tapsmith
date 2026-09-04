@@ -83,6 +83,12 @@ const FILES = [
     desc: 'Run tests across multiple devices with work-stealing distribution and CI sharding.',
   },
   {
+    src: 'multi-device.md',
+    dest: 'guides/multi-device.md',
+    title: 'Multi-Device Tests',
+    desc: 'Drive two app sessions from one test with device groups (use.devices).',
+  },
+  {
     src: 'debugging.md',
     dest: 'guides/debugging.md',
     title: 'Debugging',
