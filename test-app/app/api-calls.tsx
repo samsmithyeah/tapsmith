@@ -65,6 +65,25 @@ export default function ApiCallsScreen() {
     }
   }
 
+  // Exists purely so e2e can assert platform behaviour for a host in the
+  // daemon's DEFAULT_PASSTHROUGH_HOSTS list (PILOT-279): captured on Android,
+  // tunnelled on iOS. The response is expected to be an unauthenticated
+  // error — the test asserts on whether the request was *visible* to
+  // interception, never on its status — so no state is stored.
+  const fetchFirestoreHost = async () => {
+    setLoading("firestore")
+    setError("")
+    try {
+      await fetch(
+        "https://firestore.googleapis.com/v1/projects/tapsmith-e2e/databases/(default)/documents",
+      )
+    } catch (e) {
+      setError(`Request failed: ${e instanceof Error ? e.message : e}`)
+    } finally {
+      setLoading("")
+    }
+  }
+
   return (
     <ScrollView style={styles.container}>
       <Text style={styles.heading} accessibilityRole="header">
@@ -101,6 +120,19 @@ export default function ApiCallsScreen() {
           accessibilityLabel="Fetch 404"
         >
           <Text style={styles.buttonText}>Fetch 404</Text>
+        </Pressable>
+      </View>
+
+      {/* Second row: kept off the row above so the three original buttons
+          keep their existing widths and positional selectors still hold. */}
+      <View style={styles.buttonRow}>
+        <Pressable
+          style={styles.button}
+          onPress={fetchFirestoreHost}
+          accessibilityRole="button"
+          accessibilityLabel="Fetch Firestore Host"
+        >
+          <Text style={styles.buttonText}>Fetch Firestore Host</Text>
         </Pressable>
       </View>
 

@@ -35,8 +35,11 @@ export interface TraceSpec {
   /** Keyed by absolute source path. */
   sources?: Record<string, string>
   network?: NetworkEntry[]
-  /** Keyed by archive path, e.g. `network/res-0.bin`. */
-  networkBodies?: Record<string, string>
+  /** Keyed by archive path, e.g. `network/res-0.bin`. Accepts bytes so binary
+   * payloads (gRPC/protobuf) can be exercised, which a string cannot express —
+   * the viewer keeps bodies as bytes precisely because a UTF-8 round-trip
+   * destroys them. */
+  networkBodies?: Record<string, string | Uint8Array>
   /** Omit metadata.json entirely, to exercise the viewer's error path. */
   omitMetadata?: boolean
 }
@@ -108,7 +111,7 @@ export function buildTrace(spec: TraceSpec = {}): Uint8Array {
     files["network.json"] = strToU8(spec.network.map((e) => JSON.stringify(e)).join("\n") + "\n")
   }
   for (const [name, body] of Object.entries(spec.networkBodies ?? {})) {
-    files[name] = strToU8(body)
+    files[name] = typeof body === "string" ? strToU8(body) : body
   }
 
   return zipSync(files)

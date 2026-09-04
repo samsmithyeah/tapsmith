@@ -20,7 +20,7 @@ use crate::device::DeviceManager;
 use crate::device_logs;
 use crate::ios;
 use crate::mitm_ca::MitmAuthority;
-use crate::network_proxy::NetworkProxy;
+use crate::network_proxy::{EmbeddedRootDefaults, NetworkProxy};
 use crate::platform::Platform;
 use crate::proto;
 use crate::route_handler::RouteInterceptHandler;
@@ -363,6 +363,35 @@ impl TapsmithServiceImpl {
         )
     }
 
+    /// Whether the built-in embedded-root passthrough defaults
+    /// (`firestore.googleapis.com`) apply to the active device (PILOT-279).
+    ///
+    /// Android's Firestore runs on gRPC-Java, which validates TLS against the
+    /// platform trust store, so once `adb::install_ca_cert` has put our CA
+    /// there the host is MITM-able through the normal h2 pipeline — applying
+    /// the default would hide capturable traffic. iOS keeps the default: its
+    /// gRPC-C++ stack compiles its roots into the app binary and can never
+    /// trust our CA.
+    ///
+    /// Defaults to `Apply` when no device is selected: that's the
+    /// conservative direction (tunnel rather than break the app), and every
+    /// path that starts a proxy re-derives this once a device is known.
+    async fn embedded_root_defaults(&self) -> EmbeddedRootDefaults {
+        let dm = self.device_manager.read().await;
+        Self::embedded_root_defaults_for(dm.active_device().map(|d| d.platform))
+    }
+
+    /// Pure half of [`Self::embedded_root_defaults`], split out so the
+    /// platform mapping is unit-testable and callers that already hold a
+    /// platform (or a `device_manager` guard) can reuse it without a second
+    /// lock acquisition.
+    fn embedded_root_defaults_for(platform: Option<Platform>) -> EmbeddedRootDefaults {
+        match platform {
+            Some(Platform::Android) => EmbeddedRootDefaults::Skip,
+            Some(Platform::Ios) | None => EmbeddedRootDefaults::Apply,
+        }
+    }
+
     /// Idempotently start the Wi-Fi MITM proxy bound to a physical iOS
     /// device's deterministic port. Needed whenever we're about to
     /// perform any operation on a physical device that might cause iOS
@@ -396,7 +425,11 @@ impl TapsmithServiceImpl {
                 // Clone out of the read guard before awaiting — holding a
                 // RwLock guard across an await risks starving writers.
                 let passthrough_hosts = self.passthrough_hosts.read().await.clone();
-                proxy.set_passthrough_hosts(passthrough_hosts).await;
+                // Physical iOS by construction, so the embedded-root defaults
+                // always apply here.
+                proxy
+                    .set_passthrough_hosts(passthrough_hosts, EmbeddedRootDefaults::Apply)
+                    .await;
                 *self.network_proxy.write().await = Some(proxy);
             }
             Err(e) => {
@@ -3399,9 +3432,17 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // independent: simulators, Android, and physical iOS all
                 // honor SNI-based passthrough.
                 *self.passthrough_hosts.write().await = req.passthrough_hosts.clone();
+                // Re-derive the embedded-root defaults here too: this is the
+                // point where the active device (and so the platform) can
+                // change under a proxy that is already running — UI mode
+                // switching between an iOS simulator and an emulator.
+                let embedded_root_defaults = self.embedded_root_defaults().await;
                 if let Some(proxy) = self.network_proxy.read().await.as_ref() {
                     proxy
-                        .set_passthrough_hosts(req.passthrough_hosts.clone())
+                        .set_passthrough_hosts(
+                            req.passthrough_hosts.clone(),
+                            embedded_root_defaults,
+                        )
                         .await;
                 }
                 // For physical iOS with tracing enabled, pre-start the Wi-Fi
@@ -5338,11 +5379,14 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         // Capture state is reset so this session starts clean.
         if let Some(existing) = proxy_guard.as_ref() {
             let existing_port = existing.port();
-            existing.reset_entries().await;
+            existing.reset_capture_state().await;
             // Clone out of the read guard before awaiting — holding a
             // RwLock guard across an await risks starving writers.
             let passthrough_hosts = self.passthrough_hosts.read().await.clone();
-            existing.set_passthrough_hosts(passthrough_hosts).await;
+            let embedded_root_defaults = self.embedded_root_defaults().await;
+            existing
+                .set_passthrough_hosts(passthrough_hosts, embedded_root_defaults)
+                .await;
             let serial = self.active_serial().await.unwrap_or_default();
             info!(
                 serial = %serial,
@@ -5510,7 +5554,14 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         // Clone out of the read guard before awaiting — holding a RwLock
         // guard across an await risks starving writers.
         let passthrough_hosts = self.passthrough_hosts.read().await.clone();
-        proxy.set_passthrough_hosts(passthrough_hosts).await;
+        // `platform` is already resolved above, so use it directly rather than
+        // re-reading the device manager.
+        proxy
+            .set_passthrough_hosts(
+                passthrough_hosts,
+                Self::embedded_root_defaults_for(Some(platform)),
+            )
+            .await;
         let host_port = proxy.port();
 
         // Physical iOS: verify the proxy is reachable from the LAN. On
@@ -5676,6 +5727,20 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // TCP level, so TLS is correctly detected from the ClientHello.
                 let iptables_ok = adb::setup_iptables_redirect(&serial, device_port).await;
                 *self.proxy_uses_iptables.write().await = iptables_ok;
+                // The redirect is IPv4-only. On a device with IPv6 egress, an
+                // app that prefers IPv6 bypasses it entirely and its traffic is
+                // *invisible* — no capture entry and no `passthrough` marker,
+                // which reads as "the app made no request". Say so rather than
+                // letting it look like a capture bug. (Emulators normally have
+                // no IPv6 default route, so this stays quiet there.)
+                if iptables_ok && adb::has_ipv6_default_route(&serial).await {
+                    let msg = "Device has IPv6 connectivity but the transparent redirect \
+                               is IPv4-only — traffic the app sends over IPv6 bypasses \
+                               capture entirely and will not appear in the trace"
+                        .to_string();
+                    warn!(%serial, "{msg}");
+                    warnings.push(msg);
+                }
                 if !iptables_ok {
                     // Fallback: set the system HTTP proxy for non-rooted devices
                     // or emulators where iptables is unavailable.
@@ -8299,6 +8364,26 @@ impl app_reset::ResetOps for ServiceResetOps<'_> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn embedded_root_defaults_are_skipped_only_for_android() {
+        // Android's Firestore (gRPC-Java) honours the platform trust store, so
+        // the built-in passthrough default would hide capturable traffic.
+        assert_eq!(
+            TapsmithServiceImpl::embedded_root_defaults_for(Some(Platform::Android)),
+            EmbeddedRootDefaults::Skip
+        );
+        // iOS compiles its gRPC roots into the app binary — keep tunneling.
+        assert_eq!(
+            TapsmithServiceImpl::embedded_root_defaults_for(Some(Platform::Ios)),
+            EmbeddedRootDefaults::Apply
+        );
+        // No device selected: tunnel rather than risk breaking the app.
+        assert_eq!(
+            TapsmithServiceImpl::embedded_root_defaults_for(None),
+            EmbeddedRootDefaults::Apply
+        );
+    }
 
     #[test]
     fn android_reverse_port_candidates_start_with_host_port_then_fallbacks() {

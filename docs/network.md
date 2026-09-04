@@ -40,7 +40,7 @@ npx tapsmith test --trace on --no-network
 
 When network capture is off, `device.route()` silently registers the handler but it will never fire because no traffic passes through the proxy.
 
-HTTP/2 traffic is intercepted when the client accepts Tapsmith's MITM CA. Some gRPC clients, including Firestore SDKs that use embedded roots or certificate pinning, reject external MITM certificates; Tapsmith detects that rejection for HTTP/2-capable clients and tunnels later connections so the app keeps working, but route handlers and waiters cannot see the encrypted requests inside. See [HTTP/2, gRPC, and passthrough connections](#http2-grpc-and-passthrough-connections).
+HTTP/2 traffic is intercepted when the client accepts Tapsmith's MITM CA — including gRPC, and including Firestore on Android. Clients that use embedded roots or certificate pinning reject external MITM certificates (Firestore on iOS always does); Tapsmith detects that rejection for HTTP/2-capable clients and tunnels later connections so the app keeps working, but route handlers and waiters cannot see the encrypted requests inside. See [HTTP/2, gRPC, and passthrough connections](#http2-grpc-and-passthrough-connections).
 
 ---
 
@@ -744,13 +744,48 @@ Capture decrypts and records both **HTTP/1.1** and **HTTP/2** traffic when the c
 
 Clients that *require* HTTP/2, such as gRPC libraries, can be captured too: the proxy speaks HTTP/2 to the app and to the origin, forwarding DATA frames and trailers (so `grpc-status` is preserved) while recording each request/response. `device.route()`, `device.waitForRequest()`, and `device.waitForResponse()` work for those requests only when the client trusts the generated Tapsmith certificate.
 
-Some clients do not trust the device or simulator trust store. Firestore's native SDKs are a common example: their gRPC stack may use embedded root certificates or explicit TLS credentials, so they reject Tapsmith's generated certificate even though the Tapsmith CA is installed on the device. **`firestore.googleapis.com` is tunnelled by default** for exactly this reason, so Firestore-backed screens keep working out of the box.
+Some clients do not trust the device or simulator trust store. Firestore is the common example, and it behaves differently per platform:
 
-For other HTTP/2-capable hosts that reject the certificate, Tapsmith detects the rejection and tunnels later connections for the same SNI. The rejection is recognised both when the client sends a TLS alert (`unknown_ca`, `bad_certificate`) and when it simply tears the connection down without one — gRPC-C++/BoringSSL stacks abort with a connection reset rather than a decodable alert, so this abrupt-close case is treated as a rejection once it repeats for a host. The app continues to work, and the trace shows a single `CONNECT` row marked `passthrough`, but the encrypted requests inside are not available to `device.route()`, `device.waitForRequest()`, `device.waitForResponse()`, or the trace viewer.
+- **Android: Firestore is captured.** Its gRPC stack (gRPC-Java) validates TLS against the platform trust store, so once Tapsmith has installed its CA there, Firestore calls are decrypted and recorded like any other HTTP/2 traffic — each RPC appears as an inspectable request/response, and `device.route()` can match and mock it. This needs a rootable emulator image so the CA reaches the *system* store; see [Android emulator image requirements](#android-emulator-image-requirements).
+- **iOS: Firestore is tunnelled.** Its gRPC stack (gRPC-C++/BoringSSL) compiles its own CA roots into the app binary and passes them explicitly, so it rejects Tapsmith's certificate no matter what the device trust store contains. No configuration changes that. `firestore.googleapis.com` is therefore **tunnelled by default on iOS**, which keeps Firestore-backed screens working out of the box at the cost of not being able to inspect those calls.
+
+Firestore RPC bodies are protobuf rather than JSON. The trace viewer decodes them: a gRPC body is split into its length-prefixed messages and each is shown as protobuf fields, with a **Raw** toggle for the underlying bytes.
+
+Protobuf carries field *numbers* on the wire, never names, so the baseline output is numeric (`1: "projects/demo/databases/(default)"`, in the style of `protoc --decode_raw`). For services Tapsmith knows — currently Firestore's `Listen` — a built-in name table lifts that to real field names, resolves enums, unpacks repeated scalars and formats timestamps:
+
+```
+── message 3 of 64 (902 bytes)
+  document_change {
+    document {
+      name: "projects/demo/databases/(default)/documents/users/u1"
+      fields:
+        displayName: { string_value: "E2E Test User" }
+        onboardingCompletedAt: { timestamp_value: 2026-06-10T11:29:35.776Z }
+        onboardingCompleted: { boolean_value: true }
+    }
+    target_ids: [2]
+  }
+```
+
+A body with more than a few messages is led by a per-kind summary, because a long stream is mostly bookkeeping — this one carries two document changes among sixty target acks, and the tallies also make listener churn obvious:
+
+```
+── summary of 64 messages
+   target_change   ×60  target_change_type: NO_CHANGE ×23, ADD ×13, CURRENT ×12, REMOVE ×12
+   document_change ×2   "…/documents/users/u1"
+   filter          ×2
+```
+
+Unknown services fall back to numbers rather than guessing. Repeated fields are marked `[]` so a single-element list is not mistaken for a scalar, compressed messages are listed but not inflated (the codec lives in `grpc-encoding`), and a body truncated by the capture cap says how much is missing.
+
+**A body only exists once the RPC finishes.** A stream still open when the test ends leaves **no entry in the trace at all** — not even the `CONNECT ... passthrough` row a tunnelled connection leaves — so a long-lived `Listen` is routinely absent from the Network tab even though it was decrypted and captured. Whether you see the decoded body above therefore depends on the app tearing its listener down inside the test, which is not something a test can rely on. To assert on such a call, use `device.waitForRequest()`, which fires when the stream opens (see the HTTP/2 specifics below).
+
+For any other HTTP/2-capable host that rejects the certificate — including Firestore on Android when the CA only reached the *user* trust store — Tapsmith detects the rejection and tunnels later connections for the same SNI. The rejection is recognised both when the client sends a TLS alert (`unknown_ca`, `bad_certificate`) and when it simply tears the connection down without one — gRPC-C++/BoringSSL stacks abort with a connection reset rather than a decodable alert, so this abrupt-close case is treated as a rejection once it repeats for a host. The app continues to work, and the trace shows a single `CONNECT` row marked `passthrough`, but the encrypted requests inside are not available to `device.route()`, `device.waitForRequest()`, `device.waitForResponse()`, or the trace viewer.
 
 A few HTTP/2 specifics to be aware of:
 
-- **Streaming / long-lived calls** (e.g. Firestore `Listen`) are forwarded incrementally and only appear in the trace once the stream closes -- a never-ending server stream stays open and is recorded at teardown.
+- **Long-lived channels are opened once per app process.** gRPC clients (Firestore included) multiplex every call over a single h2 connection. If the app was already running when your test started, that connection already exists and nothing new crosses the proxy, so `waitForRequest`/`waitForResponse` never fire and `route()` handlers never match -- capture looks broken while working correctly. Relaunch the app inside the test (`device.launchApp(...)`) so the channel is opened during the window you are waiting on.
+- **Streaming / long-lived calls** (e.g. Firestore `Listen`) are forwarded incrementally and only appear in the trace once the stream closes -- a never-ending server stream stays open and is recorded at teardown. Assert on the *request* event, which fires when the stream opens; a `waitForResponse` on a stream that never ends will time out.
 - Captured HTTP/2 header names are lowercase (that's how HTTP/2 sends them on the wire).
 - Request/response **bodies in the trace are capped** (~1 MB), but the full stream is always forwarded to the app.
 
@@ -781,7 +816,7 @@ Open a trace archive:
 npx tapsmith show-trace tapsmith-results/traces/trace-my_test.zip
 ```
 
-The Network tab shows a sortable table with columns for method, URL, status code, content type, duration, and response size. Click a row to expand request/response headers and bodies. JSON bodies are pretty-printed automatically.
+The Network tab shows a sortable table with columns for method, URL, status code, content type, duration, and response size. Click a row to expand request/response headers and bodies. JSON bodies are pretty-printed automatically, and gRPC/protobuf bodies are decoded into their messages and fields (see [HTTP/2, gRPC, and passthrough connections](#http2-grpc-and-passthrough-connections)) with a **Raw** toggle for the original bytes.
 
 Route handler actions also appear as events in the trace viewer's actions panel (e.g., `route.fulfill`, `route.abort`), with the source location of your handler code highlighted.
 

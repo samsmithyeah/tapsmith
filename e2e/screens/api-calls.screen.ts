@@ -9,6 +9,9 @@ export class ApiCallsScreen {
   get fetchPostsButton() { return this.device.getByRole("button", { name: "Fetch Posts" }) }
   get fetchUserButton() { return this.device.getByRole("button", { name: "Fetch User" }) }
   get fetch404Button() { return this.device.getByRole("button", { name: "Fetch 404" }) }
+  // Hits firestore.googleapis.com — a host in the daemon's built-in
+  // passthrough list — to exercise the per-platform gate (PILOT-279).
+  get fetchFirestoreHostButton() { return this.device.getByRole("button", { name: "Fetch Firestore Host" }) }
   get postsHeading() { return this.device.getByText("Posts", { exact: true }) }
   get userHeading() { return this.device.getByText("User", { exact: true }) }
   get errorMessage() { return this.device.getByText("Request failed") }

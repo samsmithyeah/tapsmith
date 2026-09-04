@@ -9,13 +9,14 @@ import { useWebSocket } from './hooks/use-websocket.js';
 import {
   useTraceData,
   base64ToBlobUrl,
-  base64ToUtf8,
+  base64ToBytes,
   revokeTraceScreenshots,
   reconcileTraceWallDuration,
   emptyTraceData,
   resolveActionHierarchy,
   getOrCreateTrace,
   EMPTY_MAP,
+  EMPTY_BYTES_MAP,
   EMPTY_EVENTS,
   EMPTY_ACTION_EVENTS,
   EMPTY_NETWORK,
@@ -407,7 +408,7 @@ function App() {
     return line !== undefined ? { file: previewKey, line } : undefined;
   }, [currentTrace, previewKey, previewContent, viewedTestNode]);
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
-  const networkBodies = currentTrace?.networkBodies ?? EMPTY_MAP;
+  const networkBodies = currentTrace?.networkBodies ?? EMPTY_BYTES_MAP;
   const viewedTestWorker = (() => {
     if (!viewedTraceKey) return undefined;
     const workerId = testWorkerMapRef.current.get(viewedTraceKey);
@@ -1024,7 +1025,7 @@ function App() {
           const networkBodies = new Map(data.networkBodies);
           if (msg.bodies) {
             for (const [path, b64] of Object.entries(msg.bodies)) {
-              networkBodies.set(path, base64ToUtf8(b64));
+              networkBodies.set(path, base64ToBytes(b64));
             }
           }
           const next = new Map(map);

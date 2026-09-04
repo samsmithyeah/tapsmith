@@ -493,7 +493,12 @@ export class NetworkRouteManager {
       // close (e.g. proxy teardown between test files) that auto-recovers.
       const code = (err as grpc.ServiceError).code;
       const isCleanReset = code === 13 && err.message.includes('RST_STREAM with code 0');
-      if (code !== 1 && code !== 14 && !isCleanReset) {
+      // `dispose()` half-closes the stream with `end()`; the daemon's own close
+      // can then land here as INTERNAL/STREAM_CLOSED (`RST_STREAM with code 5`)
+      // once we have stopped reading. That raced teardown is not actionable —
+      // it printed after every run's summary — but the same code mid-run means
+      // a lost route decision, so only suppress it once we are disposing.
+      if (!this._disposed && code !== 1 && code !== 14 && !isCleanReset) {
         console.warn('[tapsmith] NetworkRoute stream error:', err.message);
       }
       this._rejectPendingFetches(`NetworkRoute stream error: ${err.message}`);

@@ -23,8 +23,13 @@ export interface TestTraceData {
   hierarchies: Map<string, string>;
   sources: Map<string, string>;
   network: NetworkEntry[];
-  /** Decoded network request/response bodies keyed by path (e.g. `network/res-0.bin`). */
-  networkBodies: Map<string, string>;
+  /** Raw network request/response body bytes keyed by path (e.g.
+   * `network/res-0.bin`). Kept as bytes rather than a decoded string because
+   * binary payloads — notably gRPC/protobuf — cannot survive a UTF-8 decode:
+   * invalid sequences become replacement characters and the original bytes are
+   * unrecoverable. The Network tab decodes to text (or to protobuf) at render
+   * time instead. */
+  networkBodies: Map<string, Uint8Array>;
   /** File this test belongs to — used to scope clearing on re-runs. */
   filePath?: string;
   /** Path to the trace ZIP on the server (set when test completes). */
@@ -52,26 +57,33 @@ export function base64ToBlobUrl(base64: string): string {
  * Network tab still works. */
 const MAX_INLINE_BODY_BYTES = 2 * 1024 * 1024;
 
-/** Decode a base64-encoded body into a UTF-8 string for display. Returns a
- * short placeholder for bodies above `MAX_INLINE_BODY_BYTES` so we don't
- * freeze the UI on a multi-megabyte response. `atob` throws `DOMException`
- * on malformed input, so we catch and substitute a placeholder — this
+/** Decode a base64-encoded body into its raw bytes. Returns a short
+ * placeholder (as encoded text) for bodies above `MAX_INLINE_BODY_BYTES` so we
+ * don't freeze the UI on a multi-megabyte response. `atob` throws
+ * `DOMException` on malformed input, so we catch and substitute a placeholder — this
  * function runs inside the network-message handler and an uncaught throw
  * would break subsequent trace updates. */
-export function base64ToUtf8(base64: string): string {
+export function base64ToBytes(base64: string): Uint8Array {
   // base64 encodes ~3 bytes per 4 chars; use the encoded length as a cheap
   // upper bound to short-circuit huge bodies before we allocate.
   const approxBytes = Math.floor((base64.length * 3) / 4);
   if (approxBytes > MAX_INLINE_BODY_BYTES) {
-    return `[body too large to display inline — ${(approxBytes / (1024 * 1024)).toFixed(1)} MB; open the trace archive to inspect]`;
+    return new TextEncoder().encode(
+      `[body too large to display inline — ${(approxBytes / (1024 * 1024)).toFixed(1)} MB; open the trace archive to inspect]`,
+    );
   }
   try {
     const bin = atob(base64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new TextDecoder().decode(bytes);
+    return bytes;
   } catch (e) {
-    return `[error decoding body: ${e instanceof Error ? e.message : String(e)}]`;
+    // The over-cap and error paths both substitute a text marker, encoded as
+    // bytes so the map stays one type. Markers are ASCII, so they render
+    // identically once decoded downstream.
+    return new TextEncoder().encode(
+      `[error decoding body: ${e instanceof Error ? e.message : String(e)}]`,
+    );
   }
 }
 
@@ -223,6 +235,9 @@ export function getOrCreateTrace(
 // ─── Stable empty references ───
 
 export const EMPTY_MAP = new Map<string, string>();
+/** Byte-valued counterpart for `TestTraceData.networkBodies`, which holds raw
+ * bytes so binary (gRPC/protobuf) payloads survive to the Network tab. */
+export const EMPTY_BYTES_MAP = new Map<string, Uint8Array>();
 export const EMPTY_EVENTS: AnyTraceEvent[] = [];
 export const EMPTY_ACTION_EVENTS: (ActionTraceEvent | AssertionTraceEvent)[] = [];
 export const EMPTY_NETWORK: NetworkEntry[] = [];

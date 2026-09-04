@@ -47,6 +47,28 @@ export class NetworkPane {
     return this.page.getByTestId("net-detail-body")
   }
 
+  /** The body toolbar's label — content type, or the decoder's verdict for a
+   * gRPC/protobuf body (e.g. "gRPC · 2 messages"). */
+  get bodyInfo() {
+    return this.page.getByTestId("net-body-info")
+  }
+
+  /** Toggle between the decoded protobuf view and the raw bytes. Only rendered
+   * for a body the decoder recognised.
+   *
+   * Addressed by testid, not by name: the JSON pretty-print toggle also reads
+   * "Raw" while pretty is on, so a name-based locator matches that button too
+   * and would silently drive the wrong control on a JSON body. */
+  get decodeToggle() {
+    return this.page.getByTestId("net-decode-toggle")
+  }
+
+  /** Toggle between pretty-printed and raw JSON. Only rendered for a JSON
+   * content type, and never alongside {@link decodeToggle}. */
+  get prettyToggle() {
+    return this.page.getByRole("button", { name: /^(Pretty|Raw)$/ })
+  }
+
   get detailClose() {
     return this.page.getByRole("button", { name: "Close", exact: true })
   }
