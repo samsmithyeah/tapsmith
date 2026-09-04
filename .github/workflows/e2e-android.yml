@@ -371,6 +371,22 @@ jobs:
           path: ${{ env.AUTH_STATE_ARCHIVE }}
           key: ${{ steps.auth-state-cache.outputs.cache-primary-key }}
 
+      # Record one trace against the live emulator and assert what is inside
+      # it: decodable screenshots at the device's real resolution, hierarchy
+      # dumps that contain the element each action resolved, and the app's real
+      # HTTPS traffic. The sharded run above records `retain-on-failure`
+      # traces nobody opens, so nothing else here would notice a trace that
+      # packages successfully but holds the wrong data. One shard is enough —
+      # this verifies the recording path, not the tests.
+      - name: Verify trace archive contents
+        if: matrix.shard == 1
+        working-directory: e2e
+        run: |
+          SERIAL=$(adb devices | grep -w device | head -1 | awk '{print $1}')
+          node verify-trace-archive.mjs \
+            -c tapsmith.config.android-ci.mjs \
+            --device "$SERIAL"
+
       - name: Upload blob report
         if: always()
         uses: actions/upload-artifact@v4

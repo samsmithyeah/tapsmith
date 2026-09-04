@@ -281,8 +281,19 @@ describe('runner app reset (declared isolation)', () => {
 
   it('root setup time is attributed to the first test even when it lives inside a describe', async () => {
     const d = makeDevice();
+    // Measure what the hook actually took rather than asserting against the
+    // nominal sleep: `setTimeout(60)` does not guarantee a 60ms Date.now()
+    // delta (Node arms timers on the loop's cached clock while Date.now()
+    // truncates), so `>= 60` failed roughly 1 run in 125 at exactly 59ms.
+    // The runner brackets the hook — suiteStart before, setupMs measured
+    // after — so first.durationMs >= hookMs holds by construction.
+    let hookMs = 0;
     pushContext();
-    tapsmithBeforeAll(async () => { await new Promise((r) => setTimeout(r, 60)); });
+    tapsmithBeforeAll(async () => {
+      const hookStart = Date.now();
+      await new Promise((r) => setTimeout(r, 60));
+      hookMs = Date.now() - hookStart;
+    });
     tapsmithDescribe('nested', () => {
       tapsmithTest('first', async () => {});
       tapsmithTest('second', async () => {});
@@ -292,8 +303,10 @@ describe('runner app reset (declared isolation)', () => {
     const result = await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig()));
 
     const [first, second] = collectResults(result);
-    expect(first.durationMs).toBeGreaterThanOrEqual(60);
-    expect(second.durationMs).toBeLessThan(60);
+    expect(hookMs).toBeGreaterThan(0);
+    expect(first.durationMs).toBeGreaterThanOrEqual(hookMs);
+    // The setup landed on the first test, not carried into the second.
+    expect(second.durationMs).toBeLessThan(hookMs);
   });
 
   it('the reporter hears onTestStart for the test the scope reset was announced under', async () => {
