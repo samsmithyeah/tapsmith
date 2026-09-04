@@ -123,6 +123,31 @@ export function bootSimulator(udid: string): void {
 }
 
 /**
+ * How long a freshly booted simulator gets to finish booting. `simctl boot`
+ * returns as soon as the device reaches the `Booted` state, well before
+ * SpringBoard, installd and the launch services are up; on a hosted CI
+ * runner that already hosts another simulator the rest takes minutes.
+ */
+export const SIMULATOR_BOOT_TIMEOUT_MS = process.env.CI ? 300_000 : 120_000;
+
+/**
+ * Block until a booted simulator has actually finished booting
+ * (`simctl bootstatus -b`), so the install and agent start that follow do
+ * not race installd and time out on a simulator that is technically
+ * `Booted`. Returns false (rather than throwing) when the wait times out or
+ * `bootstatus` is unavailable: the caller's install / agent start retry on
+ * their own, and a slow simulator is still better than no simulator.
+ */
+export function waitForSimulatorBootComplete(udid: string, timeoutMs = SIMULATOR_BOOT_TIMEOUT_MS): boolean {
+  try {
+    execFileSync('xcrun', ['simctl', 'bootstatus', udid, '-b'], { timeout: timeoutMs, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Shutdown a simulator by UDID.
  */
 export function shutdownSimulator(udid: string): void {
@@ -986,6 +1011,9 @@ export function provisionSimulators(opts: {
           // simulator after it.
           recordClonedSimulators([{ udid: newUdid, name: createName, cloned: true }], simulatorName);
           bootSimulator(newUdid);
+          if (!waitForSimulatorBootComplete(newUdid)) {
+            logProgress(`Simulator ${createName} is still booting after ${SIMULATOR_BOOT_TIMEOUT_MS / 1000}s; continuing`, 'warning');
+          }
           if (opts.appPath) {
             try { installApp(newUdid, opts.appPath); } catch { /* worker will retry */ }
           }
@@ -1008,6 +1036,9 @@ export function provisionSimulators(opts: {
           // Recorded immediately — see the create path above for why.
           recordClonedSimulators([{ udid: newUdid, name: cloneName, cloned: true }], simulatorName);
           bootSimulator(newUdid);
+          if (!waitForSimulatorBootComplete(newUdid)) {
+            logProgress(`Simulator ${cloneName} is still booting after ${SIMULATOR_BOOT_TIMEOUT_MS / 1000}s; continuing`, 'warning');
+          }
           if (opts.appPath) {
             try { installApp(newUdid, opts.appPath); } catch { /* worker will retry */ }
           }

@@ -500,19 +500,25 @@ jobs:
       - name: Install Android emulator package
         run: echo "y" | sdkmanager --install emulator
 
-      - name: Create AVD
+      # Two AVDs from the same image, one per group member. A second
+      # `-read-only` instance of a single AVD never registered with adb on
+      # these runners; two independent writable instances boot the way the
+      # shard jobs' single emulator does.
+      - name: Create two AVDs
         run: |
-          echo "no" | avdmanager create avd \
-            -n "${{ env.AVD_NAME }}" \
-            -k "${{ env.ANDROID_SYSTEM_IMAGE }}" \
-            --device "pixel_6" \
-            --force
+          for NAME in "${{ env.AVD_NAME }}" "${{ env.AVD_NAME }}-2"; do
+            echo "no" | avdmanager create avd \
+              -n "$NAME" \
+              -k "${{ env.ANDROID_SYSTEM_IMAGE }}" \
+              --device "pixel_6" \
+              --force
+          done
 
       # Both members of the group boot here, side by side, rather than letting
-      # Tapsmith launch the second: a cold `-read-only` instance started after
-      # the first one is already up (and the app installed) has blown through
-      # the 120 s boot wait on these 4-core runners. Two cold boots in parallel
-      # finish while the SDK and E2E dependencies install.
+      # Tapsmith launch the second: a cold emulator started after the first one
+      # is already up (and the app installed) has blown through the 120 s boot
+      # wait on these 4-core runners. Two cold boots in parallel finish while
+      # the SDK and E2E dependencies install.
       - name: Boot two emulators
         run: |
           nohup emulator -avd "${{ env.AVD_NAME }}" -port 5554 \
@@ -521,17 +527,19 @@ jobs:
             -no-boot-anim \
             -memory 3072 \
             &>/tmp/emulator-5554.log &
-          # A second instance of the same AVD must be read-only.
-          nohup emulator -avd "${{ env.AVD_NAME }}" -port 5556 -read-only \
-            -no-window -no-audio -no-snapshot-load -no-snapshot-save \
+          nohup emulator -avd "${{ env.AVD_NAME }}-2" -port 5556 \
+            -no-window -no-audio -no-snapshot-save \
             -gpu swiftshader_indirect \
             -no-boot-anim \
             -memory 3072 \
             &>/tmp/emulator-5556.log &
           echo "Waiting for both emulators to boot..."
+          # Polling `getprop` (not `adb wait-for-device`, which blocks forever
+          # for a serial that never registers) keeps a dead emulator a bounded
+          # failure with its log attached.
           TIMEOUT=300
           for SERIAL in emulator-5554 emulator-5556; do
-            adb -s "$SERIAL" wait-for-device
+            BOOT=""
             while [ $TIMEOUT -gt 0 ]; do
               BOOT=$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
               if [ "$BOOT" = "1" ]; then break; fi
@@ -540,7 +548,8 @@ jobs:
             done
             if [ "$BOOT" != "1" ]; then
               echo "::error::$SERIAL failed to boot within 300s"
-              tail -30 "/tmp/$SERIAL.log"
+              adb devices
+              tail -40 "/tmp/$SERIAL.log"
               exit 1
             fi
             # Disable animations for test stability
@@ -563,13 +572,17 @@ jobs:
         working-directory: e2e
         run: npm ci
 
+      # The primary is pinned with --device and the member through the CI
+      # config (`TAPSMITH_ANDROID_MEMBER` → `bob.device`), so the group is
+      # exactly the two emulators booted above.
       - name: Run two-device E2E tests
         working-directory: e2e
+        env:
+          TAPSMITH_ANDROID_MEMBER: emulator-5556
         run: |
-          SERIAL=$(adb devices | grep -w device | head -1 | awk '{print $1}')
           npx tapsmith test -c tapsmith.config.android-multi-ci.mjs \
             --trace on \
-            --device "$SERIAL"
+            --device emulator-5554
 
       - name: Upload test results
         if: always()

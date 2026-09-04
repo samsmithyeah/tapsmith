@@ -638,11 +638,11 @@ jobs:
           if [ -n "$UDID" ]; then
             echo "Booting $SIM ($UDID)"
             echo "TAPSMITH_IOS_UDID=$UDID" >> $GITHUB_ENV
-            # The group's second member boots here too, as a clone carrying the
-            # same name: Tapsmith reuses booted simulators whose name matches
-            # `simulator`, so it finds both warm instead of cloning a cold one
-            # after the primary is up — which took 5 min to boot and then
-            # outlasted the agent start timeout on these 3-core runners.
+            # The group's second member boots here too, as a clone the CI config
+            # pins as `bob` (TAPSMITH_IOS_UDID2), so both are warm before the
+            # tests start: cloning a cold one after the primary was up took 5 min
+            # to boot and then outlasted the agent start timeout on these
+            # 3-core runners.
             CLONE=$(xcrun simctl clone "$UDID" "$SIM")
             echo "Cloned $SIM -> $CLONE for the group's second device"
             echo "TAPSMITH_IOS_UDID2=$CLONE" >> $GITHUB_ENV
@@ -778,24 +778,17 @@ jobs:
             echo "No simulator UDID resolved; skipping wait."
             exit 0
           fi
-          TIMEOUT=300
+          # `bootstatus -b` returns once the boot has actually finished
+          # (SpringBoard, installd, launch services), not when the device
+          # merely reports `Booted`: two simulators booting side by side left
+          # the primary "Booted" but starved for minutes, and the app install
+          # that followed timed out. Ten minutes covers both on these runners;
+          # perl's alarm is the portable timeout (macOS has no coreutils).
           for UDID in "$TAPSMITH_IOS_UDID" "$TAPSMITH_IOS_UDID2"; do
-            while [ $TIMEOUT -gt 0 ]; do
-              STATE=$(xcrun simctl list devices -j | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)
-          for devs in d['devices'].values():
-            for dev in devs:
-              if dev['udid']=='$UDID':
-                print(dev['state']); sys.exit()
-          ")
-              if [ "$STATE" = "Booted" ]; then break; fi
-              sleep 2
-              TIMEOUT=$((TIMEOUT - 2))
-            done
-            echo "Simulator $UDID state: $STATE"
-            if [ "$STATE" != "Booted" ]; then
-              echo "::error::Simulator $UDID failed to boot within 300s"
+            if perl -e 'alarm shift; exec @ARGV' 600 xcrun simctl bootstatus "$UDID" -b; then
+              echo "Simulator $UDID finished booting"
+            else
+              echo "::error::Simulator $UDID did not finish booting within 600s"
               exit 1
             fi
           done
@@ -804,8 +797,7 @@ jobs:
         working-directory: e2e
         env:
           TAPSMITH_DAEMON_LOG: /tmp/tapsmith-daemon-ios-multi.log
-        # The primary is pinned: two booted simulators share the name, and the
-        # member is whichever booted match is not the primary.
+        # Primary pinned with --device, member pinned through the CI config.
         run: npx tapsmith test -c tapsmith.config.ios-multi-ci.mjs --trace on --device "$TAPSMITH_IOS_UDID"
 
       - name: Upload test results

@@ -33,7 +33,14 @@ export default defineConfig({
     {
       name: "pair",
       testMatch: ["**/multi-device/**/*.test.ts"],
-      use: { devices: [{ name: "alice" }, { name: "bob" }] },
+      // The workflow boots a second simulator up front and exports its UDID;
+      // unset locally, so Tapsmith clones one instead.
+      use: {
+        devices: [
+          { name: "alice" },
+          { name: "bob", device: process.env.TAPSMITH_IOS_UDID2 || undefined },
+        ],
+      },
     },
   ],
 })

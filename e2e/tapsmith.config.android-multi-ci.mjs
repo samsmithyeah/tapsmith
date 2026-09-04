@@ -29,7 +29,14 @@ export default defineConfig({
     {
       name: "pair",
       testMatch: ["**/multi-device/**/*.test.ts"],
-      use: { devices: [{ name: "alice" }, { name: "bob" }] },
+      // The workflow boots both emulators up front and names the member's
+      // serial; unset locally, so Tapsmith picks or launches one instead.
+      use: {
+        devices: [
+          { name: "alice" },
+          { name: "bob", device: process.env.TAPSMITH_ANDROID_MEMBER || undefined },
+        ],
+      },
     },
   ],
 })
