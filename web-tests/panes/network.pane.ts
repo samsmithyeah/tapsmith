@@ -54,9 +54,19 @@ export class NetworkPane {
   }
 
   /** Toggle between the decoded protobuf view and the raw bytes. Only rendered
-   * for a body the decoder recognised. */
+   * for a body the decoder recognised.
+   *
+   * Addressed by testid, not by name: the JSON pretty-print toggle also reads
+   * "Raw" while pretty is on, so a name-based locator matches that button too
+   * and would silently drive the wrong control on a JSON body. */
   get decodeToggle() {
-    return this.page.getByRole("button", { name: /^(Decode|Raw)$/ })
+    return this.page.getByTestId("net-decode-toggle")
+  }
+
+  /** Toggle between pretty-printed and raw JSON. Only rendered for a JSON
+   * content type, and never alongside {@link decodeToggle}. */
+  get prettyToggle() {
+    return this.page.getByRole("button", { name: /^(Pretty|Raw)$/ })
   }
 
   get detailClose() {

@@ -398,6 +398,10 @@ test.describe("Network tab", () => {
 
       await expect(network.bodyInfo).toContainText("json")
       await expect(network.detailBody).toContainText("Buy milk")
+      // No decoder toggle at all — and the toggle that *is* here is the
+      // pretty-printer, which confusingly also reads "Raw" once it is on.
+      await expect(network.decodeToggle).toHaveCount(0)
+      await expect(network.prettyToggle).toBeVisible()
     })
   })
 })

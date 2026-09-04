@@ -719,6 +719,10 @@ function BodyViewer({ body, contentType, url, direction }: {
         {decoded && (
           <button
             class={`net-toggle${showDecoded ? ' active' : ''}`}
+            // Carries a testid because its label is not unique: the JSON
+            // pretty-print toggle below also reads "Raw" while pretty is on,
+            // and the two are indistinguishable by accessible name.
+            data-testid="net-decode-toggle"
             onClick={() => setShowDecoded(d => !d)}
           >
             {showDecoded ? 'Raw' : 'Decode'}
