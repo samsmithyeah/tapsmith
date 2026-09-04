@@ -162,6 +162,22 @@ test.describe("Detail tabs", () => {
       await expect(detailTabs.consoleTimestamps.first()).toHaveText(/^\d{2}:\d{2}:\d{2}\.\d{3}$/)
     })
 
+    test("falls back to relative when the stored time mode is not one of the two", async ({ viewer, detailTabs, page }) => {
+      // A stale or hand-edited value used to match neither pill, leaving both
+      // unlit while the list silently rendered wall-clock times.
+      await page.addInitScript(() => sessionStorage.setItem("tapsmith-console-time", "elapsed"))
+      await viewer.open({
+        events: [
+          actionEvent({ actionIndex: 0, action: "tap" }),
+          consoleEvent({ actionIndex: 0, level: "log", message: "app started", offsetMs: 1_234 }),
+        ],
+      })
+      await detailTabs.select("Console")
+
+      await expect(detailTabs.consoleTimeMode("relative")).toHaveAttribute("aria-pressed", "true")
+      await expect(detailTabs.consoleTimestamps.first()).toHaveText("+1.234s")
+    })
+
     test("sorts by a column when its header is clicked, and flips on a second click", async ({ viewer, detailTabs }) => {
       await viewer.open({
         events: [

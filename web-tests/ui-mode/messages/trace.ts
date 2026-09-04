@@ -101,3 +101,33 @@ export function group(o: {
     },
   }
 }
+
+/**
+ * A console entry. The SPA keeps these in the per-test event list that feeds
+ * the Console tab, so they arrive as a plain `completed` trace-event.
+ */
+export function consoleEntry(o: {
+  testFullName: string
+  level: "log" | "warn" | "error" | "info" | "debug"
+  message: string
+  /** Offset from the trace's base time in ms — what the Time column renders. */
+  offsetMs: number
+  source?: "test" | "device" | "daemon"
+  actionIndex?: number
+  projectName?: string
+}): TraceEventMessage {
+  return {
+    type: "trace-event",
+    testFullName: o.testFullName,
+    projectName: o.projectName,
+    lifecycle: "completed",
+    event: {
+      type: "console",
+      level: o.level,
+      message: o.message,
+      source: o.source ?? "device",
+      actionIndex: o.actionIndex ?? 0,
+      timestamp: 1_700_000_000_000 + o.offsetMs,
+    },
+  }
+}

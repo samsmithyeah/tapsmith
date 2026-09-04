@@ -901,7 +901,8 @@ html, body, #app {
 .call-value .sel-fn { color: var(--accent-dim); }
 .call-value .sel-val { color: var(--fg); }
 
-/* Log / Console tab */
+/* Log / Console tab. DetailTabs is shared with UI mode, which has its own copy of
+   these rules — mirror any change in ui-mode/styles/ui-mode.css.ts. */
 .log-entry { font-family: var(--font-mono); font-size: 11px; padding: 1px 12px; display: flex; gap: 8px; line-height: 1.6; }
 .log-time { min-width: 84px; color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; cursor: default; }
 .log-level { min-width: 40px; font-weight: 600; text-transform: uppercase; font-size: 10px; }

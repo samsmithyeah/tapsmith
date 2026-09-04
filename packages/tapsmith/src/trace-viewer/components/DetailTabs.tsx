@@ -357,9 +357,14 @@ function formatConsoleWallClock(ts: number): string {
 
 function ConsoleTab({ event, events: consoleEvents, metadata }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; events: ConsoleTraceEvent[]; metadata: TraceMetadata }) {
   const [search, setSearch] = useState('');
-  // Offsets are relative to the test start. While UI mode is still assembling
-  // a run the metadata may not carry a start time yet, so fall back to the
-  // earliest console entry (the same rule the filmstrip uses).
+  // Offsets are relative to the test start. UI mode never has one: the SPA is
+  // not told when a test began (`ui-mode/main.tsx` builds its live metadata with
+  // `startTime: 0`), so it always falls back to the earliest console entry.
+  // Offsets there are therefore relative to the first log line, which is what
+  // `docs/trace-viewer.md` documents. The filmstrip has the same no-start-time
+  // problem and takes the same fallback, but it also clamps a *present*
+  // `startTime` against its earliest event; console entries are stamped on
+  // ingestion and so never precede the test start, which is why this doesn't.
   const timeBase = useMemo(() => {
     if (metadata.startTime > 0) return metadata.startTime;
     let min = Infinity;
@@ -369,7 +374,11 @@ function ConsoleTab({ event, events: consoleEvents, metadata }: { event: ActionT
   const [levelFilter, setLevelFilter] = useState<Set<ConsoleLevel>>(new Set(LEVEL_ORDER));
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [scopeToAction, setScopeToAction] = useState(false);
-  const [timeMode, setTimeMode] = usePersistedString('tapsmith-console-time', 'relative') as [ConsoleTimeMode, (v: ConsoleTimeMode) => void];
+  // Read back through a validating narrow rather than a cast: a stale or
+  // hand-edited storage value would otherwise match neither pill, leaving both
+  // unlit while the list silently rendered wall-clock times.
+  const [storedTimeMode, setTimeMode] = usePersistedString('tapsmith-console-time', 'relative');
+  const timeMode: ConsoleTimeMode = storedTimeMode === 'absolute' ? 'absolute' : 'relative';
   const [sortColumn, setSortColumn] = useState<ConsoleSortColumn>('time');
   const [sortDirection, setSortDirection] = useState<ConsoleSortDirection>('asc');
 
