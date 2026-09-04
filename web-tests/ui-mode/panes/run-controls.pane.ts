@@ -42,6 +42,25 @@ export class RunControlsPane {
     return this.page.getByRole("status", { name: "Device connection" })
   }
 
+  /** One chip per worker (a single device is one worker). */
+  get workerChips() {
+    return this.page.getByTestId("worker-chip")
+  }
+
+  workerChip(displayName: string) {
+    return this.workerChips.filter({ hasText: displayName })
+  }
+
+  /** The short readiness word inside a chip ("ready", "preparing…", "stale"). */
+  get readinessWords() {
+    return this.page.getByTestId("worker-readiness")
+  }
+
+  /** Right-click menu on a worker chip. */
+  workerMenu(workerId: number) {
+    return this.page.getByRole("menu", { name: `Worker ${workerId} actions` })
+  }
+
   get themeSelect() {
     return this.page.getByRole("combobox", { name: "Theme" })
   }

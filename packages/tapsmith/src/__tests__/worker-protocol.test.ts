@@ -7,7 +7,10 @@ import {
   serializeRegExp,
   serializeRegExpArray,
   deserializeRegExpArray,
+  serializeConfig,
+  configFromSerialized,
 } from '../worker-protocol.js';
+import type { TapsmithConfig } from '../config.js';
 import type { TestResult, SuiteResult } from '../runner.js';
 
 describe('worker-protocol serialization', () => {
@@ -204,6 +207,58 @@ describe('worker-protocol serialization', () => {
       expect(restored.flags.split('').sort().join('')).toBe(
         original.flags.split('').sort().join(''),
       );
+    });
+  });
+
+  describe('serializeConfig / configFromSerialized', () => {
+    it('round-trips every worker-relevant key, including video and the app reset policy', () => {
+      const config: TapsmithConfig = {
+        timeout: 15_000,
+        retries: 2,
+        screenshot: 'always',
+        testMatch: ['**/*.test.ts'],
+        daemonAddress: 'localhost:1',
+        rootDir: '/proj',
+        outputDir: 'out',
+        workers: 4,
+        launchEmulators: true,
+        apk: './app.apk',
+        activity: '.Main',
+        package: 'com.example.app',
+        agentApk: './agent.apk',
+        agentTestApk: './agent-test.apk',
+        trace: { mode: 'retain-on-failure' },
+        video: 'on-first-retry',
+        platform: 'android',
+        app: './App.app',
+        iosXctestrun: './x.xctestrun',
+        simulator: 'iPhone 16',
+        resetAppDeepLink: 'app:///__reset',
+        resetAppWaitMs: 500,
+        appReset: 'restart',
+        appResetScope: 'test',
+        appResetColdEvery: 5,
+        baseURL: 'https://api.example.com',
+        extraHTTPHeaders: { Authorization: 'Bearer x' },
+        grep: [/smoke/i],
+        grepInvert: /slow/,
+      };
+
+      const back = configFromSerialized(serializeConfig(config), 'localhost:2');
+
+      // Worker-side synthetic fields: fresh daemon address, single worker, no emulator launches.
+      expect(back).toMatchObject({
+        ...config,
+        daemonAddress: 'localhost:2',
+        testMatch: [],
+        workers: 1,
+        launchEmulators: false,
+        grep: [/smoke/i],
+        grepInvert: [/slow/],
+      });
+      // Regression: the headless dispatcher used to hand-roll this object and
+      // dropped `video`, so workers never recorded video.
+      expect(back.video).toBe('on-first-retry');
     });
   });
 });

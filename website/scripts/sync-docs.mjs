@@ -59,6 +59,12 @@ const FILES = [
     desc: 'Record and inspect step-by-step test execution with screenshots, hierarchy, and network.',
   },
   {
+    src: 'warm-reset.md',
+    dest: 'guides/warm-reset.md',
+    title: 'Warm App Reset',
+    desc: 'Reset app state in under a second with @tapsmith/react-native and automatic per-test isolation.',
+  },
+  {
     src: 'watch-mode.md',
     dest: 'guides/watch-mode.md',
     title: 'Watch Mode',
@@ -229,6 +235,7 @@ const LINK_MAP = {
   'watch-and-ui-mode.md': '/guides/watch-mode/',
   'watch-mode.md': '/guides/watch-mode/',
   'ui-mode.md': '/guides/ui-mode/',
+  'warm-reset.md': '/guides/warm-reset/',
   'parallel-and-sharding.md': '/guides/parallel-and-sharding/',
   'debugging.md': '/guides/debugging/',
   'mcp-server.md': '/guides/mcp-server/',

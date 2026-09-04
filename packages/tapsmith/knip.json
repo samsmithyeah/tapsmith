@@ -3,7 +3,6 @@
   "entry": [
     "src/cli.ts",
     "src/worker-runner.ts",
-    "src/ui-mode/ui-run.ts",
     "src/ui-mode/ui-worker.ts",
     "src/ui-mode/ui-discover.ts",
     "src/index.ts",

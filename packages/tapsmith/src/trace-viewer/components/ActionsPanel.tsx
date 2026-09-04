@@ -146,6 +146,7 @@ function formatGroupName(name: string): string {
     case 'afterEach Hooks': return 'AFTER EACH';
     case 'afterAll Hooks': return 'AFTER ALL';
     case 'Test': return 'TEST BODY';
+    case 'App reset': return 'APP RESET';
     default: return name.toUpperCase();
   }
 }
@@ -193,12 +194,13 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
 
   const filterLower = filter.toLowerCase();
 
-  // Compute max duration across all actions for the heatmap
-  const maxDur = items.reduce((max, item) => {
-    if (item.kind !== 'action' || !('event' in item)) return max;
-    return Math.max(max, displayDuration(item.event));
-  }, 1);
-
+  // Sections with nothing to show (an empty lifecycle group, or one whose
+  // every action the filter hides) render no header. Groups are matched to
+  // their `group-end` by depth so nested groups count for their parents too.
+  const rowMatchesFilter = (event: ActionTraceEvent | AssertionTraceEvent): boolean =>
+    !filterLower ||
+    getLabel(event).toLowerCase().includes(filterLower) ||
+    getSelectorDisplay(event).toLowerCase().includes(filterLower);
   // Index assigned to the in-flight row — slots in right after the last
   // completed action so its actionIndex matches the global index that the
   // matching `addActionEvent` will eventually own. Auto-pin in main.tsx
@@ -209,6 +211,27 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
     || inFlightAction.label.toLowerCase().includes(filterLower)
     || inFlightSelector.toLowerCase().includes(filterLower);
   const showInFlight = !!inFlightAction && inFlightMatchesFilter;
+
+  const nonEmptyGroups = new Set<number>();
+  {
+    const open: number[] = [];
+    items.forEach((item, i) => {
+      if (item.kind === 'group-start') open.push(i);
+      else if (item.kind === 'group-end') open.pop();
+      else if (rowMatchesFilter(item.event)) for (const g of open) nonEmptyGroups.add(g);
+    });
+    // The in-flight action streams into whichever groups are still open at the
+    // tail, so its section header must show before its row completes —
+    // otherwise the first action of every group renders headless until it
+    // finishes and becomes a real row.
+    if (showInFlight) for (const g of open) nonEmptyGroups.add(g);
+  }
+
+  // Compute max duration across all actions for the heatmap
+  const maxDur = items.reduce((max, item) => {
+    if (item.kind !== 'action' || !('event' in item)) return max;
+    return Math.max(max, displayDuration(item.event));
+  }, 1);
 
   return (
     <div class="actions-panel">
@@ -243,10 +266,10 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
             <div class="actions-list" data-testid="actions-list">
               {items.map((item, i) => {
                 if (item.kind === 'group-start') {
-                  if (filterLower && !item.event.name.toLowerCase().includes(filterLower)) return null;
-                  const isLifecycle = item.event.name === 'beforeAll Hooks' || item.event.name === 'beforeEach Hooks' || item.event.name === 'afterEach Hooks' || item.event.name === 'Test';
+                  if (!nonEmptyGroups.has(i)) return null;
+                  const isLifecycle = item.event.name === 'App reset' || item.event.name === 'beforeAll Hooks' || item.event.name === 'beforeEach Hooks' || item.event.name === 'afterEach Hooks' || item.event.name === 'afterAll Hooks' || item.event.name === 'Test';
                   return (
-                    <div key={`g-${i}`} class={`group-item${isLifecycle ? ' lifecycle' : ''} act-group`}>
+                    <div key={`g-${i}`} class={`group-item${isLifecycle ? ' lifecycle' : ''} act-group`} data-testid="action-group">
                       {formatGroupName(item.event.name)}
                     </div>
                   );
@@ -282,8 +305,18 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
                   >
                     <span class={`action-icon ${iconClass}`}>{icon}</span>
                     <div class="action-details">
-                      <span class="action-name">{label}</span>
-                      <SelectorDisplay sel={event.selector} />
+                      <span class="action-name">
+                        {label}
+                        {event.type === 'action' && event.origin === 'prepared' && (
+                          <span class="action-origin-tag" data-testid="action-origin" title="Satisfied by an earlier preparation — no device work ran here">prepared</span>
+                        )}
+                        {event.type === 'action' && event.origin === 'skipped' && (
+                          <span class="action-origin-tag" data-testid="action-origin">skipped</span>
+                        )}
+                      </span>
+                      {event.type === 'action' && !event.selector && event.detail
+                        ? <span class="action-detail" data-testid="action-detail">{event.detail}</span>
+                        : <SelectorDisplay sel={event.selector} />}
                     </div>
                     <span
                       class="action-duration act-dur"
@@ -371,6 +404,12 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
             {metadata.project && <>
               <span class="metadata-label">Project</span>
               <span class="metadata-value">{metadata.project}</span>
+            </>}
+            {metadata.appReset && <>
+              <span class="metadata-label">Isolation</span>
+              <span class="metadata-value" data-testid="metadata-isolation">
+                {metadata.appReset}{metadata.appResetScope ? ` · per ${metadata.appResetScope}` : ''}
+              </span>
             </>}
             {metadata.appState && <>
               <span class="metadata-label">App State</span>

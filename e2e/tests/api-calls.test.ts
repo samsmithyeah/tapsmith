@@ -7,16 +7,15 @@
  *   npx tapsmith test tests/api-calls.test.ts --trace on
  */
 import { describe, expect, test } from "../fixtures.js"
-import { resetApp } from "../utils/app-reset.js"
+import { openScreen } from "../utils/app-reset.js"
 
 describe("API Calls screen", () => {
-  // Each test resets the app and makes real HTTP requests.
-  // A full iOS restart takes ~5s, leaving little room for network latency
-  // under the default 10s timeout.
+  // Each test navigates back to the screen and makes real HTTP requests,
+  // leaving little room for network latency under the default 10s timeout.
   test.use({ timeout: 15_000 })
 
   test.beforeEach(async ({ device, apiCallsScreen }) => {
-    await resetApp(device, "/api-calls")
+    await openScreen(device, "/api-calls")
     await expect(apiCallsScreen.heading).toBeVisible()
   })
 

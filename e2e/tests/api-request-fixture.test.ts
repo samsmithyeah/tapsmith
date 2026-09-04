@@ -10,7 +10,7 @@
  *   npx tapsmith test tests/api-request-fixture.test.ts --trace on
  */
 import { describe, expect, test } from "../fixtures.js"
-import { resetApp } from "../utils/app-reset.js"
+import { openScreen } from "../utils/app-reset.js"
 
 describe("request fixture", () => {
   test.use({ timeout: 15_000 })
@@ -57,7 +57,7 @@ describe("request fixture", () => {
 
   describe("combined device + request", () => {
     test.beforeEach(async ({ device, apiCallsScreen }) => {
-      await resetApp(device, "/api-calls")
+      await openScreen(device, "/api-calls")
       await expect(apiCallsScreen.heading).toBeVisible()
     })
 

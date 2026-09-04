@@ -1,5 +1,7 @@
 import { Link } from "expo-router"
+import { useEffect, useRef } from "react"
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native"
+import { useTapsmithResetEpoch } from "@tapsmith/react-native"
 
 const screens = [
   {
@@ -42,8 +44,18 @@ const screens = [
 ] as const
 
 export default function HomeScreen() {
+  // Component-local state (here: the scroll offset) survives the warm reset's
+  // navigation, so scroll back to the top when the reset epoch changes. An
+  // imperative reset is preferred over remounting with `key={resetEpoch}`: on
+  // Android a remounted ScrollView exposes accessibility nodes with empty
+  // bounds until the next input event, which hides its items from UIAutomator.
+  const resetEpoch = useTapsmithResetEpoch()
+  const listRef = useRef<ScrollView>(null)
+  useEffect(() => {
+    if (resetEpoch > 0) listRef.current?.scrollTo({ y: 0, animated: false })
+  }, [resetEpoch])
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView ref={listRef} style={styles.container}>
       <Text style={styles.heading} accessibilityRole="header">
         Test Screens
       </Text>

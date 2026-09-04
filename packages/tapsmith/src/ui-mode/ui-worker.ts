@@ -2,8 +2,9 @@
  * Persistent UI worker child process.
  *
  * Combines the persistent lifecycle of worker-runner.ts (init once, run
- * many files) with the real-time trace streaming of ui-run.ts. Forked
- * by the UI server when workers > 1.
+ * many files) with real-time trace streaming to the UI server. Every UI
+ * session runs through these workers — one per device; a single device is
+ * one worker that adopts the primary daemon/agent the CLI provisioned.
  *
  * @see PILOT-87
  */
@@ -14,25 +15,27 @@ import { TapsmithGrpcClient } from '../grpc-client.js';
 import { Device } from '../device.js';
 import { runTestFile, collectResults } from '../runner.js';
 import type { TapsmithConfig } from '../config.js';
-import { isPackageInstalled, waitForPackageIndexed } from '../emulator.js';
+import { installedApkMatches, isPackageInstalled, waitForPackageIndexed } from '../emulator.js';
 import { installApp, isAppInstalled, probeSimulatorHealth, rebootSimulator } from '../ios-simulator.js';
 import {
   serializeTestResult,
   serializeSuiteResult,
   isRecoverableInfrastructureError,
-  type SerializedConfig,
+  configFromSerialized,
 } from '../worker-protocol.js';
-import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from '../session-preflight.js';
+import { ensureSessionReady, executeAppReset, launchConfiguredApp, probeResetCapabilities, type SessionPreflightContext } from '../session-preflight.js';
+import type { PreparedState, ResetCapabilities } from '../app-reset.js';
 import { createActionProgressMessenger } from '../action-progress-renderer.js';
 import { isAbortError } from '../abort.js';
 import type { AnyTraceEvent } from '../trace/types.js';
-import { isNetworkTracingEnabled, networkHostsForPac } from '../trace/types.js';
+import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from '../trace/types.js';
 import { encodeNetworkBodies } from './encode-bodies.js';
 import { streamSourcesForEvent } from './source-stream.js';
 import type {
   UIWorkerMessage,
   UIWorkerChildMessage,
   UIWorkerInitMessage,
+  UIWorkerPrepareMessage,
   UIWorkerTraceEventMessage,
 } from './ui-protocol.js';
 
@@ -47,6 +50,9 @@ let screenshotDir: string | undefined;
 let ipcOpen = true;
 let currentAbortController: AbortController | undefined;
 let resolvedXctestrunPath: string | undefined;
+let resolvedAgentApkPath: string | undefined;
+let resolvedAgentTestApkPath: string | undefined;
+let resolvedIosAppPathCached: string | undefined;
 
 // ─── Helpers ───
 
@@ -63,33 +69,37 @@ function sendProgress(message: string): void {
   send({ type: 'progress', workerId, message });
 }
 
-function configFromSerialized(s: SerializedConfig, daemonAddress: string): TapsmithConfig {
-  return {
-    timeout: s.timeout,
-    retries: s.retries,
-    screenshot: s.screenshot,
-    testMatch: [],
-    daemonAddress,
-    rootDir: s.rootDir,
-    outputDir: s.outputDir,
-    apk: s.apk,
-    activity: s.activity,
-    package: s.package,
-    agentApk: s.agentApk,
-    agentTestApk: s.agentTestApk,
-    workers: 1,
-    launchEmulators: false,
-    trace: s.trace as TapsmithConfig['trace'],
-    video: s.video as TapsmithConfig['video'],
-    platform: s.platform,
-    app: s.app,
-    iosXctestrun: s.iosXctestrun,
-    simulator: s.simulator,
-    resetAppDeepLink: s.resetAppDeepLink,
-    resetAppWaitMs: s.resetAppWaitMs,
-    baseURL: s.baseURL,
-    extraHTTPHeaders: s.extraHTTPHeaders,
-  };
+/**
+ * A launch that already left the app in fresh state (startup, warmup,
+ * recovery). Handed to the next file's runner so it can skip its own reset
+ * when the declared policy is satisfied — consumed exactly once.
+ */
+let preparedDevice: PreparedState | undefined;
+/** Runtime reset capabilities (in-app hooks detected?), shared by every context this worker builds. */
+const sharedCapabilities: ResetCapabilities = {};
+/** What the server last heard (`ready` / `capabilities`); diffed after each device op. */
+let publishedCapabilities: ResetCapabilities = {};
+
+/**
+ * Tell the server when a run or preparation upgraded the shared capabilities
+ * (a reset detecting hooks the startup probe missed). The server's copy
+ * drives policy resolution for background preparation; without this it would
+ * stay a stale snapshot of `ready` and keep preparing with the wrong mode.
+ */
+function publishCapabilities(): void {
+  const keys = new Set([...Object.keys(sharedCapabilities), ...Object.keys(publishedCapabilities)]) as Set<keyof ResetCapabilities>;
+  let changed = false;
+  for (const key of keys) {
+    if (sharedCapabilities[key] !== publishedCapabilities[key]) { changed = true; break; }
+  }
+  if (!changed) return;
+  publishedCapabilities = { ...sharedCapabilities };
+  send({ type: 'capabilities', workerId, capabilities: { ...sharedCapabilities } });
+}
+function consumePreparedDevice(): PreparedState | undefined {
+  const p = preparedDevice;
+  preparedDevice = undefined;
+  return p;
 }
 
 function sessionContext(
@@ -106,10 +116,14 @@ function sessionContext(
     ? `UI Worker ${workerId} (${serial})`
     : `UI Worker ${workerId}`;
   return {
-    label, config, device, client, agentApkPath, agentTestApkPath,
+    label, config, device, client,
+    agentApkPath: agentApkPath ?? resolvedAgentApkPath,
+    agentTestApkPath: agentTestApkPath ?? resolvedAgentTestApkPath,
     iosXctestrunPath: iosXctestrunPath ?? resolvedXctestrunPath,
+    iosAppPath: resolvedIosAppPathCached,
     deviceSerial: serial,
     networkTracingEnabled: isNetworkTracingEnabled(config.trace),
+    capabilities: sharedCapabilities,
   };
 }
 
@@ -164,10 +178,16 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
 
   if (msg.deviceSerial) {
     sendProgress(`selecting device ${msg.deviceSerial}`);
+    // SetDevice resolves the serial against the daemon's last device listing.
+    // A worker that (re)connects later — a recycle, a respawn — cannot assume
+    // that listing still holds the device (an Android daemon reported
+    // "Device emulator-5554 not found. Run ListDevices first"), so refresh it.
+    await device.listDevices();
     await device.setDevice(
       msg.deviceSerial,
       isNetworkTracingEnabled(config.trace),
       networkHostsForPac(config.trace),
+      networkPassthroughHosts(config.trace),
     );
   }
 
@@ -180,16 +200,42 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
     // Non-fatal
   }
 
+  // Adopting the primary device: the CLI already installed the app, started
+  // the agent and cold-launched. Resolve the artifact paths recovery needs,
+  // verify the session, and — on the initial spawn only — hand that launch
+  // to the first file as its prepared state. A respawned worker re-adopts a
+  // daemon whose app has run tests since; claiming `clear · file` there
+  // would skip the first file's reset over the previous run's state.
+  if (msg.adoptPrimary) {
+    await resolveArtifactPaths(msg);
+    sendProgress('attaching to the primary device session');
+    await ensureSessionReady(sessionContext(msg.deviceSerial), 'UI worker adopt');
+    await probeResetCapabilities(sessionContext(msg.deviceSerial));
+    preparedDevice = msg.adoptPrepared
+      ? {
+        policy: { mode: 'clear', scope: 'file' },
+        preparedAt: Date.now(),
+        durationMs: 0,
+        source: 'startup launch',
+      }
+      : undefined;
+    finishInit();
+    return;
+  }
+
   // Install app if needed. Always reinstall on freshly-launched devices —
   // the AVD/simulator snapshot may have a stale copy of the app baked in.
   if (config.apk) {
+    const resolvedApkPath = path.resolve(config.rootDir, config.apk);
     const alreadyInstalled = !msg.freshEmulator
       && config.package
       && msg.deviceSerial
-      && isPackageInstalled(msg.deviceSerial, config.package);
+      && isPackageInstalled(msg.deviceSerial, config.package)
+      // A rebuilt APK must replace the installed one.
+      && installedApkMatches(msg.deviceSerial, config.package, resolvedApkPath) !== false;
 
     if (alreadyInstalled) {
-      sendProgress(`app ${config.package} already installed, skipping APK install`);
+      sendProgress(`app ${config.package} already installed (matching build), skipping APK install`);
     } else {
       const resolvedApk = path.resolve(config.rootDir, config.apk);
       sendProgress(`installing app APK ${path.basename(resolvedApk)}`);
@@ -225,6 +271,65 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
   }
 
   // Start agent
+  const { resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun, resolvedIosAppPath } =
+    await resolveArtifactPaths(msg);
+  sendProgress('starting Tapsmith agent');
+  await device.startAgent(
+    config.package ?? '',
+    resolvedAgentApk,
+    resolvedAgentTestApk,
+    resolvedIosXctestrun,
+    resolvedIosAppPath,
+    isNetworkTracingEnabled(config.trace),
+  );
+
+  try {
+    if (config.package) {
+      sendProgress(`launching ${config.package}`);
+      preparedDevice = await launchConfiguredApp(
+        sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
+        'UI worker startup launch',
+      );
+    } else {
+      sendProgress('validating session readiness');
+      await ensureSessionReady(
+        sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
+        'UI worker initialization',
+      );
+    }
+  } catch (err) {
+    throw new Error(
+      `UI Worker ${workerId} (${msg.deviceSerial}): ${err instanceof Error ? err.message : err}`,
+    );
+  }
+
+  // Warm up fresh emulators
+  if (msg.freshEmulator && config.package) {
+    sendProgress('warming up fresh emulator');
+    await device.waitForIdle();
+    await device.terminateApp(config.package);
+    preparedDevice = await launchConfiguredApp(
+      sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
+      'emulator warmup launch',
+    );
+    await device.waitForIdle();
+  }
+
+  finishInit();
+}
+
+/**
+ * Resolve agent APK / xctestrun / device-signed .app paths from the config,
+ * auto-detecting the xctestrun like cli.ts and worker-runner.ts do. Needed
+ * both to start the agent and (in adopt mode) for session recovery later.
+ */
+async function resolveArtifactPaths(msg: UIWorkerInitMessage): Promise<{
+  resolvedAgentApk?: string
+  resolvedAgentTestApk?: string
+  resolvedIosXctestrun?: string
+  resolvedIosAppPath?: string
+}> {
+  if (!config) throw new Error(`UI Worker ${workerId}: Not initialized`);
   const resolvedAgentApk = config.agentApk
     ? path.resolve(config.rootDir, config.agentApk)
     : undefined;
@@ -234,8 +339,6 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
   let resolvedIosXctestrun = config.iosXctestrun
     ? path.resolve(config.rootDir, config.iosXctestrun)
     : undefined;
-  // Auto-detect xctestrun if omitted, mirroring the single-worker
-  // resolution in cli.ts and the parallel-worker path in worker-runner.ts.
   if (!resolvedIosXctestrun && config.platform === 'ios' && msg.deviceSerial) {
     const { isPhysicalDevice } = await import('../ios-devicectl.js');
     const { findDeviceXctestrun, findSimulatorXctestrun } =
@@ -258,52 +361,16 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
       resolvedIosAppPath = path.resolve(config.rootDir, config.app);
     }
   }
-  sendProgress('starting Tapsmith agent');
-  await device.startAgent(
-    config.package ?? '',
-    resolvedAgentApk,
-    resolvedAgentTestApk,
-    resolvedIosXctestrun,
-    resolvedIosAppPath,
-    isNetworkTracingEnabled(config.trace),
-  );
+  resolvedAgentApkPath = resolvedAgentApk;
+  resolvedAgentTestApkPath = resolvedAgentTestApk;
+  resolvedIosAppPathCached = resolvedIosAppPath;
+  return { resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun, resolvedIosAppPath };
+}
 
-  try {
-    if (config.package) {
-      sendProgress(`launching ${config.package}`);
-      await launchConfiguredApp(
-        sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
-        'UI worker initialization',
-        { allowSoftReset: false },
-      );
-    } else {
-      sendProgress('validating session readiness');
-      await ensureSessionReady(
-        sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
-        'UI worker initialization',
-      );
-    }
-  } catch (err) {
-    throw new Error(
-      `UI Worker ${workerId} (${msg.deviceSerial}): ${err instanceof Error ? err.message : err}`,
-    );
-  }
-
-  // Warm up fresh emulators
-  if (msg.freshEmulator && config.package) {
-    sendProgress('warming up fresh emulator');
-    await device.waitForIdle();
-    await device.terminateApp(config.package);
-    await launchConfiguredApp(
-      sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
-      'warmup',
-      { allowSoftReset: false },
-    );
-    await device.waitForIdle();
-  }
-
+function finishInit(): void {
   sendProgress('ready');
-  send({ type: 'ready', workerId });
+  publishedCapabilities = { ...sharedCapabilities };
+  send({ type: 'ready', workerId, policy: preparedDevice?.policy, capabilities: { ...sharedCapabilities } });
 
   // From here on, stream slow-device-action progress (between-file preflight,
   // test.use({appState}) restore, recovery) so the UI can show "Restoring app
@@ -326,10 +393,18 @@ async function handleRunFile(
   projectUseOptions?: import('../worker-protocol.js').RunFileUseOptions,
   projectName?: string,
   testFilter?: string,
+  preparedFor?: PreparedState,
 ): Promise<void> {
   if (!config || !device) {
     throw new Error(`UI Worker ${workerId}: Not initialized`);
   }
+  // The server owns the prepared-state claim: it mirrors the startup launch
+  // into its readiness state and hands it back (or a background preparation)
+  // when it still satisfies this file's policy. It omits `preparedFor` when
+  // that claim was invalidated — a mirror gesture before the first run, a
+  // stale launch — so the launch-time record here must go too, or the runner
+  // would skip the file reset over a device the user has already touched.
+  preparedDevice = preparedFor;
 
   // Created BEFORE the between-files preflight so a stop that lands during
   // wake/unlock/app-reset is honored too — otherwise the abort IPC would be
@@ -340,17 +415,11 @@ async function handleRunFile(
 
   try {
     // Ensure the device is awake — the screen may have auto-locked while
-    // watch mode was idle waiting for file changes.
+    // watch mode was idle waiting for file changes. The between-file app
+    // reset itself is the runner's job (declared policy, recorded in the
+    // trace as fixture setup, ending with its own readiness check).
     await device.wake();
     await device.unlock();
-
-    // Reset app between files. When this scope restores a non-empty `appState`,
-    // skip the destructive clearAppData: the restore owns isolation and
-    // preserves the AndroidKeyStore (a pm clear here would wipe the keys that
-    // decrypt saved credentials, leaving the app signed out after restore).
-    if (config.package) {
-      await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`, { skipDataClear: !!projectUseOptions?.appState });
-    }
   } catch (err) {
     // Whether aborted or a genuine preflight failure, this run is over —
     // don't leave a stale controller for a later idle-state abort IPC.
@@ -412,6 +481,9 @@ async function handleRunFile(
 
   const results = collectResults(suiteResult);
 
+  // Before file-done so the server resolves the next dispatch's policy with
+  // whatever this run learned about the device.
+  publishCapabilities();
   send({
     type: 'file-done',
     workerId,
@@ -455,13 +527,23 @@ async function runFileWithRecovery(
         reporter: reporterProxy,
         bustImportCache: true,
         abortSignal,
-        onTestStart: async (fullName: string, options?: { attributionOnly?: boolean }) => {
-          send({ type: 'test-start', workerId, fullName, filePath, attributionOnly: options?.attributionOnly });
+        onTestStart: async (fullName, options) => {
+          const policy = options?.policy;
+          send({
+            type: 'test-start', workerId, fullName, filePath,
+            attributionOnly: options?.attributionOnly,
+            isolation: policy
+              ? { appReset: policy.mode, appResetScope: policy.scope, appState: policy.appState || undefined }
+              : undefined,
+          });
         },
         beforeEachTest: async (fullName: string) => {
           await ensureSessionReady(sessionContext(undefined), `before test ${fullName}`);
         },
         abortFileOnError: isRecoverableInfrastructureError,
+        sessionContext: sessionContext(undefined),
+        preparedDevice: consumePreparedDevice(),
+        resetCapabilities: sharedCapabilities,
         projectUseOptions,
         projectName,
         testFilter,
@@ -526,10 +608,9 @@ async function recoverFileSession(filePath: string, err: unknown): Promise<void>
   }
 
   if (config?.package) {
-    await launchConfiguredApp(
+    preparedDevice = await launchConfiguredApp(
       sessionContext(undefined),
       `recovery for ${path.basename(filePath)}`,
-      { allowSoftReset: false },
     );
   } else {
     await ensureSessionReady(sessionContext(undefined), `recovery for ${path.basename(filePath)}`);
@@ -546,29 +627,109 @@ function handleShutdown(): void {
 
 // ─── IPC message handler ───
 
-process.on('message', async (msg: UIWorkerMessage) => {
+// ─── Background preparation ───
+
+let currentPrepare: { prepareId: string; abort: AbortController } | undefined;
+
+/**
+ * Reset the app to `policy` while no run is in flight so the next Run click
+ * pays only a readiness check. Cooperative cancellation: a `run-file` that
+ * arrives mid-prepare aborts it (the gRPC call is cancelled through the
+ * client's abort signal) and the queue then runs the file — the run never
+ * waits for the preparation to finish.
+ */
+async function handlePrepare(msg: UIWorkerPrepareMessage): Promise<void> {
+  if (!config || !device) {
+    throw new Error(`UI Worker ${workerId}: Not initialized`);
+  }
+  const abort = new AbortController();
+  currentPrepare = { prepareId: msg.prepareId, abort };
+  device._client._setAbortSignal(abort.signal);
+  const startedAt = Date.now();
   try {
-    switch (msg.type) {
-      case 'init':
-        await handleInit(msg);
-        break;
-      case 'run-file':
-        await handleRunFile(msg.filePath, msg.projectUseOptions, msg.projectName, msg.testFilter);
-        break;
-      case 'abort':
-        currentAbortController?.abort();
-        break;
-      case 'shutdown':
-        handleShutdown();
-        break;
-    }
-  } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    process.stderr.write(`UI Worker ${workerId} error: ${error.message}\n`);
-    send({
-      type: 'error',
-      workerId,
-      error: { message: error.message, stack: error.stack },
+    await device.wake();
+    await device.unlock();
+    // The reset below mutates the device, so whatever the startup launch left
+    // behind is gone the moment it starts — cancelled or failed included. Drop
+    // the local record now; a successful preparation comes back from the
+    // server with run-file, and a failed one must not let the next run
+    // consume a stale clear·file claim over a half-restored app.
+    preparedDevice = undefined;
+    // Project-level use (appState etc.) is folded into the policy by the
+    // server; the effective config is the worker's own.
+    const report = await executeAppReset(sessionContext(undefined), msg.policy, {
+      phase: `background preparation${msg.forFile ? ` for ${path.basename(msg.forFile)}` : ''}`,
     });
+    if (abort.signal.aborted) throw new Error('preparation cancelled');
+    send({
+      type: 'prepared',
+      workerId,
+      prepareId: msg.prepareId,
+      policy: msg.policy,
+      startedAt,
+      durationMs: Date.now() - startedAt,
+      steps: report.steps.map((s) => `${s.name}: ${s.durationMs}ms${s.ok ? '' : ' (failed)'}`),
+      satisfiedBy: report.satisfiedBy,
+    });
+  } catch (err) {
+    const cancelled = abort.signal.aborted || isAbortError(err);
+    send({
+      type: 'prepare-failed',
+      workerId,
+      prepareId: msg.prepareId,
+      error: { message: err instanceof Error ? err.message : String(err) },
+      cancelled,
+    });
+  } finally {
+    device._client._setAbortSignal(undefined);
+    if (currentPrepare?.prepareId === msg.prepareId) currentPrepare = undefined;
+    publishCapabilities();
+  }
+}
+
+// ─── Message loop ───
+//
+// Device-touching operations (init, run-file) are serialized through one
+// promise chain: the IPC handler used to start each message's async work
+// concurrently, so a `run-file` arriving while a previous op was still on
+// the device raced it. `abort` and `shutdown` bypass the queue — they exist
+// to interrupt whatever the queue is doing.
+
+let opQueue: Promise<void> = Promise.resolve();
+
+function reportError(err: unknown): void {
+  const error = err instanceof Error ? err : new Error(String(err));
+  process.stderr.write(`UI Worker ${workerId} error: ${error.message}\n`);
+  send({
+    type: 'error',
+    workerId,
+    error: { message: error.message, stack: error.stack },
+  });
+}
+
+function enqueue(op: () => Promise<void>): void {
+  opQueue = opQueue.then(op, op).catch(reportError);
+}
+
+process.on('message', (msg: UIWorkerMessage) => {
+  switch (msg.type) {
+    case 'init':
+      enqueue(() => handleInit(msg));
+      break;
+    case 'run-file':
+      enqueue(() => handleRunFile(msg.filePath, msg.projectUseOptions, msg.projectName, msg.testFilter, msg.preparedFor));
+      break;
+    case 'prepare':
+      enqueue(() => handlePrepare(msg));
+      break;
+    case 'cancel-prepare':
+      if (currentPrepare?.prepareId === msg.prepareId) currentPrepare.abort.abort();
+      break;
+    case 'abort':
+      currentAbortController?.abort();
+      break;
+    case 'shutdown':
+      handleShutdown();
+      break;
   }
 });

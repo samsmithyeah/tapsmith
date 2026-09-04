@@ -3,13 +3,12 @@
  * Each section preserves the original PILOT issue ID so future regressions
  * are easy to triage.
  */
-import { beforeEach, describe, expect, test } from "tapsmith"
-import { resetApp } from "../utils/app-reset.js"
+import { describe, expect, test } from "tapsmith"
 
 describe("Selector & assertion regressions", () => {
-  beforeEach(async ({ device }) => {
-    await resetApp(device)
-  })
+  // Every test starts from the home screen and types into shared fields —
+  // genuine per-test isolation, worth ~1 s of warm reset before each test.
+  test.use({ appResetScope: "test" })
 
   // ─── PILOT-131: testId() now resolves to resource-id ───
   test("PILOT-131: testId() should find element by resource-id", async ({ device }) => {

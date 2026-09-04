@@ -18,6 +18,7 @@ import { Device } from './device.js';
 import { runTestFile, collectResults, markFileRetryFlakes, type TestResult, type SuiteResult } from './runner.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
+import type { PreparedState, ResetCapabilities } from './app-reset.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { discoverTestFiles } from './test-file-discovery.js';
@@ -35,6 +36,7 @@ import {
   preserveEmulatorsForReuse,
   filterHealthyDevices,
   isPackageInstalled,
+  installedApkMatches,
   listAdbDevices,
   waitForPackageIndexed,
   cleanupStaleEmulators,
@@ -47,8 +49,8 @@ import {
   waitForDeviceStability,
   ensureAdbRoot,
 } from './emulator.js';
-import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeRegExpArray } from './worker-protocol.js';
-import { findPidsOnPort, freeStaleAgentPort } from './port-utils.js';
+import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeConfig } from './worker-protocol.js';
+import { findPidsOnPort, freeStaleAgentPort, pickFreePort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
 import {
   createUiLaunchSteps,
@@ -362,13 +364,19 @@ function installSequentialFatalHandlers(
   process.on('unhandledRejection', (reason) => runFatalTeardown('rejection', reason));
 }
 
+/**
+ * Start (or attach to) the daemon and return the client together with the
+ * address actually used — which differs from the requested one when another
+ * live Tapsmith session already owns that port.
+ */
 async function ensureDaemonRunning(
-  address: string,
+  requestedAddress: string,
   daemonBin?: string,
   platform?: string,
   progress?: LaunchProgressSink,
-): Promise<TapsmithGrpcClient> {
-  const port = address.split(':').pop() ?? '50051';
+): Promise<{ client: TapsmithGrpcClient; address: string }> {
+  let address = requestedAddress;
+  let port = address.split(':').pop() ?? '50051';
   progress?.start('daemon', `starting tapsmith-core on ${address}`);
 
   // When TAPSMITH_REUSE_DAEMON is set (e.g. from MCP server's tapsmith_run_tests),
@@ -381,29 +389,38 @@ async function ensureDaemonRunning(
       const version = (await client.ping()).version;
       if (progress) progress.complete('daemon', `connected to existing tapsmith-core v${version}`);
       else console.log(dim(`Connected to existing Tapsmith daemon v${version}`));
-      return client;
+      return { client, address };
     }
     client.close();
     // Fall through to normal startup if no daemon is running
   }
 
-  // Kill any stale daemon on this port so we always get a fresh one
-  // with the correct --platform flag. The daemon starts in <1s so
-  // the cost of a restart is negligible.
+  // A daemon that answers on the requested port belongs to another live
+  // Tapsmith session (UI mode on the other platform, a watch, an MCP server).
+  // Killing it would break that session — and worse, its workers would then
+  // silently reconnect to *our* daemon and drive the wrong device. Start on a
+  // free port instead; the resolved address is threaded to every consumer via
+  // the config. A listener that does not answer is a stale daemon: kill it and
+  // reuse the port so the --platform flag is always the current one.
+  let sharingWithLiveSession = false;
   try {
     const probe = new TapsmithGrpcClient(address);
     const alive = await probe.waitForReady(1_000);
+    probe.close();
     if (alive) {
-      probe.close();
-      // Find and kill the process listening on this port
+      sharingWithLiveSession = true;
+      const freePort = await pickFreePort();
+      const requestedPort = requestedAddress.split(':').pop() ?? port;
+      address = `localhost:${freePort}`;
+      port = String(freePort);
+      if (progress) progress.note(`port ${requestedPort} is in use by another Tapsmith session; starting on ${address}`);
+      else console.log(dim(`Daemon port ${requestedPort} is in use by another Tapsmith session; starting on ${address}`));
+    } else {
       const pids = findPidsOnPort(port);
       for (const pid of pids) {
         try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
       }
-      // Brief wait for the port to free up
-      await new Promise((r) => setTimeout(r, 500));
-    } else {
-      probe.close();
+      if (pids.length > 0) await new Promise((r) => setTimeout(r, 500));
     }
   } catch {
     // No daemon running, nothing to kill
@@ -415,7 +432,12 @@ async function ensureDaemonRunning(
   // <remote>" — match `local === tcp:18700` exactly so we don't try to remove
   // forwards whose remote side happens to be 18700 but whose host port is not
   // (which would print "listener 'tcp:18700' not found").
-  try {
+  //
+  // Skipped entirely when another live Tapsmith session owns the requested
+  // port: its agent forward and agent process are not stale, they are that
+  // session's — sweeping them would cut it off from its device, which is
+  // exactly what starting on a free port above set out to avoid.
+  if (!sharingWithLiveSession) try {
     const fwdList = execFileSync('adb', ['forward', '--list'], { encoding: 'utf-8' }).trim();
     for (const line of fwdList.split('\n')) {
       const [serial, local] = line.split(/\s+/);
@@ -433,12 +455,14 @@ async function ensureDaemonRunning(
   // listener squatting on this port, the new daemon's `adb forward` is
   // shadowed by the stale socket and every command silently routes to the
   // wrong device — see freeStaleAgentPort for the full rationale.
-  freeStaleAgentPort(18700, progress
-    ? ({ port, pid }) => progress.update('daemon', {
-      state: 'running',
-      detail: `cleared stale agent port ${port} (pid ${pid})`,
-    })
-    : undefined);
+  if (!sharingWithLiveSession) {
+    freeStaleAgentPort(18700, progress
+      ? ({ port, pid }) => progress.update('daemon', {
+        state: 'running',
+        detail: `cleared stale agent port ${port} (pid ${pid})`,
+      })
+      : undefined);
+  }
 
   // Start a fresh daemon
   const resolvedBin = process.env.TAPSMITH_DAEMON_BIN ?? daemonBin ?? findDaemonBin();
@@ -492,7 +516,7 @@ async function ensureDaemonRunning(
   const version = (await newClient.ping()).version;
   if (progress) progress.complete('daemon', `connected to tapsmith-core v${version}`);
   else console.log(dim(`Connected to Tapsmith daemon v${version}`));
-  return newClient;
+  return { client: newClient, address };
 }
 
 // ─── Sequential per-project device setup ───
@@ -508,6 +532,14 @@ interface SequentialDeviceState {
   resolvedIosXctestrun?: string
   resolvedIosAppPath?: string
   signature: string
+  /** Reset capabilities probed after the startup launch (in-app hooks, …).
+   * One object per device, shared into every file's sessionContext so the
+   * runner resolves `appReset: 'auto'` from it and warm resets refresh it. */
+  capabilities: ResetCapabilities
+  /** What the startup launch left the app in — consumed by the first file's
+   * reset so it can skip work the launch already did. Absent when there is
+   * no package to launch. */
+  prepared?: PreparedState
 }
 
 /**
@@ -546,7 +578,9 @@ async function setupSequentialDevice(
     await checkDeviceHealth(cfg.device);
   }
 
-  const client = await ensureDaemonRunning(cfg.daemonAddress, cfg.daemonBin, cfg.platform, progress);
+  const { client, address: daemonAddress } = await ensureDaemonRunning(cfg.daemonAddress, cfg.daemonBin, cfg.platform, progress);
+  // Workers, the UI server and recovery all read the address from the config.
+  cfg.daemonAddress = daemonAddress;
   const device = new Device(client, cfg);
 
   // Tell the daemon whether this session intends to capture network traffic.
@@ -574,7 +608,11 @@ async function setupSequentialDevice(
   }
 
   const deviceJustLaunched = launchedEmulators.some((e) => e.serial === cfg.device);
-  let skipAppReset = false;
+  // Whether the startup launch may skip its clear: only when the app was
+  // installed onto a device that did not have it. A reinstall (`adb install
+  // -r`, `simctl install`, devicectl) keeps the data container.
+  let freshInstall = false;
+  let simulatorHadApp = false;
   let pendingSimulatorInstall: Promise<void> | undefined;
   let pendingInstallError: unknown;
 
@@ -665,15 +703,14 @@ async function setupSequentialDevice(
               progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)} on device` });
             }
             await installAppOnDevice(cfg.device, resolvedApp);
-            skipAppReset = true;
+            freshInstall = !alreadyInstalled;
             if (progress) progress.complete('app-install', `installed ${path.basename(resolvedApp)} on ${cfg.device}`);
             else console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS device ${cfg.device}.`));
           }
         } else {
           const { installAppAsync, isAppInstalled, installedAppMatches } = await import('./ios-simulator.js');
-          const alreadyInstalled = !deviceJustLaunched
-            && cfg.package
-            && isAppInstalled(cfg.device, cfg.package);
+          simulatorHadApp = !!cfg.package && isAppInstalled(cfg.device, cfg.package);
+          const alreadyInstalled = !deviceJustLaunched && simulatorHadApp;
           // Skip only when the installed bundle is byte-identical — simulator
           // state can outlive a run (reused CI runner device sets, local app
           // rebuilds), and a presence-only skip silently tests a stale build.
@@ -736,25 +773,32 @@ async function setupSequentialDevice(
 
     if (cfg.apk) {
       progress?.start('app-install', `checking ${path.basename(cfg.apk)}`);
-      const isInstalled = !deviceJustLaunched
-        && cfg.package
-        && cfg.device
-        && isPackageInstalled(cfg.device, cfg.package);
+      // Whether a data container may already exist is a different question
+      // from whether to (re)install: a freshly-launched AVD snapshot may hold
+      // a stale build *with* data, so it is always reinstalled — but that
+      // reinstall keeps the data, and only a true first install is "fresh".
+      const wasInstalled = !!cfg.package && !!cfg.device && isPackageInstalled(cfg.device, cfg.package);
+      const isInstalled = !deviceJustLaunched && wasInstalled;
+      // A rebuilt APK must replace the installed one — matching the iOS
+      // "installed build differs" check.
+      const buildDiffers = isInstalled && cfg.package && cfg.device
+        && installedApkMatches(cfg.device, cfg.package, path.resolve(cfg.rootDir, cfg.apk)) === false;
 
-      if (isInstalled && !forceInstall) {
-        if (progress) progress.complete('app-install', `${cfg.package} already installed`);
+      if (isInstalled && !forceInstall && !buildDiffers) {
+        if (progress) progress.complete('app-install', `${cfg.package} already installed (matching build)`);
         else console.log(dim(`App ${cfg.package} already installed, skipping APK install. Use --force-install to reinstall.`));
       } else {
         const resolvedApk = path.resolve(cfg.rootDir, cfg.apk);
         try {
           if (isInstalled) {
-            if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling ${path.basename(resolvedApk)}` });
-            else console.log(dim(`Reinstalling app APK: ${path.basename(resolvedApk)}`));
+            const why = buildDiffers ? ' (installed build differs)' : '';
+            if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling ${path.basename(resolvedApk)}${why}` });
+            else console.log(dim(`Reinstalling app APK${why}: ${path.basename(resolvedApk)}`));
           } else {
             progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApk)}` });
           }
           await device.installApk(resolvedApk);
-          skipAppReset = true;
+          freshInstall = !wasInstalled;
           if (cfg.package && cfg.device) {
             await waitForPackageIndexed(cfg.device, cfg.package);
           }
@@ -865,7 +909,7 @@ async function setupSequentialDevice(
       progress?.fail('app-install', `failed to install ${path.basename(resolvedIosAppPath ?? cfg.app!)}`);
       throw new Error(`Failed to install iOS app: ${pendingInstallError}`);
     }
-    skipAppReset = true;
+    freshInstall = !simulatorHadApp;
     if (progress) progress.complete('app-install', `installed ${path.basename(resolvedIosAppPath!)}`);
     else console.log(dim(`Installed ${path.basename(resolvedIosAppPath!)} on iOS simulator.`));
     if (cfg.package && cfg.device) {
@@ -939,10 +983,15 @@ async function setupSequentialDevice(
     throw new Error(`Failed to start agent: ${err}`);
   }
 
+  // One capabilities object per device: probeResetCapabilities (inside the
+  // launch below) fills it, and it is shared into every file's sessionContext
+  // so `appReset: 'auto'` resolves from the detected in-app hooks.
+  const capabilities: ResetCapabilities = {};
+  let prepared: PreparedState | undefined;
   if (cfg.package) {
     try {
       progress?.start('app-launch', `launching ${cfg.package}`);
-      await launchConfiguredApp({
+      prepared = await launchConfiguredApp({
         label: `Device ${cfg.device}`,
         config: cfg,
         device,
@@ -953,7 +1002,8 @@ async function setupSequentialDevice(
         iosAppPath: resolvedIosAppPath,
         deviceSerial: cfg.device,
         networkTracingEnabled,
-      }, 'startup', { allowSoftReset: false, readinessAttempts: 3, skipAppReset });
+        capabilities,
+      }, 'startup launch', { readinessAttempts: 3, freshInstall });
       if (progress) progress.complete('app-launch', `launched ${cfg.package}`);
       else console.log(dim(`Launched ${cfg.package}`));
     } catch (err) {
@@ -975,6 +1025,8 @@ async function setupSequentialDevice(
     resolvedIosXctestrun,
     resolvedIosAppPath,
     signature,
+    capabilities,
+    prepared,
   };
 }
 
@@ -1454,40 +1506,6 @@ interface PerProjectProvisionResult {
 }
 
 /**
- * Build a SerializedConfig from a TapsmithConfig (a per-bucket effective config).
- */
-function buildSerializedConfig(cfg: TapsmithConfig): import('./worker-protocol.js').SerializedConfig {
-  return {
-    timeout: cfg.timeout,
-    retries: cfg.retries,
-    screenshot: cfg.screenshot,
-    rootDir: cfg.rootDir,
-    outputDir: cfg.outputDir,
-    apk: cfg.apk,
-    activity: cfg.activity,
-    package: cfg.package,
-    agentApk: cfg.agentApk,
-    agentTestApk: cfg.agentTestApk,
-    trace: typeof cfg.trace === 'string' || typeof cfg.trace === 'object'
-      ? cfg.trace
-      : undefined,
-    video: typeof cfg.video === 'string' || typeof cfg.video === 'object'
-      ? cfg.video
-      : undefined,
-    platform: cfg.platform,
-    app: cfg.app,
-    iosXctestrun: cfg.iosXctestrun,
-    simulator: cfg.simulator,
-    resetAppDeepLink: cfg.resetAppDeepLink,
-    resetAppWaitMs: cfg.resetAppWaitMs,
-    baseURL: cfg.baseURL,
-    extraHTTPHeaders: cfg.extraHTTPHeaders,
-    grep: serializeRegExpArray(normalizeGrep(cfg.grep)),
-    grepInvert: serializeRegExpArray(normalizeGrep(cfg.grepInvert)),
-  };
-}
-
-/**
  * Provision devices for a single bucket using its effective config and a
  * fixed worker count. Returns the device serials successfully provisioned
  * (may be fewer than requested if hardware constraints prevent it).
@@ -1670,7 +1688,7 @@ async function provisionPerProjectDevices(
     const { signature, bucketEffective, provisioned } = outcome;
     result.launched.push(...provisioned.launched);
     result.reusedSimulatorCount += provisioned.reusedSimulatorCount;
-    const bucketSerialized = buildSerializedConfig(bucketEffective);
+    const bucketSerialized = serializeConfig(bucketEffective);
     for (const serial of provisioned.serials) {
       result.deviceSerials.push(serial);
       result.configByDevice.set(serial, bucketSerialized);
@@ -2387,8 +2405,18 @@ async function main(): Promise<void> {
         launchedEmulators = [...launchedEmulators, ...uiProvision.launched];
         if (uiDeviceSerials) uiWorkersOverride = config.workers;
       }
-      if (!uiDeviceSerials || uiDeviceSerials.length <= 1) {
-        launchProgress?.skip('ui-workers', 'single-worker UI session');
+      // Every UI session runs through persistent workers. With one device the
+      // single worker adopts the primary daemon/agent set up above, so the
+      // server always gets a serial list to build workers from.
+      if (!uiDeviceSerials || uiDeviceSerials.length === 0) {
+        if (!config.device) {
+          throw new Error(
+            'UI mode: no device selected after setup — the primary device setup should have set config.device. ' +
+              'Re-run with a --device/serial, or report this as a bug.',
+          );
+        }
+        uiDeviceSerials = [config.device];
+        uiWorkersOverride = 1;
       }
 
       const uiServer = await startUIServer({
@@ -2397,7 +2425,10 @@ async function main(): Promise<void> {
         device,
         client,
         deviceSerial: config.device!,
-        daemonAddress: config.daemonAddress,
+        // The primary setup may have moved the daemon to a free port; that
+        // landed on the project's effective config (a copy when any project
+        // declares `use`), not on `config`.
+        daemonAddress: currentSequentialState?.effectiveConfig.daemonAddress ?? config.daemonAddress,
         testFiles,
         screenshotDir: uiScreenshotDir,
         launchedEmulators,
@@ -2465,10 +2496,17 @@ async function main(): Promise<void> {
         device,
         client,
         deviceSerial: config.device!,
-        daemonAddress: config.daemonAddress,
+        // The primary setup may have moved the daemon to a free port; that
+        // landed on the project's effective config (a copy when any project
+        // declares `use`), not on `config`.
+        daemonAddress: currentSequentialState?.effectiveConfig.daemonAddress ?? config.daemonAddress,
         testFiles,
         screenshotDir: watchScreenshotDir,
         launchedEmulators,
+        // The startup launch already probed for in-app hooks into this shared
+        // object; watch-run children seed from it and report back, so warm
+        // per-policy resets survive the fresh-child-per-run boundary.
+        resetCapabilities: currentSequentialState?.capabilities ?? {},
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
         workers: watchWorkersOverride,
@@ -2573,72 +2611,14 @@ async function main(): Promise<void> {
         // when projects override device-shaping fields via `use:`.
         const projectConfig = currentSequentialState?.effectiveConfig ?? config;
 
-        let isFirstFileInProject = true;
         for (const file of project.testFiles) {
-          // Skip the file-level reset when the project has appState — the
-          // runner's suite-level restoreAppState + restartApp will handle
-          // the transition, making a prior launchConfiguredApp redundant.
-          const projectHasAppState = !!(project.use?.appState);
-          if (fileIndex > 0 && projectConfig.package
-            && !(isFirstFileInProject && projectHasAppState)) {
-            const resetCtx: import('./session-preflight.js').SessionPreflightContext = {
-              label: `Device ${projectConfig.device}`,
-              config: projectConfig,
-              device: device!,
-              client: client!,
-              agentApkPath: resolvedAgentApk,
-              agentTestApkPath: resolvedAgentTestApk,
-              iosXctestrunPath: resolvedIosXctestrun,
-              iosAppPath: resolvedIosAppPath,
-              deviceSerial: projectConfig.device,
-              networkTracingEnabled: isNetworkTracingEnabled(projectConfig.trace),
-            };
-            let resetOk = false;
-            try {
-              // For appState projects, skip the destructive clearAppData (pm
-              // clear) — the suite-level restoreAppState owns isolation and
-              // preserves the AndroidKeyStore key that decrypts saved creds.
-              await launchConfiguredApp(resetCtx, `reset before ${path.basename(file)}`, { skipDataClear: projectHasAppState });
-              const pong = await client!.ping();
-              if (!pong.agentConnected) {
-                throw new Error('Not connected to agent after app reset');
-              }
-              resetOk = true;
-            } catch (err) {
-              if (isRecoverableInfrastructureError(err)) {
-                process.stderr.write(
-                  dim(`Recovering session after reset failure before ${path.basename(file)}: ${err instanceof Error ? err.message : String(err)}\n`),
-                );
-                try {
-                  await launchConfiguredApp(resetCtx, `recovery for reset before ${path.basename(file)}`, { allowSoftReset: false, skipDataClear: projectHasAppState });
-                  const recoveryPong = await client!.ping();
-                  if (recoveryPong.agentConnected) {
-                    resetOk = true;
-                  }
-                } catch {
-                  // Hard recovery also failed — fall through to skip
-                }
-              } else {
-                console.error(red(`Failed to reset app between test files: ${err}`));
-              }
-            }
-            if (!resetOk) {
-              console.error(red(`Failed to reset app before ${path.basename(file)}, skipping file.`));
-              reporter.onTestFileStart(file);
-              const skippedResult: TestResult = {
-                name: path.basename(file),
-                fullName: path.basename(file),
-                status: 'skipped',
-                durationMs: 0,
-                project: project.name,
-              };
-              allResults.push(skippedResult);
-              reporter.onTestFileEnd(file, [skippedResult]);
-              sequentialExitCode = 1;
-              projectFailed = true;
-              continue;
-            }
-          }
+          // The between-file app reset is the runner's job (declared policy,
+          // recorded in the trace as fixture setup). The first file after a
+          // device launch inherits what that launch actually did as its
+          // prepared state — never a hand-built claim.
+          const preparedDevice: PreparedState | undefined = fileIndex === 0
+            ? currentSequentialState?.prepared
+            : undefined;
 
           reporter.onTestFileStart(file);
 
@@ -2654,11 +2634,13 @@ async function main(): Promise<void> {
             projectName: projectLabel(project),
             projectGrep: projectGrepRe.length > 0 ? projectGrepRe : undefined,
             projectGrepInvert: projectGrepInvertRe.length > 0 ? projectGrepInvertRe : undefined,
+            preparedDevice,
             sessionContext: {
               label: `Device ${projectConfig.device}`,
               config: projectConfig,
               device: device!,
               client: client!,
+              capabilities: currentSequentialState?.capabilities ?? {},
               agentApkPath: resolvedAgentApk,
               agentTestApkPath: resolvedAgentTestApk,
               iosXctestrunPath: resolvedIosXctestrun,
@@ -2673,7 +2655,6 @@ async function main(): Promise<void> {
 
           reporter.onTestFileEnd(file, fileResults);
           fileIndex++;
-          isFirstFileInProject = false;
 
           if (fileResults.some((r) => r.status === 'failed')) {
             projectFailed = true;
@@ -2747,11 +2728,13 @@ async function runTestFileWithRecovery(
     projectGrep?: RegExp[]
     projectGrepInvert?: RegExp[]
     sessionContext: import('./session-preflight.js').SessionPreflightContext
+    preparedDevice?: PreparedState
   },
 ): Promise<SuiteResult> {
   const grep = normalizeGrep(opts.config.grep);
   const grepInvert = normalizeGrep(opts.config.grepInvert);
   let firstAttemptSuite: SuiteResult | undefined;
+  let recoveredPrepared: PreparedState | undefined;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const suite = await runTestFile(file, {
@@ -2786,6 +2769,11 @@ async function runTestFileWithRecovery(
           }
         },
         abortFileOnError: isRecoverableInfrastructureError,
+        sessionContext: opts.sessionContext,
+        resetCapabilities: opts.sessionContext.capabilities ?? {},
+        // Only the first attempt can reuse the pre-launch state; a retry
+        // follows a recovery relaunch, which is itself a fresh `clear`.
+        preparedDevice: attempt === 1 ? opts.preparedDevice : recoveredPrepared,
         // In-process retries need the same ESM cache busting as worker
         // retries; otherwise import() returns the cached module and the
         // retry registers no tests.
@@ -2824,7 +2812,7 @@ async function runTestFileWithRecovery(
       process.stderr.write(
         dim(`Recovering session after infrastructure error in ${path.basename(file)}: ${infraFailure.error?.message ?? 'unknown'}\n`),
       );
-      await launchConfiguredApp(opts.sessionContext, `recovery for ${path.basename(file)}`, { allowSoftReset: false });
+      recoveredPrepared = await launchConfiguredApp(opts.sessionContext, `recovery for ${path.basename(file)}`);
     } catch (err) {
       if (!isRecoverableInfrastructureError(err) || attempt === 2) {
         // If the retry itself crashed, return the first attempt's results
@@ -2835,7 +2823,7 @@ async function runTestFileWithRecovery(
       process.stderr.write(
         dim(`Recovering session after infrastructure error in ${path.basename(file)}: ${err instanceof Error ? err.message : err}\n`),
       );
-      await launchConfiguredApp(opts.sessionContext, `recovery for ${path.basename(file)}`, { allowSoftReset: false });
+      recoveredPrepared = await launchConfiguredApp(opts.sessionContext, `recovery for ${path.basename(file)}`);
     }
   }
   // Unreachable — loop always returns or throws

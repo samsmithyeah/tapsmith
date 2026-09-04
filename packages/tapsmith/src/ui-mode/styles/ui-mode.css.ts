@@ -456,6 +456,12 @@ html, body, #app {
 .rc-dot.done { background: var(--pass); }
 .rc-dot.initializing { background: var(--color-warning); }
 .rc-dot.error { background: var(--fail); }
+.rc-dot.ready { background: var(--pass); }
+.rc-dot.preparing { background: var(--color-warning); animation: pulse 1.2s infinite; }
+.rc-dot.stale { background: var(--fg-muted); }
+.rc-dot.unprepared { background: transparent; box-shadow: inset 0 0 0 1.5px var(--fg-muted); }
+.rc-readiness { font-size: 10px; color: var(--fg-muted); margin-left: 4px; font-variant-numeric: tabular-nums; }
+.rc-context-item[aria-checked] { font-variant-numeric: tabular-nums; }
 
 .rc-theme-select {
   padding: 3px 6px;
@@ -790,6 +796,7 @@ html, body, #app {
 .te-deps { font-size: 10px; color: var(--fg-muted); font-style: italic; flex-shrink: 0; margin-right: 4px; }
 
 .te-duration { font-size: 10px; color: var(--fg-muted); font-family: var(--font-mono); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.te-isolation { font-size: 9.5px; color: var(--fg-muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 5px; margin-right: 6px; flex-shrink: 0; letter-spacing: 0.02em; line-height: 14px; }
 
 .te-actions {
   position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
@@ -1520,6 +1527,8 @@ html, body, #app {
 .action-item.selected .action-icon { background: var(--bg-elev-2); color: var(--fg-dim); border-color: var(--border); }
 .action-icon.assert.failed, .action-icon.failed { color: var(--fail); }
 .action-name { font-size: 12.5px; font-weight: 500; color: var(--fg); white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.action-detail { font-size: 11px; color: var(--fg-muted, var(--fg-dim, #888)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.action-origin-tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; padding: 1px 5px; border-radius: 999px; border: 1px solid var(--border, #444); color: var(--fg-muted, var(--fg-dim, #888)); }
 .action-item.failed .action-name { color: var(--fail); }
 .action-selector-text {
   font-family: var(--font-mono);
@@ -1864,7 +1873,12 @@ html, body, #app {
 .timeline-thumb:hover { opacity: 1; border-color: var(--border-strong); }
 .timeline-thumb.selected { opacity: 1; border-color: var(--accent); box-shadow: 0 0 0 2px oklch(0.78 0.15 var(--accent-h) / 0.2); }
 .timeline-thumb.failed { opacity: 1; border-color: var(--fail); border-width: 2px; box-shadow: 0 0 0 2px oklch(0.68 0.2 25 / 0.2); }
-.timeline-placeholder { width: 40px; height: calc(var(--filmstrip-h, 130px) - 40px); border-radius: 5px; background: var(--bg-elev-2); border: 1.5px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--fg-muted); flex-shrink: 0; cursor: pointer; transition: all 0.12s; }
+/* The placeholder also carries .film-thumb, whose width: auto would otherwise win by source order
+   and collapse the box to its label. The compound selector keeps our sizing regardless of order; the
+   aspect ratio matches a phone screenshot so the box sits flush with its neighbouring thumbnails.
+   Thumbnails are border-box images whose ratio applies to the content area, so the placeholder uses
+   content-box with the 3px of border taken off its height to land on identical outer dimensions. */
+.timeline-placeholder, .film-thumb.timeline-placeholder { box-sizing: content-box; width: auto; aspect-ratio: 9 / 19.5; height: calc(var(--filmstrip-h, 130px) - 40px - 3px); border-radius: 5px; background: var(--bg-elev-2); border: 1.5px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--fg-muted); flex-shrink: 0; cursor: pointer; transition: all 0.12s; }
 .timeline-placeholder:hover { border-color: var(--border-strong); }
 .timeline-placeholder.selected { border-color: var(--accent); box-shadow: 0 0 0 2px oklch(0.78 0.15 var(--accent-h) / 0.2); }
 .timeline-time-label { position: absolute; transform: translateX(-50%); font-variant-numeric: tabular-nums; }
@@ -2078,6 +2092,10 @@ html, body, #app {
   color: var(--fg);
   font-weight: 500;
 }
+.rc-mcp-client.listening {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
 
 /* ─── MCP Panel ─── */
 
@@ -2254,6 +2272,11 @@ html, body, #app {
   animation: mcp-pulse 1.5s ease-in-out infinite;
 }
 .mcp-in-progress { font-style: italic; }
+.mcp-subtitle { font-size: 10px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-left: 6px; }
+.activity-kind { font-size: 9.5px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-left: 6px; }
+.mcp-entry.cancelled { opacity: 0.6; }
+.activity-entry.activity-prepare .mcp-tool { color: var(--accent); }
+.activity-entry.activity-mirror .mcp-tool { color: var(--fg-muted); }
 @keyframes mcp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
 .mcp-entry-detail {
@@ -2300,6 +2323,52 @@ html, body, #app {
 .mcp-setup {
   text-align: left;
 }
+/* Segmented source filter (All | Agent | Device) for the merged feed. */
+.mcp-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+.mcp-filter-btn {
+  font-size: 10px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.mcp-filter-btn:hover { color: var(--fg); }
+.mcp-filter-btn.active {
+  background: var(--bg-active);
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+.mcp-filter-hidden {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+
+/* The connect hint pinned between the header and the feed while no agent is
+   attached — the feed itself is rarely empty (background preparation writes
+   rows), so the hint cannot live in the empty state alone. Collapsed to a
+   single disclosure line so the feed keeps the panel's height. */
+.mcp-setup-pinned {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.mcp-setup-pinned > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-weight: 600;
+  user-select: none;
+}
+.mcp-setup-pinned > summary:hover { color: var(--fg); }
+.mcp-setup-pinned[open] > summary { margin-bottom: 8px; }
 .mcp-setup-title {
   font-weight: 600;
   color: var(--fg);

@@ -1,9 +1,9 @@
 import { beforeAll, describe, expect, test } from "tapsmith"
-import { resetApp } from "../utils/app-reset.js"
+import { openScreen } from "../utils/app-reset.js"
 
 describe("getByRole state options", () => {
   beforeAll(async ({ device }) => {
-    await resetApp(device, "/toggles")
+    await openScreen(device, "/toggles")
     await expect(device.getByText("Switches", { exact: true })).toBeVisible()
   })
 

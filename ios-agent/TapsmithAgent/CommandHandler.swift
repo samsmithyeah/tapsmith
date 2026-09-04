@@ -152,6 +152,128 @@ class CommandHandler {
         return false
     }
 
+    enum HooksEpochOutcome {
+        case acknowledged(UInt64)
+        case hookError(String)
+        case timedOut
+    }
+
+    /// Parse the `@tapsmith/react-native` marker
+    /// (`tapsmith-hooks:<v>;epoch=<n>;url=<prefix>[;err=<msg>]`) out of a
+    /// snapshot, if the app renders one.
+    private func hooksMarker(
+        in snapshot: XCUIElementSnapshot
+    ) -> (epoch: UInt64, nav: UInt64?, boot: String?, err: String?)? {
+        let candidates = [snapshot.label, snapshot.identifier, String(describing: snapshot.value ?? "")]
+        for text in candidates {
+            guard let range = text.range(of: "tapsmith-hooks:") else { continue }
+            let body = text[range.upperBound...]
+            let fields = body.split(separator: ";")
+            // A different protocol version has unknown semantics — treat it as
+            // no marker (same rule as the daemon and SDK parsers).
+            guard let version = fields.first, version == "1" else { continue }
+            var epoch: UInt64?
+            var nav: UInt64?
+            var boot: String?
+            var err: String?
+            for field in fields.dropFirst() {
+                let parts = field.split(separator: "=", maxSplits: 1).map(String.init)
+                guard parts.count == 2 else { continue }
+                if parts[0] == "epoch" { epoch = UInt64(parts[1]) }
+                if parts[0] == "nav" { nav = UInt64(parts[1]) }
+                if parts[0] == "boot", !parts[1].isEmpty { boot = parts[1] }
+                if parts[0] == "err", !parts[1].isEmpty {
+                    err = parts[1].removingPercentEncoding ?? parts[1]
+                }
+            }
+            if let epoch { return (epoch, nav, boot, err) }
+        }
+        for child in snapshot.children {
+            if let found = hooksMarker(in: child) { return found }
+        }
+        return nil
+    }
+
+    /// The in-app hooks acknowledged a plain navigation deep link when the
+    /// marker's `nav` counter (bumped for every URL the process receives)
+    /// advanced past the value read before delivery — or, on a fresh process
+    /// (`boot` changed), reports any nav ≥ 1 (the launch URL was handled).
+    private func waitForHooksNav(
+        _ app: XCUIApplication,
+        greaterThan navBefore: UInt64,
+        bootBefore: String?,
+        timeout: TimeInterval
+    ) -> Bool {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            if self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.0) {
+                // Dialog accepted — re-check on the next iteration.
+            } else {
+                var acknowledged = false
+                _ = ObjCExceptionCatcher.catchException {
+                    guard let snapshot = try? app.snapshot(),
+                          let marker = self.hooksMarker(in: snapshot),
+                          let nav = marker.nav else { return }
+                    if let bootBefore, let boot = marker.boot, boot != bootBefore {
+                        acknowledged = nav >= 1
+                    } else {
+                        acknowledged = nav > navBefore
+                    }
+                }
+                if acknowledged { return true }
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return false
+    }
+
+    /// Wait until the in-app hooks marker reports an epoch greater than
+    /// `epochBefore` — the ack that a declared reset actually ran.
+    /// The in-app hook acknowledged a reset when its epoch advanced past the
+    /// value read before the request — or, when the marker's per-process
+    /// `boot` token changed (the app was relaunched, so the counter restarted
+    /// at 0), when the fresh process reports any epoch ≥ 1.
+    private func hooksAcknowledged(
+        epoch: UInt64, boot: String?, epochBefore: UInt64, bootBefore: String?
+    ) -> Bool {
+        if let bootBefore, let boot, boot != bootBefore { return epoch >= 1 }
+        return epoch > epochBefore
+    }
+
+    private func waitForHooksEpoch(
+        _ app: XCUIApplication,
+        greaterThan epochBefore: UInt64,
+        bootBefore: String?,
+        timeout: TimeInterval
+    ) -> HooksEpochOutcome {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            if self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.0) {
+                // Dialog accepted — re-check on the next iteration.
+            } else {
+                var outcome: HooksEpochOutcome?
+                _ = ObjCExceptionCatcher.catchException {
+                    guard let snapshot = try? app.snapshot(),
+                          let marker = self.hooksMarker(in: snapshot),
+                          self.hooksAcknowledged(
+                              epoch: marker.epoch, boot: marker.boot,
+                              epochBefore: epochBefore, bootBefore: bootBefore
+                          ) else { return }
+                    if let err = marker.err {
+                        outcome = .hookError(err)
+                    } else {
+                        outcome = .acknowledged(marker.epoch)
+                    }
+                }
+                if let outcome { return outcome }
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return .timedOut
+    }
+
     /// Wait for the UI hierarchy to change from its pre-deep-link state after
     /// a warm in-process delivery (`XCUIApplication.open(url:)` to an
     /// already-running app).
@@ -1462,6 +1584,16 @@ class CommandHandler {
             // remaining prompt and rebinds once the target app is foreground.
             let deliverInProcess = params["deliverInProcess"] as? Bool ?? true
             let requireUiChange = params["requireUiChange"] as? Bool ?? false
+            // Declared app resets are acknowledged by the @tapsmith/react-native
+            // marker's epoch advancing past this value, instead of the
+            // hierarchy-change heuristic (which cannot tell a same-screen reset
+            // from a dropped Linking event).
+            let ackEpochGreaterThan = (params["ackEpochGreaterThan"] as? NSNumber)?.uint64Value
+            // Plain navigation links are acknowledged by the marker's `nav`
+            // counter — even a link to the screen already showing advances it,
+            // where the hierarchy-change heuristic can only time out.
+            let ackNavGreaterThan = (params["ackNavGreaterThan"] as? NSNumber)?.uint64Value
+            let ackBootBefore = params["ackBootBefore"] as? String
             let targetApp = XCUIApplication(bundleIdentifier: bundleId)
             _ = safeAppState(targetApp)
             QuiescenceDisabler.disable(for: targetApp)
@@ -1498,6 +1630,45 @@ class CommandHandler {
                     targetApp.open(url)
                 }
 
+                if let epochBefore = ackEpochGreaterThan {
+                    let outcome = waitForHooksEpoch(targetApp, greaterThan: epochBefore, bootBefore: ackBootBefore, timeout: 8.0)
+                    switch outcome {
+                    case .acknowledged(let epoch):
+                        if displayAppearsBlack() {
+                            throw AgentError.actionFailed(
+                                "openDeepLink: display is not rendering after warm "
+                                    + "in-process delivery of \(urlString)"
+                            )
+                        }
+                        _ = rebindApp(bundleId: bundleId)
+                        return ["success": true, "epochAfter": epoch]
+                    case .hookError(let message):
+                        throw AgentError.actionFailed("openDeepLink: in-app reset reported an error: \(message)")
+                    case .timedOut:
+                        throw AgentError.actionFailed(
+                            "openDeepLink: in-app reset did not acknowledge (epoch > \(epochBefore)) "
+                                + "after warm in-process delivery of \(urlString)"
+                        )
+                    }
+                }
+
+                if let navBefore = ackNavGreaterThan {
+                    if waitForHooksNav(targetApp, greaterThan: navBefore, bootBefore: ackBootBefore, timeout: 8.0) {
+                        if displayAppearsBlack() {
+                            throw AgentError.actionFailed(
+                                "openDeepLink: display is not rendering after warm "
+                                    + "in-process delivery of \(urlString)"
+                            )
+                        }
+                        _ = rebindApp(bundleId: bundleId)
+                        return ["success": true]
+                    }
+                    throw AgentError.actionFailed(
+                        "openDeepLink: navigation was not acknowledged (nav > \(navBefore)) "
+                            + "after warm in-process delivery of \(urlString)"
+                    )
+                }
+
                 if let before = preOpenHierarchy {
                     if waitForDeepLinkNavigation(targetApp, before: before, timeout: 5.0) {
                         // The hierarchy check can pass against a display that
@@ -1531,6 +1702,30 @@ class CommandHandler {
                     throw AgentError.actionFailed(
                         "openDeepLink: display is not rendering after cold "
                             + "delivery of \(urlString)"
+                    )
+                }
+                // A cold-delivered declared reset still has to be acknowledged
+                // by the in-app hook — rendered content alone is what the
+                // hierarchy heuristic could not trust.
+                if let epochBefore = ackEpochGreaterThan {
+                    switch waitForHooksEpoch(targetApp, greaterThan: epochBefore, bootBefore: ackBootBefore, timeout: 8.0) {
+                    case .acknowledged(let epoch):
+                        _ = rebindApp(bundleId: bundleId)
+                        return ["success": true, "epochAfter": epoch]
+                    case .hookError(let message):
+                        throw AgentError.actionFailed("openDeepLink: in-app reset reported an error: \(message)")
+                    case .timedOut:
+                        throw AgentError.actionFailed(
+                            "openDeepLink: in-app reset did not acknowledge (epoch > \(epochBefore)) "
+                                + "after cold delivery of \(urlString)"
+                        )
+                    }
+                }
+                if let navBefore = ackNavGreaterThan,
+                   !waitForHooksNav(targetApp, greaterThan: navBefore, bootBefore: ackBootBefore, timeout: 8.0) {
+                    throw AgentError.actionFailed(
+                        "openDeepLink: navigation was not acknowledged (nav > \(navBefore)) "
+                            + "after cold delivery of \(urlString)"
                     )
                 }
                 _ = rebindApp(bundleId: bundleId)

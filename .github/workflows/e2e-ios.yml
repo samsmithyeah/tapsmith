@@ -182,16 +182,34 @@ jobs:
         with:
           path: e2e/fixtures/TapsmithTestApp.app
           key: test-app-ios-${{ hashFiles('test-app/app/**', 'test-app/assets/**',
-            'test-app/package-lock.json', 'test-app/app.json') }}
+            'test-app/package-lock.json', 'test-app/app.json',
+            'test-app/metro.config.js',
+            'packages/tapsmith-react-native/src/**',
+            'packages/tapsmith-react-native/package.json',
+            'packages/tapsmith-react-native/tsconfig*.json') }}
 
       - uses: actions/setup-node@v4
         if: steps.test-app-cache.outputs.cache-hit != 'true'
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            test-app/package-lock.json
+            packages/tapsmith-react-native/package-lock.json
+
+      - name: Build @tapsmith/react-native (test-app dependency)
+        if: steps.test-app-cache.outputs.cache-hit != 'true'
+        working-directory: packages/tapsmith-react-native
+        run: |
+          npm ci
+          npm run build
 
       - name: Install dependencies and prebuild
         if: steps.test-app-cache.outputs.cache-hit != 'true'
         working-directory: test-app
+        env:
+          # Release builds strip __DEV__; the flag keeps the in-app reset hooks on.
+          EXPO_PUBLIC_TAPSMITH_HOOKS: "1"
         run: |
           npm ci --legacy-peer-deps
           npx expo prebuild --platform ios
@@ -204,6 +222,8 @@ jobs:
       - name: Build for iOS Simulator
         if: steps.test-app-cache.outputs.cache-hit != 'true'
         working-directory: test-app/ios
+        env:
+          EXPO_PUBLIC_TAPSMITH_HOOKS: "1"
         run: |
           xcodebuild build \
             -workspace TapsmithTestApp.xcworkspace \
@@ -324,7 +344,11 @@ jobs:
         with:
           path: e2e/fixtures/TapsmithTestApp.app
           key: test-app-ios-${{ hashFiles('test-app/app/**', 'test-app/assets/**',
-            'test-app/package-lock.json', 'test-app/app.json') }}
+            'test-app/package-lock.json', 'test-app/app.json',
+            'test-app/metro.config.js',
+            'packages/tapsmith-react-native/src/**',
+            'packages/tapsmith-react-native/package.json',
+            'packages/tapsmith-react-native/tsconfig*.json') }}
 
       - name: Download test app
         if: steps.test-app-cache.outputs.cache-hit != 'true'
@@ -410,7 +434,10 @@ jobs:
           path: ${{ env.AUTH_STATE_ARCHIVE }}
           key: auth-state-ios-${{ env.AUTH_STATE_CACHE_VERSION }}-${{
             hashFiles('test-app/app/**', 'test-app/assets/**',
-            'test-app/package-lock.json', 'test-app/app.json') }}-${{
+            'test-app/package-lock.json', 'test-app/app.json',
+            'test-app/metro.config.js', 'packages/tapsmith-react-native/src/**',
+            'packages/tapsmith-react-native/package.json',
+            'packages/tapsmith-react-native/tsconfig*.json') }}-${{
             hashFiles('e2e/tests/auth.setup.ts', 'e2e/fixtures.ts', 'e2e/screens/**') }}
 
       - name: Wait for simulator boot

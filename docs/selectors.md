@@ -282,3 +282,4 @@ export default [
 | `tapsmith/prefer-role` | warn | Suggests `getByRole()` instead of `locator({ className })` for standard Android widgets. |
 | `tapsmith/no-bare-locator-xpath` | error | Requires an explanatory comment when using `locator({ xpath })`. |
 | `tapsmith/prefer-accessible-selectors` | warn | Suggests accessible getters instead of `getByTestId()` or `locator({ id })`. |
+| `tapsmith/prefer-app-reset-option` | warn | Suggests `test.use({ appReset, appResetScope })` when a `beforeEach` only restarts or clears the app. |

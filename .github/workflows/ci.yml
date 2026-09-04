@@ -234,7 +234,15 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: test-app/package-lock.json
+          cache-dependency-path: |
+            test-app/package-lock.json
+            packages/tapsmith-react-native/package-lock.json
+
+      - name: Build @tapsmith/react-native (test-app dependency)
+        working-directory: packages/tapsmith-react-native
+        run: |
+          npm ci
+          npm run build
 
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
@@ -250,6 +258,36 @@ jobs:
 
       - name: Unused code check (knip)
         run: npm run knip
+
+  react-native:
+    name: React Native hooks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/tapsmith-react-native
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: packages/tapsmith-react-native/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
 
   ui-web:
     name: Web Tests

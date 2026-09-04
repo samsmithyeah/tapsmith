@@ -110,42 +110,58 @@ describe("Login screen", () => {
 
 ## Test isolation
 
-Tests must not depend on each other. Each test should start from a known state and leave the device in a state that does not affect subsequent tests. Tapsmith provides several mechanisms for resetting state.
+Tests must not depend on each other. Each test should start from a known state and leave the device in a state that does not affect subsequent tests.
 
-### `beforeEach` with `restartApp()`
+Tapsmith resets the app for you — the mobile equivalent of Playwright giving every test a fresh browser context. The reset is **declared**, not written by hand: it runs as fixture setup, appears in the trace in its own **APP RESET** section just before **BEFORE ALL** (per-file) or **BEFORE EACH** (per-test) — so the hook sections contain only your code — and its time counts toward the test's duration so slow isolation is visible rather than hidden.
 
-The most common pattern. Restarting the app clears in-memory state (React state, navigation stack) but preserves persisted data (AsyncStorage, databases):
+### Declaring the reset policy
+
+Two options control it, at any level — config, `projects[].use`, or `test.use()`:
+
+| Option | Values | Default |
+|---|---|---|
+| `appReset` | `'auto'` \| `'clear'` \| `'restart'` \| `'warm'` \| `'none'` | `'auto'` |
+| `appResetScope` | `'auto'` \| `'file'` \| `'test'` | `'auto'` |
+
+| Mode | What happens | Typical cost |
+|---|---|---|
+| `clear` | Wipe app data and cold-launch — fully hermetic | 7–13 s on iOS simulators, 1–3 s on Android emulators |
+| `restart` | Terminate and relaunch, keeping persisted data (AsyncStorage, databases) | 1–3 s |
+| `warm` | In-app reset through detected [`@tapsmith/react-native`](warm-reset.md) hooks (or the legacy `resetAppDeepLink`); no process restart | < 1 s |
+| `none` | No reset — only verify the session is healthy | ~0 |
+
+`'auto'` picks the fastest hermetic option the app supports: `warm` when in-app hooks are detected (or `resetAppDeepLink` is set), otherwise `clear`. A declared `warm` policy that cannot run warm (no hook, or the delivery fails) falls back to a **clear** — the policy's promise is state-clearing, and a restart would keep persisted data. Only the explicit [`device.resetApp()`](api-reference.md#deviceresetappoptions-promiseappresetresult) API keeps the gentler warm → restart → clear ladder. The scope is per-file — one reset at file entry (and at a nested `describe` that declares a different policy). Even a warm reset costs ~1-2 s, so resetting before every test roughly doubles a suite that navigates per test anyway; scopes that genuinely need it opt in with `appResetScope: "test"` (each of those resets is warm when the app mounts the hooks). With no configuration at all you get a clean app once per file, and nothing to write.
 
 ```typescript
-beforeEach(async ({ device }) => {
-  await device.restartApp()
+// tapsmith.config.ts — restart between files instead of wiping data
+export default defineConfig({
+  apk: "./app-debug.apk",
+  package: "com.example.myapp",
+  appReset: "restart",
 })
 ```
 
-### `clearAppData()` for full reset
+```typescript
+// a spec that needs a truly fresh app before every test
+test.use({ appReset: "clear", appResetScope: "test" })
 
-When tests write persistent data that affects other tests, clear everything:
+test("first launch shows onboarding", async ({ device }) => { /* … */ })
+test("skipping onboarding lands on home", async ({ device }) => { /* … */ })
+```
 
 ```typescript
-beforeEach(async ({ device }) => {
-  await device.clearAppData("com.example.myapp")
-  await device.launchApp("com.example.myapp")
+// tests that deliberately share state across the file
+describe("multi-step wizard", () => {
+  test.use({ appReset: "none" })
+  // …
 })
 ```
 
-### `launchApp()` with `clearData`
-
-Combines clearing and launching in a single call:
-
-```typescript
-beforeEach(async ({ device }) => {
-  await device.launchApp("com.example.myapp", { clearData: true })
-})
-```
+A `beforeEach` that only calls `device.restartApp()` or `device.clearAppData()` + `device.launchApp()` is the same thing written by hand — the `tapsmith/prefer-app-reset-option` lint rule points you at the option instead. The manual methods remain available for resets in the *middle* of a test.
 
 ### Restoring saved state with `test.use()`
 
-For tests that need a specific starting state (e.g. logged-in), restore a previously saved snapshot:
+For tests that need a specific starting state (e.g. logged-in), restore a previously saved snapshot. A restore replaces the reset for that scope — Tapsmith restores the archive and relaunches, and never wipes app data first (on Android that would destroy the keystore keys the saved credentials depend on):
 
 ```typescript
 describe("authenticated tests", () => {
@@ -158,7 +174,7 @@ describe("authenticated tests", () => {
 })
 ```
 
-To opt out of restored state in a nested scope, pass an empty string:
+To opt out of restored state in a nested scope, pass an empty string — it means "clear":
 
 ```typescript
 describe("without auth", () => {
@@ -171,14 +187,23 @@ describe("without auth", () => {
 })
 ```
 
+### Manual resets inside a test
+
+- `device.resetApp()` — the same ladder the runner uses (warm hook → restart → clear); returns what actually ran. See [API reference](api-reference.md#deviceresetappoptions-promiseappresetresult).
+- `device.restartApp()` — restart, keep persisted data.
+- `device.clearAppData(pkg)` then `device.launchApp(pkg)`, or `device.launchApp(pkg, { clearData: true })` — full wipe.
+- `device.openDeepLink(resetLink)` — trigger your app's own reset hook.
+
 ### Choosing the right approach
 
 | Scenario | Method |
 |---|---|
-| Tests are independent, app has little persistent state | `restartApp()` in `beforeEach` |
-| Tests modify persistent storage | `clearAppData()` or `launchApp({ clearData: true })` |
+| Tests are independent, app has little persistent state | `appReset: "restart"` |
+| Tests modify persistent storage | default (`clear`), or `appResetScope: "test"` for per-test hermeticity |
+| App exposes a reset hook | `resetAppDeepLink` (→ `warm`) — see [Configuration](configuration.md#warm-app-reset) |
 | Many tests need the same complex starting state | Setup project with `saveAppState()` + `test.use({ appState })` |
 | One specific scope needs different state | `test.use({ appState: "" })` or `test.use({ appState: "other.tar.gz" })` |
+| Tests intentionally build on each other | `test.use({ appReset: "none" })` in that scope |
 
 ---
 

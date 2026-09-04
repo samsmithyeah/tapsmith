@@ -5,7 +5,7 @@
  */
 
 // Device
-export { Device, type SwipeOptions } from './device.js';
+export { Device, type SwipeOptions, type AppResetOptions, type AppResetResult } from './device.js';
 
 // Device management types
 export type { LaunchAppOptions, OpenDeepLinkOptions, AppState, Orientation, ColorScheme } from './grpc-client.js';
@@ -61,7 +61,7 @@ export {
 } from './network.js';
 
 // Config
-export { defineConfig, loadConfig, type TapsmithConfig, type ProjectConfig, type ScreenshotMode, type TraceMode, type TraceConfig } from './config.js';
+export { defineConfig, loadConfig, type TapsmithConfig, type ProjectConfig, type ScreenshotMode, type TraceMode, type TraceConfig, type AppResetMode, type AppResetScope } from './config.js';
 
 // Reporters
 export {

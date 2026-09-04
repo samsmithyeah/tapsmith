@@ -49,11 +49,15 @@ describe('createUiLaunchSteps', () => {
       'app-install',
       'agent',
       'app-launch',
+      'ui-workers',
       'ui-server',
       'mcp',
       'test-tree',
       'browser',
     ]);
+    // A single-device UI session still runs through one persistent worker
+    // that attaches to the primary device.
+    expect(steps.find((s) => s.id === 'ui-workers')!.label).toBe('Worker');
     expect(steps[0]!.detail).toContain('1 worker');
     expect(steps[0]!.detail).toContain('3 test files');
     expect(steps.find((s) => s.id === 'app-install')!.detail).toBe('verify/install app-debug.apk');
@@ -93,7 +97,10 @@ describe('createUiLaunchSteps', () => {
     expect(steps[0]!.detail).toContain('android + ios');
     expect(steps.map((s) => s.id)).toContain('primary-device');
     expect(steps.map((s) => s.id)).toContain('worker-devices');
-    expect(steps.map((s) => s.id)).toContain('ui-workers');
+    // Exactly one workers row: the single-device "attach a worker" step must
+    // not double up with the multi-device one (steps are keyed by id).
+    expect(steps.filter((s) => s.id === 'ui-workers')).toHaveLength(1);
+    expect(steps.find((s) => s.id === 'ui-workers')!.label).toBe('UI workers');
     expect(steps.find((s) => s.id === 'worker-devices')!.detail).toContain('across 2 targets');
   });
 

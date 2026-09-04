@@ -1,12 +1,17 @@
 import { beforeAll, describe, expect, test } from "tapsmith"
-import { resetApp } from "../utils/app-reset.js"
+import { openScreen } from "../utils/app-reset.js"
 
 describe("getByLabel", () => {
   // ─── Text fields (Login screen) ───
 
   describe("text fields", () => {
     beforeAll(async ({ device }) => {
-      await device.getByDescription("Login Form").tap()
+      // Deep link rather than tapping the home card: after a background
+      // preparation on Android the home list's top items were once seen
+      // missing from the accessibility tree until the next gesture (not
+      // reproducible with current builds, but the deep link is also how
+      // every other file enters its screen).
+      await openScreen(device, "/login")
     })
 
     test("finds text field by its accessibility label", async ({ device }) => {
@@ -37,7 +42,7 @@ describe("getByLabel", () => {
 
   describe("switches", () => {
     beforeAll(async ({ device }) => {
-      await resetApp(device, "/toggles")
+      await openScreen(device, "/toggles")
     })
 
     test("finds switch by its accessibility label", async ({ device }) => {

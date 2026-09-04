@@ -75,3 +75,29 @@ export function actionCompleted(o: ActionOptions): TraceEventMessage {
 export function action(o: ActionOptions): TraceEventMessage[] {
   return [actionStarted(o), actionCompleted(o)]
 }
+
+/**
+ * A lifecycle group boundary ("App reset", "beforeEach Hooks", "Test", …).
+ * The runner emits these as ordinary completed trace events around the
+ * actions they contain; the panel renders each non-empty group as a section
+ * header.
+ */
+export function group(o: {
+  testFullName: string
+  type: "group-start" | "group-end"
+  name: string
+  actionIndex: number
+  projectName?: string
+}): TraceEventMessage {
+  return {
+    type: "trace-event",
+    testFullName: o.testFullName,
+    projectName: o.projectName,
+    event: {
+      type: o.type,
+      name: o.name,
+      actionIndex: o.actionIndex,
+      timestamp: 1_700_000_000_000 + o.actionIndex * 100,
+    },
+  }
+}

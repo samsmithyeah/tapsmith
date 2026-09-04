@@ -5,13 +5,13 @@
  * `https://` URL scheme — not `http://`.
  */
 import { describe, expect, test } from "../fixtures.js"
-import { resetApp } from "../utils/app-reset.js"
+import { openScreen } from "../utils/app-reset.js"
 
 describe("Network capture", () => {
   test.use({ timeout: 20_000 })
 
   test.beforeEach(async ({ device, apiCallsScreen }) => {
-    await resetApp(device, "/api-calls")
+    await openScreen(device, "/api-calls")
     await expect(apiCallsScreen.heading).toBeVisible()
   })
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "../fixtures.js"
-import { resetApp } from "../utils/app-reset.js"
+import { openScreen } from "../utils/app-reset.js"
 import type { ElementHandle } from "tapsmith"
 
 /**
@@ -17,7 +17,7 @@ async function center(el: ElementHandle): Promise<{ x: number; y: number }> {
 
 describe("Coordinate gesture API (mirror)", () => {
   test("tapXY taps at a resolved coordinate", async ({ device, gesturesScreen }) => {
-    await resetApp(device, "/gestures")
+    await openScreen(device, "/gestures")
     await expect(gesturesScreen.heading).toBeVisible()
     const c = await center(gesturesScreen.tapArea)
     await device.tapXY(c.x, c.y)
@@ -25,7 +25,7 @@ describe("Coordinate gesture API (mirror)", () => {
   })
 
   test("longPressXY long-presses at a resolved coordinate", async ({ device, gesturesScreen }) => {
-    await resetApp(device, "/gestures")
+    await openScreen(device, "/gestures")
     await expect(gesturesScreen.heading).toBeVisible()
     const c = await center(gesturesScreen.longPressArea)
     await device.longPressXY(c.x, c.y, { duration: 800 })
@@ -33,7 +33,7 @@ describe("Coordinate gesture API (mirror)", () => {
   })
 
   test("dragXY drags from one coordinate to another", async ({ device, gesturesScreen }) => {
-    await resetApp(device, "/gestures")
+    await openScreen(device, "/gestures")
     await expect(gesturesScreen.heading).toBeVisible()
     const from = await center(gesturesScreen.draggable)
     const to = await center(gesturesScreen.dropZone)

@@ -90,11 +90,13 @@ what is deliberately not covered.
 
 ## CI
 
-GitHub Actions runs 8 parallel jobs: `proto-lint`, `typescript`, `rust`, `rust-macos`, `android`,
-`website`, `test-app`, `ui-web`. All must pass. See `.github/workflows/ci.yml`.
+GitHub Actions runs 9 parallel jobs: `proto-lint`, `typescript`, `rust`, `rust-macos`, `android`,
+`website`, `test-app`, `react-native`, `ui-web`. All must pass. See `.github/workflows/ci.yml`.
 
 Device E2E runs separately on every PR: `e2e-android.yml` (ubuntu + KVM emulator, 5 shards) and
-`e2e-ios.yml` (macOS simulators, 5 shards).
+`e2e-ios.yml` (macOS simulators, 5 shards). `e2e-android-hookless.yml` covers the hook-less reset
+path (test app built without `EXPO_PUBLIC_TAPSMITH_HOOKS`) weekly, on manual dispatch, and on PRs
+touching the reset-path sources.
 
 Shard 1 of each device workflow also runs `e2e/verify-trace-archive.mjs`, which records one trace
 with `--trace on` and then asserts what is *inside* the archive — screenshots that decode at the
@@ -152,6 +154,27 @@ The release workflow (`.github/workflows/release.yml`) builds and publishes:
 - **Assertions** (`expect.ts`): Locator assertions (auto-waiting, 250ms poll) + generic value assertions. Supports `.not`, `expect.soft()`, `expect.poll()`.
 - **Runner** (`runner.ts`): Custom test runner with `test()`, `describe()`, `.only`, `.skip`, hooks, screenshot-on-failure.
 - **gRPC client** (`grpc-client.ts`): Dynamic proto loading via `@grpc/proto-loader` (no codegen step on TS side).
+
+## The five run paths (embedders)
+
+Tests execute through five separately-assembled paths. **Anything threaded
+per-session — capabilities, install checks, passthrough hosts, new config
+keys — must be wired through all of them**, or the missed path degrades
+silently (this class of bug has shipped more than once):
+
+1. `cli.ts` — sequential `tapsmith test` (the only path device CI exercises)
+2. `worker-runner.ts` — parallel workers (`--workers N`, dispatcher.ts)
+3. `ui-mode/ui-worker.ts` — every UI-mode session
+4. `watch-run.ts` — headless watch mode's fresh-forked child per re-run
+5. `mcp/headless-dispatcher.ts` — `tapsmith mcp-server`, which forks the same
+   `watch-run.ts` children (so 4 and 5 share child code but have separate
+   parent-side state threading)
+
+When adding a per-session concern, prefer a **required** option on
+`runTestFile` over an optional one — a compile error in every embedder beats
+a silent default (see `RunOptions.resetCapabilities` for the precedent), and
+verify degraded paths loudly (assert the trace's reset rung, not just
+pass/fail).
 
 ## Design principles
 

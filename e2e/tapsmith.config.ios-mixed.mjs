@@ -47,6 +47,9 @@ const DEVICE_USE = {
 
 export default defineConfig({
   package: "dev.tapsmith.testapp",
+  // Deliberately keeps the explicit reset route: this config exercises the
+  // legacy `resetAppDeepLink` path (the other configs rely on the in-app hooks
+  // from @tapsmith/react-native being detected automatically).
   resetAppDeepLink: RESET_APP_DEEP_LINK,
   timeout: 15_000,
   retries: 0,

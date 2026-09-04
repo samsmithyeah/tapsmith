@@ -28,16 +28,16 @@ import {
   type ColorScheme,
   type DeviceLogEntry,
   type CaptureTraceStateResponse,
-  type DaemonLogEntry,
-} from './grpc-client.js';
+  type DaemonLogEntry, type ResetAppRequestOptions, type ResetAppResponse } from './grpc-client.js';
 import * as nodePath from 'node:path';
 import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
 import { withActionProgress } from './action-progress.js';
-import type { TapsmithConfig } from './config.js';
+import { DEFAULT_APP_RESET_COLD_EVERY, type TapsmithConfig } from './config.js';
 import { Tracing } from './trace/tracing.js';
 import { type TraceCollector, getActiveTraceCollector, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory, ConsoleLevel } from './trace/types.js';
-import { tracedAction } from './trace/traced-action.js';
+import { tracedAction, type TracedActionExtra } from './trace/traced-action.js';
+import { appResetModeFromWire } from './grpc-client.js';
 import {
   NetworkRouteManager,
   type TapsmithRequest,
@@ -137,6 +137,7 @@ export class Device {
   /** @internal */
   readonly _client: TapsmithGrpcClient;
   private _defaultTimeoutMs: number;
+  private _appResetColdEvery: number;
   private readonly defaultPackageName?: string;
   /** @internal */
   readonly _platform: Platform;
@@ -156,6 +157,13 @@ export class Device {
   /** @internal — Network route manager (lazily created). */
   _routeManager: NetworkRouteManager | null = null;
   private _networkCaptureActive = false;
+  /**
+   * Whether network capture was ever started this session. The runner keeps
+   * the proxy alive across files (stable port for warm-reset-persisted apps),
+   * so `close()` is the point that releases it — but only when capture was
+   * actually used, to avoid a wasted teardown RPC on non-network runs.
+   */
+  private _networkCaptureEverStarted = false;
   private _networkCaptureError: string | undefined;
   /** Set by the runner on retry attempts — see _setForceColdDeepLinks. */
   private _forceColdDeepLinks = false;
@@ -176,9 +184,10 @@ export class Device {
   private _typingDelayMs: number;
   private _doubleTapIntervalMs: number;
 
-  constructor(client: TapsmithGrpcClient, config?: Partial<Pick<TapsmithConfig, 'timeout' | 'package' | 'platform' | 'simulator' | 'typingDelay' | 'doubleTapInterval'>>) {
+  constructor(client: TapsmithGrpcClient, config?: Partial<Pick<TapsmithConfig, 'timeout' | 'package' | 'platform' | 'simulator' | 'typingDelay' | 'doubleTapInterval' | 'appResetColdEvery'>>) {
     this._client = client;
     this._defaultTimeoutMs = config?.timeout ?? 30_000;
+    this._appResetColdEvery = config?.appResetColdEvery ?? DEFAULT_APP_RESET_COLD_EVERY;
     this._typingDelayMs = config?.typingDelay ?? 0;
     this._doubleTapIntervalMs = config?.doubleTapInterval ?? 0;
     this.defaultPackageName = config?.package;
@@ -217,6 +226,20 @@ export class Device {
   /** @internal — Override the default timeout. Used by the runner for test.use(). */
   _setDefaultTimeout(timeoutMs: number): void {
     this._defaultTimeoutMs = timeoutMs;
+  }
+
+  /** @internal */
+  _getAppResetColdEvery(): number {
+    return this._appResetColdEvery;
+  }
+
+  /**
+   * @internal — the runner applies a scope's `test.use({ appResetColdEvery })`
+   * here so explicit `device.resetApp()` calls inside that scope honour it
+   * like the runner's own resets do.
+   */
+  _setAppResetColdEvery(n: number): void {
+    this._appResetColdEvery = n;
   }
 
   /** @internal — Get the active trace collector, if any. */
@@ -345,7 +368,7 @@ export class Device {
     selector: Selector | undefined,
     fn: () => Promise<ActionResponse>,
     fallbackMsg: string,
-    extra?: { inputValue?: string },
+    extra?: TracedActionExtra,
   ): Promise<void> {
     const collector = this._traceCollector;
     const ctx = collector ? {
@@ -583,6 +606,56 @@ export class Device {
         'Launch app failed'));
   }
 
+  /**
+   * Bring the app to a known state — the same reset the runner performs for
+   * the declared `appReset` policy, callable mid-test. Runs the daemon's
+   * ladder (warm in-app hook → restart → clear, when `fallback` is on) and
+   * reports which rung actually ran.
+   */
+  async resetApp(options: AppResetOptions = {}): Promise<AppResetResult> {
+    return this._resetApp(this.requirePackageName(), options);
+  }
+
+  /** @internal — runner/preflight entry point with policy inputs. */
+  async _resetApp(packageName: string, options: InternalAppResetOptions): Promise<AppResetResult> {
+    const mode = options.mode ?? 'warm';
+    let response: ResetAppResponse | undefined;
+    const request: ResetAppRequestOptions = {
+      mode,
+      allowFallback: options.fallback ?? true,
+      resetDeepLink: options.resetDeepLink,
+      // Retry attempts force cold *delivery* of the hook (see
+      // _setForceColdDeepLinks). On platforms without cold delivery the
+      // daemon delivers warm in place rather than downgrading to a restart,
+      // so an explicit resetApp() reports the same modeUsed on every attempt.
+      forceCold: (options.forceCold ?? false) || this._forceColdDeepLinks,
+      // Mid-test resetApp() calls share the daemon's warm-window state with
+      // the runner's resets, so they honour the same `appResetColdEvery`
+      // (0 = off) — sending nothing would mean "never bound the window".
+      coldEveryNResets: options.coldEveryNResets ?? this._appResetColdEvery,
+      waitForIdle: options.waitForIdle,
+      targetPath: options.target,
+      fallbackToClear: options.fallbackToClear,
+    };
+    if (mode !== 'warm') await this._disposeWebViewManager();
+    await withActionProgress('resetApp', packageName,
+      () => this._tracedAction('resetApp', 'device', undefined,
+        async () => {
+          response = await this._client.resetApp(packageName, request);
+          if (mode === 'warm' && response.success && appResetModeFromWire(response.modeUsed) !== 'warm') {
+            // The process was recreated after all — drop cached WebView state.
+            await this._disposeWebViewManager();
+          }
+          return response;
+        },
+        'App reset failed',
+        {
+          detail: () => (response ? describeAppResetResponse(mode, response) : undefined),
+          skipBeforeCapture: options.skipTraceCapture,
+        }));
+    return toAppResetResult(mode, response!);
+  }
+
   async openDeepLink(uri: string, options?: OpenDeepLinkOptions): Promise<void> {
     // On retry attempts the runner forces every deep link cold (see
     // _setForceColdDeepLinks); an explicit forceColdLaunch option can only
@@ -624,10 +697,11 @@ export class Device {
     return res.activity;
   }
 
-  async terminateApp(packageName: string): Promise<void> {
-    return withActionProgress('terminateApp', packageName,
+  async terminateApp(packageName?: string): Promise<void> {
+    const pkg = packageName ?? this.requirePackageName();
+    return withActionProgress('terminateApp', pkg,
       () => this._tracedAction('terminateApp', 'device', undefined,
-        () => this._client.terminateApp(packageName),
+        () => this._client.terminateApp(pkg),
         'Terminate app failed'));
   }
 
@@ -788,6 +862,7 @@ export class Device {
     }
     if (res.success) {
       this._networkCaptureActive = true;
+      this._networkCaptureEverStarted = true;
       this._networkCaptureError = undefined;
       this._ensureRouteManager().ensureEventsSubscribed();
     } else {
@@ -1668,6 +1743,18 @@ export class Device {
     this._stopDeviceLogStream();
     this._stopDaemonLogStream();
 
+    // Release the network proxy for real. The runner keeps it alive across
+    // files (a stable port so a warm-reset-persisted app keeps valid
+    // keep-alive sockets); the session ending is the point to tear it down.
+    if (this._networkCaptureEverStarted) {
+      try {
+        await this._stopNetworkCapture({ keepRunning: false });
+      } catch {
+        // Best-effort; the daemon also cleans up the proxy on shutdown.
+      }
+      this._networkCaptureEverStarted = false;
+    }
+
     // Dispose the route manager (closes gRPC stream)
     if (this._routeManager) {
       await this._routeManager.dispose();
@@ -1698,4 +1785,87 @@ function formatPattern(url: string | RegExp | ((url: URL) => boolean)): string {
   if (typeof url === 'string') return url;
   if (url instanceof RegExp) return url.toString();
   return '<predicate>';
+}
+
+// ─── App reset types ───
+
+export interface AppResetOptions {
+  /** How far to reset. Default `'warm'` (falls back per `fallback`). */
+  mode?: 'warm' | 'restart' | 'clear';
+  /** Escalate warm → restart → clear when a rung fails. Default `true`. */
+  fallback?: boolean;
+  /**
+   * Route to land on after an in-app (warm) reset — the reset deep link's
+   * path. A `restart`/`clear` rung leaves the app at its launch route; check
+   * `modeUsed` and navigate if the route matters. Default `'/'`.
+   */
+  target?: string;
+}
+
+/** @internal */
+export interface InternalAppResetOptions extends AppResetOptions {
+  resetDeepLink?: string;
+  forceCold?: boolean;
+  coldEveryNResets?: number;
+  waitForIdle?: boolean;
+  /**
+   * Skip the trace's before-action capture (screenshot + hierarchy) for this
+   * reset. The runner sets it for fixture-setup resets, where the pre-reset
+   * screen is the previous test's leftover state.
+   */
+  skipTraceCapture?: boolean;
+  /**
+   * Warm falls back to clear instead of restart. Set by the runner's declared
+   * isolation policy (its promise is state-clearing; a restart keeps data);
+   * public `device.resetApp()` keeps the gentler restart fallback.
+   */
+  fallbackToClear?: boolean;
+}
+
+export interface AppResetResult {
+  modeRequested: 'warm' | 'restart' | 'clear';
+  /** The rung that actually ran. */
+  modeUsed: 'warm' | 'restart' | 'clear';
+  fellBack: boolean;
+  /** The app process was recreated (cold delivery, restart or clear). */
+  coldLaunch: boolean;
+  /** Why a fallback or cold relaunch happened, when it did. */
+  reason?: string;
+  durationMs: number;
+  /** `@tapsmith/react-native` reset hooks were detected in the app. */
+  hooksDetected: boolean;
+  epochBefore?: number;
+  epochAfter?: number;
+  steps: Array<{ name: string; durationMs: number; ok: boolean; detail?: string }>;
+}
+
+function toAppResetResult(requested: 'warm' | 'restart' | 'clear', r: ResetAppResponse): AppResetResult {
+  return {
+    modeRequested: requested,
+    modeUsed: appResetModeFromWire(r.modeUsed) ?? requested,
+    fellBack: r.fellBack,
+    coldLaunch: r.coldLaunch,
+    ...(r.reason ? { reason: r.reason } : {}),
+    durationMs: r.durationMs,
+    hooksDetected: r.hooksDetected,
+    ...(r.hooksDetected ? { epochBefore: r.epochBefore, epochAfter: r.epochAfter } : {}),
+    steps: (r.steps ?? []).map((st) => ({
+      name: st.name,
+      durationMs: st.durationMs,
+      ok: st.ok,
+      ...(st.detail ? { detail: st.detail } : {}),
+    })),
+  };
+}
+
+function describeAppResetResponse(requested: 'warm' | 'restart' | 'clear', r: ResetAppResponse): string {
+  const used = appResetModeFromWire(r.modeUsed) ?? requested;
+  const via = used === 'warm'
+    ? (r.hooksDetected
+      ? `warm reset via @tapsmith/react-native (epoch ${r.epochBefore}→${r.epochAfter})`
+      : 'warm reset via resetAppDeepLink')
+    : used === 'restart' ? 'terminated and relaunched (data kept)' : 'cleared app data and relaunched';
+  const secs = `${(r.durationMs / 1000).toFixed(1)}s`;
+  if (!r.success) return `${via} — failed: ${r.errorMessage}`;
+  return r.reason ? `${via}, ${secs} — ${r.reason}` : `${via}, ${secs}`;
 }

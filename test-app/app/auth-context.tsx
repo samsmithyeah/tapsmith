@@ -15,12 +15,9 @@ interface AuthState {
   email: string | null
   loading: boolean
   /**
-   * Counts completed resetAppState() calls in this process. Rendered into the
-   * accessibility tree by RootLayout's ResetEpochMarker so a warm in-process
-   * `__reset` deep link always produces a hierarchy change, even when it lands
-   * back on the exact screen the app was already showing — the iOS agent
-   * verifies warm delivery by requiring the a11y hierarchy to differ from its
-   * pre-open state.
+   * Counts completed resetAppState() calls in this process. Consumers can key
+   * on it to remount after a reset; the Tapsmith hooks marker (see
+   * `@tapsmith/react-native`) carries its own epoch for the harness.
    */
   resetEpoch: number
   login: (email: string) => Promise<void>

@@ -517,6 +517,18 @@ pub enum AgentCommand {
         /// already-running app, where "app has rendered content" is trivially
         /// true and would mask a dropped Linking event.
         require_ui_change: bool,
+        /// Acknowledge the delivery only once the `@tapsmith/react-native`
+        /// marker's epoch is strictly greater than this value (the in-app
+        /// reset completed). Replaces the hierarchy-change heuristic for
+        /// declared app resets; the agent reports `epochAfter` in its data.
+        ack_epoch_gt: Option<u64>,
+        /// Per-process `boot` token read alongside `ack_epoch_gt`; lets the
+        /// agent recognise the ack after a cold relaunch (see
+        /// `app_reset::hooks_acknowledged`).
+        ack_boot_before: Option<String>,
+        /// Acknowledge a plain navigation link by the marker's `nav` counter
+        /// advancing past this value (same-screen links verify instantly).
+        ack_nav_gt: Option<u64>,
     },
     AcceptOpenInAppDialog {
         timeout_ms: Option<u64>,
@@ -913,15 +925,27 @@ impl AgentCommand {
                 package,
                 deliver_in_process,
                 require_ui_change,
-            } => (
-                "openDeepLink",
-                json!({
+                ack_epoch_gt,
+                ack_boot_before,
+                ack_nav_gt,
+            } => {
+                let mut p = json!({
                     "url": url,
                     "bundleId": package,
                     "deliverInProcess": deliver_in_process,
                     "requireUiChange": require_ui_change,
-                }),
-            ),
+                });
+                if let Some(epoch) = ack_epoch_gt {
+                    p["ackEpochGreaterThan"] = json!(epoch);
+                }
+                if let Some(boot) = ack_boot_before {
+                    p["ackBootBefore"] = json!(boot);
+                }
+                if let Some(nav) = ack_nav_gt {
+                    p["ackNavGreaterThan"] = json!(nav);
+                }
+                ("openDeepLink", p)
+            }
             AgentCommand::AcceptOpenInAppDialog { timeout_ms } => {
                 let mut p = json!({});
                 if let Some(t) = timeout_ms {
@@ -1873,6 +1897,9 @@ mod tests {
             package: "dev.tapsmith.testapp".into(),
             deliver_in_process: false,
             require_ui_change: false,
+            ack_epoch_gt: None,
+            ack_boot_before: None,
+            ack_nav_gt: None,
         };
         let j = cmd.to_json("dl1");
         assert_eq!(j["method"], "openDeepLink");
@@ -1889,11 +1916,59 @@ mod tests {
             package: "dev.tapsmith.testapp".into(),
             deliver_in_process: true,
             require_ui_change: true,
+            ack_epoch_gt: None,
+            ack_boot_before: None,
+            ack_nav_gt: None,
         };
         let j = cmd.to_json("dl2");
         assert_eq!(j["method"], "openDeepLink");
         assert_eq!(j["params"]["deliverInProcess"], true);
         assert_eq!(j["params"]["requireUiChange"], true);
+        assert!(j["params"].get("ackEpochGreaterThan").is_none());
+    }
+
+    #[test]
+    fn to_json_open_deep_link_with_ack_epoch() {
+        let cmd = AgentCommand::OpenDeepLink {
+            url: "myapp:///?__tapsmith_reset=1&nonce=abc".into(),
+            package: "dev.tapsmith.testapp".into(),
+            deliver_in_process: true,
+            require_ui_change: false,
+            ack_epoch_gt: Some(4),
+            ack_boot_before: None,
+            ack_nav_gt: None,
+        };
+        let j = cmd.to_json("dl3");
+        assert_eq!(j["params"]["ackEpochGreaterThan"], 4);
+        let with_boot = AgentCommand::OpenDeepLink {
+            url: "tapsmithtest:///?__tapsmith_reset=1".into(),
+            package: "dev.tapsmith.testapp".into(),
+            deliver_in_process: false,
+            require_ui_change: false,
+            ack_epoch_gt: Some(4),
+            ack_boot_before: Some("c0ffee42".into()),
+            ack_nav_gt: None,
+        };
+        let j = with_boot.to_json("dl3");
+        assert_eq!(j["params"]["ackEpochGreaterThan"], 4);
+        assert_eq!(j["params"]["ackBootBefore"], "c0ffee42");
+    }
+
+    #[test]
+    fn open_deep_link_serialises_nav_ack() {
+        let cmd = AgentCommand::OpenDeepLink {
+            url: "app:///gestures".into(),
+            package: "com.example".into(),
+            deliver_in_process: true,
+            require_ui_change: false,
+            ack_epoch_gt: None,
+            ack_boot_before: Some("c0ffee42".into()),
+            ack_nav_gt: Some(7),
+        };
+        let j = cmd.to_json("id-1");
+        assert_eq!(j["params"]["ackNavGreaterThan"], 7);
+        assert!(j["params"].get("ackEpochGreaterThan").is_none());
+        assert_eq!(j["params"]["requireUiChange"], false);
     }
 
     #[test]
