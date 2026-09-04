@@ -158,12 +158,17 @@ jobs:
             'test-app/plugins/**', 'test-app/package-lock.json',
             'test-app/app.json', 'test-app/metro.config.js',
             'packages/tapsmith-react-native/src/**',
-            'packages/tapsmith-react-native/package.json') }}
+            'packages/tapsmith-react-native/package.json',
+            'packages/tapsmith-react-native/tsconfig*.json') }}
 
       - uses: actions/setup-node@v4
         if: steps.test-app-cache.outputs.cache-hit != 'true'
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            test-app/package-lock.json
+            packages/tapsmith-react-native/package-lock.json
 
       - uses: actions/setup-java@v4
         if: steps.test-app-cache.outputs.cache-hit != 'true'

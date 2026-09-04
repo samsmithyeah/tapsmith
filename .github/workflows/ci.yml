@@ -221,7 +221,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: test-app/package-lock.json
+          cache-dependency-path: |
+            test-app/package-lock.json
+            packages/tapsmith-react-native/package-lock.json
 
       - name: Build @tapsmith/react-native (test-app dependency)
         working-directory: packages/tapsmith-react-native
