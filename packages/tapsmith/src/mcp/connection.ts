@@ -6,7 +6,7 @@ import { withFileLockSync } from '../file-lock.js';
 import { TapsmithGrpcClient, type DeviceInfoProto } from '../grpc-client.js';
 import { findDaemonBin } from '../daemon-bin.js';
 import { pickFreePort } from '../port-utils.js';
-import type { TapsmithConfig } from '../config.js';
+import { resolveDeviceGroup, type TapsmithConfig } from '../config.js';
 import { loadMcpConfig } from './config-loader.js';
 import { uiPortFilePath, allUiPortFiles, mcpDaemonRegistryPath } from './port-file.js';
 
@@ -829,6 +829,18 @@ export interface PlatformTarget {
   address: string
   deviceSerial: string
   platform?: string
+  /**
+   * The rest of a `use.devices` group, each on its own daemon, in member
+   * order. Absent for single-device targets.
+   */
+  members?: PlatformTargetMember[]
+}
+
+export interface PlatformTargetMember {
+  /** Group entry name (`bob`). */
+  name: string
+  address: string
+  deviceSerial: string
 }
 
 /**
@@ -871,6 +883,66 @@ export async function platformTargetIsLive(target: PlatformTarget): Promise<bool
  * and agent paths, so resolve a target per platform from that instead.
  */
 export async function ensurePlatformTarget(config: TapsmithConfig): Promise<PlatformTarget> {
+  const primary = await ensurePrimaryTarget(config);
+  const group = resolveDeviceGroup(config);
+  if (group.length <= 1) return primary;
+  // A `use.devices` project: one more daemon + device per member, each
+  // prepared like the primary. Members never share a daemon (a daemon holds
+  // one device), and never reuse the primary's device.
+  const members: PlatformTargetMember[] = [];
+  const taken = [primary.deviceSerial];
+  try {
+    for (const entry of group.slice(1)) {
+      const member = await ensureMemberTarget(config, entry.name, entry.device, taken);
+      members.push(member);
+      taken.push(member.deviceSerial);
+    }
+  } catch (err) {
+    for (const m of members) {
+      const conn = _connections.find((c) => c.address === m.address);
+      if (conn) discardDaemon(conn);
+    }
+    await refreshDeviceIndex();
+    throw err;
+  }
+  return { ...primary, members };
+}
+
+/** A daemon + device + agent for one group member beyond the primary. */
+async function ensureMemberTarget(
+  config: TapsmithConfig,
+  name: string,
+  wantedSerial: string | undefined,
+  exclude: string[],
+): Promise<PlatformTargetMember> {
+  const platform = config.platform;
+  const conn = await startDaemon(platform);
+  if (!conn) {
+    throw new Error(`Failed to start a ${platform ?? 'Tapsmith'} daemon for group member "${name}". Is tapsmith-core installed?`);
+  }
+  const serial = (await pickDevice(conn, platform, wantedSerial, exclude))?.serial;
+  if (!serial) {
+    const visible = (await visibleDevices(conn, platform)).filter((s) => !exclude.includes(s));
+    discardDaemon(conn);
+    await refreshDeviceIndex();
+    throw new Error(
+      `${noDeviceMessage(platform, wantedSerial, visible)} (needed for group member "${name}"; `
+      + `${exclude.join(', ')} already serve the group's other members)`,
+    );
+  }
+  conn.claimedBy = `${platform ?? 'default'}:${name}`;
+  try {
+    await prepareTarget(conn, serial, config);
+  } catch (err) {
+    discardDaemon(conn);
+    await refreshDeviceIndex();
+    throw err;
+  }
+  await refreshDeviceIndex();
+  return { name, address: conn.address, deviceSerial: serial };
+}
+
+async function ensurePrimaryTarget(config: TapsmithConfig): Promise<PlatformTarget> {
   await ensureConnected();
   const platform = config.platform;
   const key = platform ?? 'default';
@@ -1034,6 +1106,7 @@ async function pickDevice(
   conn: DaemonConnection,
   platform: string | undefined,
   wantedSerial: string | undefined,
+  exclude: string[] = [],
 ): Promise<DeviceChoice | undefined> {
   let devices: DeviceInfoProto[];
   try {
@@ -1043,7 +1116,8 @@ async function pickDevice(
   }
 
   const activeSerial = activeDeviceOf(devices);
-  const candidates = platform ? devices.filter((d) => d.platform === platform) : devices;
+  const candidates = (platform ? devices.filter((d) => d.platform === platform) : devices)
+    .filter((d) => !exclude.includes(d.serial));
   const serial = wantedSerial
     ? candidates.find((d) => d.serial === wantedSerial)?.serial
     : (

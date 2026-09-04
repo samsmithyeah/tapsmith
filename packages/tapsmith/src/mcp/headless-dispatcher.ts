@@ -18,7 +18,8 @@ import {
 import type { WatchRunMessage, WatchRunChildMessage } from '../watch-run.js';
 import { RunQueue } from '../watch-queue.js';
 import { ensurePlatformTarget, platformTargetIsLive, type PlatformTarget } from './connection.js';
-import type { TapsmithConfig } from '../config.js';
+import { deviceGroupSize, resolveDeviceGroup, type TapsmithConfig } from '../config.js';
+import { deviceSignature } from '../project.js';
 import { matchesTestFilter } from '../test-filter.js';
 import type {
   TestDispatcher,
@@ -42,6 +43,16 @@ function platformKey(platform?: string): string {
 }
 
 /**
+ * The target key for a project's effective config. One target per platform —
+ * except `use.devices` projects, which need their own group of daemons and
+ * therefore their own target, keyed by the group's device signature.
+ */
+function targetKeyFor(config: TapsmithConfig): string {
+  const key = platformKey(config.platform);
+  return deviceGroupSize(config) > 1 ? `${key}|${deviceSignature(config)}` : key;
+}
+
+/**
  * Which platform's device a run belongs on.
  *
  * A project's own platform wins: in a multi-platform config the root has none,
@@ -51,11 +62,14 @@ function platformKey(platform?: string): string {
  * @internal — exported for unit testing.
  */
 export function platformKeyForProject(
-  projects: Array<{ name: string; effectiveConfig: { platform?: string } }>,
+  projects: Array<{ name: string; effectiveConfig: { platform?: string; devices?: TapsmithConfig['devices'] } }>,
   projectName: string | undefined,
   rootPlatform: string | undefined,
 ): string {
   const project = projectName ? projects.find((p) => p.name === projectName) : undefined;
+  if (project && deviceGroupSize(project.effectiveConfig) > 1) {
+    return targetKeyFor(project.effectiveConfig as TapsmithConfig);
+  }
   return platformKey(project?.effectiveConfig.platform ?? rootPlatform);
 }
 
@@ -702,23 +716,26 @@ export class HeadlessTestDispatcher implements TestDispatcher {
    */
   private _wantedConfigs(config: TapsmithConfig): TapsmithConfig[] {
     if (!this._hasRealProjects()) return [config];
-    const byPlatform = new Map<string, TapsmithConfig>();
+    const byKey = new Map<string, TapsmithConfig>();
     for (const project of this._projects) {
-      const key = platformKey(project.effectiveConfig.platform);
-      if (!byPlatform.has(key)) byPlatform.set(key, project.effectiveConfig);
+      // A `use.devices` project gets its own target (a group of daemons);
+      // single-device projects share one per platform.
+      const key = targetKeyFor(project.effectiveConfig);
+      if (!byKey.has(key)) byKey.set(key, project.effectiveConfig);
     }
-    return [...byPlatform.values()];
+    return [...byKey.values()];
   }
 
   /** Resolve (or re-resolve) a single platform, leaving the others alone. */
   private async _resolveOnePlatformTarget(effective: TapsmithConfig): Promise<void> {
-    const key = platformKey(effective.platform);
+    const key = targetKeyFor(effective);
     try {
       const target = await ensurePlatformTarget(effective);
       this._targets.set(key, target);
       this._targetErrors.delete(key);
       this._deviceSerial ??= target.deviceSerial;
       log(`Using ${key === DEFAULT_PLATFORM_KEY ? 'device' : `${key} device`} ${target.deviceSerial} via ${target.address}`);
+      for (const m of target.members ?? []) log(`  group member ${m.name}: ${m.deviceSerial} via ${m.address}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this._targetErrors.set(key, message);
@@ -761,12 +778,44 @@ export class HeadlessTestDispatcher implements TestDispatcher {
 
   /** Every platform this session runs on, with its device or its failure. */
   private _deviceTargets(): DeviceTarget[] {
-    const toPlatform = (key: string): string | undefined =>
-      key === DEFAULT_PLATFORM_KEY ? undefined : key;
+    const toPlatform = (key: string): string | undefined => {
+      const platform = key.split('|')[0];
+      return platform === DEFAULT_PLATFORM_KEY ? undefined : platform;
+    };
     return [
-      ...[...this._targets].map(([key, t]) => ({ platform: toPlatform(key), device: t.deviceSerial })),
+      ...[...this._targets].flatMap(([key, t]) => {
+        const platform = toPlatform(key);
+        if (!t.members || t.members.length === 0) return [{ platform, device: t.deviceSerial }];
+        const groupName = this._projectForTargetKey(key);
+        const primaryName = this._projectForTargetKey(key, true);
+        return [
+          { platform, device: t.deviceSerial, name: primaryName, group: groupName },
+          ...t.members.map((m) => ({ platform, device: m.deviceSerial, name: m.name, group: groupName })),
+        ];
+      }),
       ...[...this._targetErrors].map(([key, error]) => ({ platform: toPlatform(key), error })),
     ];
+  }
+
+  /** The project a group target belongs to (or, with `primaryName`, its primary's group name). */
+  private _projectForTargetKey(key: string, primaryName = false): string | undefined {
+    const project = this._projects.find((p) => targetKeyFor(p.effectiveConfig) === key);
+    if (!project) return undefined;
+    return primaryName ? resolveDeviceGroup(project.effectiveConfig)[0]?.name : project.name;
+  }
+
+  /**
+   * A group member's serial by name. Every device tool accepts `device`, and
+   * `alice` is how a two-user test's author refers to a device; the serial is
+   * an implementation detail they have to look up otherwise.
+   */
+  resolveDeviceName(name: string): string | undefined {
+    for (const [key, target] of this._targets) {
+      if (this._projectForTargetKey(key, true) === name) return target.deviceSerial;
+      const member = target.members?.find((m) => m.name === name);
+      if (member) return member.deviceSerial;
+    }
+    return undefined;
   }
 
   /**
@@ -792,7 +841,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     await this._dropTargetIfDaemonDied(key);
     if (this._config && this._targetErrors.has(key) && !this._retriedTargets.has(key)) {
       this._retriedTargets.add(key);
-      const effective = this._wantedConfigs(this._config).find((c) => platformKey(c.platform) === key);
+      const effective = this._wantedConfigs(this._config).find((c) => targetKeyFor(c) === key);
       if (effective) await this._resolveOnePlatformTarget(effective);
     }
     return selectPlatformTarget(key, this._targets, this._targetErrors);
@@ -943,6 +992,11 @@ export class HeadlessTestDispatcher implements TestDispatcher {
               Object.assign(store, response.resetCapabilities);
               this._resetCapabilities.set(target.deviceSerial, store);
             }
+            for (const [serial, learned] of Object.entries(response.groupResetCapabilities ?? {})) {
+              const store = this._resetCapabilities.get(serial) ?? {};
+              Object.assign(store, learned);
+              this._resetCapabilities.set(serial, store);
+            }
             const results = response.results.map(deserializeTestResult);
             const suite = deserializeSuiteResult(response.suite);
             resolveOnce({ results, suite });
@@ -982,6 +1036,14 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         // script they happen to share.
         label: 'Run',
         resetCapabilities: this._resetCapabilities.get(target.deviceSerial),
+        ...(target.members && target.members.length > 0 ? {
+          groupMembers: target.members.map((m) => ({
+            name: m.name,
+            daemonAddress: m.address,
+            deviceSerial: m.deviceSerial,
+            resetCapabilities: this._resetCapabilities.get(m.deviceSerial),
+          })),
+        } : {}),
       };
 
       child.send(msg);

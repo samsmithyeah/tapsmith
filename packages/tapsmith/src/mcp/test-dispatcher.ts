@@ -87,6 +87,10 @@ export interface DeviceTarget {
   platform?: string
   device?: string
   error?: string
+  /** Group entry name (`alice`) when this device belongs to a `use.devices` project. */
+  name?: string
+  /** The `use.devices` project this device is a member of. */
+  group?: string
 }
 
 export interface SessionInfo {
@@ -143,5 +147,11 @@ export interface TestDispatcher {
    */
   resolveRequestedFiles?(files: string[]): string[]
   getSessionInfo(): SessionInfo
+  /**
+   * The serial behind a `use.devices` group name (`alice`), so device tools
+   * can take the name a test author uses instead of a serial. Optional: only
+   * dispatchers that hold group targets know any names.
+   */
+  resolveDeviceName?(name: string): string | undefined
   toggleWatch(filePath: string, options?: { testFilter?: string; project?: string }): { enabled: boolean }
 }

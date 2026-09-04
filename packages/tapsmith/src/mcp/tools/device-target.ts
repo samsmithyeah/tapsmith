@@ -16,7 +16,8 @@ export interface DeviceRequest {
 }
 
 export const DEVICE_ARG_DESCRIPTION =
-  'Serial of a device this session drives (see tapsmith_session_info). Never required: '
+  'Serial of a device this session drives (see tapsmith_session_info), or the group name '
+  + '(e.g. "alice") of a device in a `use.devices` project. Never required: '
   + 'a session on one platform acts on its primary device (worker 0 in UI mode), and a '
   + 'session spanning platforms takes `project`. Pass this only to single out one worker '
   + 'of a parallel run. A device the session merely *sees* cannot be acted on: its daemon '
@@ -49,7 +50,12 @@ export async function deviceClientFor(
   // `resolveDeviceTarget` points the daemon and records that it did — both
   // matter, and doing the pointing here left the pool's own account of itself
   // stale for every call that followed.
-  const { client } = await resolveDeviceTarget({ device: request.device, project });
+  // A group name (`alice`) names a device the way its tests do; resolve it to
+  // the serial the connection pool knows.
+  const device = request.device
+    ? dispatcher?.resolveDeviceName?.(request.device) ?? request.device
+    : undefined;
+  const { client } = await resolveDeviceTarget({ device, project });
   return client;
 }
 

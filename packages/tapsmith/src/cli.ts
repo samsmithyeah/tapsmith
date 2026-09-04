@@ -11,7 +11,7 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, EXPLICIT_WORKERS, isExplicitWorkers, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
+import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, deviceGroupSize, EXPLICIT_WORKERS, isExplicitWorkers, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
 import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
@@ -1689,8 +1689,48 @@ async function provisionMultiWorkerDevices(
   return { deviceSerials: serials, launched, freshSerials };
 }
 
+/**
+ * Worker device groups for a single-bucket UI / watch session: worker 0 is
+ * the group the sequential setup already opened (primary + `use.devices`
+ * members); further workers get `groupSize` devices each, provisioned like
+ * extra worker devices. `undefined` when the session stays single-worker.
+ */
+async function provisionWorkerGroups(
+  state: SequentialDeviceState,
+  modeName: string,
+  opts?: { quiet?: boolean; progress?: LaunchProgressSink },
+): Promise<{ workerGroups: string[][] | undefined; launched: LaunchedEmulator[] }> {
+  const config = state.effectiveConfig;
+  const groupSize = deviceGroupSize(config);
+  const firstGroup = state.sessions.map((s) => s.serial);
+  const pinned = resolveDeviceGroup(config).slice(1).some((e) => e.device);
+  if (config.workers <= 1 || pinned) return { workerGroups: undefined, launched: [] };
+  const provision = await provisionMultiWorkerDevices(config, modeName, {
+    ...opts,
+    wanted: config.workers * groupSize,
+    pinned: firstGroup.slice(1),
+  });
+  if (!provision.deviceSerials) return { workerGroups: undefined, launched: provision.launched };
+  const rest = provision.deviceSerials.filter((s) => !firstGroup.includes(s));
+  const groups = [firstGroup];
+  for (let i = 0; i + groupSize <= rest.length && groups.length < config.workers; i += groupSize) {
+    groups.push(rest.slice(i, i + groupSize));
+  }
+  if (groups.length < 2) {
+    if (!opts?.quiet && !opts?.progress) {
+      process.stderr.write(
+        `${YELLOW}Only ${provision.deviceSerials.length} device(s) available. ${modeName} needs ${2 * groupSize}+ for parallel. Using single-worker mode.${RESET}\n`,
+      );
+    }
+    return { workerGroups: undefined, launched: provision.launched };
+  }
+  return { workerGroups: groups, launched: provision.launched };
+}
+
 interface PerProjectProvisionResult {
   deviceSerials: string[]
+  /** One entry per worker: its device group, primary first. */
+  workerGroups: string[][]
   configByDevice: Map<string, import('./worker-protocol.js').SerializedConfig>
   bucketByDevice: Map<string, string>
   bucketByProject: Map<string, string>
@@ -1707,8 +1747,22 @@ async function provisionDevicesForBucket(
   effectiveConfig: TapsmithConfig,
   desiredWorkers: number,
   progress?: LaunchProgressSink,
+  pinnedMembers: string[] = [],
 ): Promise<{ serials: string[]; launched: LaunchedEmulator[]; reusedSimulatorCount: number }> {
   if (desiredWorkers <= 0) return { serials: [], launched: [], reusedSimulatorCount: 0 };
+  if (pinnedMembers.length > 0) {
+    // A pinned group is exactly one worker: the primary (pinned or the first
+    // device found), then the named members in order.
+    const primary = effectiveConfig.device
+      ? { serials: [effectiveConfig.device], launched: [] as LaunchedEmulator[], reusedSimulatorCount: 0 }
+      : await provisionDevicesForBucket({ ...effectiveConfig, devices: undefined }, 1 + pinnedMembers.length, progress);
+    const first = primary.serials.find((s) => !pinnedMembers.includes(s));
+    return {
+      serials: first ? [first, ...pinnedMembers] : pinnedMembers,
+      launched: primary.launched,
+      reusedSimulatorCount: primary.reusedSimulatorCount,
+    };
+  }
 
   if (effectiveConfig.platform === 'ios') {
     // Physical-device bucket: no `simulator` set → resolve a paired USB
@@ -1827,6 +1881,7 @@ async function provisionPerProjectDevices(
   progress?.start('worker-devices', 'preparing devices across project targets');
   const result: PerProjectProvisionResult = {
     deviceSerials: [],
+    workerGroups: [],
     configByDevice: new Map(),
     bucketByDevice: new Map(),
     bucketByProject: new Map(),
@@ -1854,38 +1909,54 @@ async function provisionPerProjectDevices(
     if (desiredWorkers === 0) return null;
 
     const bucketEffective = bucketProjects[0].effectiveConfig;
+    // A `use.devices` bucket needs `groupSize` devices per worker.
+    const groupSize = deviceGroupSize(bucketEffective);
+    const pinned = resolveDeviceGroup(bucketEffective).slice(1).flatMap((e) => (e.device ? [e.device] : []));
+    const workersWanted = pinned.length > 0 ? 1 : desiredWorkers;
+    const desiredDevices = workersWanted * groupSize;
     progress?.update(
       'worker-devices',
-      { state: 'running', detail: `preparing ${desiredWorkers} device(s) for ${bucketProjects.map((p) => p.name).join(', ')}` },
+      { state: 'running', detail: `preparing ${desiredDevices} device(s) for ${bucketProjects.map((p) => p.name).join(', ')}` },
     );
-    const provisioned = await provisionDevicesForBucket(bucketEffective, desiredWorkers, progress);
+    const provisioned = await provisionDevicesForBucket(bucketEffective, desiredDevices, progress, pinned);
 
     if (provisioned.serials.length === 0) {
       throw new Error(
         `Failed to provision any devices for bucket "${signature.split('|').slice(0, 2).join(' ')}".`,
       );
     }
-    if (provisioned.serials.length < desiredWorkers) {
-      const message = `Bucket "${bucketProjects.map((p) => p.name).join(',')}" requested ${desiredWorkers} workers but only ${provisioned.serials.length} device(s) could be provisioned.`;
+    if (provisioned.serials.length < groupSize) {
+      throw new Error(
+        `Bucket "${bucketProjects.map((p) => p.name).join(',')}" needs ${groupSize} device(s) per worker (use.devices) but only `
+        + `${provisioned.serials.length} could be provisioned (${provisioned.serials.join(', ')}).`,
+      );
+    }
+    if (provisioned.serials.length < desiredDevices) {
+      const message = `Bucket "${bucketProjects.map((p) => p.name).join(',')}" requested ${workersWanted} workers but only ${Math.floor(provisioned.serials.length / groupSize)} could be provisioned.`;
       if (progress) progress.note(message);
       else process.stderr.write(`${YELLOW}${message}${RESET}\n`);
     }
 
-    return { signature, bucketEffective, provisioned };
+    return { signature, bucketEffective, provisioned, groupSize };
   });
 
   const outcomes = await Promise.all(tasks);
 
   for (const outcome of outcomes) {
     if (!outcome) continue;
-    const { signature, bucketEffective, provisioned } = outcome;
+    const { signature, bucketEffective, provisioned, groupSize } = outcome;
     result.launched.push(...provisioned.launched);
     result.reusedSimulatorCount += provisioned.reusedSimulatorCount;
     const bucketSerialized = serializeConfig(bucketEffective);
-    for (const serial of provisioned.serials) {
+    // Whole groups only: a trailing partial group has no worker to serve.
+    const usable = provisioned.serials.slice(0, Math.floor(provisioned.serials.length / groupSize) * groupSize);
+    for (const serial of usable) {
       result.deviceSerials.push(serial);
       result.configByDevice.set(serial, bucketSerialized);
       result.bucketByDevice.set(serial, signature);
+    }
+    for (let i = 0; i < usable.length; i += groupSize) {
+      result.workerGroups.push(usable.slice(i, i + groupSize));
     }
   }
 
@@ -2570,7 +2641,7 @@ async function main(): Promise<void> {
           ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
           : undefined;
 
-      let uiDeviceSerials: string[] | undefined;
+      let uiWorkerGroups: string[][] | undefined;
       let uiConfigByDevice: Map<string, import('./worker-protocol.js').SerializedConfig> | undefined;
       let uiBucketByDevice: Map<string, string> | undefined;
       let uiBucketByProject: Map<string, string> | undefined;
@@ -2579,32 +2650,33 @@ async function main(): Promise<void> {
       if (isMultiBucketSequential) {
         // Multi-device-target projects: provision per-bucket devices.
         const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, launchProgress);
-        uiDeviceSerials = perBucket.deviceSerials;
+        uiWorkerGroups = perBucket.workerGroups;
         uiConfigByDevice = perBucket.configByDevice;
         uiBucketByDevice = perBucket.bucketByDevice;
         uiBucketByProject = perBucket.bucketByProject;
-        uiWorkersOverride = perBucket.deviceSerials.length;
+        uiWorkersOverride = perBucket.workerGroups.length;
         launchedEmulators = [...launchedEmulators, ...perBucket.launched];
       } else {
-        const uiProvision = await provisionMultiWorkerDevices(config, 'UI mode', {
+        const uiProvision = await provisionWorkerGroups(currentSequentialState, 'UI mode', {
           quiet: !args.tsxReexec,
           progress: launchProgress,
         });
-        uiDeviceSerials = uiProvision.deviceSerials;
+        uiWorkerGroups = uiProvision.workerGroups;
         launchedEmulators = [...launchedEmulators, ...uiProvision.launched];
-        if (uiDeviceSerials) uiWorkersOverride = config.workers;
+        if (uiWorkerGroups) uiWorkersOverride = uiWorkerGroups.length;
       }
       // Every UI session runs through persistent workers. With one device the
-      // single worker adopts the primary daemon/agent set up above, so the
-      // server always gets a serial list to build workers from.
-      if (!uiDeviceSerials || uiDeviceSerials.length === 0) {
+      // single worker adopts the primary daemon/agent set up above (and the
+      // group members opened beside it), so the server always gets a group
+      // list to build workers from.
+      if (!uiWorkerGroups || uiWorkerGroups.length === 0) {
         if (!config.device) {
           throw new Error(
             'UI mode: no device selected after setup — the primary device setup should have set config.device. ' +
               'Re-run with a --device/serial, or report this as a bug.',
           );
         }
-        uiDeviceSerials = [config.device];
+        uiWorkerGroups = [currentSequentialState.sessions.map((s) => s.serial)];
         uiWorkersOverride = 1;
       }
 
@@ -2624,7 +2696,10 @@ async function main(): Promise<void> {
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
         workers: uiWorkersOverride,
-        deviceSerials: uiDeviceSerials,
+        workerGroups: uiWorkerGroups,
+        primaryGroupMembers: currentSequentialState.sessions.slice(1).map((s) => ({
+          name: s.name, serial: s.serial, daemonAddress: s.daemonAddress,
+        })),
         configByDevice: uiConfigByDevice,
         bucketByDevice: uiBucketByDevice,
         bucketByProject: uiBucketByProject,
@@ -2659,7 +2734,7 @@ async function main(): Promise<void> {
           ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
           : undefined;
 
-      let watchDeviceSerials: string[] | undefined;
+      let watchWorkerGroups: string[][] | undefined;
       let watchConfigByDevice: Map<string, import('./worker-protocol.js').SerializedConfig> | undefined;
       let watchBucketByDevice: Map<string, string> | undefined;
       let watchBucketByProject: Map<string, string> | undefined;
@@ -2667,17 +2742,17 @@ async function main(): Promise<void> {
 
       if (isMultiBucketSequential) {
         const perBucket = await provisionPerProjectDevices(config, projects, budgetCap);
-        watchDeviceSerials = perBucket.deviceSerials;
+        watchWorkerGroups = perBucket.workerGroups;
         watchConfigByDevice = perBucket.configByDevice;
         watchBucketByDevice = perBucket.bucketByDevice;
         watchBucketByProject = perBucket.bucketByProject;
-        watchWorkersOverride = perBucket.deviceSerials.length;
+        watchWorkersOverride = perBucket.workerGroups.length;
         launchedEmulators = [...launchedEmulators, ...perBucket.launched];
       } else {
-        const watchProvision = await provisionMultiWorkerDevices(config, 'Watch mode', { quiet: !args.tsxReexec });
-        watchDeviceSerials = watchProvision.deviceSerials;
+        const watchProvision = await provisionWorkerGroups(currentSequentialState, 'Watch mode', { quiet: !args.tsxReexec });
+        watchWorkerGroups = watchProvision.workerGroups;
         launchedEmulators = [...launchedEmulators, ...watchProvision.launched];
-        if (watchDeviceSerials) watchWorkersOverride = config.workers;
+        if (watchWorkerGroups) watchWorkersOverride = watchWorkerGroups.length;
       }
 
       await runWatchMode({
@@ -2696,10 +2771,15 @@ async function main(): Promise<void> {
         // object; watch-run children seed from it and report back, so warm
         // per-policy resets survive the fresh-child-per-run boundary.
         resetCapabilities: currentSequentialState?.capabilities ?? {},
+        // The CLI keeps the group members' daemons alive across re-runs; each
+        // child attaches to them the way it attaches to the primary's.
+        groupMembers: currentSequentialState.sessions.slice(1).map((s) => ({
+          name: s.name, deviceSerial: s.serial, daemonAddress: s.daemonAddress, resetCapabilities: s.capabilities,
+        })),
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
         workers: watchWorkersOverride,
-        deviceSerials: watchDeviceSerials,
+        workerGroups: watchWorkerGroups,
         configByDevice: watchConfigByDevice,
         bucketByDevice: watchBucketByDevice,
         bucketByProject: watchBucketByProject,

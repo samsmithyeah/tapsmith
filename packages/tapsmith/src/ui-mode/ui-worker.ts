@@ -182,6 +182,8 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
         serial: m.deviceSerial,
         daemonAddress: `localhost:${m.daemonPort}`,
         freshDevice: m.freshEmulator,
+        adopt: m.adopt,
+        adoptPrepared: m.adopt ? msg.adoptPrepared : undefined,
       })),
     ],
     config,

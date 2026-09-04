@@ -29,10 +29,13 @@ import {
   deserializeTestResult,
   deserializeSuiteResult,
   serializeConfig,
+  configFromSerialized,
   type SerializedConfig,
   type RunFileUseOptions,
 } from './worker-protocol.js';
 import type { WatchRunMessage, WatchRunChildMessage } from './watch-run.js';
+import { resolveDeviceGroup } from './config.js';
+import { startDaemon } from './device-session.js';
 import type {
   UIWorkerMessage,
   UIWorkerChildMessage,
@@ -69,6 +72,13 @@ export interface WatchModeContext {
    * across re-runs instead of falling back to clear · file.
    */
   resetCapabilities?: import('./app-reset.js').ResetCapabilities
+  /**
+   * The rest of the primary's device group (`use.devices`), already opened by
+   * the CLI's sequential setup: each has a daemon the CLI keeps alive across
+   * re-runs. Single-device runs omit it. The capabilities are sticky per
+   * device like `resetCapabilities`, folded back from each child's `file-done`.
+   */
+  groupMembers?: Array<{ name: string; deviceSerial: string; daemonAddress: string; resetCapabilities: import('./app-reset.js').ResetCapabilities }>
   /** Resolved projects with test files populated. */
   projects?: ResolvedProject[]
   /** Dependency-ordered project waves from topologicalSort(). */
@@ -77,6 +87,11 @@ export interface WatchModeContext {
   workers?: number
   /** Device serials for multi-worker mode. */
   deviceSerials?: string[]
+  /**
+   * The device group of every worker, primary first — one entry per worker.
+   * Takes precedence over `deviceSerials` (single-device workers only).
+   */
+  workerGroups?: string[][]
   /**
    * Per-bucket maps for multi-device-target projects. When set, each
    * device serial is paired with its bucket's serialized config and
@@ -171,17 +186,22 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     daemonPort: number
     agentPort: number
     daemonProcess?: ChildProcess
+    /** Group member daemons this worker owns (`use.devices`). */
+    memberDaemons: ChildProcess[]
     busy: boolean
     retired?: boolean
     bucketSignature?: string
   }
 
-  const multiWorker = (ctx.workers ?? 1) > 1 && (ctx.deviceSerials?.length ?? 0) > 1;
+  const workerGroups: string[][] = ctx.workerGroups && ctx.workerGroups.length > 0
+    ? ctx.workerGroups
+    : (ctx.deviceSerials ?? []).map((s) => [s]);
+  const multiWorker = (ctx.workers ?? 1) > 1 && workerGroups.length > 1;
   const watchWorkers: WatchWorkerHandle[] = [];
   let workersReady = false;
 
   async function initializeWatchWorkers(): Promise<void> {
-    if (!ctx.deviceSerials || ctx.deviceSerials.length === 0) return;
+    if (workerGroups.length === 0) return;
 
     const baseDaemonPort = Number.parseInt(ctx.daemonAddress.split(':').pop() ?? '50051', 10);
     const baseAgentPort = 18700;
@@ -190,7 +210,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       ? path.resolve(ctx.config.rootDir, rawBin)
       : rawBin;
 
-    const numWorkers = Math.min(ctx.workers ?? 2, ctx.deviceSerials.length);
+    const numWorkers = Math.min(ctx.workers ?? 2, workerGroups.length);
     process.stderr.write(`${DIM}Initializing ${numWorkers} watch worker(s)...${RESET}\n`);
 
     // Kill stale daemons from a previous watch session that may still be
@@ -198,7 +218,15 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     // the old daemon instead of the freshly spawned one, which means daemon
     // binary updates (e.g. bug fixes) don't take effect until the user
     // manually kills the old processes.
-    const daemonPorts = Array.from({ length: numWorkers }, (_, i) => baseDaemonPort + 100 + i);
+    // Group members take ports past the per-worker band (at most 100 workers).
+    const memberPorts = (workerIndex: number, memberIndex: number): { daemonPort: number; agentPort: number } => {
+      const offset = 200 + workerIndex * 10 + memberIndex;
+      return { daemonPort: baseDaemonPort + offset, agentPort: baseAgentPort + offset };
+    };
+    const daemonPorts = [
+      ...Array.from({ length: numWorkers }, (_, i) => baseDaemonPort + 100 + i),
+      ...workerGroups.slice(0, numWorkers).flatMap((g, i) => g.slice(1).map((_, m) => memberPorts(i, m).daemonPort)),
+    ];
     for (const port of daemonPorts) {
       try {
         const { execFileSync } = await import('node:child_process');
@@ -211,15 +239,18 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     }
 
     for (let i = 0; i < numWorkers; i++) {
-      const deviceSerial = ctx.deviceSerials[i];
+      const [deviceSerial, ...memberSerials] = workerGroups[i];
       const daemonPort = baseDaemonPort + 100 + i;
       const agentPort = baseAgentPort + 100 + i;
       try {
-        const worker = await initOneWatchWorker(i, deviceSerial, daemonPort, agentPort, daemonBin);
+        const worker = await initOneWatchWorker(
+          i, deviceSerial, daemonPort, agentPort, daemonBin,
+          memberSerials.map((serial, m) => ({ serial, ...memberPorts(i, m) })),
+        );
         watchWorkers.push(worker);
       } catch (err) {
         process.stderr.write(
-          `${YELLOW}Skipping device ${deviceSerial}: ${err instanceof Error ? err.message : err}.${RESET}\n`,
+          `${YELLOW}Skipping device ${[deviceSerial, ...memberSerials].join('+')}: ${err instanceof Error ? err.message : err}.${RESET}\n`,
         );
       }
     }
@@ -240,9 +271,14 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     daemonPort: number,
     agentPort: number,
     daemonBin: string,
+    members: Array<{ serial: string; daemonPort: number; agentPort: number }> = [],
   ): Promise<WatchWorkerHandle> {
     const workerConfig = ctx.configByDevice?.get(deviceSerial) ?? serializedConfig;
     const workerBucketSig = ctx.bucketByDevice?.get(deviceSerial);
+    const groupNames = resolveDeviceGroup(configFromSerialized(workerConfig, `localhost:${daemonPort}`));
+    if (members.length !== groupNames.length - 1) {
+      throw new Error(`worker ${id}: config declares a device group of ${groupNames.length} but ${members.length + 1} device(s) were provisioned for it`);
+    }
     const daemonProcess = spawn(
       daemonBin,
       ['--port', String(daemonPort), '--agent-port', String(agentPort),
@@ -261,6 +297,22 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     // Only detach after confirmed ready so kill() works during init failure
     daemonProcess.unref();
 
+    // One more daemon per group member.
+    const memberDaemons: ChildProcess[] = [];
+    try {
+      for (const m of members) {
+        const daemon = await startDaemon({
+          daemonBin, port: m.daemonPort, agentPort: m.agentPort, platform: workerConfig.platform,
+          describe: `daemon for ${m.serial}`,
+        });
+        memberDaemons.push(daemon.process);
+      }
+    } catch (err) {
+      for (const d of memberDaemons) { try { d.kill(); } catch { /* already dead */ } }
+      try { daemonProcess.kill(); } catch { /* already dead */ }
+      throw err;
+    }
+
     const child = fork(resolvedWorkerScript, [], {
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
       ...(tsxBin ? { execPath: tsxBin } : {}),
@@ -269,7 +321,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     child.setMaxListeners(20);
 
     const worker: WatchWorkerHandle = {
-      id, process: child, deviceSerial, daemonPort, agentPort, daemonProcess, busy: false,
+      id, process: child, deviceSerial, daemonPort, agentPort, daemonProcess, memberDaemons, busy: false,
       bucketSignature: workerBucketSig,
     };
 
@@ -307,6 +359,9 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         daemonPort,
         config: workerConfig,
         screenshotDir: ctx.screenshotDir,
+        ...(members.length > 0 ? {
+          groupMembers: members.map((m, i) => ({ name: groupNames[i + 1].name, deviceSerial: m.serial, daemonPort: m.daemonPort })),
+        } : {}),
       } satisfies UIWorkerMessage);
     });
 
@@ -465,6 +520,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         }
       } catch { /* dead */ }
       try { worker.daemonProcess?.kill(); } catch { /* dead */ }
+      for (const d of worker.memberDaemons) { try { d.kill(); } catch { /* dead */ } }
     }
     watchWorkers.length = 0;
     workersReady = false;
@@ -827,6 +883,14 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         projectUseOptions,
         projectName,
         resetCapabilities: ctx.resetCapabilities,
+        ...(ctx.groupMembers && ctx.groupMembers.length > 0 ? {
+          groupMembers: ctx.groupMembers.map((m) => ({
+            name: m.name,
+            daemonAddress: m.daemonAddress,
+            deviceSerial: m.deviceSerial,
+            resetCapabilities: m.resetCapabilities,
+          })),
+        } : {}),
       };
 
       child.on('message', (response: WatchRunChildMessage) => {
@@ -845,6 +909,10 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
             // fresh child starts already-detected (a probe never demotes).
             if (ctx.resetCapabilities && response.resetCapabilities) {
               Object.assign(ctx.resetCapabilities, response.resetCapabilities);
+            }
+            for (const member of ctx.groupMembers ?? []) {
+              const learned = response.groupResetCapabilities?.[member.deviceSerial];
+              if (learned) Object.assign(member.resetCapabilities, learned);
             }
             const results = response.results.map(deserializeTestResult);
             const suite = deserializeSuiteResult(response.suite);

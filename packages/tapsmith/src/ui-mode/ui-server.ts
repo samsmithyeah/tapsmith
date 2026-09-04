@@ -41,6 +41,7 @@ import {
   deserializeTestResult,
   deserializeSuiteResult,
   serializeConfig,
+  configFromSerialized,
   type SerializedConfig,
   type RunFileUseOptions,
 } from '../worker-protocol.js';
@@ -59,6 +60,8 @@ import type {
   TestTreeUseOptions,
 } from './ui-protocol.js';
 import { encodeScreenFrame, type TestNodeStatus } from './ui-protocol.js';
+import { resolveDeviceGroup } from '../config.js';
+import { startDaemon, waitForDaemon } from '../device-session.js';
 import { RunQueue } from '../watch-queue.js';
 import { DeviceReadiness, toWireReadiness, type Candidate, type ReadinessCommand, type ReadinessEvent, type StaleReason } from './device-readiness.js';
 import { mergeResetCapabilities, nextCandidate as pickCandidate, policyForFile, type CandidateProject } from './readiness-candidate.js';
@@ -158,6 +161,18 @@ export interface UIServerContext {
   /** Device serials for multi-worker mode. */
   deviceSerials?: string[]
   /**
+   * The device group of every worker, primary first — one entry per worker.
+   * Takes precedence over `deviceSerials`, which describes single-device
+   * workers only. A `use.devices` project's workers list all their members.
+   */
+  workerGroups?: string[][]
+  /**
+   * Group members the CLI's sequential setup already opened beside the
+   * primary (daemon running, agent up, app launched). The worker adopting
+   * the primary adopts these too instead of provisioning them again.
+   */
+  primaryGroupMembers?: Array<{ name: string; serial: string; daemonAddress: string }>
+  /**
    * Per-bucket maps for multi-device-target projects. When set, each
    * device serial is paired with its bucket's serialized config and
    * worker dispatch routes files to workers in the matching bucket.
@@ -193,10 +208,24 @@ interface AdoptTarget {
   daemonPort: number
 }
 
+/** A secondary device of a UI worker's group, with the daemon that drives it. */
+interface UIWorkerMemberHandle {
+  name: string
+  deviceSerial: string
+  daemonPort: number
+  agentPort: number
+  daemonProcess?: ChildProcess
+  /** False when the CLI owns this daemon (adopted alongside the primary). */
+  ownsDaemon: boolean
+}
+
 interface UIWorkerHandle {
   id: number
   process: ChildProcess
+  /** The group's primary device. */
   deviceSerial: string
+  /** The rest of the worker's device group (`use.devices`); empty otherwise. */
+  members: UIWorkerMemberHandle[]
   /** Effective platform used to launch this worker's daemon. */
   platform?: 'android' | 'ios'
   /** Friendly display name, e.g. "iPhone 16 #1" for iOS or the serial for Android. */
@@ -663,9 +692,12 @@ export async function startUIServer(
   // device. A single device is one worker that *adopts* the daemon/agent the
   // CLI already provisioned (no second daemon, no second cold launch, and a
   // process that outlives the run so the device can be prepared between runs).
-  const workerSerials: string[] = ctx.deviceSerials && ctx.deviceSerials.length > 0
-    ? ctx.deviceSerials
-    : (ctx.deviceSerial ? [ctx.deviceSerial] : []);
+  const workerGroups: string[][] = ctx.workerGroups && ctx.workerGroups.length > 0
+    ? ctx.workerGroups
+    : ctx.deviceSerials && ctx.deviceSerials.length > 0
+      ? ctx.deviceSerials.map((s) => [s])
+      : (ctx.deviceSerial ? [[ctx.deviceSerial]] : []);
+  const workerSerials: string[] = workerGroups.map((g) => g[0]);
   const workersEnabled = workerSerials.length > 0;
   /** Progress label last reported by each worker (replayed to late clients). */
   const lastProgressByWorker = new Map<number, string>();
@@ -1484,6 +1516,28 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     return { client: ctx.client, daemonAddress: address, daemonPort: Number.parseInt(address.split(':').pop() ?? '50051', 10) };
   }
 
+  /**
+   * Daemon + agent ports for group member `m` of worker `i`. Past the
+   * per-worker band (`base+100+i`, at most 100 workers) so members never
+   * collide with another worker's primary.
+   */
+  function memberPorts(workerIndex: number, memberIndex: number): { daemonPort: number; agentPort: number } {
+    const baseDaemonPort = Number.parseInt((ctx.daemonAddress ?? ctx.config.daemonAddress).split(':').pop() ?? '50051', 10);
+    const offset = 200 + workerIndex * 10 + memberIndex;
+    return { daemonPort: baseDaemonPort + offset, agentPort: 18700 + offset };
+  }
+
+  /** A CLI-opened group member the primary's worker can adopt instead of provisioning. */
+  function adoptMemberFor(deviceSerial: string): { name: string; daemonPort: number } | undefined {
+    if (ctx.configByDevice) return undefined;
+    const member = ctx.primaryGroupMembers?.find((m) => m.serial === deviceSerial);
+    if (!member) return undefined;
+    return { name: member.name, daemonPort: Number.parseInt(member.daemonAddress.split(':').pop() ?? '0', 10) };
+  }
+
+  /** Listeners squatting on member daemon ports at startup (killed before spawning). */
+  let stalePidsByPortForMembers = new Map<number, number[]>();
+
   /** Initialize persistent workers. Called once during server startup. */
   async function initializeWorkers(): Promise<void> {
     if (!workersEnabled) return;
@@ -1515,9 +1569,12 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     const failedWorkerMessages: string[] = [];
 
     // Collect PIDs listening on all daemon ports in a single lsof call
-    // so each worker doesn't need to shell out individually.
+    // so each worker doesn't need to shell out individually. Group members
+    // take ports past the per-worker band (see memberPorts).
     const daemonPorts = Array.from({ length: numWorkers }, (_, i) => baseDaemonPort + 100 + i);
-    const stalePidsByPort = collectListeningPids(daemonPorts);
+    const memberDaemonPorts = workerGroups.flatMap((g, i) => g.slice(1).map((_, m) => memberPorts(i, m).daemonPort));
+    const stalePidsByPort = collectListeningPids([...daemonPorts, ...memberDaemonPorts]);
+    stalePidsByPortForMembers = stalePidsByPort;
 
     for (let i = 0; i < numWorkers; i++) {
       const deviceSerial = workerSerials[i];
@@ -1664,6 +1721,18 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     /** The adopted primary's startup launch is still unconsumed (initial spawn only). */
     adoptPrepared = false,
   ): Promise<UIWorkerHandle> {
+    // The rest of this worker's device group (`use.devices`), each on a
+    // daemon of its own — adopted from the CLI when it opened them beside
+    // the primary, spawned here otherwise.
+    const memberSerials = workerGroups[id]?.slice(1) ?? [];
+    const groupNames = resolveDeviceGroup(configFromSerialized(
+      ctx.configByDevice?.get(deviceSerial) ?? serializedConfig, `localhost:${daemonPort}`,
+    ));
+    if (memberSerials.length !== groupNames.length - 1) {
+      throw new Error(
+        `worker ${id}: config declares a device group of ${groupNames.length} but ${memberSerials.length + 1} device(s) were provisioned for it`,
+      );
+    }
     // Kill any stale daemon on this port from a previous run or another
     // Tapsmith instance so we always get a fresh daemon with the correct
     // --platform flag. Without this, waitForReady succeeds by connecting
@@ -1729,6 +1798,34 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       daemonProcess.unref();
     }
 
+    // Member daemons, spawned together — they are independent.
+    const members: UIWorkerMemberHandle[] = [];
+    try {
+      await Promise.all(memberSerials.map(async (serial, m) => {
+        const name = groupNames[m + 1].name;
+        const adoptMember = adopt ? adoptMemberFor(serial) : undefined;
+        if (adoptMember) {
+          const alive = await waitForDaemon(`localhost:${adoptMember.daemonPort}`, 5_000);
+          if (!alive) throw new Error(`primary group member ${name}'s daemon on port ${adoptMember.daemonPort} is not reachable`);
+          members[m] = { name, deviceSerial: serial, daemonPort: adoptMember.daemonPort, agentPort: 0, ownsDaemon: false };
+          return;
+        }
+        const ports = memberPorts(id, m);
+        for (const pid of stalePidsByPortForMembers.get(ports.daemonPort) ?? []) {
+          try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+        }
+        const daemon = await startDaemon({
+          daemonBin, port: ports.daemonPort, agentPort: ports.agentPort, platform: workerConfig.platform,
+          describe: `daemon for ${name}`,
+        });
+        members[m] = { name, deviceSerial: serial, ...ports, daemonProcess: daemon.process, ownsDaemon: true };
+      }));
+    } catch (err) {
+      for (const m of members) if (m?.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
+      if (!adopt) { try { daemonProcess?.kill(); } catch { /* already dead */ } }
+      throw err;
+    }
+
     // Fork ui-worker.ts
     const workerLoader = childLoader();
     const child = fork(resolvedWorkerScript, [], {
@@ -1750,6 +1847,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       id,
       process: child,
       deviceSerial,
+      members,
       platform: workerConfig.platform,
       displayName: deviceSerial,
       daemonPort,
@@ -1814,6 +1912,14 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         screenshotDir: ctx.screenshotDir,
         adoptPrimary: !!adopt,
         adoptPrepared: !!adopt && adoptPrepared,
+        ...(members.length > 0 ? {
+          groupMembers: members.map((m) => ({
+            name: m.name,
+            deviceSerial: m.deviceSerial,
+            daemonPort: m.daemonPort,
+            adopt: !m.ownsDaemon || undefined,
+          })),
+        } : {}),
       };
       child.send(initMsg);
     });
@@ -2508,6 +2614,9 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     if (worker.ownsDaemon !== false) {
       try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
     }
+    for (const m of worker.members) {
+      if (m.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
+    }
     if (worker.ownsScreenClient !== false) worker.screenClient?.close();
   }
 
@@ -2520,18 +2629,22 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
    * graceful teardown overruns.
    */
   function awaitDaemonExit(worker: UIWorkerHandle, graceMs = 5_000): Promise<void> {
-    const daemon = worker.daemonProcess;
-    if (!daemon || worker.ownsDaemon === false) return Promise.resolve();
-    if (daemon.exitCode !== null || daemon.signalCode !== null) return Promise.resolve();
-    return new Promise((resolve) => {
-      const killTimer = setTimeout(() => {
-        try { daemon.kill('SIGKILL'); } catch { /* already dead */ }
-      }, graceMs);
-      // A daemon that ignores SIGKILL too (unkillable state) must not wedge
-      // the respawn forever — give up and let the bind attempt report it.
-      const giveUp = setTimeout(() => { clearTimeout(killTimer); resolve(); }, graceMs + 2_000);
-      daemon.once('exit', () => { clearTimeout(killTimer); clearTimeout(giveUp); resolve(); });
-    });
+    const owned = [
+      ...(worker.ownsDaemon !== false && worker.daemonProcess ? [worker.daemonProcess] : []),
+      ...worker.members.flatMap((m) => (m.ownsDaemon && m.daemonProcess ? [m.daemonProcess] : [])),
+    ];
+    return Promise.all(owned.map((daemon) => {
+      if (daemon.exitCode !== null || daemon.signalCode !== null) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        const killTimer = setTimeout(() => {
+          try { daemon.kill('SIGKILL'); } catch { /* already dead */ }
+        }, graceMs);
+        // A daemon that ignores SIGKILL too (unkillable state) must not wedge
+        // the respawn forever — give up and let the bind attempt report it.
+        const giveUp = setTimeout(() => { clearTimeout(killTimer); resolve(); }, graceMs + 2_000);
+        daemon.once('exit', () => { clearTimeout(killTimer); clearTimeout(giveUp); resolve(); });
+      });
+    })).then(() => undefined);
   }
 
   /**
@@ -2599,12 +2712,12 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       // alive; otherwise (or if the primary died) it gets its own daemon.
       let adopt = adoptTargetFor(worker.deviceSerial);
       if (adopt && !(await adopt.client.waitForReady(2_000))) adopt = undefined;
-      if (!adopt) {
-        // The replacement rebinds this worker's daemon port: the old daemon
-        // has to be gone first, not merely signalled.
-        releaseWorkerResources(worker);
-        await awaitDaemonExit(worker);
-      }
+      // The replacement rebinds this worker's daemon ports (its own, and any
+      // group member daemons it spawned): the old daemons have to be gone
+      // first, not merely signalled. An adopting worker keeps the CLI's.
+      if (!adopt) releaseWorkerResources(worker);
+      else for (const m of worker.members) if (m.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
+      await awaitDaemonExit(worker);
       const daemonPort = adopt?.daemonPort ?? baseDaemonPort + 100 + worker.id;
 
       const newWorker = await initializeOneWorker(
@@ -4176,16 +4289,25 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     if (url.pathname === '/api/daemon-ports' && req.method === 'GET') {
       const daemons = uiWorkers
         .filter(w => !w.retired)
-        .map(w => ({
-          address: `127.0.0.1:${w.daemonPort}`,
-          deviceSerial: w.deviceSerial,
-          // Resolved, like every other consumer of a worker's platform: the raw
-          // field comes from the bucket config and is unset when that config
-          // declares no platform. An MCP session tags its connection from this,
-          // and an untagged one matches no project — so `tap({project: 'ios'})`
-          // would report no ios device with the worker sitting right there.
-          platform: resolveWorkerPlatform(ctx, w),
-        }));
+        .flatMap(w => [
+          {
+            address: `127.0.0.1:${w.daemonPort}`,
+            deviceSerial: w.deviceSerial,
+            // Resolved, like every other consumer of a worker's platform: the raw
+            // field comes from the bucket config and is unset when that config
+            // declares no platform. An MCP session tags its connection from this,
+            // and an untagged one matches no project — so `tap({project: 'ios'})`
+            // would report no ios device with the worker sitting right there.
+            platform: resolveWorkerPlatform(ctx, w),
+          },
+          // Group members are this session's too — a headless MCP server must
+          // not claim their daemons.
+          ...w.members.map((m) => ({
+            address: `127.0.0.1:${m.daemonPort}`,
+            deviceSerial: m.deviceSerial,
+            platform: resolveWorkerPlatform(ctx, w),
+          })),
+        ]);
       // Every daemon this session drives, workers *and* the primary one. A
       // headless MCP server has to be able to tell that the daemon at the
       // default address belongs to a UI run: it reaches that address through

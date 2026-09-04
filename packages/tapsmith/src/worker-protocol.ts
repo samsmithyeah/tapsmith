@@ -40,6 +40,12 @@ export interface WorkerGroupMember {
   daemonPort: number
   /** Freshly provisioned for this run (needs reinstall + warmup). */
   freshEmulator?: boolean
+  /**
+   * The daemon already holds this device with the agent running and the app
+   * launched (the CLI's sequential setup opened it): attach instead of
+   * provisioning. UI workers adopting the CLI's primary adopt its group too.
+   */
+  adopt?: boolean
 }
 
 export interface RunFileMessage {
