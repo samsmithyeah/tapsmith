@@ -3,7 +3,8 @@ import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo, DeviceActivityMessage, UIPreferences } from './ui-protocol.js';
 import { inferDevicePlatform, DEFAULT_UI_PREFERENCES, type DevicePlatform } from './ui-protocol.js';
-import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata, SourceLocation } from '../trace/types.js';
+import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata, TraceDeviceInfo, SourceLocation } from '../trace/types.js';
+import { actingDevice, frameIndexForDevice, hierarchyForDeviceFrame, type DeviceGroupView } from '../trace-viewer/components/device-frames.js';
 import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { useWebSocket } from './hooks/use-websocket.js';
 import {
@@ -453,6 +454,21 @@ function App() {
   }, [viewedTestWorker, viewedTestProject, testDeviceSerial, devicePlatform]);
 
   const viewedIsolation = currentTrace?.isolation;
+  // A `use.devices` worker: the trace's device group, as a packaged archive
+  // would list it, so the live view gets the same side-by-side panes and
+  // device filters as the standalone viewer.
+  const viewedGroupDevices = useMemo<TraceDeviceInfo[] | undefined>(() => {
+    const devices = viewedTestWorker?.devices;
+    if (!devices || devices.length < 2) return undefined;
+    return devices.map((d) => ({
+      name: d.name,
+      serial: d.deviceSerial,
+      model: d.displayName,
+      platform: d.platform,
+      devicePixelRatio: d.devicePixelRatio,
+      isEmulator: d.isEmulator ?? false,
+    }));
+  }, [viewedTestWorker]);
   const metadata = useMemo<TraceMetadata>(() => ({
     version: 1,
     tapsmithVersion,
@@ -478,7 +494,8 @@ function App() {
     appReset: viewedIsolation?.appReset,
     appResetScope: viewedIsolation?.appResetScope,
     appState: viewedIsolation?.appState,
-  }), [viewedTestName, viewedTestFile, viewedTestNode, viewedTestProject, isRunning, actionEvents.length, screenshots.size, testDeviceSerial, deviceIsEmulator, tapsmithVersion, viewedIsolation]);
+    devices: viewedGroupDevices,
+  }), [viewedTestName, viewedTestFile, viewedTestNode, viewedTestProject, isRunning, actionEvents.length, screenshots.size, testDeviceSerial, deviceIsEmulator, tapsmithVersion, viewedIsolation, viewedGroupDevices]);
 
   // Prefer a real completed event at this index; fall back to a synthesized
   // one from the in-flight slot so ScreenshotPanel can render the before-
@@ -540,15 +557,39 @@ function App() {
   // picks on a before-screenshot would hit-test the after-hierarchy.
   const [screenshotVariant, setScreenshotVariant] = useState<'before' | 'after'>('before');
 
+  // Multi-device: the pane the user last clicked (picking, Locator tab).
+  // Reset whenever the selection moves so each step opens on its acting device.
+  const [activeDeviceOverride, setActiveDeviceOverride] = useState<string | undefined>(undefined);
+  useEffect(() => { setActiveDeviceOverride(undefined); }, [selectedIndex, viewedTraceKey]);
+  const group = useMemo<DeviceGroupView | undefined>(() => {
+    if (!viewedGroupDevices) return undefined;
+    const acting = actingDevice({ devices: viewedGroupDevices }, selectedEvent);
+    const override = activeDeviceOverride && viewedGroupDevices.some((d) => d.name === activeDeviceOverride)
+      ? activeDeviceOverride
+      : undefined;
+    return {
+      devices: viewedGroupDevices,
+      actionEvents,
+      actionCount: actionEvents.length,
+      hierarchies,
+      activeDevice: override ?? acting,
+      onActiveDeviceChange: setActiveDeviceOverride,
+    };
+  }, [viewedGroupDevices, actionEvents, hierarchies, selectedEvent, activeDeviceOverride]);
+
   // Hierarchy for the current action (used by selector playground) — resolved
   // to depict the same moment as the displayed screenshot, borrowing for
   // actions that capture none (network family). PILOT-302.
-  const currentHierarchy = useMemo(
-    () => selectedEvent
-      ? resolveActionHierarchy(hierarchies, screenshots, selectedEvent.actionIndex, screenshotVariant)
-      : undefined,
-    [selectedEvent, hierarchies, screenshots, screenshotVariant],
-  );
+  const currentHierarchy = useMemo(() => {
+    if (!selectedEvent) return undefined;
+    // A non-acting pane is bound to its own device's frame, not the step's.
+    if (group && group.activeDevice && group.activeDevice !== actingDevice(group, selectedEvent)) {
+      const frame = frameIndexForDevice(group, group.activeDevice, selectedEvent.actionIndex, screenshotVariant);
+      const xml = hierarchyForDeviceFrame(group, frame);
+      return xml ? { xml } : undefined;
+    }
+    return resolveActionHierarchy(hierarchies, screenshots, selectedEvent.actionIndex, screenshotVariant);
+  }, [selectedEvent, hierarchies, screenshots, screenshotVariant, group]);
 
   // Keyed on the xml string, not the wrapper object: the trace maps are
   // rebuilt on every streamed message, and re-parsing a large tree per
@@ -1744,6 +1785,7 @@ function App() {
               pickUnavailable={!!selectedEvent && currentRoots.length === 0}
               onDisplayedVariantChange={setScreenshotVariant}
               devicePixelRatio={viewedTestDpr}
+              group={group}
               testName={metadata.testName}
               testStatus={metadata.testStatus}
               onDownloadTrace={currentTrace?.tracePath ? handleDownloadTrace : undefined}
@@ -1807,6 +1849,7 @@ function App() {
           onHierarchyNodeSelect={setHierarchyHighlight}
           pickMode={pickTarget !== null}
           previewHighlight={previewHighlight}
+          group={group}
           locatorTab={
             <SelectorTab
               hierarchyXml={selectorSource === 'live' ? (liveHierarchyXml ?? undefined) : currentHierarchyXml}

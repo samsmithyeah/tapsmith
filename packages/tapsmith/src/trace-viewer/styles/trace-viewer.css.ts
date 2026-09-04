@@ -375,10 +375,17 @@ html, body, #app {
 .action-device-tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.02em; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: var(--accent-dim, rgba(120, 140, 255, 0.18)); color: var(--fg, #ddd); vertical-align: middle; }
 
 /* ─── Multi-device traces (PILOT-310) ─── */
-.film-lanes { display: flex; flex-direction: column; min-width: 100%; overflow-x: auto; overflow-y: hidden; }
-.film-lane { display: flex; align-items: flex-end; }
-.film-lane-label { flex-shrink: 0; width: 56px; padding: 0 6px 6px; font-size: 10px; font-weight: 600; color: var(--fg-dim); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.film-lane-inner { flex: 1; min-height: 0; overflow: visible; padding-top: 2px; padding-bottom: 2px; }
+/* The lanes share the single filmstrip row: thumbnails shrink by the lane
+   count so two users fit where one did, and the strip clips rather than
+   spilling over the panels below it (which would swallow their clicks). */
+.timeline:has(.film-lanes) { height: 100%; overflow: hidden; }
+.film-lanes { display: flex; flex: 1; flex-direction: column; min-width: 100%; min-height: 0; overflow-x: auto; overflow-y: hidden; }
+.film-lane { display: flex; align-items: flex-end; min-height: 0; }
+.film-lane-label { flex-shrink: 0; width: 56px; padding: 0 6px 4px; font-size: 10px; font-weight: 600; color: var(--fg-dim); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.film-lane-inner { flex: 1; min-height: 0; overflow: visible; padding: 2px 8px; }
+.film-lane .film-frame { gap: 2px; }
+.film-lane .timeline-thumb, .film-lane .film-thumb { height: calc((var(--filmstrip-h, 130px) - 28px) / var(--lane-count, 2) - 18px); }
+.film-lane .timeline-placeholder, .film-lane .film-thumb.timeline-placeholder { height: calc((var(--filmstrip-h, 130px) - 28px) / var(--lane-count, 2) - 21px); }
 .film-lane + .film-lane .film-lane-inner { border-top: 1px dashed var(--border); }
 .film-gap { width: 42px; min-height: 1px; }
 .hier-device-toggle { display: flex; gap: 4px; padding: 6px 8px 0; }

@@ -200,7 +200,7 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
       {isMultiDevice(metadata) ? (
         // One lane per device: the same chronological strip, split by the
         // device that acted, so a two-user conversation reads as two rows.
-        <div class="film-lanes" data-testid="film-lanes">
+        <div class="film-lanes" data-testid="film-lanes" style={{ '--lane-count': String(metadata.devices!.length) }}>
           {metadata.devices!.map((d) => {
             const name = d.name ?? '';
             const group = { devices: metadata.devices! };

@@ -536,12 +536,10 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
               const name = d.name ?? '';
               const isActing = name === acting;
               const isActive = name === active;
-              // The acting device follows the displayed stage; the others show
-              // their state at that same moment (their next capture past the
-              // step for the Action/After stages, their latest before it for
-              // Before).
-              const variant = isActing ? displayedVariant : (tab === 'before' ? 'before' : 'after');
-              const frameIndex = frameIndexForDevice(group, name, event.actionIndex, variant);
+              // Every pane depicts the moment the acting pane displays: for a
+              // "before" moment the others show their latest capture at or
+              // before the step, for "after" their next capture past it.
+              const frameIndex = frameIndexForDevice(group, name, event.actionIndex, displayedVariant);
               const url = screenshotForFrame(screenshots, frameIndex);
               return (
                 <ScreenshotDevicePane
@@ -946,8 +944,8 @@ function ScreenshotDevicePane({
     >
       <div class="screenshot-pane-label">
         <span class="action-device-tag">{name}</span>
-        {acting && <span class="screenshot-pane-role">acting</span>}
-        {!acting && active && <span class="screenshot-pane-role">selected</span>}
+        {acting && <span class="screenshot-pane-role" data-testid="screenshot-pane-role">acting</span>}
+        {!acting && active && <span class="screenshot-pane-role" data-testid="screenshot-pane-role">selected</span>}
       </div>
       <div class="screenshot-pane-body">
         {framed ? (

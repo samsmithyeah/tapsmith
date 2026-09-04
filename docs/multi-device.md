@@ -133,16 +133,26 @@ story, and it needs to live in one file.
 - Every action, assertion and device-log line carries the `deviceId` of the
   device that produced it, and the trace's metadata lists every device of the
   group (`devices`, primary first) with its own pixel ratio and platform.
-- The trace viewer shows a device badge on each row, lists every device in the
-  Metadata tab, scales bounds by the acting device's pixel ratio, and treats
-  the "after" state of an action as the next capture **on the same device**
-  rather than the next action overall (which may belong to the other user).
-- Network entries record which device's proxy captured them.
+- The trace viewer shows **one screenshot pane per device, side by side**. The
+  pane of the device that acted is outlined and follows the Action / Before /
+  After stages; the other panes show that device's state at the same moment
+  (its latest capture before the step, or its next capture after it). Bounds
+  are scaled by each device's own pixel ratio. Clicking another pane selects
+  it, and pick mode then resolves locators against *that* device's captured
+  hierarchy.
+- The filmstrip splits into **one lane per device**, so a two-user conversation
+  reads as two rows on one timeline. Every action row carries a device badge,
+  and the Metadata tab lists every device.
+- The Console and Network tabs offer a **filter pill per device**; network rows
+  show which device's proxy captured them. The Hierarchy tab defaults to the
+  acting device's tree and has a toggle to view the other device's tree at the
+  frame its pane displays. Device and daemon log lines keep the timestamp the
+  daemon recorded, so lines from two devices interleave in true order.
 - `tapsmith_read_trace` prefixes each step with the device name and prints one
   device-log section per device.
 
-Side-by-side screenshot panes and per-device filmstrip lanes are planned
-follow-ups; today the panel shows the acting device's frame.
+UI mode's live trace view renders the same panes, lanes and filters for a test
+that ran on a device group.
 
 ## Run modes
 
@@ -152,7 +162,7 @@ Device groups work in every run mode. Each mode holds one group per worker:
 | --- | --- |
 | `tapsmith test` (sequential) | The primary is set up as usual; the other members get their own daemons on free ports before the first file runs. Switching to a project with a different group tears the previous one down. |
 | `tapsmith test --workers N` | Each worker receives `N × groupSize` device slots; the dispatcher provisions that many devices and hands each worker its chunk. A group project's own `workers` should be kept low. |
-| `--ui` and `--watch` | Worker 0 adopts the CLI's group; further workers get their own. The device mirror shows the primary device. |
+| `--ui` and `--watch` | Worker 0 adopts the CLI's group; further workers get their own. The device pane has one tab per member (labelled `<worker> · <name>`), the **All** view tiles every member, and pick mode and mirror gestures target the member whose tab is open. |
 | `tapsmith mcp-server` | A group project resolves its own set of daemons; `tapsmith_run_tests` runs against all of them. Device tools accept a member's **name** (`device: "bob"`) in place of a serial, and `tapsmith_session_info` lists each member. |
 
 ## Limits

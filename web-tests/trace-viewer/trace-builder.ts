@@ -176,6 +176,9 @@ export function assertionEvent(o: {
   stack?: SourceLocation[]
   /** Group name of the device that was asserted on (multi-device traces). */
   deviceId?: string
+  /** Assertions capture a before-hierarchy (and screenshot) like actions do. */
+  screenshots?: { before?: boolean; after?: boolean }
+  hierarchies?: { before?: boolean; after?: boolean }
 }): AssertionTraceEvent {
   return {
     type: "assertion",
@@ -194,10 +197,10 @@ export function assertionEvent(o: {
     actual: o.actual,
     sourceLocation: o.sourceLocation ?? o.stack?.[0],
     stack: o.stack,
-    hasScreenshotBefore: false,
-    hasScreenshotAfter: false,
-    hasHierarchyBefore: false,
-    hasHierarchyAfter: false,
+    hasScreenshotBefore: !!o.screenshots?.before,
+    hasScreenshotAfter: !!o.screenshots?.after,
+    hasHierarchyBefore: !!o.hierarchies?.before,
+    hasHierarchyAfter: !!o.hierarchies?.after,
   }
 }
 
