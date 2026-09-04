@@ -8,6 +8,7 @@ import { resolveSourceView } from './source-view-utils.js';
 import { HierarchyTree } from './HierarchyTree.js';
 import type { Bounds } from './HierarchyTree.js';
 import { NetworkTab } from './NetworkTab.js';
+import { actingDevice, deviceNamesFor, frameIndexForDevice, hierarchyForDeviceFrame, type DeviceGroupView } from './device-frames.js';
 import { parseSelectorParts } from './ActionsPanel.js';
 
 interface Props {
@@ -26,6 +27,8 @@ interface Props {
    * a test that hasn't run yet). Ignored once a real event drives the view.
    */
   previewHighlight?: SourceLocation
+  /** A multi-device trace's group — drives the per-device console/network filters and the hierarchy toggle. */
+  group?: DeviceGroupView
 }
 
 type DetailTab = 'call' | 'log' | 'console' | 'source' | 'hierarchy' | 'locator' | 'errors' | 'network'
@@ -43,8 +46,13 @@ function deviceForEvent(
   return group.find((d) => d.name === event.deviceId) ?? metadata.device;
 }
 
-export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode, previewHighlight }: Props) {
+export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode, previewHighlight, group }: Props) {
   const testError = metadata.error;
+  // Device names of a multi-device trace, for the per-device filters.
+  const deviceNames = useMemo(
+    () => (metadata.devices && metadata.devices.length > 1 ? deviceNamesFor(metadata, networkEntries) : []),
+    [metadata, networkEntries],
+  );
   const [tab, setTab] = usePersistedString('tapsmith-detail-tab', 'call') as [DetailTab, (v: DetailTab) => void];
 
   const hasActionError = event && (
@@ -188,11 +196,11 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
       >
         {activeTab === 'call' && <CallTab event={event} metadata={metadata} />}
         {activeTab === 'log' && <LogTab event={event} />}
-        {activeTab === 'console' && <ConsoleTab event={event} events={consoleEvents} metadata={metadata} />}
+        {activeTab === 'console' && <ConsoleTab event={event} events={consoleEvents} metadata={metadata} deviceNames={deviceNames} />}
         {activeTab === 'source' && <SourceTab event={event} sources={sources} previewHighlight={previewHighlight} />}
-        {activeTab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} />}
+        {activeTab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} group={group} />}
         {activeTab === 'locator' && locatorTab}
-        {activeTab === 'network' && <NetworkTab entries={networkEntries} bodies={networkBodies} />}
+        {activeTab === 'network' && <NetworkTab entries={networkEntries} bodies={networkBodies} deviceNames={deviceNames} />}
         {activeTab === 'errors' && <ErrorsTab event={event} events={events} testError={testError} sources={sources} />}
       </div>
     </div>
@@ -344,7 +352,8 @@ function LogTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | und
 
 // ─── Console Tab ───
 
-type SourceFilter = 'all' | 'test' | 'device' | 'daemon'
+/** `all`, a source, or — in a multi-device trace — a device name. */
+type SourceFilter = string
 type ConsoleTimeMode = 'relative' | 'absolute'
 type ConsoleSortColumn = 'time' | 'level' | 'source' | 'message'
 type ConsoleSortDirection = 'asc' | 'desc'
@@ -374,7 +383,7 @@ function formatConsoleWallClock(ts: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
-function ConsoleTab({ event, events: consoleEvents, metadata }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; events: ConsoleTraceEvent[]; metadata: TraceMetadata }) {
+function ConsoleTab({ event, events: consoleEvents, metadata, deviceNames = [] }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; events: ConsoleTraceEvent[]; metadata: TraceMetadata; deviceNames?: string[] }) {
   const [search, setSearch] = useState('');
   // Offsets are relative to the test start. UI mode never has one: the SPA is
   // not told when a test began (`ui-mode/main.tsx` builds its live metadata with
@@ -406,21 +415,31 @@ function ConsoleTab({ event, events: consoleEvents, metadata }: { event: ActionT
     for (const e of consoleEvents) s.add(e.source as SourceFilter);
     return s;
   }, [consoleEvents]);
-  const showSourceFilter = presentSources.size > 1;
+  // A multi-device trace tags device and daemon lines with the device that
+  // produced them; one pill per device narrows the list to that device.
+  const presentDevices = useMemo(() => {
+    const present = new Set<string>();
+    for (const e of consoleEvents) if (e.deviceId) present.add(e.deviceId);
+    return deviceNames.filter((n) => present.has(n));
+  }, [consoleEvents, deviceNames]);
+  const showSourceFilter = presentSources.size > 1 || presentDevices.length > 1;
 
   // If the active source filter is no longer present (e.g. switching to an
   // event with no daemon logs), reset to 'all' so the tab isn't confusingly empty.
   useEffect(() => {
-    if (sourceFilter !== 'all' && !presentSources.has(sourceFilter)) {
+    if (sourceFilter !== 'all' && !presentSources.has(sourceFilter) && !presentDevices.includes(sourceFilter)) {
       setSourceFilter('all');
     }
-  }, [presentSources, sourceFilter]);
+  }, [presentSources, presentDevices, sourceFilter]);
 
   const filtered = useMemo(() => {
     const lf = search.toLowerCase();
     const result = consoleEvents.filter(e => {
       if (!levelFilter.has(e.level as ConsoleLevel)) return false;
-      if (sourceFilter !== 'all' && e.source !== sourceFilter) return false;
+      if (sourceFilter !== 'all') {
+        const byDevice = presentDevices.includes(sourceFilter);
+        if (byDevice ? e.deviceId !== sourceFilter : e.source !== sourceFilter) return false;
+      }
       if (scopeToAction && event && Math.abs(e.actionIndex - event.actionIndex) > 1) return false;
       if (lf && !e.message.toLowerCase().includes(lf)) return false;
       return true;
@@ -439,7 +458,7 @@ function ConsoleTab({ event, events: consoleEvents, metadata }: { event: ActionT
       return sortDirection === 'asc' ? cmp : -cmp;
     });
     return result;
-  }, [consoleEvents, search, levelFilter, sourceFilter, scopeToAction, event, sortColumn, sortDirection]);
+  }, [consoleEvents, search, levelFilter, sourceFilter, presentDevices, scopeToAction, event, sortColumn, sortDirection]);
 
   const handleSort = (col: ConsoleSortColumn) => {
     if (sortColumn === col) {
@@ -484,16 +503,26 @@ function ConsoleTab({ event, events: consoleEvents, metadata }: { event: ActionT
         {showSourceFilter && (
           <>
             <div class="con-pill-sep" />
-            <div class="con-pills">
+            <div class="con-pills" role="group" aria-label="Filter by source">
               {(['all', 'test', 'device', 'daemon'] as SourceFilter[])
                 .filter(s => s === 'all' || presentSources.has(s))
                 .map(s => (
                   <button
                     key={s}
                     class={`con-pill${sourceFilter === s ? ' active' : ''}`}
+                    aria-pressed={sourceFilter === s}
                     onClick={() => setSourceFilter(s)}
                   >{s}</button>
                 ))}
+              {presentDevices.length > 1 && presentDevices.map((name) => (
+                <button
+                  key={`device-${name}`}
+                  class={`con-pill con-pill-device${sourceFilter === name ? ' active' : ''}`}
+                  aria-pressed={sourceFilter === name}
+                  data-testid="console-device-pill"
+                  onClick={() => setSourceFilter(name)}
+                >{name}</button>
+              ))}
             </div>
           </>
         )}
@@ -784,21 +813,63 @@ function SourceTab({ event, sources, previewHighlight }: { event: ActionTraceEve
 
 // ─── Hierarchy Tab ───
 
-function HierarchyTabWrapper({ event, hierarchies, onNodeSelect }: {
+function HierarchyTabWrapper({ event, hierarchies, onNodeSelect, group }: {
   event: ActionTraceEvent | AssertionTraceEvent | undefined
   hierarchies: Map<string, string>
   onNodeSelect?: (bounds: Bounds | null) => void
+  group?: DeviceGroupView
 }) {
+  // Multi-device: default to the pane the viewer has active (the acting device
+  // unless the user clicked another pane); the toggle views a different
+  // device's tree at the frame its pane displays.
+  const multi = !!group && group.devices.length > 1;
+  const defaultDevice = multi ? (group!.activeDevice ?? actingDevice(group!, event)) : undefined;
+  const [chosen, setChosen] = useState<string | undefined>(undefined);
+  const eventKey = event ? `${event.type}-${event.actionIndex}-${defaultDevice ?? ''}` : 'none';
+  useEffect(() => { setChosen(undefined); }, [eventKey]);
+  const shownDevice = multi && chosen && group!.devices.some((d) => d.name === chosen) ? chosen : defaultDevice;
+
   if (!event || hierarchies.size === 0) return <div class="no-content" data-testid="no-content">No view hierarchy available</div>;
 
-  const pad = String(event.actionIndex).padStart(3, '0');
-  const afterKey = `hierarchy/action-${pad}-after.xml`;
-  const beforeKey = `hierarchy/action-${pad}-before.xml`;
-  const xml = hierarchies.get(afterKey) ?? hierarchies.get(beforeKey);
+  let xml: string | undefined;
+  if (multi && shownDevice && shownDevice !== actingDevice(group!, event)) {
+    xml = hierarchyForDeviceFrame(group!, frameIndexForDevice(group!, shownDevice, event.actionIndex, 'after'));
+  } else {
+    const pad = String(event.actionIndex).padStart(3, '0');
+    const afterKey = `hierarchy/action-${pad}-after.xml`;
+    const beforeKey = `hierarchy/action-${pad}-before.xml`;
+    xml = hierarchies.get(afterKey) ?? hierarchies.get(beforeKey);
+  }
 
-  if (!xml) return <div class="no-content" data-testid="no-content">No hierarchy snapshot for this action</div>;
+  const toggle = multi ? (
+    <div class="hier-device-toggle" role="group" aria-label="Hierarchy device">
+      {group!.devices.map((d) => (
+        <button
+          key={d.name}
+          class={`con-pill${shownDevice === d.name ? ' active' : ''}`}
+          aria-pressed={shownDevice === d.name}
+          data-testid="hierarchy-device-pill"
+          onClick={() => setChosen(d.name)}
+        >{d.name}</button>
+      ))}
+    </div>
+  ) : null;
 
-  return <HierarchyTree xml={xml} onNodeSelect={onNodeSelect} />;
+  if (!xml) {
+    return (
+      <div>
+        {toggle}
+        <div class="no-content" data-testid="no-content">No hierarchy snapshot for this action</div>
+      </div>
+    );
+  }
+
+  return (
+    <div class={multi ? 'hier-with-toggle' : undefined}>
+      {toggle}
+      <HierarchyTree xml={xml} onNodeSelect={onNodeSelect} />
+    </div>
+  );
 }
 
 // ─── Errors Tab ───

@@ -1,16 +1,17 @@
 /**
  * DevicePane — dedicated device mirror pane with multi-worker support.
  *
- * Single-worker: shows DeviceMirror directly.
- * Multi-worker: worker tabs (All + per-worker) with status dots.
- *   - Per-worker tab: single DeviceMirror for the selected worker.
- *   - "All" tab: vertical grid of all worker devices.
+ * Single device: shows DeviceMirror directly.
+ * Several devices (several workers, or a `use.devices` worker whose group
+ * has several members): device tabs (All + one per device) with status dots.
+ *   - Per-device tab: single DeviceMirror for that worker's device.
+ *   - "All" tab: grid of every device of every worker.
  */
 
 import type { RefObject } from 'preact';
 import { useRef, useEffect } from 'preact/hooks';
 import { Lock, LockOpen, Focus } from 'lucide-preact';
-import type { WorkerInfo, ClientMessage, DevicePlatform } from '../ui-protocol.js';
+import type { WorkerInfo, WorkerDeviceInfo, ClientMessage, DevicePlatform } from '../ui-protocol.js';
 import { inferDevicePlatform, inferDeviceFormFactor } from '../ui-protocol.js';
 import type { Bounds } from '../../trace-viewer/components/hierarchy-utils.js';
 import { DeviceMirror } from './DeviceMirror.js';
@@ -24,9 +25,11 @@ interface DevicePaneProps {
   workers: WorkerInfo[]
   selectedWorkerId: number
   deviceViewMode: 'all' | number
-  onSelectDeviceView: (mode: 'all' | number) => void
-  registerCanvas: (workerId: number, canvas: HTMLCanvasElement) => void
-  unregisterCanvas: (workerId: number) => void
+  /** Which device of the selected worker's group the single view mirrors (0 = primary). */
+  mirrorDeviceIndex: number
+  onSelectDeviceView: (mode: 'all' | number, deviceIndex?: number) => void
+  registerCanvas: (workerId: number, canvas: HTMLCanvasElement, deviceIndex?: number) => void
+  unregisterCanvas: (workerId: number, deviceIndex?: number) => void
   /** Single-view mirror is starting and hasn't painted its first frame yet. */
   mirrorLoading: boolean
   platform?: 'android' | 'ios'
@@ -54,14 +57,53 @@ const DOT_CLASS: Record<WorkerInfo['status'], string> = {
   error: 'error',
 };
 
-/** Canvas ref callback for the "All" grid — registers/unregisters with multi-mirror hook. */
-function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas, unregisterCanvas, platform, interactive, force, send }: {
+/**
+ * One mirrorable device: a worker's primary, or a member of its group. The
+ * pane's tabs and grid are built from these, so a two-user worker shows two.
+ */
+export interface DeviceView {
   workerId: number
+  deviceIndex: number
+  /** Tab / tile label: the worker's display name, plus the member name for groups. */
+  label: string
+  deviceSerial: string
+  platform?: DevicePlatform
+  devicePixelRatio?: number
+  status: WorkerInfo['status']
+}
+
+/** Flatten the workers into device views, primary first within each group. */
+export function deviceViewsOf(workers: WorkerInfo[]): DeviceView[] {
+  const views: DeviceView[] = [];
+  for (const w of workers) {
+    const devices: WorkerDeviceInfo[] = w.devices && w.devices.length > 0
+      ? w.devices
+      : [{ index: 0, name: 'device-1', deviceSerial: w.deviceSerial, displayName: w.displayName, platform: w.platform, devicePixelRatio: w.devicePixelRatio }];
+    const group = devices.length > 1;
+    for (const d of devices) {
+      views.push({
+        workerId: w.workerId,
+        deviceIndex: d.index,
+        label: group ? `${w.displayName} · ${d.name}` : w.displayName,
+        deviceSerial: d.deviceSerial,
+        platform: d.platform ?? w.platform,
+        devicePixelRatio: d.devicePixelRatio ?? w.devicePixelRatio,
+        status: w.status,
+      });
+    }
+  }
+  return views;
+}
+
+/** Canvas ref callback for the "All" grid — registers/unregisters with multi-mirror hook. */
+function WorkerCanvas({ workerId, deviceIndex, label, deviceSerial, connected, registerCanvas, unregisterCanvas, platform, interactive, force, send }: {
+  workerId: number
+  deviceIndex: number
   label: string
   deviceSerial: string
   connected: boolean
-  registerCanvas: (id: number, canvas: HTMLCanvasElement) => void
-  unregisterCanvas: (id: number) => void
+  registerCanvas: (id: number, canvas: HTMLCanvasElement, deviceIndex?: number) => void
+  unregisterCanvas: (id: number, deviceIndex?: number) => void
   platform?: DevicePlatform
   interactive: boolean
   force: boolean
@@ -70,15 +112,15 @@ function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas
   const ref = useRef<HTMLCanvasElement>(null);
   const framePlatform = platform ?? inferDevicePlatform(label, deviceSerial);
   const frameFormFactor = inferDeviceFormFactor({ hints: [label, deviceSerial] });
-  const interaction = useDeviceInteraction({ send, enabled: interactive, force, workerId });
+  const interaction = useDeviceInteraction({ send, enabled: interactive, force, workerId, deviceIndex });
 
   // Register this tile's canvas with the screenshot mirror.
   useEffect(() => {
     if (ref.current) {
-      registerCanvas(workerId, ref.current);
+      registerCanvas(workerId, ref.current, deviceIndex);
     }
-    return () => unregisterCanvas(workerId);
-  }, [workerId, registerCanvas, unregisterCanvas]);
+    return () => unregisterCanvas(workerId, deviceIndex);
+  }, [workerId, deviceIndex, registerCanvas, unregisterCanvas]);
 
   return (
     <div class="device-body-item">
@@ -126,6 +168,7 @@ export function DevicePane({
   workers,
   selectedWorkerId,
   deviceViewMode,
+  mirrorDeviceIndex,
   onSelectDeviceView,
   registerCanvas,
   unregisterCanvas,
@@ -145,26 +188,34 @@ export function DevicePane({
   onPickPoint,
   onPickHover,
 }: DevicePaneProps) {
-  const hasWorkers = workers.length > 1;
-  const selectedWorker = workers.find((worker) => worker.workerId === selectedWorkerId);
-  const mirrorPlatform = selectedWorker
-    ? (selectedWorker.platform ?? inferDevicePlatform(selectedWorker.displayName, selectedWorker.deviceSerial) ?? platform)
+  const views = deviceViewsOf(workers);
+  const hasWorkers = views.length > 1;
+  const mirroredWorkerId = typeof deviceViewMode === 'number' ? deviceViewMode : selectedWorkerId;
+  const selectedView = views.find((v) => v.workerId === mirroredWorkerId && v.deviceIndex === mirrorDeviceIndex)
+    ?? views.find((v) => v.workerId === mirroredWorkerId);
+  const mirrorPlatform = selectedView
+    ? (selectedView.platform ?? inferDevicePlatform(selectedView.label, selectedView.deviceSerial) ?? platform)
     : platform;
   const mirrorFormFactor = inferDeviceFormFactor({
-    hints: selectedWorker ? [selectedWorker.displayName, selectedWorker.deviceSerial] : [],
+    hints: selectedView ? [selectedView.label, selectedView.deviceSerial] : [],
   });
 
   // Left/Right move between the All tab and the per-device tabs; Home/End jump
   // to the ends. Additive: these are real buttons and stay individually
   // tabbable (see tabstrip.ts).
-  const deviceViews: Array<'all' | number> = ['all', ...workers.map((w) => w.workerId)];
+  const tabTargets: Array<'all' | DeviceView> = ['all', ...views];
   const handleWorkerTabKey = (e: KeyboardEvent, index: number) => {
-    const next = nextTabIndex(e.key, index, deviceViews.length);
+    const next = nextTabIndex(e.key, index, tabTargets.length);
     if (next === null) return;
     e.preventDefault();
-    onSelectDeviceView(deviceViews[next]);
+    const target = tabTargets[next];
+    if (target === 'all') onSelectDeviceView('all');
+    else onSelectDeviceView(target.workerId, target.deviceIndex);
     focusSibling(e, next);
   };
+  const viewId = (v: DeviceView): string => `device-view-${v.workerId}-${v.deviceIndex}`;
+  const isViewSelected = (v: DeviceView): boolean =>
+    deviceViewMode === v.workerId && v.deviceIndex === mirrorDeviceIndex;
 
   return (
     <div class="device-col" role="region" aria-label="Live device mirror">
@@ -214,20 +265,20 @@ export function DevicePane({
           >
             All
           </button>
-          {workers.map((w, i) => (
+          {views.map((v, i) => (
             <button
-              key={w.workerId}
-              class={`worker-tab ${deviceViewMode === w.workerId ? 'active' : ''}`}
-              id={`device-view-${w.workerId}`}
+              key={`${v.workerId}:${v.deviceIndex}`}
+              class={`worker-tab ${isViewSelected(v) ? 'active' : ''}`}
+              id={viewId(v)}
               role="tab"
-              aria-selected={deviceViewMode === w.workerId}
+              aria-selected={isViewSelected(v)}
               aria-controls="device-tabpanel"
-              onClick={() => onSelectDeviceView(w.workerId)}
+              onClick={() => onSelectDeviceView(v.workerId, v.deviceIndex)}
               onKeyDown={(e) => handleWorkerTabKey(e, i + 1)}
-              title={`${w.displayName} (${w.deviceSerial}) — ${w.status}`}
+              title={`${v.label} (${v.deviceSerial}) — ${v.status}`}
             >
-              <span class={`dot ${connected ? DOT_CLASS[w.status] : 'error'}`} />
-              {w.displayName}
+              <span class={`dot ${connected ? DOT_CLASS[v.status] : 'error'}`} />
+              {v.label}
             </button>
           ))}
         </div>
@@ -236,21 +287,24 @@ export function DevicePane({
       <div
         id="device-tabpanel"
         role={hasWorkers ? 'tabpanel' : undefined}
-        aria-labelledby={hasWorkers ? `device-view-${deviceViewMode}` : undefined}
+        aria-labelledby={hasWorkers
+          ? (deviceViewMode === 'all' ? 'device-view-all' : selectedView ? viewId(selectedView) : undefined)
+          : undefined}
         class="device-pane-body"
       >
         {deviceViewMode === 'all' && hasWorkers ? (
           <div class="device-pane-grid">
-            {workers.map((w) => (
+            {views.map((v) => (
               <WorkerCanvas
-                key={w.workerId}
-                workerId={w.workerId}
-                label={w.displayName}
-                deviceSerial={w.deviceSerial}
+                key={`${v.workerId}:${v.deviceIndex}`}
+                workerId={v.workerId}
+                deviceIndex={v.deviceIndex}
+                label={v.label}
+                deviceSerial={v.deviceSerial}
                 connected={connected}
                 registerCanvas={registerCanvas}
                 unregisterCanvas={unregisterCanvas}
-                platform={w.platform}
+                platform={v.platform}
                 interactive={interactive}
                 force={force}
                 send={send}
@@ -266,7 +320,8 @@ export function DevicePane({
             formFactor={mirrorFormFactor}
             interactive={interactive}
             force={force}
-            workerId={typeof deviceViewMode === 'number' ? deviceViewMode : selectedWorkerId}
+            workerId={mirroredWorkerId}
+            deviceIndex={mirrorDeviceIndex}
             send={send}
             pickMode={pickMode}
             pickDpr={pickDpr}

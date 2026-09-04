@@ -964,7 +964,7 @@ export class Device {
       const message = entry.tag
         ? `[${entry.tag}] ${entry.message}`
         : entry.message;
-      collector.addLogcatEntry(level, message, this._traceDeviceId);
+      collector.addLogcatEntry(level, message, this._traceDeviceId, entry.timestampMs);
     });
 
     stream.on('error', (err: Error) => {
@@ -1013,7 +1013,7 @@ export class Device {
       const message = entry.target
         ? `[${entry.target}] ${entry.message}`
         : entry.message;
-      collector.addDaemonLogEntry(level, message, this._traceDeviceId);
+      collector.addDaemonLogEntry(level, message, this._traceDeviceId, entry.timestampMs);
     });
 
     stream.on('error', (err: Error) => {

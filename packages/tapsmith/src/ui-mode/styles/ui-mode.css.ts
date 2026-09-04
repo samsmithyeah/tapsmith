@@ -1530,6 +1530,18 @@ html, body, #app {
 .action-detail { font-size: 11px; color: var(--fg-muted, var(--fg-dim, #888)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .action-origin-tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; padding: 1px 5px; border-radius: 999px; border: 1px solid var(--border, #444); color: var(--fg-muted, var(--fg-dim, #888)); }
 .action-device-tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.02em; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: var(--accent-dim, rgba(120, 140, 255, 0.18)); color: var(--fg, #ddd); vertical-align: middle; }
+
+/* ─── Multi-device traces (PILOT-310) ─── */
+.film-lanes { display: flex; flex-direction: column; min-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.film-lane { display: flex; align-items: flex-end; }
+.film-lane-label { flex-shrink: 0; width: 56px; padding: 0 6px 6px; font-size: 10px; font-weight: 600; color: var(--fg-dim); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.film-lane-inner { flex: 1; min-height: 0; overflow: visible; padding-top: 2px; padding-bottom: 2px; }
+.film-lane + .film-lane .film-lane-inner { border-top: 1px dashed var(--border); }
+.film-gap { width: 42px; min-height: 1px; }
+.hier-device-toggle { display: flex; gap: 4px; padding: 6px 8px 0; }
+.hier-with-toggle { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.con-pill-device { text-transform: none; }
+.net-device { color: var(--fg-dim); font-size: 10.5px; }
 .action-item.failed .action-name { color: var(--fail); }
 .action-selector-text {
   font-family: var(--font-mono);

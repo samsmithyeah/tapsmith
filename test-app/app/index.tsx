@@ -32,6 +32,11 @@ const screens = [
   { href: "/scroll", label: "Scroll", description: "Nested scrollable containers" },
   { href: "/api-calls", label: "API Calls", description: "Real HTTP requests to a test API" },
   {
+    href: "/chat",
+    label: "Chat",
+    description: "Two devices talking through a host-side server",
+  },
+  {
     href: "/webview",
     label: "WebView",
     description: "Embedded web content interaction",

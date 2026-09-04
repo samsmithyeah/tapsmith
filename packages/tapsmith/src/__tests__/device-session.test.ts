@@ -18,6 +18,14 @@ const mocks = vi.hoisted(() => ({
   agentFailures: 0,
   /** Serials whose agent never starts (permanent failure). */
   failAgentFor: new Set<string>(),
+  /** iOS simulator installs performed (installAppAsync calls). */
+  simInstalls: 0,
+  /** Whether the simulator's installed .app matches the build on disk. */
+  simAppMatches: true,
+  /** Device-slice xctestrun `findDeviceXctestrun` reports for physical iOS. */
+  deviceXctestrun: '/proj/ios-agent/.build-device/TapsmithAgent.xctestrun' as string | undefined,
+  /** Shell commands device-session ran (`execFileSync`). */
+  execs: [] as string[][],
 }));
 
 // No real backoff between agent-start attempts — the retry is what matters here.
@@ -67,10 +75,33 @@ vi.mock('../emulator.js', () => ({
 
 vi.mock('../ios-simulator.js', () => ({
   installApp: vi.fn(),
-  installedAppMatches: vi.fn(() => true),
+  installAppAsync: vi.fn(async () => { mocks.simInstalls++; }),
+  installedAppMatches: vi.fn(() => mocks.simAppMatches),
   isAppInstalled: vi.fn(() => true),
   probeSimulatorHealth: vi.fn(() => ({ healthy: true })),
   rebootSimulator: vi.fn(),
+}));
+
+vi.mock('../ios-devicectl.js', () => ({
+  isPhysicalDevice: vi.fn((serial: string) => serial.startsWith('PHYS')),
+  installAppOnDevice: vi.fn(async () => {}),
+  isAppInstalledOnDevice: vi.fn(async () => true),
+}));
+
+vi.mock('../ios-device-resolve.js', () => ({
+  findDeviceXctestrun: vi.fn(() => mocks.deviceXctestrun),
+}));
+
+vi.mock('../ios-simulator-build.js', () => ({
+  ensureSimulatorAgent: vi.fn(async () => '/derived/TapsmithAgent.xctestrun'),
+}));
+
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
+  execFileSync: vi.fn((file: string, args?: readonly string[]) => {
+    mocks.execs.push([file, ...(args ?? [])]);
+    return '';
+  }),
 }));
 
 vi.mock('../agent-resolve.js', () => ({
@@ -98,6 +129,10 @@ beforeEach(() => {
   mocks.installed = true;
   mocks.agentFailures = 0;
   mocks.failAgentFor.clear();
+  mocks.simInstalls = 0;
+  mocks.simAppMatches = true;
+  mocks.deviceXctestrun = '/proj/ios-agent/.build-device/TapsmithAgent.xctestrun';
+  mocks.execs.length = 0;
   mocks.preflight.ensureSessionReady.mockClear();
   mocks.preflight.launchConfiguredApp.mockClear();
   mocks.preflight.probeResetCapabilities.mockClear();
@@ -157,7 +192,7 @@ describe('openDeviceSession', () => {
       { name: 'device-1', serial: 'emulator-5556', daemonAddress: 'localhost:50053' },
       makeConfig(),
       { label: 'Worker 1' },
-    )).rejects.toThrow(/^Worker 1 \(emulator-5556\): Failed to connect to agent socket/);
+    )).rejects.toThrow(/^Worker 1 \(emulator-5556\): Failed to start agent: Failed to connect to agent socket/);
     // A failed open leaves nothing behind.
     expect(mocks.devices.at(-1)!.close).toHaveBeenCalled();
     expect(mocks.clients.at(-1)!.close).toHaveBeenCalled();
@@ -187,6 +222,108 @@ describe('openDeviceSession', () => {
       makeConfig(),
       { label: 'Worker 0' },
     )).rejects.toThrow(/Worker 0 \(emulator-5554\): Failed to connect to daemon at localhost:50099/);
+  });
+});
+
+describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
+  const phases = (): Array<[string, string, string]> => [];
+
+  it('reports install, agent and launch in order with the CLI\'s detail strings', async () => {
+    const seen = phases();
+    await openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
+    );
+    expect(seen).toEqual([
+      ['install', 'start', 'checking app.apk'],
+      ['install', 'complete', 'com.example.app already installed (matching build)'],
+      ['agent', 'start', 'starting Android automation agent'],
+      ['agent', 'complete', 'agent connected'],
+      ['launch', 'start', 'launching com.example.app'],
+      ['launch', 'complete', 'launched com.example.app'],
+    ]);
+  });
+
+  it('reports skips when nothing is configured, and an install that was needed', async () => {
+    const seen = phases();
+    await openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig({ apk: undefined, package: undefined }),
+      { label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
+    );
+    expect(seen).toEqual([
+      ['install', 'skip', 'no Android APK configured'],
+      ['agent', 'start', 'starting Android automation agent'],
+      ['agent', 'complete', 'agent connected'],
+      ['launch', 'skip', 'no package configured'],
+    ]);
+    seen.length = 0;
+    mocks.installed = false;
+    await openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
+    );
+    expect(seen[1]).toEqual(['install', 'complete', 'installed app.apk']);
+  });
+
+  it('reports the failing phase and wraps the error as the CLI did', async () => {
+    const seen = phases();
+    mocks.failAgentFor.add('emulator-5554');
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
+    )).rejects.toThrow(/^Device \(emulator-5554\): Failed to start agent: /);
+    expect(seen.at(-1)?.slice(0, 2)).toEqual(['agent', 'fail']);
+  });
+
+  it('reuses a caller-provided client and leaves it open on failure', async () => {
+    const client = { waitForReady: vi.fn(async () => true), close: vi.fn() };
+    const session = await openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { label: 'Device', client: client as never },
+    );
+    expect(session.client).toBe(client);
+    expect(mocks.clients).toHaveLength(0);
+    closeDeviceSession(session);
+    expect(client.close).not.toHaveBeenCalled();
+
+    mocks.failAgentFor.add('emulator-5556');
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5556', daemonAddress: 'localhost:50053' },
+      makeConfig(),
+      { label: 'Device', client: client as never },
+    )).rejects.toThrow();
+    expect(client.close).not.toHaveBeenCalled();
+  });
+
+  it('on an iOS simulator, overlaps the install with agent resolution and pre-launches the app before the agent', async () => {
+    mocks.simAppMatches = false;
+    const seen = phases();
+    await openDeviceSession(
+      { name: 'device-1', serial: 'SIM-1', daemonAddress: 'localhost:50052' },
+      makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
+      { label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
+    );
+    expect(mocks.simInstalls).toBe(1);
+    expect(seen).toContainEqual(['install', 'complete', 'installed App.app']);
+    expect(seen).toContainEqual(['agent', 'start', 'starting iOS agent (TapsmithAgent.xctestrun)']);
+    expect(mocks.execs).toContainEqual(['xcrun', 'simctl', 'launch', 'SIM-1', 'com.example.app']);
+    const device = mocks.devices[0];
+    expect(device.startAgent).toHaveBeenCalledWith('com.example.app', '/agents/agent.apk', '/agents/agent-test.apk', '/derived/TapsmithAgent.xctestrun', '/proj/Build/App.app', false);
+  });
+
+  it('fails a physical iOS device that has no device-slice xctestrun to run', async () => {
+    mocks.deviceXctestrun = undefined;
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'PHYS-1', daemonAddress: 'localhost:50052' },
+      makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
+      { label: 'Device' },
+    )).rejects.toThrow(/No device xctestrun found under ios-agent\/.build-device/);
+    expect(mocks.execs.some((e) => e[0] === 'xcrun')).toBe(false);
   });
 });
 

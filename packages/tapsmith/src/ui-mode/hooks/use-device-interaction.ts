@@ -43,6 +43,8 @@ export interface DeviceInteractionOptions {
   force?: boolean;
   /** Target worker id (multi-worker). */
   workerId?: number;
+  /** Which device of the worker's group (0 = primary). */
+  deviceIndex?: number;
 }
 
 export function useDeviceInteraction(opts: DeviceInteractionOptions) {
@@ -75,7 +77,7 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
     const m = pendingMove.current;
     pendingMove.current = null;
     if (!dragging.current || !m) return;
-    o.send({ type: 'mirror-touch-move', x: m.x, y: m.y, tMs: m.tMs, workerId: o.workerId, force: o.force });
+    o.send({ type: 'mirror-touch-move', x: m.x, y: m.y, tMs: m.tMs, workerId: o.workerId, deviceIndex: o.deviceIndex, force: o.force });
   }, []);
 
   const onPointerMove = useCallback((e: PointerEvent) => {
@@ -88,7 +90,7 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
       const dist = Math.hypot(e.clientX - s.x, e.clientY - s.y);
       if (dist < TAP_MOVE_THRESHOLD) return;
       dragging.current = true;
-      o.send({ type: 'mirror-touch-start', x: s.nx, y: s.ny, workerId: o.workerId, force: o.force });
+      o.send({ type: 'mirror-touch-start', x: s.nx, y: s.ny, workerId: o.workerId, deviceIndex: o.deviceIndex, force: o.force });
     }
     pendingMove.current = { x: n.x, y: n.y, tMs };
     if (rafId.current == null) rafId.current = requestAnimationFrame(flushMove);
@@ -106,20 +108,21 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
       dragging.current = false;
       if (rafId.current != null) { cancelAnimationFrame(rafId.current); rafId.current = null; }
       pendingMove.current = null;
-      o.send({ type: 'mirror-touch-end', x: end.x, y: end.y, tMs, workerId: o.workerId, force: o.force });
+      o.send({ type: 'mirror-touch-end', x: end.x, y: end.y, tMs, workerId: o.workerId, deviceIndex: o.deviceIndex, force: o.force });
       return;
     }
 
     const kind = classifyGesture({ dx: e.clientX - s.x, dy: e.clientY - s.y, durationMs: tMs });
     const force = o.force;
     const workerId = o.workerId;
+    const deviceIndex = o.deviceIndex;
     if (kind === 'tap') {
-      o.send({ type: 'mirror-tap', x: s.nx, y: s.ny, workerId, force });
+      o.send({ type: 'mirror-tap', x: s.nx, y: s.ny, workerId, deviceIndex, force });
     } else if (kind === 'long-press') {
-      o.send({ type: 'mirror-long-press', x: s.nx, y: s.ny, durationMs: tMs, workerId, force });
+      o.send({ type: 'mirror-long-press', x: s.nx, y: s.ny, durationMs: tMs, workerId, deviceIndex, force });
     } else {
-      o.send({ type: 'mirror-touch-start', x: s.nx, y: s.ny, workerId, force });
-      o.send({ type: 'mirror-touch-end', x: end.x, y: end.y, tMs, workerId, force });
+      o.send({ type: 'mirror-touch-start', x: s.nx, y: s.ny, workerId, deviceIndex, force });
+      o.send({ type: 'mirror-touch-end', x: end.x, y: end.y, tMs, workerId, deviceIndex, force });
     }
   }, []);
 
@@ -129,7 +132,7 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
   const onPointerCancel = useCallback(() => {
     const o = optsRef.current;
     if (dragging.current) {
-      o.send({ type: 'mirror-touch-cancel', workerId: o.workerId, force: o.force });
+      o.send({ type: 'mirror-touch-cancel', workerId: o.workerId, deviceIndex: o.deviceIndex, force: o.force });
     }
     dragging.current = false;
     if (rafId.current != null) { cancelAnimationFrame(rafId.current); rafId.current = null; }
@@ -142,16 +145,17 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
     if (!o.enabled) return;
     const force = o.force;
     const workerId = o.workerId;
+    const deviceIndex = o.deviceIndex;
     // Key names are lowercased by both agents; 'Enter'/'Backspace' match their
     // pressKey maps ('enter'/'return', 'delete'/'backspace'). 'DEL' would NOT.
     if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      o.send({ type: 'mirror-press-key', key: 'Enter', workerId, force });
+      o.send({ type: 'mirror-press-key', key: 'Enter', workerId, deviceIndex, force });
       e.preventDefault();
     } else if (e.key === 'Backspace' && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      o.send({ type: 'mirror-press-key', key: 'Backspace', workerId, force });
+      o.send({ type: 'mirror-press-key', key: 'Backspace', workerId, deviceIndex, force });
       e.preventDefault();
     } else if (PRINTABLE.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      o.send({ type: 'mirror-input-text', text: e.key, workerId, force });
+      o.send({ type: 'mirror-input-text', text: e.key, workerId, deviceIndex, force });
       e.preventDefault();
     }
   }, []);
@@ -161,13 +165,13 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
   // touch so the device isn't left with a finger held down.
   useEffect(() => {
     if (!opts.enabled && dragging.current) {
-      opts.send({ type: 'mirror-touch-cancel', workerId: opts.workerId, force: opts.force });
+      opts.send({ type: 'mirror-touch-cancel', workerId: opts.workerId, deviceIndex: opts.deviceIndex, force: opts.force });
       dragging.current = false;
       if (rafId.current != null) { cancelAnimationFrame(rafId.current); rafId.current = null; }
       pendingMove.current = null;
       start.current = null;
     }
-  }, [opts.enabled, opts.send, opts.workerId, opts.force]);
+  }, [opts.enabled, opts.send, opts.workerId, opts.deviceIndex, opts.force]);
 
   // Cancel any pending coalesced-move frame on unmount.
   useEffect(() => () => {

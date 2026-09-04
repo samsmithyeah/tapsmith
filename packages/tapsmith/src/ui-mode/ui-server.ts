@@ -59,8 +59,8 @@ import type {
   UIWorkerMessage,
   TestTreeUseOptions,
 } from './ui-protocol.js';
-import { encodeScreenFrame, type TestNodeStatus } from './ui-protocol.js';
-import { resolveDeviceGroup } from '../config.js';
+import { encodeScreenFrame, mirrorKey, type TestNodeStatus, type WorkerDeviceInfo } from './ui-protocol.js';
+import { deviceGroupSize, resolveDeviceGroup } from '../config.js';
 import { startDaemon, waitForDaemon } from '../device-session.js';
 import { RunQueue } from '../watch-queue.js';
 import { DeviceReadiness, toWireReadiness, type Candidate, type ReadinessCommand, type ReadinessEvent, type StaleReason } from './device-readiness.js';
@@ -212,11 +212,15 @@ interface AdoptTarget {
 interface UIWorkerMemberHandle {
   name: string
   deviceSerial: string
+  /** Friendly display name, resolved like the worker's own. */
+  displayName?: string
   daemonPort: number
   agentPort: number
   daemonProcess?: ChildProcess
   /** False when the CLI owns this daemon (adopted alongside the primary). */
   ownsDaemon: boolean
+  /** gRPC client to this member's daemon, for screen polling and mirror gestures. */
+  screenClient?: TapsmithGrpcClient
 }
 
 interface UIWorkerHandle {
@@ -735,8 +739,10 @@ export async function startUIServer(
   const INTERACTIVE_POLL_MS = 90;
   /** Screen view mode: 'all' polls all workers, number polls a specific worker. */
   let screenViewMode: 'all' | number = 'all';
-  /** Last known frame dimensions per worker ID, used to convert normalized coords. */
-  const lastFrameDims = new Map<number, { width: number; height: number }>();
+  /** Last known frame dimensions per mirrored device (`mirrorKey`), used to convert normalized coords. */
+  const lastFrameDims = new Map<string, { width: number; height: number }>();
+  /** Which device of the selected worker's group the single-view mirror shows. */
+  let selectedDeviceIndex = 0;
   /** Set to true while a parallel run is in progress, to signal stop. */
   let parallelRunAborted = false;
   /** True from the moment the user requests a stop until the next run starts.
@@ -1260,20 +1266,26 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     const appReset = nodeUse?.appReset ?? projectUse?.appReset;
     const appResetScope = nodeUse?.appResetScope ?? projectUse?.appResetScope;
     const appState = nodeUse?.appState ?? projectUse?.appState;
+    const devices = projectUse?.devices;
     if (appReset !== undefined) merged.appReset = appReset;
     if (appResetScope !== undefined) merged.appResetScope = appResetScope;
     if (appState !== undefined) merged.appState = appState;
+    if (devices !== undefined) merged.devices = devices;
     return Object.keys(merged).length > 0 ? merged : undefined;
   }
 
-  function projectTreeUse(project: { use?: { appReset?: unknown; appResetScope?: unknown; appState?: unknown } }): TestTreeUseOptions | undefined {
+  function projectTreeUse(project: { use?: { appReset?: unknown; appResetScope?: unknown; appState?: unknown; devices?: unknown }; effectiveConfig?: TapsmithConfig }): TestTreeUseOptions | undefined {
     const u = project.use;
     if (!u) return undefined;
-    return mergeTreeUse(undefined, {
+    // A `use.devices` project: its tests drive a group — the tree badges them.
+    const groupSize = project.effectiveConfig ? deviceGroupSize(project.effectiveConfig) : 1;
+    const merged = mergeTreeUse(undefined, {
       ...(u.appReset !== undefined ? { appReset: u.appReset as TestTreeUseOptions['appReset'] } : {}),
       ...(u.appResetScope !== undefined ? { appResetScope: u.appResetScope as TestTreeUseOptions['appResetScope'] } : {}),
       ...(typeof u.appState === 'string' ? { appState: u.appState } : {}),
     });
+    if (groupSize <= 1) return merged;
+    return { ...(merged ?? {}), devices: groupSize };
   }
 
   function rebuildTestTreeFromDiscoveredFiles(): void {
@@ -1668,8 +1680,11 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         return serial;
       };
 
-      // Resolve names for all workers.
+      // Resolve names for all workers, and for every member of their groups.
       const resolvedNames = uiWorkers.map((w) => resolveSerialToName(w.deviceSerial));
+      for (const w of uiWorkers) {
+        for (const m of w.members) m.displayName = resolveSerialToName(m.deviceSerial);
+      }
 
       // Count occurrences of each name to decide whether to append #N.
       const nameCounts = new Map<string, number>();
@@ -1807,7 +1822,10 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         if (adoptMember) {
           const alive = await waitForDaemon(`localhost:${adoptMember.daemonPort}`, 5_000);
           if (!alive) throw new Error(`primary group member ${name}'s daemon on port ${adoptMember.daemonPort} is not reachable`);
-          members[m] = { name, deviceSerial: serial, daemonPort: adoptMember.daemonPort, agentPort: 0, ownsDaemon: false };
+          members[m] = {
+            name, deviceSerial: serial, daemonPort: adoptMember.daemonPort, agentPort: 0, ownsDaemon: false,
+            screenClient: new TapsmithGrpcClient(`localhost:${adoptMember.daemonPort}`),
+          };
           return;
         }
         const ports = memberPorts(id, m);
@@ -1818,7 +1836,10 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
           daemonBin, port: ports.daemonPort, agentPort: ports.agentPort, platform: workerConfig.platform,
           describe: `daemon for ${name}`,
         });
-        members[m] = { name, deviceSerial: serial, ...ports, daemonProcess: daemon.process, ownsDaemon: true };
+        members[m] = {
+          name, deviceSerial: serial, ...ports, daemonProcess: daemon.process, ownsDaemon: true,
+          screenClient: new TapsmithGrpcClient(`localhost:${ports.daemonPort}`),
+        };
       }));
     } catch (err) {
       for (const m of members) if (m?.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
@@ -2616,6 +2637,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     }
     for (const m of worker.members) {
       if (m.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
+      m.screenClient?.close();
     }
     if (worker.ownsScreenClient !== false) worker.screenClient?.close();
   }
@@ -3057,8 +3079,61 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
 
   // ─── Screen Polling ───
 
+  /** `device-info` for the device the single-view mirror currently shows. */
+  function broadcastSelectedDeviceInfo(): void {
+    const worker = uiWorkers.find((w) => w.id === selectedWorkerId);
+    if (!worker) return;
+    const platform = resolveWorkerPlatform(ctx, worker);
+    const member = selectedDeviceIndex > 0 ? worker.members[selectedDeviceIndex - 1] : undefined;
+    const serial = member?.deviceSerial ?? worker.deviceSerial;
+    broadcast({
+      type: 'device-info',
+      serial: (member ? member.displayName : worker.displayName) || serial,
+      model: undefined,
+      isEmulator: isEmulatorOrSimulator(serial, platform),
+      platform,
+      tapsmithVersion: TAPSMITH_VERSION,
+      devicePixelRatio: cachedScreenScale(serial, platform),
+    });
+  }
+
+  /** The devices of a worker's group as `workers-info` describes them, primary first. */
+  function workerDevicesInfo(worker: UIWorkerHandle): WorkerDeviceInfo[] {
+    const platform = resolveWorkerPlatform(ctx, worker);
+    const groupNames = resolveDeviceGroup(configFromSerialized(
+      ctx.configByDevice?.get(worker.deviceSerial) ?? serializedConfig, `localhost:${worker.daemonPort}`,
+    ));
+    const describe = (index: number, serial: string, displayName: string | undefined): WorkerDeviceInfo => ({
+      index,
+      name: groupNames[index]?.name ?? `device-${index + 1}`,
+      deviceSerial: serial,
+      displayName: displayName || serial,
+      platform,
+      devicePixelRatio: cachedScreenScale(serial, platform),
+      isEmulator: isEmulatorOrSimulator(serial, platform),
+    });
+    return [
+      describe(0, worker.deviceSerial, worker.displayName),
+      ...worker.members.map((m, i) => describe(i + 1, m.deviceSerial, m.displayName)),
+    ];
+  }
+
+  /** The gRPC client driving device `deviceIndex` of a worker's group (0 = primary). */
+  function deviceClientOf(worker: UIWorkerHandle, deviceIndex: number): TapsmithGrpcClient | undefined {
+    if (deviceIndex <= 0) return worker.screenClient;
+    return worker.members[deviceIndex - 1]?.screenClient;
+  }
+
+  /** Every device of a worker with the client that drives it, primary first. */
+  function workerDeviceClients(worker: UIWorkerHandle): Array<{ deviceIndex: number; client: TapsmithGrpcClient }> {
+    const out: Array<{ deviceIndex: number; client: TapsmithGrpcClient }> = [];
+    if (worker.screenClient) out.push({ deviceIndex: 0, client: worker.screenClient });
+    worker.members.forEach((m, i) => { if (m.screenClient) out.push({ deviceIndex: i + 1, client: m.screenClient }); });
+    return out;
+  }
+
   /** Poll a single device and broadcast its frame. */
-  async function pollSingleWorker(workerId: number, client: import('../grpc-client.js').TapsmithGrpcClient): Promise<void> {
+  async function pollSingleWorker(workerId: number, client: import('../grpc-client.js').TapsmithGrpcClient, deviceIndex = 0): Promise<void> {
     const response = await client.takeScreenshot();
     if (response.success && response.data) {
       const data = Buffer.isBuffer(response.data)
@@ -3067,8 +3142,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       // Read dimensions from the PNG IHDR chunk (bytes 16-23: width + height as big-endian uint32)
       const width = data.length >= 24 ? data.readUInt32BE(16) : 1080;
       const height = data.length >= 24 ? data.readUInt32BE(20) : 1920;
-      lastFrameDims.set(workerId, { width, height });
-      const frame = encodeScreenFrame(screenSeq++, workerId, width, height, data);
+      lastFrameDims.set(mirrorKey(workerId, deviceIndex), { width, height });
+      const frame = encodeScreenFrame(screenSeq++, workerId, width, height, data, deviceIndex);
       broadcastBinary(frame);
     }
   }
@@ -3085,22 +3160,22 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         return;
       }
       if (screenViewMode === 'all') {
-        // Poll ALL non-retired workers in parallel
-        const activeWorkers = uiWorkers.filter(
-          (w) => !w.retired && w.screenClient,
-        );
+        // Poll every device of every non-retired worker in parallel — a group
+        // worker's members are separate tiles in the grid.
+        const activeWorkers = uiWorkers.filter((w) => !w.retired);
         await Promise.allSettled(
-          activeWorkers.map((w) => pollSingleWorker(w.id, w.screenClient!)),
+          activeWorkers.flatMap((w) => workerDeviceClients(w).map(({ deviceIndex, client }) => pollSingleWorker(w.id, client, deviceIndex))),
         );
       } else {
-        const pollClient = uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient;
+        const worker = uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired);
+        const pollClient = worker ? deviceClientOf(worker, selectedDeviceIndex) : undefined;
 
         if (!pollClient) {
           scheduleScreenPoll();
           return;
         }
 
-        await pollSingleWorker(selectedWorkerId, pollClient);
+        await pollSingleWorker(selectedWorkerId, pollClient, selectedDeviceIndex);
       }
     } catch {
       // Device may be busy — skip frame
@@ -3557,25 +3632,27 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
   // ─── Mirror Gesture Helpers ───
 
   /** Resolve the gRPC client + devicePixelRatio for a mirror gesture target. */
-  function resolveGestureTarget(workerId?: number): {
+  function resolveGestureTarget(workerId?: number, deviceIndex?: number): {
     client: TapsmithGrpcClient | undefined
     dpr: number
     dims: { width: number; height: number } | undefined
   } {
     if (workersEnabled && workersInitialized) {
       const id = workerId ?? selectedWorkerId;
+      const index = deviceIndex ?? (id === selectedWorkerId ? selectedDeviceIndex : 0);
       const worker = uiWorkers.find((w) => w.id === id && !w.retired);
       const platform = worker ? resolveWorkerPlatform(ctx, worker) : undefined;
+      const serial = index > 0 ? worker?.members[index - 1]?.deviceSerial : worker?.deviceSerial;
       return {
-        client: worker?.screenClient,
-        dpr: (worker && cachedScreenScale(worker.deviceSerial, platform)) || 1,
-        dims: lastFrameDims.get(id),
+        client: worker ? deviceClientOf(worker, index) : undefined,
+        dpr: (serial && cachedScreenScale(serial, platform)) || 1,
+        dims: lastFrameDims.get(mirrorKey(id, index)),
       };
     }
     return {
       client: ctx.client,
       dpr: cachedScreenScale(ctx.deviceSerial ?? '', singleWorkerPlatform) || 1,
-      dims: lastFrameDims.get(0),
+      dims: lastFrameDims.get(mirrorKey(0, 0)),
     };
   }
 
@@ -3778,23 +3855,24 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         // polls this every second while the Locator tab is live-bound, which
         // would otherwise pin the screenshot poll at the interactive rate.
         const hierWorkerId = msg.workerId ?? selectedWorkerId;
+        const hierDeviceIndex = msg.deviceIndex ?? (hierWorkerId === selectedWorkerId ? selectedDeviceIndex : 0);
         const hierWorker = uiWorkers.find((w) => w.id === hierWorkerId && !w.retired);
-        const hierClient = hierWorker?.screenClient;
+        const hierClient = hierWorker ? deviceClientOf(hierWorker, hierDeviceIndex) : undefined;
         hierClient?.getUiHierarchy().then(async (response) => {
           let xml = response.hierarchyXml;
           if (!xml) return;
           // Append the WebView DOM so picks inside a WebView suggest
           // webview.* locators. Primary-device only — the server's Device
           // instance can open a WebView connection to that device; other
-          // workers' devices have none.
-          const webviewDom = hierWorker?.adoptedPrimary ? await dumpWebViewDomForPicker(xml) : undefined;
+          // workers' devices (and group members) have none.
+          const webviewDom = hierWorker?.adoptedPrimary && hierDeviceIndex === 0 ? await dumpWebViewDomForPicker(xml) : undefined;
           if (webviewDom) {
             const lastClose = xml.lastIndexOf('</');
             if (lastClose !== -1) {
               xml = xml.slice(0, lastClose) + webviewDom + '\n' + xml.slice(lastClose);
             }
           }
-          broadcast({ type: 'hierarchy-update', xml, workerId: hierWorkerId });
+          broadcast({ type: 'hierarchy-update', xml, workerId: hierWorkerId, deviceIndex: hierDeviceIndex });
         }).catch(() => {});
         break;
       }
@@ -3803,21 +3881,21 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         break;
       case 'mirror-tap': {
         noteMirrorInteraction(msg.workerId, 'tap');
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.tapXY(p.x, p.y).catch(() => {});
         break;
       }
       case 'mirror-long-press': {
         noteMirrorInteraction(msg.workerId, 'long press');
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.longPressXY(p.x, p.y, msg.durationMs).catch(() => {});
         break;
       }
       case 'mirror-swipe': {
         noteMirrorInteraction(msg.workerId, 'swipe');
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         const from = normalizedToLogical(msg.fromX, msg.fromY, t.dims, t.dpr);
         const to = normalizedToLogical(msg.toX, msg.toY, t.dims, t.dpr);
         if (t.client && from && to) {
@@ -3827,80 +3905,55 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       }
       case 'mirror-input-text': {
         noteMirrorInteraction(msg.workerId, 'text input');
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         if (t.client) t.client.inputText(msg.text).catch(() => {});
         break;
       }
       case 'mirror-press-key': {
         noteMirrorInteraction(msg.workerId, 'key press');
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         if (t.client) t.client.pressKey(msg.key).catch(() => {});
         break;
       }
       case 'mirror-touch-start': {
         noteMirrorInteraction(msg.workerId, 'touch');
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.touchDown(p.x, p.y, 0).catch(() => {});
         break;
       }
       case 'mirror-touch-move': {
         lastMirrorInteraction = Date.now();
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.touchMove(p.x, p.y, msg.tMs).catch(() => {});
         break;
       }
       case 'mirror-touch-end': {
         lastMirrorInteraction = Date.now();
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.touchUp(p.x, p.y, msg.tMs).catch(() => {});
         break;
       }
       case 'mirror-touch-cancel': {
         lastMirrorInteraction = Date.now();
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         if (t.client) t.client.touchCancel().catch(() => {});
         break;
       }
       case 'select-worker':
         selectedWorkerId = msg.workerId;
+        selectedDeviceIndex = msg.deviceIndex ?? 0;
         screenViewMode = msg.workerId;
-        // Send device info for the new selection
-        {
-          const worker = uiWorkers.find((w) => w.id === msg.workerId);
-          if (worker) {
-            const platform = resolveWorkerPlatform(ctx, worker);
-            broadcast({
-              type: 'device-info',
-              serial: worker.displayName || worker.deviceSerial,
-              model: undefined,
-              isEmulator: isEmulatorOrSimulator(worker.deviceSerial, platform),
-              platform,
-              tapsmithVersion: TAPSMITH_VERSION,
-              devicePixelRatio: cachedScreenScale(worker.deviceSerial, platform),
-            });
-          }
-        }
+        broadcastSelectedDeviceInfo();
         break;
       case 'select-worker-view':
         screenViewMode = msg.mode;
         if (typeof msg.mode === 'number') {
           selectedWorkerId = msg.mode;
-          const worker = uiWorkers.find((w) => w.id === msg.mode);
-          if (worker) {
-            const platform = resolveWorkerPlatform(ctx, worker);
-            broadcast({
-              type: 'device-info',
-              serial: worker.displayName || worker.deviceSerial,
-              model: undefined,
-              isEmulator: isEmulatorOrSimulator(worker.deviceSerial, platform),
-              platform,
-              tapsmithVersion: TAPSMITH_VERSION,
-              devicePixelRatio: cachedScreenScale(worker.deviceSerial, platform),
-            });
-          }
+          selectedDeviceIndex = msg.deviceIndex ?? 0;
+          broadcastSelectedDeviceInfo();
         }
         break;
       case 'respawn-worker': {
@@ -4142,6 +4195,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
             displayName: w.displayName,
             platform,
             devicePixelRatio: cachedScreenScale(w.deviceSerial, platform),
+            devices: workerDevicesInfo(w),
           };
         }),
       } satisfies ServerMessage));

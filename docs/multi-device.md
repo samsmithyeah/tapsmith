@@ -164,6 +164,8 @@ Device groups work in every run mode. Each mode holds one group per worker:
   needs three emulators or simulators.
 - **Boot time.** Emulators and simulators boot serially; a group project's
   startup is roughly `groupSize` times a single device's.
-- **CI.** Provision the group's devices up front (two booted emulators or
-  simulators) and give group tests their own job — the per-shard matrix boots
-  one device per runner.
+- **CI.** Give group tests their own job rather than a shard: the per-shard
+  matrix boots one device per runner. Tapsmith's own `Multi-device` jobs in
+  `e2e-android.yml` and `e2e-ios.yml` boot one device and let Tapsmith launch
+  or clone the second; the suite they run (`e2e/tests/multi-device/`) has two
+  users chatting through a server the test hosts.

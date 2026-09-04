@@ -17,7 +17,7 @@ import { Device } from './device.js';
 import type { TapsmithConfig } from './config.js';
 import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
 import { installedApkMatches, isPackageInstalled, waitForPackageIndexed } from './emulator.js';
-import { installApp, installedAppMatches, isAppInstalled, probeSimulatorHealth, rebootSimulator } from './ios-simulator.js';
+import { installApp, installAppAsync, installedAppMatches, isAppInstalled, probeSimulatorHealth, rebootSimulator } from './ios-simulator.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import {
   AGENT_START_RETRY_DELAY_MS,
@@ -81,12 +81,36 @@ export interface DeviceSession {
   daemonProcess?: ChildProcess
   /** Agent host port the owned daemon forwards to the device (for cleanup). */
   agentPort?: number
+  /**
+   * False when the gRPC client was handed in by the caller
+   * (`OpenDeviceSessionOptions.client`), who owns its lifetime;
+   * `closeDeviceSession` then leaves it open.
+   */
+  ownsClient?: boolean
 }
+
+/** A setup step the sequential CLI shows as its own progress row. */
+export type DeviceSessionPhase = 'install' | 'agent' | 'launch'
+export type DeviceSessionPhaseState = 'start' | 'complete' | 'skip' | 'fail'
 
 export interface OpenDeviceSessionOptions {
   /** Prefix for error messages and preflight labels, e.g. `Worker 0`. */
   label: string
   onProgress?: (message: string) => void
+  /**
+   * Step-level progress for embedders with a step UI (the sequential CLI):
+   * fired when the app install, the agent start and the app launch begin,
+   * finish, are skipped or fail, with the detail the CLI has always shown
+   * (`checking app.apk`, `com.x already installed (matching build)`,
+   * `agent connected`, `launched com.x`, `no package configured`, …).
+   */
+  onPhase?: (phase: DeviceSessionPhase, state: DeviceSessionPhaseState, detail: string) => void
+  /**
+   * An already-connected client for `daemonAddress`, reused instead of opening
+   * a second connection to the same daemon. The caller keeps ownership: a
+   * failed open (and `closeDeviceSession`) leaves it for the caller to close.
+   */
+  client?: TapsmithGrpcClient
   /**
    * The emulator / simulator was provisioned for this run: reinstall the app
    * unconditionally (the snapshot may hold a stale build) and cycle the app
@@ -233,6 +257,14 @@ export async function resolveAgentArtifacts(
   config: TapsmithConfig,
   serial: string,
   onProgress?: (message: string) => void,
+  options: {
+    /**
+     * Fail when a physical iOS device has no device-slice xctestrun to run
+     * (the agent cannot start without one). Off for adopting sessions, whose
+     * agent is already running.
+     */
+    requireXctestrun?: boolean
+  } = {},
 ): Promise<AgentArtifacts> {
   const agentApkPath = config.agentApk
     ? path.resolve(config.rootDir, config.agentApk)
@@ -256,6 +288,12 @@ export async function resolveAgentArtifacts(
     if (physical) {
       const { findDeviceXctestrun } = await import('./ios-device-resolve.js');
       iosXctestrunPath = findDeviceXctestrun(config.rootDir);
+      if (!iosXctestrunPath && options.requireXctestrun) {
+        throw new Error(
+          'No device xctestrun found under ios-agent/.build-device. '
+          + 'Run `tapsmith build-ios-agent` first, or set `iosXctestrun` explicitly.',
+        );
+      }
     } else {
       const { ensureSimulatorAgent } = await import('./ios-simulator-build.js');
       onProgress?.('resolving iOS simulator agent');
@@ -271,26 +309,50 @@ export async function resolveAgentArtifacts(
 
 // ─── App install ───
 
+interface InstallOutcome {
+  /**
+   * Whether the install was a *fresh* one — onto a device with no data
+   * container for the app — which is the only case the startup launch may
+   * skip its clear (a reinstall keeps the data).
+   */
+  freshInstall: boolean
+  /**
+   * An iOS simulator install still running. It is started here and awaited by
+   * the caller right before the agent starts, so agent-artifact resolution
+   * (possibly an xcodebuild) overlaps with the install instead of waiting
+   * behind it. Resolves once the install is complete and reported.
+   */
+  pending?: Promise<void>
+}
+
 /**
  * Install the app under test unless the device already holds this exact
- * build. Returns whether the install was a *fresh* one — onto a device with
- * no data container for the app — which is the only case the startup launch
- * may skip its clear (a reinstall keeps the data).
+ * build. Progress lines keep the wording the parallel workers always emitted
+ * (the dispatcher's launch-phase tracker parses them); `onPhase` carries the
+ * sequential CLI's step details.
  */
 async function installAppUnderTest(
   config: TapsmithConfig,
   device: Device,
   serial: string,
-  opts: { freshDevice?: boolean; forceInstall?: boolean; onProgress?: (m: string) => void },
-): Promise<boolean> {
+  opts: {
+    freshDevice?: boolean
+    forceInstall?: boolean
+    onProgress?: (m: string) => void
+    onPhase?: OpenDeviceSessionOptions['onPhase']
+  },
+): Promise<InstallOutcome> {
   const progress = opts.onProgress ?? (() => {});
+  const phase = opts.onPhase ?? (() => {});
 
   if (config.platform !== 'ios') {
     if (!config.apk) {
       progress('app install skipped');
-      return false;
+      phase('install', 'skip', 'no Android APK configured');
+      return { freshInstall: false };
     }
     const resolvedApk = path.resolve(config.rootDir, config.apk);
+    phase('install', 'start', `checking ${path.basename(resolvedApk)}`);
     const wasInstalled = !!config.package && isPackageInstalled(serial, config.package);
     // A rebuilt APK must replace the installed one; a freshly-launched AVD
     // snapshot may hold a stale build *with* data, so it is always reinstalled.
@@ -299,31 +361,48 @@ async function installAppUnderTest(
     const upToDate = !opts.freshDevice && wasInstalled && !buildDiffers;
     if (upToDate && !opts.forceInstall) {
       progress(`app ${config.package} already installed (matching build), skipping APK install`);
-      return false;
+      phase('install', 'complete', `${config.package} already installed (matching build)`);
+      return { freshInstall: false };
     }
-    progress(`${wasInstalled ? 'reinstalling' : 'installing'} app APK ${path.basename(resolvedApk)}`);
-    await device.installApk(resolvedApk);
-    if (config.package) await waitForPackageIndexed(serial, config.package);
+    const why = buildDiffers ? ' (installed build differs)' : '';
+    progress(`${wasInstalled ? 'reinstalling' : 'installing'} app APK ${path.basename(resolvedApk)}${why}`);
+    try {
+      await device.installApk(resolvedApk);
+      if (config.package) await waitForPackageIndexed(serial, config.package);
+    } catch (err) {
+      phase('install', 'fail', `failed to install ${path.basename(resolvedApk)}`);
+      throw new Error(`Failed to install app APK: ${err instanceof Error ? err.message : String(err)}`);
+    }
     progress('app install complete');
-    return !wasInstalled;
+    phase('install', 'complete', `installed ${path.basename(resolvedApk)}`);
+    return { freshInstall: !wasInstalled };
   }
 
   if (!config.app) {
     progress('app install skipped');
-    return false;
+    phase('install', 'skip', 'no iOS app configured');
+    return { freshInstall: false };
   }
   const resolvedApp = path.resolve(config.rootDir, config.app);
+  phase('install', 'start', `checking ${path.basename(resolvedApp)}`);
   const { isPhysicalDevice, installAppOnDevice, isAppInstalledOnDevice } = await import('./ios-devicectl.js');
   if (isPhysicalDevice(serial)) {
     const wasInstalled = !!config.package && (await isAppInstalledOnDevice(serial, config.package));
-    if (wasInstalled && !opts.forceInstall) {
+    if (wasInstalled && !opts.forceInstall && !opts.freshDevice) {
       progress(`app ${config.package} already installed, skipping app install`);
-      return false;
+      phase('install', 'complete', `${config.package} already installed on device`);
+      return { freshInstall: false };
     }
-    progress(`installing ${path.basename(resolvedApp)} on device`);
-    await installAppOnDevice(serial, resolvedApp);
+    progress(`${wasInstalled ? 'reinstalling' : 'installing'} ${path.basename(resolvedApp)} on device`);
+    try {
+      await installAppOnDevice(serial, resolvedApp);
+    } catch (err) {
+      phase('install', 'fail', `failed to install ${path.basename(resolvedApp)}`);
+      throw new Error(`Failed to install iOS app: ${err instanceof Error ? err.message : String(err)}`);
+    }
     progress('app install complete');
-    return !wasInstalled;
+    phase('install', 'complete', `installed ${path.basename(resolvedApp)} on ${serial}`);
+    return { freshInstall: !wasInstalled };
   }
   // Skip only when the installed bundle is byte-identical — simulator state
   // can outlive a run, and a presence-only skip silently tests a stale build.
@@ -332,12 +411,40 @@ async function installAppUnderTest(
     && installedAppMatches(serial, config.package!, resolvedApp);
   if (upToDate && !opts.forceInstall) {
     progress(`app ${config.package} already installed (matching build), skipping app install`);
-    return false;
+    phase('install', 'complete', `${config.package} already installed (matching build)`);
+    return { freshInstall: false };
   }
-  progress(`${wasInstalled ? 'reinstalling' : 'installing'} ${path.basename(resolvedApp)}`);
-  installApp(serial, resolvedApp);
-  progress('app install complete');
-  return !wasInstalled;
+  const why = wasInstalled && !opts.freshDevice ? ' (installed build differs)' : '';
+  progress(`${wasInstalled ? 'reinstalling' : 'installing'} ${path.basename(resolvedApp)}${why}`);
+  // Asynchronous: the caller resolves agent artifacts meanwhile and awaits
+  // this before the agent starts (the iOS agent launches the app itself).
+  const pending = installAppAsync(serial, resolvedApp).then(
+    () => {
+      progress('app install complete');
+      phase('install', 'complete', `installed ${path.basename(resolvedApp)}`);
+    },
+    (err: unknown) => {
+      phase('install', 'fail', `failed to install ${path.basename(resolvedApp)}`);
+      throw new Error(`Failed to install iOS app: ${err instanceof Error ? err.message : String(err)}`);
+    },
+  );
+  return { freshInstall: !wasInstalled, pending };
+}
+
+/**
+ * Bring a simulator app to the foreground before the XCUITest agent attaches,
+ * which avoids a brief black-screen flicker. Best-effort: the app may already
+ * be running. Physical devices are skipped — `simctl launch` is simulator-only.
+ */
+async function prelaunchSimulatorApp(config: TapsmithConfig, serial: string): Promise<void> {
+  if (config.platform !== 'ios' || !config.package) return;
+  const { isPhysicalDevice } = await import('./ios-devicectl.js');
+  if (isPhysicalDevice(serial)) return;
+  try {
+    execFileSync('xcrun', ['simctl', 'launch', serial, config.package], { stdio: 'ignore' });
+  } catch {
+    // App may already be running
+  }
 }
 
 // ─── Session lifecycle ───
@@ -355,14 +462,15 @@ export async function openDeviceSession(
   opts: OpenDeviceSessionOptions,
 ): Promise<DeviceSession> {
   const progress = opts.onProgress ?? (() => {});
+  const phase = opts.onPhase ?? (() => {});
   const label = `${opts.label} (${spec.serial})`;
   const config: TapsmithConfig = { ...baseConfig, device: spec.serial, daemonAddress: spec.daemonAddress };
 
   progress(`connecting to daemon on ${spec.daemonAddress}`);
-  const client = new TapsmithGrpcClient(spec.daemonAddress);
+  const client = opts.client ?? new TapsmithGrpcClient(spec.daemonAddress);
   const ready = await client.waitForReady(opts.connectTimeoutMs ?? 10_000);
   if (!ready) {
-    client.close();
+    if (!opts.client) client.close();
     throw new Error(`${label}: Failed to connect to daemon at ${spec.daemonAddress}`);
   }
 
@@ -390,6 +498,7 @@ export async function openDeviceSession(
     },
     daemonProcess: opts.daemonProcess,
     agentPort: opts.agentPort,
+    ownsClient: !opts.client,
   };
 
   try {
@@ -434,16 +543,34 @@ export async function openDeviceSession(
       return session;
     }
 
-    const freshInstall = await installAppUnderTest(config, device, spec.serial, {
+    const install = await installAppUnderTest(config, device, spec.serial, {
       freshDevice: opts.freshDevice,
       forceInstall: opts.forceInstall,
       onProgress: progress,
+      onPhase: phase,
     });
 
-    const artifacts = opts.artifacts ?? await resolveAgentArtifacts(config, spec.serial, progress);
+    // Resolving the agent artifacts may build the simulator agent; a pending
+    // simulator install runs alongside it, and is awaited before the agent
+    // starts because the iOS agent launches the app as soon as it is up.
+    let artifacts: AgentArtifacts;
+    try {
+      artifacts = opts.artifacts ?? await resolveAgentArtifacts(config, spec.serial, progress, { requireXctestrun: true });
+    } catch (err) {
+      // Never leave the install dangling as an unhandled rejection.
+      install.pending?.catch(() => {});
+      phase('agent', 'fail', err instanceof Error ? err.message : String(err));
+      throw err;
+    }
     Object.assign(session.context, artifacts);
+    if (install.pending) await install.pending;
+    await prelaunchSimulatorApp(config, spec.serial);
+    const freshInstall = install.freshInstall;
 
     progress('starting Tapsmith agent');
+    phase('agent', 'start', config.platform === 'ios'
+      ? `starting iOS agent (${artifacts.iosXctestrunPath ? path.basename(artifacts.iosXctestrunPath) : 'xctestrun not set'})`
+      : 'starting Android automation agent');
     const startAgent = (): Promise<void> => device.startAgent(
       config.package ?? '',
       artifacts.agentApkPath,
@@ -453,29 +580,43 @@ export async function openDeviceSession(
       networkTracingEnabled,
     );
     try {
-      await startAgent();
+      try {
+        await startAgent();
+      } catch (err) {
+        if (!isRetryableAgentStartError(err)) throw err;
+        progress(`agent startup failed, retrying once: ${err instanceof Error ? err.message : String(err)}`);
+        // Let a transient agent-connection drop clear before the retry — an
+        // immediate re-attempt lands inside the same drop window (PILOT-282).
+        await new Promise((resolve) => setTimeout(resolve, AGENT_START_RETRY_DELAY_MS));
+        await startAgent();
+      }
     } catch (err) {
-      if (!isRetryableAgentStartError(err)) throw err;
-      progress(`agent startup failed, retrying once: ${err instanceof Error ? err.message : String(err)}`);
-      // Let a transient agent-connection drop clear before the retry — an
-      // immediate re-attempt lands inside the same drop window (PILOT-282).
-      await new Promise((resolve) => setTimeout(resolve, AGENT_START_RETRY_DELAY_MS));
-      await startAgent();
+      phase('agent', 'fail', err instanceof Error ? err.message : String(err));
+      throw new Error(`Failed to start agent: ${err instanceof Error ? err.message : String(err)}`);
     }
     progress('agent connected');
+    phase('agent', 'complete', 'agent connected');
 
     const launchPhase = opts.launchPhase ?? 'startup launch';
     if (config.package) {
       progress(`launching ${config.package}`);
-      session.prepared = await launchConfiguredApp(session.context, launchPhase, {
-        freshInstall,
-        ...(opts.readinessAttempts !== undefined ? { readinessAttempts: opts.readinessAttempts } : {}),
-      });
+      phase('launch', 'start', `launching ${config.package}`);
+      try {
+        session.prepared = await launchConfiguredApp(session.context, launchPhase, {
+          freshInstall,
+          ...(opts.readinessAttempts !== undefined ? { readinessAttempts: opts.readinessAttempts } : {}),
+        });
+      } catch (err) {
+        phase('launch', 'fail', `failed to launch ${config.package}`);
+        throw new Error(`Failed to launch app: ${err instanceof Error ? err.message : String(err)}`);
+      }
       progress('app launched');
+      phase('launch', 'complete', `launched ${config.package}`);
     } else {
       progress('validating session readiness');
       await ensureSessionReady(session.context, `${opts.label} initialization`);
       progress('session ready');
+      phase('launch', 'skip', 'no package configured');
     }
 
     // Warm up freshly launched emulators by cycling the app once. The first
@@ -576,7 +717,9 @@ export async function recoverDeviceSessions(sessions: DeviceSession[], phase: st
  */
 export function closeDeviceSession(session: DeviceSession): void {
   try { session.device.close(); } catch { /* already closed */ }
-  try { session.client.close(); } catch { /* already closed */ }
+  if (session.ownsClient !== false) {
+    try { session.client.close(); } catch { /* already closed */ }
+  }
   if (session.daemonProcess) {
     try { session.daemonProcess.kill(); } catch { /* already gone */ }
     session.daemonProcess = undefined;

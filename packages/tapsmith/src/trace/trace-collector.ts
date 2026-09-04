@@ -906,7 +906,13 @@ export class TraceCollector {
 
   // ── Console ──
 
-  private _addConsoleEvent(level: ConsoleLevel, message: string, source: 'test' | 'device' | 'daemon', deviceId?: string): void {
+  private _addConsoleEvent(
+    level: ConsoleLevel,
+    message: string,
+    source: 'test' | 'device' | 'daemon',
+    deviceId?: string,
+    timestamp?: number,
+  ): void {
     this._flushPendingGroups();
     const event = {
       type: 'console',
@@ -914,19 +920,22 @@ export class TraceCollector {
       message,
       source,
       actionIndex: this._actionIndex,
-      timestamp: Date.now(),
+      // The source's own timestamp when it has one: device and daemon log
+      // lines arrive over a stream, and stamping them on arrival ordered two
+      // devices' logs by stream latency rather than by when they happened.
+      timestamp: timestamp && timestamp > 0 ? timestamp : Date.now(),
       ...(deviceId ? { deviceId } : {}),
     } as ConsoleTraceEvent;
     this._events.push(event);
     this._onEvent?.(event);
   }
 
-  addLogcatEntry(level: ConsoleLevel, message: string, deviceId?: string): void {
-    this._addConsoleEvent(level, message, 'device', deviceId);
+  addLogcatEntry(level: ConsoleLevel, message: string, deviceId?: string, timestampMs?: number): void {
+    this._addConsoleEvent(level, message, 'device', deviceId, timestampMs);
   }
 
-  addDaemonLogEntry(level: ConsoleLevel, message: string, deviceId?: string): void {
-    this._addConsoleEvent(level, message, 'daemon', deviceId);
+  addDaemonLogEntry(level: ConsoleLevel, message: string, deviceId?: string, timestampMs?: number): void {
+    this._addConsoleEvent(level, message, 'daemon', deviceId, timestampMs);
   }
 
   // ── Error ──

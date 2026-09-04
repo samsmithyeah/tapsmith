@@ -136,6 +136,11 @@ function injectStyles() {
 interface Props {
   entries: NetworkEntry[]
   bodies: Map<string, Uint8Array>
+  /**
+   * Devices of a multi-device trace (group order). With two or more, rows show
+   * the device whose proxy captured them and a device filter is offered.
+   */
+  deviceNames?: string[]
 }
 
 type ResourceType = 'all' | 'fetch' | 'doc' | 'js' | 'css' | 'img' | 'font' | 'media' | 'other'
@@ -276,9 +281,11 @@ function routeBadge(routeAction?: string): preact.JSX.Element | null {
 
 // ─── Component ───
 
-export function NetworkTab({ entries, bodies }: Props) {
+export function NetworkTab({ entries, bodies, deviceNames }: Props) {
   injectStyles();
 
+  const showDevices = !!deviceNames && deviceNames.length > 1;
+  const [deviceFilter, setDeviceFilter] = useState<string>('all');
   const [urlFilter, setUrlFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState<ResourceType>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -306,6 +313,7 @@ export function NetworkTab({ entries, bodies }: Props) {
       }
       if (typeFilter !== 'all' && resourceType(e) !== typeFilter) return false;
       if (!matchesStatusFilter(e, statusFilter)) return false;
+      if (showDevices && deviceFilter !== 'all' && e.deviceId !== deviceFilter) return false;
       return true;
     });
 
@@ -338,7 +346,7 @@ export function NetworkTab({ entries, bodies }: Props) {
     });
 
     return result;
-  }, [entries, urlFilter, typeFilter, statusFilter, sortColumn, sortDirection]);
+  }, [entries, urlFilter, typeFilter, statusFilter, sortColumn, sortDirection, showDevices, deviceFilter]);
 
   const selected = selectedIndex !== null
     ? entries.find(e => e.index === selectedIndex)
@@ -415,6 +423,23 @@ export function NetworkTab({ entries, bodies }: Props) {
           ))}
           </div>
           <span class="net-pill-sep" />
+          {showDevices && (
+            <div class="net-pill-group" role="group" aria-label="Filter by device">
+              <button
+                class={`net-pill${deviceFilter === 'all' ? ' active' : ''}`}
+                aria-pressed={deviceFilter === 'all'}
+                onClick={() => setDeviceFilter('all')}
+              >All devices</button>
+              {deviceNames!.map((name) => (
+                <button
+                  key={name}
+                  class={`net-pill${deviceFilter === name ? ' active' : ''}`}
+                  aria-pressed={deviceFilter === name}
+                  onClick={() => setDeviceFilter(name)}
+                >{name}</button>
+              ))}
+            </div>
+          )}
           <div class="net-pill-group" role="group" aria-label="Filter by status">
           <button
             class={`net-pill${statusFilter === 'all' ? ' active' : ''}`}
@@ -463,6 +488,7 @@ export function NetworkTab({ entries, bodies }: Props) {
             <thead>
               <tr>
                 <th onClick={() => handleSort('name')}>Name{sortIndicator('name')}</th>
+                {showDevices && <th>Device</th>}
                 <th onClick={() => handleSort('method')}>Method{sortIndicator('method')}</th>
                 <th onClick={() => handleSort('status')}>Status{sortIndicator('status')}</th>
                 {!selected && <th onClick={() => handleSort('type')}>Type{sortIndicator('type')}</th>}
@@ -490,6 +516,7 @@ export function NetworkTab({ entries, bodies }: Props) {
                         {routeBadge(entry.routeAction)}
                       </div>
                     </td>
+                    {showDevices && <td class="net-device" data-testid="net-device">{entry.deviceId ?? '—'}</td>}
                     <td class={methodClass(entry.method)}>{entry.method}</td>
                     <td class={`net-status-text ${statusTextClass(bucket)}`}>
                       {entry.routeAction === 'aborted' ? 'ABORTED' : (entry.status || '—')}

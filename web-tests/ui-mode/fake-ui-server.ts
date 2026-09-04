@@ -21,6 +21,8 @@ export interface ScreenFrame {
   seq?: number
   /** 0 in single-worker mode, which is the default the SPA assumes. */
   workerId?: number
+  /** Which device of the worker's group painted it (0 = primary, the default). */
+  deviceIndex?: number
 }
 
 export class FakeUiServer {
@@ -102,7 +104,7 @@ export class FakeUiServer {
     const seq = frame.seq ?? this.frameSeq + 1
     this.frameSeq = Math.max(this.frameSeq, seq)
     ws.send(
-      encodeScreenFrame(seq, frame.workerId ?? 0, frame.width, frame.height, frame.png),
+      encodeScreenFrame(seq, frame.workerId ?? 0, frame.width, frame.height, frame.png, frame.deviceIndex ?? 0),
     )
   }
 

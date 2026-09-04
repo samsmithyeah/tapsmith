@@ -17,11 +17,12 @@ import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults, markFileRetryFlakes, type RunDevice, type TestResult, type SuiteResult } from './runner.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
-import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
+import { ensureSessionReady } from './session-preflight.js';
 import {
   closeDeviceSession,
   consumePrepared,
   openDeviceGroup,
+  openDeviceSession,
   recoverDeviceSessions,
   resolveDaemonBin,
   startDaemon,
@@ -29,13 +30,10 @@ import {
 } from './device-session.js';
 import type { PreparedState, ResetCapabilities } from './app-reset.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
-import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { discoverTestFiles } from './test-file-discovery.js';
 import {
   resolveTraceConfig,
   isNetworkTracingEnabled,
-  networkHostsForPac,
-  networkPassthroughHosts,
 } from './trace/types.js';
 import { resolveVideoConfig } from './video/types.js';
 import { recordsOnlyOnRetry } from './trace/trace-mode.js';
@@ -44,10 +42,7 @@ import {
   clearOfflineEmulatorTransports,
   preserveEmulatorsForReuse,
   filterHealthyDevices,
-  isPackageInstalled,
-  installedApkMatches,
   listAdbDevices,
-  waitForPackageIndexed,
   cleanupStaleEmulators,
   prefilterDevicesForStrategy,
   probeDeviceHealth,
@@ -58,13 +53,14 @@ import {
   waitForDeviceStability,
   ensureAdbRoot,
 } from './emulator.js';
-import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeConfig } from './worker-protocol.js';
+import { isRecoverableInfrastructureError, serializeConfig } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort, pickFreePort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
 import {
   createUiLaunchSteps,
   UiLaunchProgress,
   type LaunchProgressSink,
+  type LaunchStepId,
 } from './launch-progress.js';
 import { killAgentRunnersForSimulators } from './ios-simulator.js';
 
@@ -591,6 +587,7 @@ async function setupSequentialDevice(
   }
 
   cfg.device = target.selectedSerial;
+  const deviceSerial = cfg.device;
 
   // CI=false (string) must be treated as falsy — some systems export CI=false
   // for "not in CI" which is truthy in JavaScript. Normalise once here.
@@ -599,63 +596,24 @@ async function setupSequentialDevice(
   // Pre-flight: verify device is responsive before doing anything slow (Android only).
   // Skip in CI — the workflow already verified boot_completed=1 and disabled animations.
   if (cfg.platform !== 'ios' && !isCI) {
-    progress?.update('primary-device', { state: 'running', detail: `checking ${cfg.device}` });
-    await checkDeviceHealth(cfg.device);
+    progress?.update('primary-device', { state: 'running', detail: `checking ${deviceSerial}` });
+    await checkDeviceHealth(deviceSerial);
   }
 
   const { client, address: daemonAddress } = await ensureDaemonRunning(cfg.daemonAddress, cfg.daemonBin, cfg.platform, progress);
   // Workers, the UI server and recovery all read the address from the config.
   cfg.daemonAddress = daemonAddress;
-  const device = new Device(client, cfg);
-
-  // Tell the daemon whether this session intends to capture network traffic.
-  // When false, the daemon skips every physical-iOS MITM/OCSP pre-arm code
-  // path — the biggest single basic-track failure-surface reduction.
-  // When true, we also pass the host-glob allowlist through so the daemon
-  // can embed it in the PAC script served at `/tapsmith.pac`.
-  const networkTracingEnabled = isNetworkTracingEnabled(cfg.trace);
-  const pacNetworkHosts = networkHostsForPac(cfg.trace);
-  const passthroughHosts = networkPassthroughHosts(cfg.trace);
-
-  // Capture the narrowed serial — the retry closure would otherwise see the
-  // possibly-undefined config field.
-  const deviceSerial = cfg.device;
-  try {
-    progress?.update('primary-device', { state: 'running', detail: `selecting ${deviceSerial}` });
-    await retryDeviceSelection(
-      () => device.setDevice(deviceSerial, networkTracingEnabled, pacNetworkHosts, passthroughHosts),
-      () => progress?.update('primary-device', { state: 'running', detail: `selection failed transiently, retrying ${deviceSerial}` }),
-    );
-    if (!progress) console.log(dim(`Using device: ${cfg.device}`));
-  } catch (err) {
-    progress?.fail('primary-device', `failed to select ${cfg.device}`);
-    throw new Error(`Failed to set device: ${err}`);
-  }
-
-  const deviceJustLaunched = launchedEmulators.some((e) => e.serial === cfg.device);
-  // Whether the startup launch may skip its clear: only when the app was
-  // installed onto a device that did not have it. A reinstall (`adb install
-  // -r`, `simctl install`, devicectl) keeps the data container.
-  let freshInstall = false;
-  let simulatorHadApp = false;
-  let pendingSimulatorInstall: Promise<void> | undefined;
-  let pendingInstallError: unknown;
 
   // Determine whether this UDID targets a physical device or a simulator.
-  // The branch drives every downstream decision in the iOS block: simctl for
-  // simulators, devicectl for physical. It also controls whether we cache
-  // the app path in startAgent for reinstall-based clearAppData.
   let targetIsPhysical = false;
-  let resolvedIosAppPath: string | undefined;
   if (cfg.platform === 'ios') {
     const { isPhysicalDevice } = await import('./ios-devicectl.js');
-    targetIsPhysical = cfg.device ? isPhysicalDevice(cfg.device) : false;
-    resolvedIosAppPath = cfg.app ? path.resolve(cfg.rootDir, cfg.app) : undefined;
+    targetIsPhysical = isPhysicalDevice(deviceSerial);
   }
 
   // Physical-iOS fast-fail checks. Fire BEFORE the 8-second installAppOnDevice
   // so the user gets an immediate, actionable error instead of a mid-test hang.
-  if (cfg.platform === 'ios' && targetIsPhysical && cfg.device) {
+  if (cfg.platform === 'ios' && targetIsPhysical) {
     // Cert-trust probe. The devicectl launch is ~1s and pattern-matches
     // cleanly on "cert not trusted". Only helpful when the runner is
     // already installed (i.e. second-and-subsequent runs on the device)
@@ -663,7 +621,7 @@ async function setupSequentialDevice(
     // we proceed silently so xcodebuild can install it via the normal
     // path and trigger the iOS trust prompt.
     const { probeCertTrust } = await import('./ios-trust-probe.js');
-    const trust = await probeCertTrust(cfg.device);
+    const trust = await probeCertTrust(deviceSerial);
     if (trust.state === 'untrusted') {
       progress?.fail('primary-device', 'developer certificate is not trusted');
       console.error();
@@ -683,13 +641,13 @@ async function setupSequentialDevice(
     // silently fail to route through the proxy.
     if (isNetworkTracingEnabled(cfg.trace)) {
       const { checkHostIpDrift } = await import('./ios-host-ip-check.js');
-      const drift = checkHostIpDrift(cfg.device);
+      const drift = checkHostIpDrift(deviceSerial);
       if (!drift.ok && drift.sidecarHostIp && drift.currentHostIp) {
         if (progress) {
           progress.note(
             `Host IP drift detected: profile points at ${drift.sidecarHostIp}, Mac is now ${drift.currentHostIp}.`,
           );
-          progress.note(`Run \`tapsmith refresh-ios-network ${cfg.device}\` and reinstall the updated profile.`);
+          progress.note(`Run \`tapsmith refresh-ios-network ${deviceSerial}\` and reinstall the updated profile.`);
         } else {
           console.log();
           console.log('\x1b[33m⚠ Host IP drift detected.\x1b[0m');
@@ -697,145 +655,12 @@ async function setupSequentialDevice(
             dim(`  Installed profile points at ${drift.sidecarHostIp}, Mac is now ${drift.currentHostIp}.`),
           );
           console.log(
-            dim(`  Run \`tapsmith refresh-ios-network ${cfg.device}\` and reinstall the updated`),
+            dim(`  Run \`tapsmith refresh-ios-network ${deviceSerial}\` and reinstall the updated`),
           );
           console.log(dim('  profile on the device, otherwise traces will come back empty.'));
           console.log();
         }
       }
-    }
-  }
-
-  if (cfg.platform === 'ios') {
-    progress?.complete('primary-device', `${cfg.device} selected`);
-    if (cfg.app && cfg.device) {
-      progress?.start('app-install', `checking ${path.basename(cfg.app)}`);
-      try {
-        const resolvedApp = resolvedIosAppPath!;
-        if (targetIsPhysical) {
-          const { installAppOnDevice, isAppInstalledOnDevice } = await import('./ios-devicectl.js');
-          const alreadyInstalled = !deviceJustLaunched
-            && cfg.package
-            && (await isAppInstalledOnDevice(cfg.device, cfg.package));
-          if (alreadyInstalled && !forceInstall) {
-            if (progress) progress.complete('app-install', `${cfg.package} already installed on device`);
-            else console.log(dim(`App ${cfg.package} already installed on device, skipping install. Use --force-install to reinstall.`));
-          } else {
-            if (alreadyInstalled) {
-              if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling ${path.basename(resolvedApp)} on device` });
-              else console.log(dim(`Reinstalling iOS app on device: ${path.basename(resolvedApp)}`));
-            } else {
-              progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)} on device` });
-            }
-            await installAppOnDevice(cfg.device, resolvedApp);
-            freshInstall = !alreadyInstalled;
-            if (progress) progress.complete('app-install', `installed ${path.basename(resolvedApp)} on ${cfg.device}`);
-            else console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS device ${cfg.device}.`));
-          }
-        } else {
-          const { installAppAsync, isAppInstalled, installedAppMatches } = await import('./ios-simulator.js');
-          simulatorHadApp = !!cfg.package && isAppInstalled(cfg.device, cfg.package);
-          const alreadyInstalled = !deviceJustLaunched && simulatorHadApp;
-          // Skip only when the installed bundle is byte-identical — simulator
-          // state can outlive a run (reused CI runner device sets, local app
-          // rebuilds), and a presence-only skip silently tests a stale build.
-          const upToDate = alreadyInstalled
-            && installedAppMatches(cfg.device, cfg.package!, resolvedApp);
-          if (upToDate && !forceInstall) {
-            if (progress) progress.complete('app-install', `${cfg.package} already installed (matching build)`);
-            else console.log(dim(`App ${cfg.package} already installed (matching build), skipping iOS app install. Use --force-install to reinstall.`));
-          } else {
-            if (alreadyInstalled) {
-              if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling ${path.basename(resolvedApp)} (installed build differs)` });
-              else console.log(dim(`Reinstalling iOS app (installed build differs): ${path.basename(resolvedApp)}`));
-            } else {
-              progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)}` });
-            }
-            // Start install asynchronously — awaited before startAgent since
-            // the iOS agent calls app.launch() immediately on startup.
-            pendingSimulatorInstall = installAppAsync(cfg.device, resolvedApp)
-              .catch((err: unknown) => { pendingInstallError = err; });
-          }
-        }
-      } catch (err) {
-        progress?.fail('app-install', `failed to install ${path.basename(resolvedIosAppPath ?? cfg.app)}`);
-        throw new Error(`Failed to install iOS app: ${err}`);
-      }
-    } else {
-      progress?.skip('app-install', 'no iOS app configured');
-    }
-    if (cfg.package && cfg.device && !pendingSimulatorInstall) {
-      // For simulators we fire a best-effort simctl launch so the app is in
-      // the foreground when the XCUITest runner attaches, which avoids a
-      // brief black-screen flicker. Deferred when a simulator install is
-      // running concurrently with agent startup. For physical devices we
-      // skip this entirely: `simctl launch` doesn't work on real hardware.
-      if (!targetIsPhysical) {
-        try {
-          execFileSync('xcrun', ['simctl', 'launch', cfg.device, cfg.package]);
-          if (!progress) console.log(dim(`Launched ${cfg.package} on iOS simulator.`));
-        } catch {
-          // App may already be running
-        }
-      }
-    }
-  } else {
-    if (isCI) {
-      // Skip wake/unlock in CI — headless emulators have no lockscreen.
-      progress?.complete('primary-device', `${cfg.device} selected`);
-    } else {
-      try {
-        progress?.update('primary-device', { state: 'running', detail: `waking ${cfg.device}` });
-        await device.wake();
-        await device.unlock();
-        if (progress) progress.complete('primary-device', `${cfg.device} awake and unlocked`);
-        else console.log(dim('Device screen unlocked.'));
-      } catch {
-        // Non-fatal — device might already be awake/unlocked
-        progress?.complete('primary-device', `${cfg.device} selected`);
-      }
-    }
-
-    if (cfg.apk) {
-      progress?.start('app-install', `checking ${path.basename(cfg.apk)}`);
-      // Whether a data container may already exist is a different question
-      // from whether to (re)install: a freshly-launched AVD snapshot may hold
-      // a stale build *with* data, so it is always reinstalled — but that
-      // reinstall keeps the data, and only a true first install is "fresh".
-      const wasInstalled = !!cfg.package && !!cfg.device && isPackageInstalled(cfg.device, cfg.package);
-      const isInstalled = !deviceJustLaunched && wasInstalled;
-      // A rebuilt APK must replace the installed one — matching the iOS
-      // "installed build differs" check.
-      const buildDiffers = isInstalled && cfg.package && cfg.device
-        && installedApkMatches(cfg.device, cfg.package, path.resolve(cfg.rootDir, cfg.apk)) === false;
-
-      if (isInstalled && !forceInstall && !buildDiffers) {
-        if (progress) progress.complete('app-install', `${cfg.package} already installed (matching build)`);
-        else console.log(dim(`App ${cfg.package} already installed, skipping APK install. Use --force-install to reinstall.`));
-      } else {
-        const resolvedApk = path.resolve(cfg.rootDir, cfg.apk);
-        try {
-          if (isInstalled) {
-            const why = buildDiffers ? ' (installed build differs)' : '';
-            if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling ${path.basename(resolvedApk)}${why}` });
-            else console.log(dim(`Reinstalling app APK${why}: ${path.basename(resolvedApk)}`));
-          } else {
-            progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApk)}` });
-          }
-          await device.installApk(resolvedApk);
-          freshInstall = !wasInstalled;
-          if (cfg.package && cfg.device) {
-            await waitForPackageIndexed(cfg.device, cfg.package);
-          }
-          if (progress) progress.complete('app-install', `installed ${path.basename(resolvedApk)}`);
-          else console.log(dim(`Installed app APK: ${path.basename(resolvedApk)}`));
-        } catch (err) {
-          progress?.fail('app-install', `failed to install ${path.basename(resolvedApk)}`);
-          throw new Error(`Failed to install app APK: ${err}`);
-        }
-      }
-    } else {
-      progress?.skip('app-install', 'no Android APK configured');
     }
   }
 
@@ -848,74 +673,92 @@ async function setupSequentialDevice(
     const { notifyLegacySudoersIfPresent } = await import('./legacy-cleanup.js');
     notifyLegacySudoersIfPresent();
   }
-  if (cfg.platform !== 'ios' && traceConfig.mode !== 'off' && traceConfig.network && cfg.device) {
-    const restarted = ensureAdbRoot(cfg.device);
+  if (cfg.platform !== 'ios' && traceConfig.mode !== 'off' && traceConfig.network) {
+    const restarted = ensureAdbRoot(deviceSerial);
     if (restarted) {
       if (progress) progress.note('Enabled adb root for network capture.');
       else console.log(dim('Enabled adb root for network capture.'));
     }
   }
 
-  const resolvedAgentApk = cfg.agentApk
-    ? path.resolve(cfg.rootDir, cfg.agentApk)
-    : findAgentApk();
-  const resolvedAgentTestApk = cfg.agentTestApk
-    ? path.resolve(cfg.rootDir, cfg.agentTestApk)
-    : findAgentTestApk();
-  // TAPSMITH_IOS_XCTESTRUN overrides auto-detection for configs that don't
-  // set `iosXctestrun` — CI configs read this env var explicitly, and honoring
-  // it uniformly means a locally built agent can be pinned for ANY config
-  // instead of silently losing to the npm-package lookup.
-  let resolvedIosXctestrun = cfg.iosXctestrun
-    ? path.resolve(cfg.rootDir, cfg.iosXctestrun)
-    : process.env.TAPSMITH_IOS_XCTESTRUN || undefined;
-  // iOS xctestrun auto-detect: if the user didn't set `iosXctestrun`,
-  // pick the newest built xctestrun for the target slice. Mirrors the way
-  // `simulator: "iPhone 16"` is enough to pick a device without hand-rolling
-  // JSON parsing in the config.
-  //   - Physical devices: look under `<rootDir>/ios-agent/.build-device/…`
-  //     (populated by `tapsmith build-ios-agent`).
-  //   - Simulators: look under `~/Library/Developer/Xcode/DerivedData/TapsmithAgent-*`
-  //     (populated by the simulator `xcodebuild build-for-testing` command).
-  if (!resolvedIosXctestrun && cfg.platform === 'ios') {
-    const { findDeviceXctestrun } =
-      await import('./ios-device-resolve.js');
-    if (targetIsPhysical) {
-      const found = findDeviceXctestrun(cfg.rootDir);
-      if (found) {
-        resolvedIosXctestrun = found;
-        const detail = `resolved ${path.relative(cfg.rootDir, found)}`;
-        if (progress) progress.update('agent', { state: 'pending', detail });
-        else console.log(dim(`Auto-detected iOS device xctestrun: ${path.relative(cfg.rootDir, found)}`));
-      } else {
-        progress?.fail('agent', 'no device xctestrun found');
-        throw new Error(
-          'No device xctestrun found under ios-agent/.build-device. ' +
-            'Run `tapsmith build-ios-agent` first, or set `iosXctestrun` explicitly.',
-        );
-      }
-    } else {
-      const { ensureSimulatorAgent } = await import('./ios-simulator-build.js');
-      try {
-        const found = await ensureSimulatorAgent();
-        resolvedIosXctestrun = found;
-        if (progress) progress.update('agent', { state: 'pending', detail: `resolved ${path.basename(found)}` });
-        else console.log(dim(`Auto-detected iOS simulator xctestrun: ${found}`));
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        progress?.fail('agent', 'failed to ensure simulator agent');
-        throw new Error(msg);
-      }
-    }
+  // The shared session module does the rest — select, wake, install, agent,
+  // launch — exactly as it does for every worker. Its phase callbacks drive
+  // the step rows below; its progress lines fill in the running detail.
+  const group = resolveDeviceGroup(cfg);
+  const deviceJustLaunched = launchedEmulators.some((e) => e.serial === deviceSerial);
+  const phaseSteps: Record<'install' | 'agent' | 'launch', LaunchStepId> = {
+    install: 'app-install', agent: 'agent', launch: 'app-launch',
+  };
+  let currentStep: LaunchStepId = 'primary-device';
+  let primaryCompleted = false;
+  const completePrimary = (detail: string): void => {
+    if (primaryCompleted) return;
+    primaryCompleted = true;
+    progress?.complete('primary-device', detail);
+  };
+  let session: DeviceSession;
+  try {
+    session = await openDeviceSession(
+      { name: group[0].name, serial: deviceSerial, daemonAddress },
+      cfg,
+      {
+        label: 'Device',
+        client,
+        forceInstall,
+        freshDevice: deviceJustLaunched,
+        // Headless CI emulators have no lockscreen; iOS never needed it here.
+        skipWakeUnlock: cfg.platform !== 'ios' && isCI,
+        readinessAttempts: 3,
+        launchPhase: 'startup launch',
+        onProgress: (message) => {
+          if (message === 'waking and unlocking device') {
+            progress?.update('primary-device', { state: 'running', detail: `waking ${deviceSerial}` });
+            return;
+          }
+          // Lines the phase callbacks already turn into step completions.
+          if (
+            message === 'app launched' || message === 'session ready' || message === 'agent connected'
+            || message === 'app install complete' || message === 'app install skipped'
+            || message.includes('already installed')
+          ) return;
+          progress?.update(currentStep, { state: 'running', detail: message });
+        },
+        onPhase: (phase, state, detail) => {
+          const step = phaseSteps[phase];
+          if (state === 'start') {
+            // Selecting and waking are done once the install begins.
+            completePrimary(`${deviceSerial} selected`);
+            currentStep = step;
+            progress?.start(step, detail);
+            if (!progress && phase === 'agent' && cfg.platform === 'ios') {
+              console.log(dim(`Starting iOS agent (${detail.replace(/^starting iOS agent \(|\)$/g, '')})`));
+            }
+          } else if (state === 'complete') {
+            progress?.complete(step, detail);
+            if (!progress) console.log(dim(phaseLine(phase, detail)));
+          } else if (state === 'skip') {
+            completePrimary(`${deviceSerial} selected`);
+            progress?.skip(step, detail);
+          } else {
+            progress?.fail(step, detail);
+          }
+        },
+      },
+    );
+  } catch (err) {
+    if (!primaryCompleted) progress?.fail('primary-device', `failed to set up ${deviceSerial}`);
+    throw err;
   }
+  completePrimary(`${deviceSerial} selected`);
+  if (!progress) console.log(dim(`Using device: ${deviceSerial}`));
 
-  // Physical-iOS provisioning-profile expiry warning, now that we have
-  // the resolved xctestrun path. Three-point surfacing (here + build-ios-agent
-  // tail + setup-ios-device preflight) so users hit the warning whichever
-  // path they took to get to this point.
-  if (cfg.platform === 'ios' && targetIsPhysical && resolvedIosXctestrun) {
+  // Physical-iOS provisioning-profile expiry warning, now that the xctestrun
+  // is resolved. Three-point surfacing (here + build-ios-agent tail +
+  // setup-ios-device preflight) so users hit the warning whichever path they
+  // took to get to this point.
+  if (cfg.platform === 'ios' && targetIsPhysical && session.context.iosXctestrunPath) {
     const { getProfileExpiryInfo, formatExpiryWarning } = await import('./ios-profile-expiry.js');
-    const info = getProfileExpiryInfo(resolvedIosXctestrun);
+    const info = getProfileExpiryInfo(session.context.iosXctestrunPath);
     if (info) {
       const warning = formatExpiryWarning(info);
       if (warning) {
@@ -925,145 +768,8 @@ async function setupSequentialDevice(
     }
   }
 
-  // The iOS agent calls app.launch() during testRunAgent(), so the target
-  // app must be installed before the agent starts. Await any pending
-  // simulator install now — this is a no-op when the app was already installed.
-  if (pendingSimulatorInstall) {
-    await pendingSimulatorInstall;
-    if (pendingInstallError) {
-      progress?.fail('app-install', `failed to install ${path.basename(resolvedIosAppPath ?? cfg.app!)}`);
-      throw new Error(`Failed to install iOS app: ${pendingInstallError}`);
-    }
-    freshInstall = !simulatorHadApp;
-    if (progress) progress.complete('app-install', `installed ${path.basename(resolvedIosAppPath!)}`);
-    else console.log(dim(`Installed ${path.basename(resolvedIosAppPath!)} on iOS simulator.`));
-    if (cfg.package && cfg.device) {
-      try {
-        execFileSync('xcrun', ['simctl', 'launch', cfg.device, cfg.package]);
-      } catch {
-        // App may already be running
-      }
-    }
-    pendingSimulatorInstall = undefined;
-  }
-
-  try {
-    progress?.start(
-      'agent',
-      cfg.platform === 'ios'
-        ? `starting iOS agent (${resolvedIosXctestrun ? path.basename(resolvedIosXctestrun) : 'xctestrun not set'})`
-        : 'starting Android automation agent',
-    );
-    if (cfg.platform === 'ios') {
-      if (!progress) console.log(dim(`Starting iOS agent (xctestrun: ${resolvedIosXctestrun ? 'set' : 'NOT SET'})`));
-    }
-    const startAgent = () => device.startAgent(
-      cfg.package ?? '',
-      resolvedAgentApk,
-      resolvedAgentTestApk,
-      resolvedIosXctestrun,
-      cfg.platform === 'ios' ? resolvedIosAppPath : undefined,
-      networkTracingEnabled,
-    );
-    try {
-      await startAgent();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (isRetryableAgentStartError(err)) {
-        // Include the first attempt's error — without it a failed retry leaves
-        // no trace of WHY attempt 1 died (the retry error may differ).
-        if (progress) progress.update('agent', { state: 'running', detail: `agent startup failed, retrying once: ${msg}` });
-        else console.error(`Agent startup failed, retrying once: ${msg}`);
-        // Let a transient agent-connection drop clear before the retry — an
-        // immediate re-attempt lands inside the same drop window (PILOT-282).
-        await new Promise((resolve) => setTimeout(resolve, AGENT_START_RETRY_DELAY_MS));
-        try {
-          await startAgent();
-        } catch (retryErr) {
-          if (progress) progress.fail('agent', 'agent startup retry failed');
-          else console.error('Agent startup retry also failed');
-          throw retryErr;
-        }
-      } else {
-        throw err;
-      }
-    }
-    if (cfg.platform !== 'ios' && !cfg.package) {
-      await ensureSessionReady({
-        label: `Device ${cfg.device}`,
-        config: cfg,
-        device,
-        client,
-        agentApkPath: resolvedAgentApk,
-        agentTestApkPath: resolvedAgentTestApk,
-        iosXctestrunPath: resolvedIosXctestrun,
-        deviceSerial: cfg.device,
-        networkTracingEnabled,
-      }, 'startup');
-    }
-    if (progress) progress.complete('agent', 'agent connected');
-    else console.log(dim('Agent connected.'));
-  } catch (err) {
-    progress?.fail('agent', err instanceof Error ? err.message : String(err));
-    throw new Error(`Failed to start agent: ${err}`);
-  }
-
-  // One capabilities object per device: probeResetCapabilities (inside the
-  // launch below) fills it, and it is shared into every file's sessionContext
-  // so `appReset: 'auto'` resolves from the detected in-app hooks.
-  const capabilities: ResetCapabilities = {};
-  let prepared: PreparedState | undefined;
-  if (cfg.package) {
-    try {
-      progress?.start('app-launch', `launching ${cfg.package}`);
-      prepared = await launchConfiguredApp({
-        label: `Device ${cfg.device}`,
-        config: cfg,
-        device,
-        client,
-        agentApkPath: resolvedAgentApk,
-        agentTestApkPath: resolvedAgentTestApk,
-        iosXctestrunPath: resolvedIosXctestrun,
-        iosAppPath: resolvedIosAppPath,
-        deviceSerial: cfg.device,
-        networkTracingEnabled,
-        capabilities,
-      }, 'startup launch', { readinessAttempts: 3, freshInstall });
-      if (progress) progress.complete('app-launch', `launched ${cfg.package}`);
-      else console.log(dim(`Launched ${cfg.package}`));
-    } catch (err) {
-      progress?.fail('app-launch', `failed to launch ${cfg.package}`);
-      throw new Error(`Failed to launch app: ${err}`);
-    }
-  } else {
-    progress?.skip('app-launch', 'no package configured');
-  }
-
-  const group = resolveDeviceGroup(cfg);
-  const primarySession: DeviceSession = {
-    name: group[0].name,
-    serial: cfg.device,
-    daemonAddress,
-    client,
-    device,
-    config: cfg,
-    label: `Device ${cfg.device}`,
-    capabilities,
-    prepared,
-    context: {
-      label: `Device ${cfg.device}`,
-      config: cfg,
-      device,
-      client,
-      agentApkPath: resolvedAgentApk,
-      agentTestApkPath: resolvedAgentTestApk,
-      iosXctestrunPath: resolvedIosXctestrun,
-      iosAppPath: resolvedIosAppPath,
-      deviceSerial: cfg.device,
-      networkTracingEnabled,
-      capabilities,
-    },
-  };
+  const primarySession = session;
+  const device = primarySession.device;
   let sessions: DeviceSession[] = [primarySession];
   if (group.length > 1) {
     device._traceDeviceId = group[0].name;
@@ -1082,17 +788,26 @@ async function setupSequentialDevice(
     effectiveConfig: cfg,
     client,
     device,
-    deviceSerial: cfg.device,
+    deviceSerial,
     launchedEmulators,
-    resolvedAgentApk,
-    resolvedAgentTestApk,
-    resolvedIosXctestrun,
-    resolvedIosAppPath,
+    resolvedAgentApk: primarySession.context.agentApkPath,
+    resolvedAgentTestApk: primarySession.context.agentTestApkPath,
+    resolvedIosXctestrun: primarySession.context.iosXctestrunPath,
+    resolvedIosAppPath: primarySession.context.iosAppPath,
     signature,
-    capabilities,
-    prepared,
+    capabilities: primarySession.capabilities,
+    prepared: primarySession.prepared,
     sessions,
   };
+}
+
+/** Plain-console line for a completed setup phase (no progress UI). */
+function phaseLine(phase: 'install' | 'agent' | 'launch', detail: string): string {
+  switch (phase) {
+    case 'install': return detail.startsWith('installed') ? `Installed ${detail.slice('installed '.length)}` : `App ${detail}, skipping install. Use --force-install to reinstall.`;
+    case 'agent': return 'Agent connected.';
+    case 'launch': return detail.replace(/^launched /, 'Launched ');
+  }
 }
 
 /**

@@ -208,9 +208,12 @@ export function consoleEvent(o: {
   source?: ConsoleTraceEvent["source"]
   /** Offset from the trace's start time in ms. Defaults to 100ms per action index. */
   offsetMs?: number
+  /** Group name of the device that logged the line (multi-device traces). */
+  deviceId?: string
 }): ConsoleTraceEvent {
   return {
     type: "console",
+    deviceId: o.deviceId,
     level: o.level,
     message: o.message,
     source: o.source ?? "device",
@@ -231,11 +234,14 @@ export function networkEntry(o: {
   requestBodyPath?: string
   routeAction?: NetworkEntry["routeAction"]
   responseSize?: number
+  /** Group name of the device whose proxy captured the request (multi-device traces). */
+  deviceId?: string
 }): NetworkEntry {
   const start = BASE_TIME + o.index * 50
   const duration = o.duration ?? 35
   return {
     index: o.index,
+    deviceId: o.deviceId,
     actionIndex: o.actionIndex ?? 0,
     startTime: start,
     endTime: start + duration,
