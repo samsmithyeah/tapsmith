@@ -335,7 +335,7 @@ Returns the current activity name.
 const activity = await device.currentActivity(); // ".settings.ProfileActivity"
 ```
 
-### `device.terminateApp(packageName: string): Promise<void>`
+### `device.terminateApp(packageName?: string): Promise<void>`
 
 Force-stop an app.
 
@@ -366,6 +366,45 @@ Bring a backgrounded app back to the foreground.
 ```typescript
 await device.bringToForeground("com.example.myapp");
 ```
+
+### `device.resetApp(options?): Promise<AppResetResult>`
+
+Bring the app to a known state — the same reset the runner performs for the declared `appReset` policy, callable from inside a test. The daemon runs a ladder and reports which rung actually ran:
+
+1. **warm** — in-app reset through the app's reset hook (`@tapsmith/react-native` marker, or `resetAppDeepLink`), process kept;
+2. **restart** — terminate and relaunch, data kept;
+3. **clear** — wipe app data and relaunch.
+
+Note that on an app with no in-app reset hook, the default warm request falls back to **restart, which keeps app data** — pass `mode: "clear"` when you need an isolation-grade wipe.
+
+Mid-test resets share the daemon's warm-window state with the runner's own resets and honour the same `appResetColdEvery` setting (default 10, `0` = off; a scope's `test.use({ appResetColdEvery })` applies to them too), so a warm `resetApp()` can come back as a cold relaunch with `reason: "cold relaunch: warm-window bound reached (…)"`.
+
+```typescript
+const result = await device.resetApp()                       // warm, falling back as needed
+await device.resetApp({ mode: "clear", fallback: false })     // exactly a clear, or throw
+await device.resetApp({ target: "/settings" })                 // warm reset landing on a route
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `mode` | `'warm' \| 'restart' \| 'clear'` | `'warm'` | How far to reset |
+| `fallback` | `boolean` | `true` | Escalate warm → restart → clear when a rung fails |
+| `target` | `string` | `'/'` | Route to land on after an in-app (warm) reset — it is the reset deep link's path. A `restart`/`clear` rung leaves the app at its launch route; check `modeUsed` and navigate if needed. |
+
+**`AppResetResult`**
+
+| Field | Type | Description |
+|---|---|---|
+| `modeRequested` / `modeUsed` | `'warm' \| 'restart' \| 'clear'` | What was asked for and what actually ran |
+| `fellBack` | `boolean` | A lower rung ran because a higher one failed |
+| `coldLaunch` | `boolean` | The process was recreated — by a `restart`/`clear` rung, a cold-window relaunch, or a warm delivery that had to relaunch the app to land (the `reason` says which) |
+| `reason` | `string?` | Why a fallback or cold relaunch happened, e.g. `"cold relaunch: warm-window bound reached (10 resets)"` |
+| `durationMs` | `number` | Wall time of the whole ladder |
+| `hooksDetected` | `boolean` | `@tapsmith/react-native` hooks were found in the app |
+| `epochBefore` / `epochAfter` | `number?` | In-app reset counter (hooks only) |
+| `steps` | `{ name, durationMs, ok, detail? }[]` | Per-rung timings |
+
+The call is recorded in the trace as a `resetApp` action whose detail line names the rung and reason. Throws when the ladder is exhausted (or `fallback: false` and the requested rung failed).
 
 ### `device.restartApp(packageName: string, options?: { waitForIdle?: boolean }): Promise<void>`
 
@@ -500,7 +539,7 @@ await device.wake();
 
 ### `device.unlock(): Promise<void>`
 
-Wake the screen and dismiss the lock screen. Works with non-secure lock screens (no PIN/pattern). Useful for CI and emulator setups.
+Wake the screen and dismiss the lock screen. Works with non-secure lock screens (no PIN/pattern). Useful for CI and emulator setups. On Android the lock screen is only dismissed when it is actually showing, so calling this on an unlocked device never sends gestures to the foreground app.
 
 ```typescript
 await device.unlock();
@@ -1467,7 +1506,10 @@ describe("custom config", () => {
 | `retries`    | `number`                                    | Retry count for failed tests                 |
 | `trace`      | `TraceMode \| Partial<TraceConfig>`         | Trace recording configuration. See [configuration.md](./configuration.md#traceconfig) for the full `TraceConfig` shape (includes `network`, `networkHosts`, `networkIgnoreHosts`, `networkPassthroughHosts`, `screenshots`, etc.). |
 | `video`      | `VideoMode \| Partial<VideoConfig>`         | Video recording configuration. See the [Video recording](#video-recording) section below. |
-| `appState`   | `string`                                    | Path to saved app state archive to restore   |
+| `appState`   | `string`                                    | Path to saved app state archive to restore; `""` means clear |
+| `appReset`   | `'auto' \| 'clear' \| 'restart' \| 'warm' \| 'none'` | How the app is reset before tests in this scope. See [Test isolation](./writing-tests.md#test-isolation). |
+| `appResetScope` | `'auto' \| 'file' \| 'test'`            | Reset once per file or before every test (`auto` resolves to per file; opt into per-test with `'test'`) |
+| `appResetColdEvery` | `number`                               | Cold-relaunch every N warm resets (default 10; 0 = off) |
 
 The following device-shaping fields may **only** be set on a project's
 `use` block (not via `test.use()`), since the device is bound to the
@@ -1488,7 +1530,7 @@ worker before any test runs:
 | `iosXctestrun`    | `string`                              | Override path to the iOS .xctestrun file |
 | `deviceStrategy`  | `'prefer-connected' \| 'avd-only'`    | Device selection strategy (Android)      |
 | `launchEmulators` | `boolean`                             | Auto-launch emulators (Android)          |
-| `resetAppDeepLink`| `string`                              | Soft-reset deep link between files       |
+| `resetAppDeepLink`| `string`                              | Warm-reset deep link (makes `appReset: 'auto'` → `warm`) |
 | `resetAppWaitMs`  | `number`                              | Wait after the reset deep link           |
 
 **Reusable auth state** — mirrors Playwright's `storageState`:

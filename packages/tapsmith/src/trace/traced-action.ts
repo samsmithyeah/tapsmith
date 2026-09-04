@@ -31,6 +31,29 @@ export interface TraceContext {
 
 // ─── Shared helper ───
 
+export interface TracedActionExtra {
+  inputValue?: string
+  /**
+   * Free-text second line for the action row. A function is evaluated after
+   * the action completes so it can describe the result (e.g. which rung of
+   * the reset ladder actually ran).
+   */
+  detail?: string | (() => string | undefined)
+  origin?: 'inline' | 'prepared' | 'skipped'
+  /**
+   * Skip the before-action screenshot + hierarchy capture. Fixture-setup
+   * actions (the runner's app reset) set this: the pre-reset screen is the
+   * previous test's leftover state, and the capture costs a full round trip
+   * on every test.
+   */
+  skipBeforeCapture?: boolean
+}
+
+function resolveDetail(extra: TracedActionExtra | undefined): string | undefined {
+  if (!extra?.detail) return undefined;
+  return typeof extra.detail === 'function' ? extra.detail() : extra.detail;
+}
+
 export async function tracedAction(
   ctx: TraceContext | undefined,
   action: string,
@@ -38,7 +61,7 @@ export async function tracedAction(
   selector: Selector | undefined,
   fn: () => Promise<ActionResponse>,
   fallbackMsg: string,
-  extra?: { inputValue?: string },
+  extra?: TracedActionExtra,
 ): Promise<void> {
   // No trace context — just run the action directly
   if (!ctx) {
@@ -57,16 +80,23 @@ export async function tracedAction(
   let bounds: { left: number; top: number; right: number; bottom: number } | undefined;
   let point: { x: number; y: number } | undefined;
 
-  log.push('Capturing before screenshot + hierarchy');
   const traceCaptureDeadline = Date.now() + TRACE_CAPTURE_TIMEOUT_MS;
 
   // When the batched captureTraceState is available (iOS), use a single
   // round-trip for screenshot + hierarchy + element bounds instead of 3
   // separate gRPC calls that each trigger their own app.snapshot() IPC.
   let beforeCaptures: { screenshotBefore?: unknown; hierarchyBefore?: unknown } = {};
-  let batchSuccess = false;
+  // Treat a skipped capture like a completed batch so the fallback path
+  // below does not run either.
+  let batchSuccess = !!extra?.skipBeforeCapture;
 
-  if (ctx.captureTraceState) {
+  if (extra?.skipBeforeCapture) {
+    log.push('Skipping before screenshot + hierarchy (fixture setup)');
+  } else {
+    log.push('Capturing before screenshot + hierarchy');
+  }
+
+  if (ctx.captureTraceState && !extra?.skipBeforeCapture) {
     const batchStart = Date.now();
     try {
       const batchResult = await ctx.captureTraceState({
@@ -218,6 +248,7 @@ export async function tracedAction(
   // This halves the screenshot overhead and avoids fire-and-forget reliability issues.
   ctx.collector.addActionEvent({
     category, action, selector: selectorStr, inputValue: extra?.inputValue,
+    detail: resolveDetail(extra), origin: extra?.origin,
     duration, success, error, errorStack,
     bounds, point, log,
     hasScreenshotBefore: !!beforeCaptures.screenshotBefore,

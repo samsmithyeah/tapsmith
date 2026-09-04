@@ -352,6 +352,60 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+  # ─── Publish in-app reset hooks package ───
+  publish-react-native:
+    name: Publish @tapsmith/react-native
+    # No build artifacts are consumed, but nothing should reach npm while the
+    # release's builds are failing (skip-if-exists makes a re-run safe).
+    needs: [build-daemon, build-android-agent, build-ios-simulator-agent]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/tapsmith-react-native
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: packages/tapsmith-react-native/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e "
+            const fs = require('fs');
+            const pkg = require('./package.json');
+            pkg.version = '$VERSION';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Build
+        run: npm run build
+
+      - name: Check if package version already exists
+        id: rn_exists
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NAME=$(node -p "require('./package.json').name")
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${NAME}@${VERSION} is already published; skipping npm publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.rn_exists.outputs.exists != 'true'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   # ─── Publish Android agent package ───
   publish-android-agent:
     name: Publish @tapsmith/agent-android
@@ -411,7 +465,7 @@ jobs:
   # ─── Publish main tapsmith package ───
   publish-tapsmith:
     name: Publish tapsmith
-    needs: [publish-platform-packages, publish-ios-simulator-packages, publish-android-agent]
+    needs: [publish-platform-packages, publish-ios-simulator-packages, publish-android-agent, publish-react-native]
     runs-on: ubuntu-latest
     defaults:
       run:

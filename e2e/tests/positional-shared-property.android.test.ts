@@ -1,5 +1,5 @@
 import { describe, expect, test } from "../fixtures.js";
-import { resetApp } from "../utils/app-reset.js";
+import { openScreen } from "../utils/app-reset.js";
 
 // Regression: `.last()/.nth()` must ACT on the resolved element even when the
 // match shares its only identifying a11y property with an earlier sibling.
@@ -19,7 +19,7 @@ describe("positional action on shared-property matches", () => {
   test("last().tap() acts on the resolved row, not the first shared-text match", async ({
     device,
   }) => {
-    await resetApp(device, "/list");
+    await openScreen(device, "/list");
 
     await device.getByTestId("search-input").type("Item 3");
     // Filter settles to exactly the two "Item 3*" rows.

@@ -263,6 +263,42 @@ describe('fileFailureEntry', () => {
   });
 });
 
+describe('tapsmith_list_tests declared isolation', () => {
+  it('prints each node\'s declared appReset / appResetScope / appState', async () => {
+    const filePath = '/project/tests/toggles.test.ts';
+    const tree: TestTreeEntry[] = [{
+      type: 'file', name: 'toggles.test.ts', fullName: 'toggles.test.ts', filePath, status: 'idle',
+      children: [{
+        type: 'suite', name: 'Toggles', fullName: 'Toggles', filePath, status: 'idle',
+        use: { appResetScope: 'test' },
+        children: [
+          { type: 'test', name: 'flips', fullName: 'Toggles flips', filePath, status: 'idle', use: { appResetScope: 'test' } },
+          {
+            type: 'test', name: 'signed in', fullName: 'Toggles signed in', filePath, status: 'idle',
+            use: { appReset: 'restart', appResetScope: 'test', appState: './tapsmith-results/auth.tar.gz' },
+          },
+        ],
+      }],
+    }];
+    const text = await callListTests(makeDispatcher({ getTestTree: () => tree }));
+    expect(text).toContain('[suite] Toggles  {appResetScope: test}');
+    expect(text).toContain('[test] flips  —  "Toggles flips"  {appResetScope: test}');
+    expect(text).toContain('{appReset: restart, appResetScope: test, appState: ./tapsmith-results/auth.tar.gz}');
+    // The file declares nothing — its line stays as before.
+    expect(text).toContain(`[file] ${filePath}\n`);
+  });
+
+  it('shows a cleared appState as such rather than as an empty string', async () => {
+    const filePath = '/project/tests/fresh.test.ts';
+    const text = await callListTests(makeDispatcher({
+      getTestTree: () => [{
+        type: 'test', name: 'fresh', fullName: 'fresh', filePath, status: 'idle', use: { appState: '' },
+      }],
+    }));
+    expect(text).toContain('{appState: "" (cleared)}');
+  });
+});
+
 describe('tapsmith_list_tests discovery errors', () => {
   const failures: DiscoveryError[] = [
     { filePath: '/project/tests/toggles.test.ts', error: "Cannot find module '/project/fixtures.js'" },

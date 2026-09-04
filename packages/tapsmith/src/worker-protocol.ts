@@ -7,7 +7,7 @@
  */
 
 import type { TestResult, SuiteResult } from './runner.js';
-import { normalizeGrep, type TapsmithConfig } from './config.js';
+import { normalizeGrep, type AppResetMode, type AppResetScope, type TapsmithConfig } from './config.js';
 
 // ─── Main → Worker messages ───
 
@@ -48,6 +48,9 @@ export interface RunFileUseOptions {
   trace?: 'off' | 'on' | 'on-first-retry' | 'on-all-retries' | 'retain-on-failure' | 'retain-on-first-failure' | 'retain-on-failure-and-retries'
   video?: 'off' | 'on' | 'on-first-retry' | 'on-all-retries' | 'retain-on-failure' | 'retain-on-first-failure' | 'retain-on-failure-and-retries'
   appState?: string
+  appReset?: AppResetMode
+  appResetScope?: AppResetScope
+  appResetColdEvery?: number
   baseURL?: string
   extraHTTPHeaders?: Record<string, string>
 }
@@ -257,6 +260,9 @@ export interface SerializedConfig {
   simulator?: string
   resetAppDeepLink?: string
   resetAppWaitMs?: number
+  appReset?: AppResetMode
+  appResetScope?: AppResetScope
+  appResetColdEvery?: number
   baseURL?: string
   extraHTTPHeaders?: Record<string, string>
   /** RegExp filters for test fullNames. Source/flags are serialized for IPC. */
@@ -289,10 +295,53 @@ export function serializeConfig(config: TapsmithConfig): SerializedConfig {
     simulator: config.simulator,
     resetAppDeepLink: config.resetAppDeepLink,
     resetAppWaitMs: config.resetAppWaitMs,
+    appReset: config.appReset,
+    appResetScope: config.appResetScope,
+    appResetColdEvery: config.appResetColdEvery,
     baseURL: config.baseURL,
     extraHTTPHeaders: config.extraHTTPHeaders,
     grep: serializeRegExpArray(normalizeGrep(config.grep)),
     grepInvert: serializeRegExpArray(normalizeGrep(config.grepInvert)),
+  };
+}
+
+/**
+ * Rebuild a worker-side TapsmithConfig from the IPC-safe subset. The single
+ * inverse of {@link serializeConfig} — every child process (headless workers,
+ * UI workers, watch/MCP run children) uses this so a new config key only has
+ * to be threaded through in one place.
+ */
+export function configFromSerialized(s: SerializedConfig, daemonAddress: string): TapsmithConfig {
+  return {
+    timeout: s.timeout,
+    retries: s.retries,
+    screenshot: s.screenshot,
+    testMatch: [],
+    daemonAddress,
+    rootDir: s.rootDir,
+    outputDir: s.outputDir,
+    apk: s.apk,
+    activity: s.activity,
+    package: s.package,
+    agentApk: s.agentApk,
+    agentTestApk: s.agentTestApk,
+    workers: 1,
+    launchEmulators: false,
+    trace: s.trace as TapsmithConfig['trace'],
+    video: s.video as TapsmithConfig['video'],
+    platform: s.platform,
+    app: s.app,
+    iosXctestrun: s.iosXctestrun,
+    simulator: s.simulator,
+    resetAppDeepLink: s.resetAppDeepLink,
+    resetAppWaitMs: s.resetAppWaitMs,
+    appReset: s.appReset,
+    appResetScope: s.appResetScope,
+    appResetColdEvery: s.appResetColdEvery,
+    baseURL: s.baseURL,
+    extraHTTPHeaders: s.extraHTTPHeaders,
+    grep: deserializeRegExpArray(s.grep),
+    grepInvert: deserializeRegExpArray(s.grepInvert),
   };
 }
 

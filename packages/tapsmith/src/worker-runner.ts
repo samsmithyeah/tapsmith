@@ -20,7 +20,6 @@ import type {
   MainToWorkerMessage,
   WorkerToMainMessage,
   InitMessage,
-  SerializedConfig,
 } from './worker-protocol.js';
 import {
   serializeTestResult,
@@ -29,9 +28,11 @@ import {
   isRetryableAgentStartError,
   retryDeviceSelection,
   deserializeRegExpArray,
+  configFromSerialized,
   AGENT_START_RETRY_DELAY_MS,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
+import type { PreparedState, ResetCapabilities } from './app-reset.js';
 import { createActionProgressMessenger } from './action-progress-renderer.js';
 import type { TapsmithReporter } from './reporter.js';
 
@@ -56,35 +57,18 @@ function sendProgress(message: string): void {
   send({ type: 'progress', workerId, message });
 }
 
-function configFromSerialized(s: SerializedConfig, daemonAddress: string): TapsmithConfig {
-  return {
-    timeout: s.timeout,
-    retries: s.retries,
-    screenshot: s.screenshot,
-    testMatch: [],
-    daemonAddress,
-    rootDir: s.rootDir,
-    outputDir: s.outputDir,
-    apk: s.apk,
-    activity: s.activity,
-    package: s.package,
-    agentApk: s.agentApk,
-    agentTestApk: s.agentTestApk,
-    workers: 1,
-    launchEmulators: false,
-    trace: s.trace as TapsmithConfig['trace'],
-    video: s.video as TapsmithConfig['video'],
-    platform: s.platform,
-    app: s.app,
-    iosXctestrun: s.iosXctestrun,
-    simulator: s.simulator,
-    resetAppDeepLink: s.resetAppDeepLink,
-    resetAppWaitMs: s.resetAppWaitMs,
-    baseURL: s.baseURL,
-    extraHTTPHeaders: s.extraHTTPHeaders,
-    grep: deserializeRegExpArray(s.grep),
-    grepInvert: deserializeRegExpArray(s.grepInvert),
-  };
+/**
+ * A launch that already left the app in fresh state (startup, warmup,
+ * recovery). Handed to the next file's runner so it can skip its own reset
+ * when the declared policy is satisfied — consumed exactly once.
+ */
+let preparedDevice: PreparedState | undefined;
+/** Runtime reset capabilities (in-app hooks detected?), shared by every context this worker builds. */
+const sharedCapabilities: ResetCapabilities = {};
+function consumePreparedDevice(): PreparedState | undefined {
+  const p = preparedDevice;
+  preparedDevice = undefined;
+  return p;
 }
 
 async function handleInit(msg: InitMessage): Promise<void> {
@@ -141,11 +125,15 @@ async function handleInit(msg: InitMessage): Promise<void> {
   // the app baked in (so `pm list packages` says installed, but the bytes are
   // out of date). Always reinstall on fresh emulators to be safe — the cost
   // is small and the alternative is silent failures with stale UI.
+  // Whether the startup launch may skip its clear: only when the app was
+  // installed onto a device that did not have it. A reinstall (`adb install
+  // -r`) keeps the data container, and "already installed" installs nothing.
+  let freshInstall = false;
   if (config.apk) {
-    const alreadyInstalled = !msg.freshEmulator
-      && config.package
-      && msg.deviceSerial
+    const wasInstalled = !!config.package
+      && !!msg.deviceSerial
       && isPackageInstalled(msg.deviceSerial, config.package);
+    const alreadyInstalled = !msg.freshEmulator && wasInstalled;
 
     if (alreadyInstalled) {
       sendProgress(`app ${config.package} already installed, skipping APK install`);
@@ -153,6 +141,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
       const resolvedApk = path.resolve(config.rootDir, config.apk);
       sendProgress(`installing app APK ${path.basename(resolvedApk)}`);
       await device.installApk(resolvedApk);
+      freshInstall = !wasInstalled;
       // Wait for package manager to index the new app
       if (config.package && msg.deviceSerial) {
         await waitForPackageIndexed(msg.deviceSerial, config.package);
@@ -177,21 +166,23 @@ async function handleInit(msg: InitMessage): Promise<void> {
       } else {
         sendProgress(`installing ${path.basename(resolvedApp)} on device`);
         await installAppOnDevice(msg.deviceSerial, resolvedApp);
+        freshInstall = true;
         sendProgress('app install complete');
       }
     } else {
       // Skip only when the installed bundle is byte-identical — simulator
       // state can outlive a run (reused CI runner device sets, local app
       // rebuilds), and a presence-only skip silently tests a stale build.
+      const wasInstalled = !!config.package && isAppInstalled(msg.deviceSerial, config.package);
       const alreadyInstalled = !msg.freshEmulator
-        && config.package
-        && isAppInstalled(msg.deviceSerial, config.package)
-        && installedAppMatches(msg.deviceSerial, config.package, resolvedApp);
+        && wasInstalled
+        && installedAppMatches(msg.deviceSerial, config.package!, resolvedApp);
       if (alreadyInstalled) {
         sendProgress(`app ${config.package} already installed (matching build), skipping app install`);
       } else {
         sendProgress(`installing ${path.basename(resolvedApp)}`);
         installApp(msg.deviceSerial, resolvedApp);
+        freshInstall = !wasInstalled;
         sendProgress('app install complete');
       }
     }
@@ -273,10 +264,10 @@ async function handleInit(msg: InitMessage): Promise<void> {
   try {
     if (config.package) {
       sendProgress(`launching ${config.package}`);
-      await launchConfiguredApp(
+      preparedDevice = await launchConfiguredApp(
         sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun, resolvedIosAppPath),
-        'worker initialization',
-        { allowSoftReset: false, skipAppReset: true },
+        'worker startup launch',
+        { freshInstall },
       );
       sendProgress('app launched');
     } else {
@@ -300,10 +291,9 @@ async function handleInit(msg: InitMessage): Promise<void> {
     sendProgress('warming up fresh emulator');
     await device.waitForIdle();
     await device.terminateApp(config.package);
-    await launchConfiguredApp(
+    preparedDevice = await launchConfiguredApp(
       sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
-      'warmup',
-      { allowSoftReset: false },
+      'emulator warmup launch',
     );
     await device.waitForIdle();
   }
@@ -331,22 +321,10 @@ async function handleRunFile(
 
   send({ type: 'file-start', workerId, filePath });
 
-  // Reset app between files for isolation — retry once on transient errors.
-  // When this scope restores a non-empty `appState`, skip the destructive
-  // clearAppData: the restore owns isolation and preserves the AndroidKeyStore
-  // (a pm clear here would wipe the keys that decrypt saved credentials).
-  const restoresAppState = !!projectUseOptions?.appState;
-  if (config.package) {
-    try {
-      await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`, { skipDataClear: restoresAppState });
-    } catch (resetErr) {
-      if (!isRecoverableInfrastructureError(resetErr)) throw resetErr;
-      process.stderr.write(
-        `Worker ${workerId}: Recovering after file-reset failure for ${path.basename(filePath)}: ${resetErr instanceof Error ? resetErr.message : String(resetErr)}\n`,
-      );
-      await recoverFileSession(filePath, resetErr);
-    }
-  }
+  // The between-file app reset is the runner's job now: it executes the
+  // declared policy as traced fixture setup and ends with its own session
+  // readiness check, so nothing device-side happens here. Infrastructure
+  // failures surface in the results and drive runFileWithRecovery.
 
   const screenshotDir =
     config.screenshot !== 'never'
@@ -445,6 +423,9 @@ async function runFileWithRecovery(
           }
         },
         abortFileOnError: isRecoverableInfrastructureError,
+        sessionContext: sessionContext(undefined),
+        preparedDevice: consumePreparedDevice(),
+        resetCapabilities: sharedCapabilities,
         // On retry (attempt 2), bust the ESM import cache so the file's
         // test registrations re-execute. Without this, import() returns the
         // cached module and no tests are registered for the retry.
@@ -521,6 +502,7 @@ function sessionContext(
     iosAppPath: iosAppPath ?? resolvedAppPath,
     deviceSerial: serial,
     networkTracingEnabled: isNetworkTracingEnabled(config.trace),
+    capabilities: sharedCapabilities,
   };
 }
 
@@ -564,10 +546,9 @@ async function recoverFileSession(filePath: string, err: unknown): Promise<void>
   }
 
   if (config?.package) {
-    await launchConfiguredApp(
+    preparedDevice = await launchConfiguredApp(
       sessionContext(undefined),
       `recovery for ${path.basename(filePath)}`,
-      { allowSoftReset: false },
     );
   } else {
     await ensureSessionReady(sessionContext(undefined), `recovery for ${path.basename(filePath)}`);

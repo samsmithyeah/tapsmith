@@ -30,6 +30,18 @@ import type { AnyTraceEvent } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
 import type { TraceDeviceInfo } from './trace/types.js';
 import { TestAbortedError, isAbortError } from './abort.js';
+import {
+  appResetAction,
+  appResetPolicyEquals,
+  describeAction,
+  resolveAppResetPolicy,
+  type AppResetPolicy,
+  type AppResetReport,
+  type PreparedState,
+  type ResetCapabilities,
+} from './app-reset.js';
+import { executeAppReset, type ExecuteAppResetOptions, type SessionPreflightContext } from './session-preflight.js';
+import { validateAppResetOptions } from './config.js';
 import { onActionProgress } from './action-progress.js';
 import { runInAttemptContext, type AttemptToken } from './attempt-fence.js';
 import { matchesTestFilter } from './test-filter.js';
@@ -167,6 +179,12 @@ export interface TestResult {
   _willRetry?: boolean;
   /** Path to the test file this result belongs to. */
   filePath?: string;
+  /**
+   * Scope setup time (declared app reset + beforeAll hooks) attributed to
+   * this test because it was the first to run in its scope. Already included
+   * in `durationMs`, mirroring how Playwright counts fixture setup.
+   */
+  setupMs?: number;
 }
 
 export interface SuiteResult {
@@ -380,6 +398,7 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
         if (options.retries !== undefined && options.retries < 0) {
           throw new Error('test.use() retries must be a non-negative number');
         }
+        validateAppResetOptions(options, 'test.use()');
         const ctx = currentContext();
         ctx.useOptions = { ...ctx.useOptions, ...options };
       },
@@ -488,6 +507,18 @@ function resolvePlatformFixture(config: TapsmithConfig): Platform {
 
 // ─── Runner engine ───
 
+/** Details announced with a test's start (UI mode). */
+export interface TestStartOptions {
+  /** Re-tag of trace attribution to a finished test (afterAll hooks). */
+  attributionOnly?: boolean;
+  /**
+   * The isolation policy this execution runs under — `auto` resolved, and the
+   * test's own scope (a describe's `test.use({ appResetScope: 'test' })`),
+   * even when an enclosing scope announces the test ahead of its beforeAll.
+   */
+  policy?: AppResetPolicy;
+}
+
 export interface RunOptions {
   config: TapsmithConfig;
   device?: Device;
@@ -503,7 +534,7 @@ export interface RunOptions {
    * Consumers must not treat these as a new test execution — the UI would
    * otherwise flip a finished test back to 'running' and clear its trace.
    */
-  onTestStart?: (fullName: string, options?: { attributionOnly?: boolean }) => Promise<void>;
+  onTestStart?: (fullName: string, options?: TestStartOptions) => Promise<void>;
   /**
    * Setup work that runs inside the beforeEach trace group. Use this for
    * any device actions (e.g. session readiness checks) so they appear
@@ -521,6 +552,39 @@ export interface RunOptions {
   projectUseOptions?: UseOptions;
   /** Project name — stamped on test results for reporter grouping. */
   projectName?: string;
+  /**
+   * Device session context used to execute the declared app reset policy
+   * (`appReset` / `appResetScope` / `appState`) as traced fixture setup.
+   * Without it the runner performs no app resets (unit tests, embedders that
+   * manage isolation themselves).
+   */
+  sessionContext?: SessionPreflightContext;
+  /**
+   * A reset that already happened before this file started (the startup
+   * launch of a fresh install, a background preparation). Consumed once: the
+   * first reset the file would perform is skipped when this satisfies it.
+   */
+  preparedDevice?: PreparedState;
+  /**
+   * Runtime capabilities used to resolve `appReset: 'auto'` — deliberately
+   * REQUIRED, not optional. Every embedder (sequential CLI, worker-runner,
+   * ui-worker, watch-run — which also serves the MCP dispatcher) must thread
+   * its sticky per-device capabilities here, or `auto` silently resolves to
+   * clear · file and warm resets never engage; two embedders shipped exactly
+   * that bug because this field was optional. Pass an explicit `{}` only for
+   * contexts with no device capability probing (unit tests).
+   */
+  resetCapabilities: ResetCapabilities;
+  /** @internal — shared holder so `preparedDevice` is consumed exactly once per file. */
+  _prepared?: { current?: PreparedState };
+  /**
+   * @internal — the policy most recently applied to the device within this
+   * file (by any scope's entry reset or a per-test reset). Scope-entry
+   * resets compare against it, not the lexical parent: after a sibling
+   * describe restored its own appState, the device holds that state, and a
+   * scope inheriting the parent's policy must reset back to it.
+   */
+  _applied?: { current?: AppResetPolicy };
   /**
    * Run only tests whose fullName contains this value (case-insensitive
    * substring match). All other tests are skipped. May match several tests.
@@ -703,6 +767,93 @@ function validateHookFixtures(
  * live. Screenshots are read from the beforeAll collector's temp dir, which
  * outlives per-test packaging (it is cleaned up after the suite finishes).
  */
+/**
+ * Full name of the first test that will actually run in this scope, searching
+ * nested describes depth-first with the same skip / `.only` / filter
+ * predicates the run loops use. `undefined` means nothing in the scope runs —
+ * in which case the scope's hooks and app reset must not run either (they
+ * would cost seconds and have no test to be attributed to).
+ */
+/**
+ * Apply a scope's `test.use()` overrides. `timeout` is handled separately via
+ * the device (it only affects assertion/action auto-wait, not the test-level
+ * safety timeout); `appState` is folded into the reset policy and cascades
+ * through it (Playwright `test.use` semantics), so a nested describe that
+ * declares nothing keeps its parent's restored state instead of resetting to
+ * clear on entry — an explicit `appState: ''` still overrides.
+ */
+function resolveScope(
+  useOptions: SuiteContext['useOptions'],
+  parentOpts: RunOptions,
+  parentPolicy: AppResetPolicy | undefined,
+): { opts: RunOptions; policy: AppResetPolicy; scopeTimeout: number | undefined } {
+  const { timeout: scopeTimeout, appState: scopeAppState, ...configOverrides } = useOptions ?? {};
+  const opts: RunOptions = Object.keys(configOverrides).length > 0
+    ? { ...parentOpts, config: { ...parentOpts.config, ...configOverrides } }
+    : parentOpts;
+  const policy = resolveAppResetPolicy(
+    { appState: scopeAppState ?? parentPolicy?.appState },
+    opts.config,
+    opts.resetCapabilities,
+  );
+  return { opts, policy, scopeTimeout };
+}
+
+/**
+ * The first test that will run in this scope (possibly inside a nested
+ * describe), with the policy it runs under — the enclosing scope announces
+ * that test ahead of its beforeAll, and the announcement must describe the
+ * test's own isolation, not the announcing scope's.
+ */
+function firstRunnableTest(
+  ctx: SuiteContext,
+  prefix: string,
+  opts: RunOptions,
+  policy: AppResetPolicy,
+): { fullName: string; policy: AppResetPolicy } | undefined {
+  const hasOnlyTests = ctx.tests.some((t) => t.only);
+  const hasOnly = hasOnlyTests || ctx.suites.some((s) => s.only);
+  for (const t of ctx.tests) {
+    if (t.skip || (hasOnly && !t.only)) continue;
+    const fullName = prefix ? `${prefix} > ${t.name}` : t.name;
+    if (passesTestFilter(fullName, opts)) return { fullName, policy };
+  }
+  for (const s of ctx.suites) {
+    if (s.skip || (hasOnly && !s.only && !hasOnlyTests)) continue;
+    const childPrefix = prefix ? `${prefix} > ${s.name}` : s.name;
+    const child = materializeSuiteEntry(s);
+    const scoped = resolveScope(child.useOptions, opts, policy);
+    const found = firstRunnableTest(child, childPrefix, scoped.opts, scoped.policy);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** Recorded scope setup (app reset + beforeAll) replayed into every test's trace. */
+interface ScopeSetupRecording {
+  events: readonly AnyTraceEvent[];
+  collector: TraceCollector | null;
+  hierarchies: Map<number, { before?: string; after?: string }>;
+  actionCount: number;
+}
+
+/**
+ * Setup inherited from enclosing scopes: the recordings to replay into each
+ * test (outermost first) and the test whose live stream already carried the
+ * setup events, so it is not streamed twice — nor announced twice.
+ */
+interface InheritedScopeSetup {
+  announced?: string;
+  recordings: ScopeSetupRecording[];
+  /**
+   * Scope setup time (app reset + beforeAll) not yet attributed to a test.
+   * Shared down the tree so the first test to run anywhere below consumes
+   * it — a file whose tests all live inside describes still counts the root
+   * reset in its first test's duration, the way Playwright counts fixtures.
+   */
+  setup?: { pendingMs: number };
+}
+
 function replayBeforeAllEvents(
   testCollector: TraceCollector,
   events: readonly AnyTraceEvent[],
@@ -748,21 +899,95 @@ function replayBeforeAllEvents(
   }
 }
 
+/** Trace group that holds the declared app reset (rendered as APP RESET). */
+const APP_RESET_GROUP = 'App reset';
+
+/**
+ * Execute the declared app reset as a traced fixture step, in its own
+ * top-level "App reset" group that precedes the hooks group (BEFORE ALL /
+ * BEFORE EACH). The hooks groups then contain only the user's own hook code,
+ * and the isolation cost stays visible per test. Inline device work
+ * (resetApp, clearAppData, restartApp, …) records its own action rows; when
+ * the reset was satisfied by a prepared device, skipped by policy, or fell
+ * back to another mode, a summary `appReset` row carries the explanation so
+ * the trace stays honest. Callers must invoke this before opening the hooks
+ * group — the actions panel renders groups as flat sections, so nesting would
+ * swallow the hook actions that follow.
+ */
+async function runTracedAppReset(
+  collector: TraceCollector | null,
+  ctx: SessionPreflightContext,
+  policy: AppResetPolicy,
+  options: ExecuteAppResetOptions,
+): Promise<AppResetReport> {
+  collector?.startGroup(APP_RESET_GROUP);
+  const started = Date.now();
+  try {
+    const report = await executeAppReset(ctx, policy, options);
+    // `appReset: 'none'` does nothing worth a row (the policy is in the trace
+    // metadata); prepared / fallback outcomes get a summary row.
+    const isNone = appResetAction(policy).kind === 'none';
+    if (collector && !isNone && (report.origin !== 'inline' || report.fellBack)) {
+      collector.addActionEvent({
+        category: 'device',
+        action: 'appReset',
+        duration: report.durationMs,
+        startTime: started,
+        endTime: started + report.durationMs,
+        success: true,
+        detail: report.reason ?? describeAction(policy),
+        origin: report.origin,
+        log: report.steps.map((s) => `${s.name}: ${s.durationMs}ms${s.ok ? '' : ` — failed: ${s.detail ?? 'unknown error'}`}`),
+        hasScreenshotBefore: false,
+        hasScreenshotAfter: false,
+        hasHierarchyBefore: false,
+        hasHierarchyAfter: false,
+      });
+    }
+    return report;
+  } finally {
+    collector?.endGroup();
+  }
+}
+
 async function runSuiteContext(
   ctx: SuiteContext,
   parentPrefix: string,
   parentBeforeEach: HookEntry[],
   parentAfterEach: HookEntry[],
   parentOpts: RunOptions,
+  parentPolicy?: AppResetPolicy,
+  inherited: InheritedScopeSetup = { recordings: [] },
 ): Promise<SuiteResult> {
-  // Apply test.use() overrides for this scope (cascading from parent).
-  // `timeout` is handled separately via the device — it should only affect
-  // assertion/action auto-wait, not the test-level safety timeout.
-  // `appState` is handled below (restore before hooks).
-  const { timeout: scopeTimeout, appState: scopeAppState, ...configOverrides } = ctx.useOptions ?? {};
-  const opts: RunOptions = Object.keys(configOverrides).length > 0
-    ? { ...parentOpts, config: { ...parentOpts.config, ...configOverrides } }
-    : parentOpts;
+  // Apply test.use() overrides for this scope (cascading from parent) and
+  // resolve the isolation policy it declares — see resolveScope.
+  const { opts, policy, scopeTimeout } = resolveScope(ctx.useOptions, parentOpts, parentPolicy);
+  const isRoot = parentPrefix === '';
+  // Compare against what the device actually holds (the last policy applied
+  // in this file), falling back to the lexical parent before anything ran.
+  const appliedPolicy = opts._applied?.current ?? parentPolicy;
+  const policyChanged = !isRoot && !appResetPolicyEquals(policy, appliedPolicy);
+  const canReset = !!opts.sessionContext && !!opts.config.package && !!opts.device;
+  // File-scope policies reset on entering the file and whenever a nested
+  // describe declares a different policy (e.g. test.use({ appState })).
+  // Test-scope policies reset before every test instead, so a scope only
+  // needs an entry reset when it has beforeAll hooks that expect the state.
+  // Nothing runnable in this scope (all skipped / filtered / not `.only`) →
+  // no setup at all: Playwright semantics, and it keeps a filtered-out
+  // describe's beforeAll from streaming trace events onto whichever test
+  // happened to run last.
+  const firstRunnable = firstRunnableTest(ctx, parentPrefix, opts, policy);
+  const scopeHasRunnable = firstRunnable !== undefined;
+  // A test-scoped policy resets before every test, so its scope only needs an
+  // entry reset when beforeAll hooks expect the declared state first; a mere
+  // policy change is covered by the first per-test reset.
+  const needsScopeReset = scopeHasRunnable && canReset && (
+    policy.scope === 'file'
+      ? (isRoot || policyChanged)
+      : ctx.beforeAll.length > 0
+  );
+  const inheritedActionCount = inherited.recordings.reduce((n, r) => n + r.actionCount, 0);
+  const resetContext = (): SessionPreflightContext => ({ ...opts.sessionContext!, config: opts.config });
 
   // Propagate timeout override to the device so assertion auto-wait uses it
   const prevDeviceTimeout = scopeTimeout && opts.device
@@ -771,6 +996,17 @@ async function runSuiteContext(
   if (scopeTimeout && opts.device) {
     opts.device._setDefaultTimeout(scopeTimeout);
   }
+  // Likewise `appResetColdEvery`: the runner's own resets read it from
+  // `opts.config`, but a mid-test `device.resetApp()` reads the device's copy,
+  // which was set once at construction — without this a scope's override
+  // would reach the policy path and silently miss explicit resets.
+  const scopeColdEvery = ctx.useOptions?.appResetColdEvery;
+  const prevDeviceColdEvery = scopeColdEvery !== undefined && opts.device
+    ? opts.device._getAppResetColdEvery()
+    : undefined;
+  if (scopeColdEvery !== undefined && opts.device) {
+    opts.device._setAppResetColdEvery(scopeColdEvery);
+  }
 
   const result: SuiteResult = { name: parentPrefix, tests: [], suites: [], durationMs: 0 };
   const suiteStart = Date.now();
@@ -778,24 +1014,6 @@ async function runSuiteContext(
   // try/finally ensures device timeout is restored even if a hook
   // throws. Body intentionally not re-indented.
   try {
-
-  // Restore or clear app state if test.use({ appState }) was specified for this scope.
-  // Mirrors Playwright's storageState: tests start already authenticated.
-  // - appState: './path.tar.gz' → restore saved state
-  // - appState: '' → clear app data (fresh unauthenticated state)
-  if (scopeAppState !== undefined && opts.device && opts.config.package) {
-    if (scopeAppState) {
-      // Resolve relative paths against rootDir so the daemon can find the archive
-      // regardless of its own working directory.
-      const resolvedPath = path.isAbsolute(scopeAppState)
-        ? scopeAppState
-        : path.resolve(opts.config.rootDir, scopeAppState);
-      await opts.device.restoreAppState(opts.config.package, resolvedPath);
-    } else {
-      await opts.device.clearAppData(opts.config.package);
-    }
-    await opts.device.restartApp(opts.config.package);
-  }
 
   // Determine if any test/suite in this context uses `.only`
   const hasOnlyTests = ctx.tests.some((t) => t.only);
@@ -811,23 +1029,20 @@ async function runSuiteContext(
   // visible for every test in the suite (UI mode + trace viewer).
   let beforeAllCollector: TraceCollector | null = null;
   let beforeAllFirstFullName: string | undefined;
-  if (ctx.beforeAll.length > 0 && opts.device) {
+  if (scopeHasRunnable && (ctx.beforeAll.length > 0 || needsScopeReset) && opts.device) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
     if (shouldRecord(traceConfig.mode, 0)) {
-      // Pick the test to tag beforeAll trace events with. The predicate
-      // must match the loop's actual shouldSkip — otherwise we could fire
-      // onTestStart for a test that the loop will skip, and the
-      // duplicate-test-start guard below would swallow the real first-test
-      // test-start.
-      const targetTest = ctx.tests.find((t) => {
-        if (t.skip) return false;
-        if (hasOnly && !t.only) return false;
-        const fn = parentPrefix ? `${parentPrefix} > ${t.name}` : t.name;
-        return passesTestFilter(fn, opts);
-      });
-      if (targetTest && opts.onTestStart) {
-        beforeAllFirstFullName = parentPrefix ? `${parentPrefix} > ${targetTest.name}` : targetTest.name;
-        await opts.onTestStart(beforeAllFirstFullName);
+      // Tag beforeAll trace events with the first test that will run in
+      // this scope — possibly inside a nested describe. An enclosing scope
+      // may already have announced that same test; announcing it again
+      // would make the UI reset the test's trace.
+      beforeAllFirstFullName = firstRunnable.fullName;
+      if (beforeAllFirstFullName !== inherited.announced) {
+        // Both listeners: the per-test loop skips its own announcement for
+        // this test (it would reset the UI trace), so the reporter must hear
+        // about it here or never.
+        if (opts.onTestStart) await opts.onTestStart(beforeAllFirstFullName, { policy: firstRunnable.policy });
+        opts.reporter?.onTestStart?.(beforeAllFirstFullName, opts.testFilePath, { project: opts.projectName });
       }
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-ba-'));
       // Trigger _startManaged to fire the monkey-patch (ui-run.ts sets up
@@ -836,11 +1051,22 @@ async function runSuiteContext(
       const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
       beforeAllCollector = new TraceCollector(traceConfig, tempDir);
       beforeAllCollector.setTimelineOrigin(suiteStart);
+      // Continue numbering after any enclosing scope's setup actions.
+      if (inheritedActionCount > 0) beforeAllCollector.setActionIndexOffset(inheritedActionCount);
       const cb = managedCollector.getEventCallback();
       if (cb) beforeAllCollector.setEventCallback(cb);
       opts.device.tracing._stopManaged();
 
-      beforeAllCollector.startGroup('beforeAll Hooks');
+      // Fold the enclosing scopes' setup into this collector first, so this
+      // scope's recording is chronological (root reset → root hooks → this
+      // scope's reset → its hooks) and the UI sees it in that order as well.
+      // Streamed unless the announced test already received it live.
+      for (const rec of inherited.recordings) {
+        replayBeforeAllEvents(
+          beforeAllCollector, rec.events, rec.collector, rec.hierarchies,
+          beforeAllFirstFullName !== inherited.announced,
+        );
+      }
     }
   }
   const suiteFixtures: Record<string, unknown> = {
@@ -852,20 +1078,94 @@ async function runSuiteContext(
 
   const suiteRegistry = getFixtureRegistry();
 
+  // Set when the file-entry reset itself (not a user hook) threw. A
+  // recoverable infrastructure error there is the embedder's to handle —
+  // see the catch below.
+  let fileEntryResetError: Error | undefined;
+
   try {
-    if (beforeAllCollector) {
-      await withActiveTraceCollector(beforeAllCollector, async () => {
-        for (const hook of ctx.beforeAll) {
-          await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
+    const runScopeSetup = async (): Promise<void> => {
+      if (needsScopeReset) {
+        // The declared app reset is fixture setup: it runs first, in its own
+        // APP RESET group ahead of BEFORE ALL, so the trace shows exactly
+        // what the scope paid for isolation. A prepared device (startup
+        // launch, background preparation) that already satisfies the policy
+        // is consumed here — by whichever scope resets first. The prepared
+        // state is cleared by the first reset of the file (any scope), so a
+        // nested describe reached before anything touched the app can use it
+        // just as the root scope would; later scopes find it already spent.
+        const prepared = opts._prepared?.current;
+        let report: AppResetReport;
+        try {
+          report = await runTracedAppReset(beforeAllCollector, resetContext(), policy, {
+            phase: isRoot
+              ? `file reset for ${path.basename(opts.testFilePath ?? '')}`
+              : `reset for ${parentPrefix}`,
+            // Cold vs warm delivery of the hook is the daemon's policy
+            // (appResetColdEvery); only retries force it from here.
+            forceCold: false,
+            prepared,
+          });
+        } catch (err) {
+          if (isRoot) fileEntryResetError = err instanceof Error ? err : new Error(String(err));
+          throw err;
         }
-      });
-      beforeAllCollector.endGroup();
-    } else {
+        if (opts._applied) opts._applied.current = policy;
+        // The device now holds exactly this policy's state, and nothing has
+        // touched the app since — so the reset doubles as preparation for the
+        // next reset in the file. Without this, `test.use({ appResetScope:
+        // 'test' })` inside a describe pays twice at file entry: the root's
+        // file-scoped reset, then the first per-test reset a moment later.
+        // `satisfies()` turns that second reset into a summary row instead.
+        // A reset that was itself satisfied by a prepared device carries the
+        // original preparation forward, so the trace keeps naming its source.
+        if (opts._prepared) {
+          opts._prepared.current = appResetAction(policy).kind === 'none'
+            ? undefined
+            : report.satisfiedBy ?? {
+              policy,
+              preparedAt: Date.now(),
+              durationMs: report.durationMs,
+              source: isRoot ? 'the file-entry reset' : `the entry reset for ${parentPrefix}`,
+            };
+        }
+      }
+      // User hooks may touch the app: whatever state the entry reset left is
+      // no longer known-good for a later reset to reuse.
+      if (ctx.beforeAll.length > 0 && opts._prepared) opts._prepared.current = undefined;
+      // The hooks group holds only the user's beforeAll code.
+      beforeAllCollector?.startGroup('beforeAll Hooks');
       for (const hook of ctx.beforeAll) {
         await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
       }
+    };
+    if (beforeAllCollector) {
+      await withActiveTraceCollector(beforeAllCollector, runScopeSetup);
+      beforeAllCollector.endGroup();
+    } else if (scopeHasRunnable) {
+      await runScopeSetup();
     }
   } catch (err) {
+    // A user stop that lands during scope setup (app reset, beforeAll) is not
+    // a failure: leave the untouched tests with whatever status they had,
+    // mirroring the test loop's abort semantics (PILOT-222).
+    if (isAbortError(err) || opts.abortSignal?.aborted) {
+      beforeAllCollector?.cleanup();
+      result.durationMs = Date.now() - suiteStart;
+      return result;
+    }
+
+    // The file-entry reset hit a recoverable infrastructure error (agent
+    // socket drop, ADB hiccup) before any test ran. Embedders that opt into
+    // recovery (`abortFileOnError`) recover the session and re-run the file;
+    // surfacing it as failed results here would record a failed attempt and
+    // then flag every test in the file as flaky — main's between-file reset
+    // recovered transparently, and so does this.
+    if (fileEntryResetError && opts.abortFileOnError?.(fileEntryResetError)) {
+      beforeAllCollector?.cleanup();
+      throw fileEntryResetError;
+    }
+
     // beforeAll failed — mark all tests in this context as failed and bail out.
     // This prevents a single beforeAll error from crashing the entire runner.
     const beforeAllError = err instanceof Error ? err : new Error(String(err));
@@ -900,6 +1200,9 @@ async function runSuiteContext(
           error: beforeAllError.message,
           outputDir,
           project: opts.projectName,
+          appState: policy.appState || undefined,
+          appReset: policy.mode,
+          appResetScope: policy.scope,
         });
       } catch {
         // Trace packaging is best-effort
@@ -916,9 +1219,17 @@ async function runSuiteContext(
     return result;
   }
 
+  // Scope setup time (app reset + beforeAll) is attributed to the first test
+  // that runs in this scope, the way Playwright counts fixture setup.
+  const setupHolder = inherited.setup ?? { pendingMs: 0 };
+  setupHolder.pendingMs += Date.now() - suiteStart;
+
   // Save beforeAll events for replay into each test's trace.
   const savedBeforeAllEvents = beforeAllCollector ? beforeAllCollector.events.slice() : [];
-  const beforeAllActionCount = beforeAllCollector ? beforeAllCollector.currentActionIndex : 0;
+  // With a collector, its recording already contains the inherited setup
+  // (folded in above); without one, the inherited recordings are replayed
+  // into each test directly.
+  const setupActionCount = beforeAllCollector ? beforeAllCollector.currentActionIndex : inheritedActionCount;
   // Build hierarchy lookup for replay (hierarchies are in-memory, not on disk)
   const beforeAllHierarchies = new Map<number, { before?: string; after?: string }>();
   if (beforeAllCollector) {
@@ -1028,8 +1339,8 @@ async function runSuiteContext(
         setActiveTraceCollector(traceCollector);
 
         // Offset action index so per-test actions don't collide with beforeAll
-        if (beforeAllActionCount > 0) {
-          traceCollector.setActionIndexOffset(beforeAllActionCount);
+        if (setupActionCount > 0) {
+          traceCollector.setActionIndexOffset(setupActionCount);
         }
 
         // Start network capture if configured. PILOT-182: iOS traffic
@@ -1133,8 +1444,9 @@ async function runSuiteContext(
 
           // Notify UI mode on first attempt only — retries re-use the same
           // test slot in the UI rather than creating duplicate entries.
-          if (attempt === 0 && fullName !== beforeAllFirstFullName) {
-            if (opts.onTestStart) await opts.onTestStart(fullName);
+          const announced = beforeAllFirstFullName ?? inherited.announced;
+          if (attempt === 0 && fullName !== announced) {
+            if (opts.onTestStart) await opts.onTestStart(fullName, { policy });
             opts.reporter?.onTestStart?.(fullName, opts.testFilePath, { project: opts.projectName });
           }
 
@@ -1144,11 +1456,21 @@ async function runSuiteContext(
           // events (recording them here is still needed — during beforeAll
           // the active collector was the standalone beforeAll collector, so
           // no test's own collector has these events).
-          if (savedBeforeAllEvents.length > 0 && traceCollector) {
-            replayBeforeAllEvents(
-              traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies,
-              fullName !== beforeAllFirstFullName,
-            );
+          if (traceCollector) {
+            if (!beforeAllCollector) {
+              for (const rec of inherited.recordings) {
+                replayBeforeAllEvents(
+                  traceCollector, rec.events, rec.collector, rec.hierarchies,
+                  fullName !== inherited.announced,
+                );
+              }
+            }
+            if (savedBeforeAllEvents.length > 0) {
+              replayBeforeAllEvents(
+                traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies,
+                fullName !== beforeAllFirstFullName,
+              );
+            }
           }
 
           // Open the beforeEach group before running setup work and hooks.
@@ -1158,6 +1480,28 @@ async function runSuiteContext(
           const hasTestScopedFixtures = registry.byScope('test').size > 0;
           const hasBeforeEachWork =
             !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0 || hasTestScopedFixtures;
+          // Per-test app reset (appResetScope: 'test'). Runs on every attempt
+          // so a retry genuinely starts from the declared state; retries
+          // deliver the warm hook cold (see _setForceColdDeepLinks above).
+          // It records into its own APP RESET group, ahead of BEFORE EACH,
+          // so the hooks group holds only the user's code. The reset itself
+          // ends with a session readiness check, so it needs no prior
+          // beforeEachTest recovery — a dead app just takes the ladder's
+          // restart rung, and the trace says so.
+          if (policy.scope === 'test' && canReset) {
+            const prepared = opts._prepared?.current;
+            await runTracedAppReset(traceCollector, resetContext(), policy, {
+              phase: `before test ${fullName}`,
+              forceCold: attempt > 0,
+              prepared,
+            });
+            if (opts._prepared) opts._prepared.current = undefined;
+            if (opts._applied) opts._applied.current = policy;
+          }
+          // The test (and its beforeEach hooks) is about to touch the app, so
+          // an entry reset's state is no longer reusable by a later reset.
+          if (opts._prepared) opts._prepared.current = undefined;
+
           if (hasBeforeEachWork) {
             traceCollector?.startGroup('beforeEach Hooks');
           }
@@ -1613,7 +1957,9 @@ async function runSuiteContext(
                 sourceFiles,
                 networkEntries,
                 project: opts.projectName,
-                appState: scopeAppState || undefined,
+                appState: policy.appState || undefined,
+                appReset: policy.mode,
+                appResetScope: policy.scope,
                 retry: attempt > 0 ? attempt : undefined,
               });
             } catch {
@@ -1734,11 +2080,13 @@ async function runSuiteContext(
       videoPath = firstFailure.videoPath ?? videoPath;
     }
 
+    const setupMs = setupHolder.pendingMs;
+    setupHolder.pendingMs = 0;
     const testResult: TestResult = {
       name: entry.name,
       fullName,
       status,
-      durationMs: Date.now() - attemptStart,
+      durationMs: Date.now() - attemptStart + setupMs,
       error,
       screenshotPath,
       tracePath,
@@ -1748,6 +2096,7 @@ async function runSuiteContext(
       firstAttemptError: status === 'passed' ? firstFailure?.error : undefined,
       failedAttemptArtifacts,
       filePath: opts.testFilePath,
+      ...(setupMs > 0 ? { setupMs } : {}),
     };
     result.tests.push(testResult);
     opts.reporter?.onTestEnd?.(testResult);
@@ -1777,7 +2126,23 @@ async function runSuiteContext(
 
     const childCtx = materializeSuiteEntry(suiteEntry);
     const prefix = parentPrefix ? `${parentPrefix} > ${suiteEntry.name}` : suiteEntry.name;
-    const childResult = await runSuiteContext(childCtx, prefix, allBeforeEach, allAfterEach, opts);
+    const childInherited: InheritedScopeSetup = {
+      announced: beforeAllFirstFullName ?? inherited.announced,
+      setup: setupHolder,
+      // This scope's recording already contains the inherited setup, so it
+      // replaces the inherited list rather than extending it.
+      recordings: beforeAllCollector
+        ? [{
+            events: savedBeforeAllEvents,
+            collector: beforeAllCollector,
+            hierarchies: beforeAllHierarchies,
+            actionCount: setupActionCount,
+          }]
+        : inherited.recordings,
+    };
+    const childResult = await runSuiteContext(
+      childCtx, prefix, allBeforeEach, allAfterEach, opts, policy, childInherited,
+    );
     result.suites.push(childResult);
   }
 
@@ -1787,7 +2152,7 @@ async function runSuiteContext(
   // actions are visible in headless runs too (the archive was written when
   // the test finished — beforeAll-style replay into a live collector is no
   // longer possible at this point).
-  if (ctx.afterAll.length > 0 && opts.device) {
+  if (scopeHasRunnable && ctx.afterAll.length > 0 && opts.device) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
     // Find the last test that actually ran, to tag events. Derived from the
     // recorded results (which include nested suites, already executed by
@@ -1870,7 +2235,8 @@ async function runSuiteContext(
         }
       }
     }
-  } else {
+  } else if (scopeHasRunnable) {
+    // No test ran in this scope → no teardown either (beforeAll was skipped too).
     for (const hook of ctx.afterAll) {
       try {
         await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
@@ -1889,6 +2255,9 @@ async function runSuiteContext(
     // Restore previous device timeout when leaving this scope
     if (prevDeviceTimeout !== undefined && opts.device) {
       opts.device._setDefaultTimeout(prevDeviceTimeout);
+    }
+    if (prevDeviceColdEvery !== undefined && opts.device) {
+      opts.device._setAppResetColdEvery(prevDeviceColdEvery);
     }
   }
 
@@ -2030,6 +2399,8 @@ export async function runTestFile(
     ...opts,
     workerFixtures,
     testFilePath: filePath,
+    _prepared: { current: opts.preparedDevice },
+    _applied: {},
     _abortFileController: abortFileController,
     abortSignal: abortFileController
       ? (opts.abortSignal
@@ -2056,12 +2427,29 @@ export async function runTestFile(
       const traceConfig = resolveTraceConfig(fileOpts.config.trace);
       if (fileOpts.device && traceConfig.mode !== 'off' && traceConfig.network) {
         try {
-          await fileOpts.device._stopNetworkCapture({ keepRunning: false });
+          // Keep the proxy (and its port) alive across files, draining only.
+          // A warm reset keeps the app process between files, so its HTTP
+          // keep-alive pool holds sockets to this proxy port; tearing the
+          // proxy down per file (churning to a new port on the next file)
+          // stranded those sockets, and the app's first requests in the next
+          // file stalled ~15-25s reusing dead connections before reconnecting
+          // — long enough to blow route-mock assertions. The proxy is released
+          // for real at Device.close() (session end); the daemon also cleans
+          // up on shutdown. Mirrors the iOS macOS system-proxy session model.
+          await fileOpts.device._stopNetworkCapture({ keepRunning: true });
         } catch {
-          // Best-effort final teardown; the daemon also cleans up on shutdown.
+          // Best-effort; the daemon cleans up the proxy on shutdown regardless.
         }
       }
-      if (fileOpts.device?._disposeRouteManager) {
+      // Keep the route-decision stream open across files when the proxy is
+      // kept alive above: closing it at the boundary releases any request the
+      // proxy is holding for a decision, so the first request of the next file
+      // falls through to the real server (a ~24s stall that blows the mock
+      // assertion). Routes are already removed per-test, and Device.close()
+      // disposes the manager for real. When network is off, dispose here as
+      // before (nothing keeps it alive).
+      if (fileOpts.device?._disposeRouteManager
+        && !(traceConfig.mode !== 'off' && traceConfig.network)) {
         await fileOpts.device._disposeRouteManager();
       }
       // Hard teardown of the cross-test cached WebView connection (kept
@@ -2075,17 +2463,43 @@ export async function runTestFile(
 
 // ─── Test discovery (UI mode) ───
 
+/** Isolation-relevant `test.use()` options, cascaded down the describe tree. */
+export interface DiscoveredUseOptions {
+  appReset?: UseOptions['appReset']
+  appResetScope?: UseOptions['appResetScope']
+  appState?: string
+}
+
 export interface DiscoveredTest {
   name: string
   fullName: string
   only: boolean
   skip: boolean
+  /** Effective isolation options for this test (suite cascade applied). */
+  use?: DiscoveredUseOptions
 }
 
 export interface DiscoveredSuite {
   name: string
   tests: DiscoveredTest[]
   suites: DiscoveredSuite[]
+  /** Effective isolation options for this suite (parent cascade applied). */
+  use?: DiscoveredUseOptions
+}
+
+function pickDiscoveredUse(
+  parent: DiscoveredUseOptions | undefined,
+  own: UseOptions | undefined,
+): DiscoveredUseOptions | undefined {
+  // `appState` is scope-local (a nested describe without it declares none);
+  // `appReset` / `appResetScope` cascade like every other config key.
+  const use: DiscoveredUseOptions = {};
+  const appReset = own?.appReset ?? parent?.appReset;
+  const appResetScope = own?.appResetScope ?? parent?.appResetScope;
+  if (appReset !== undefined) use.appReset = appReset;
+  if (appResetScope !== undefined) use.appResetScope = appResetScope;
+  if (own?.appState !== undefined) use.appState = own.appState;
+  return Object.keys(use).length > 0 ? use : undefined;
 }
 
 /**
@@ -2103,25 +2517,31 @@ export async function discoverTestFile(filePath: string): Promise<DiscoveredSuit
   await import(importUrl);
 
   const rootCtx = popContext();
-  return discoverSuiteContext(rootCtx, '');
+  return discoverSuiteContext(rootCtx, '', undefined);
 }
 
-function discoverSuiteContext(ctx: SuiteContext, parentPrefix: string): DiscoveredSuite {
+function discoverSuiteContext(
+  ctx: SuiteContext,
+  parentPrefix: string,
+  parentUse: DiscoveredUseOptions | undefined,
+): DiscoveredSuite {
+  const use = pickDiscoveredUse(parentUse, ctx.useOptions);
   const tests: DiscoveredTest[] = ctx.tests.map((t) => ({
     name: t.name,
     fullName: parentPrefix ? `${parentPrefix} > ${t.name}` : t.name,
     only: t.only,
     skip: t.skip,
+    ...(use ? { use } : {}),
   }));
 
   const suites: DiscoveredSuite[] = [];
   for (const entry of ctx.suites) {
     const suitePrefix = parentPrefix ? `${parentPrefix} > ${entry.name}` : entry.name;
     const childCtx = materializeSuiteEntry(entry);
-    suites.push(discoverSuiteContext(childCtx, suitePrefix));
+    suites.push(discoverSuiteContext(childCtx, suitePrefix, use));
   }
 
-  return { name: parentPrefix, tests, suites };
+  return { name: parentPrefix, tests, suites, ...(use ? { use } : {}) };
 }
 
 /** @internal — exposed for unit testing only. */

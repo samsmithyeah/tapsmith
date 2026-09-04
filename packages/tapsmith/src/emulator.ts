@@ -8,6 +8,7 @@
  * @see PILOT-106
  */
 
+import { createHash } from 'node:crypto';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -214,6 +215,32 @@ export async function waitForPackageIndexed(
   process.stderr.write(
     `${YELLOW}Warning: package ${packageName} not found by pm after ${Math.round(timeoutMs / 1000)}s — continuing anyway.${RESET}\n`,
   );
+}
+
+/**
+ * Whether the APK installed on the device is byte-identical to `apkPath`.
+ * `pm` keeps the installed base.apk as-is, so an md5 comparison tells a
+ * rebuilt app from the one already on the device. `undefined` when either
+ * side cannot be hashed (then callers fall back to "installed is fine").
+ */
+export function installedApkMatches(serial: string, packageName: string, apkPath: string): boolean | undefined {
+  try {
+    const pathOut = execFileSync(
+      'adb', ['-s', serial, 'shell', 'pm', 'path', packageName],
+      { encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    const devicePath = pathOut.split('\n').map((l) => l.trim()).find((l) => l.startsWith('package:'))?.slice('package:'.length);
+    if (!devicePath) return undefined;
+    const remote = execFileSync(
+      'adb', ['-s', serial, 'shell', 'md5sum', devicePath],
+      { encoding: 'utf-8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim().split(/\s+/)[0];
+    if (!/^[0-9a-f]{32}$/.test(remote)) return undefined;
+    const local = createHash('md5').update(fs.readFileSync(apkPath)).digest('hex');
+    return remote === local;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

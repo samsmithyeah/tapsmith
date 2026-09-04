@@ -35,7 +35,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `retries` | `number` | `0` | Number of times to retry a failed test. |
 | `screenshot` | `ScreenshotMode` | `"only-on-failure"` | When to capture screenshots: `"always"`, `"only-on-failure"`, or `"never"`. |
 | `testMatch` | `string[]` | `["**/*.test.ts", "**/*.spec.ts"]` | Glob patterns for discovering test files. |
-| `daemonAddress` | `string` | `"localhost:50051"` | Address of the Tapsmith daemon (host:port). |
+| `daemonAddress` | `string` | `"localhost:50051"` | Address of the Tapsmith daemon (host:port). If another live Tapsmith session already answers on that port, this session starts its own daemon on a free port instead of taking it over. |
 | `daemonBin` | `string` | `undefined` | Path to the `tapsmith-core` binary. If unset, Tapsmith auto-resolves it from several common locations (including npm packages and monorepo build outputs) before falling back to `PATH`. |
 | `device` | `string` | `undefined` | Explicit single-device override. Useful for debugging or forcing one specific physical device/emulator/simulator. |
 | `deviceStrategy` | `"prefer-connected" \| "avd-only"` | contextual | Optional override for device selection (Android). Defaults to `"avd-only"` when `avd` is set, otherwise `"prefer-connected"`. |
@@ -57,8 +57,13 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `baseURL` | `string` | `undefined` | Base URL for the `request` fixture. Relative paths in `request.get("/path")` are resolved against this. |
 | `extraHTTPHeaders` | `Record<string, string>` | `undefined` | Default headers sent with every `request` fixture call (e.g., `Authorization`). Per-request headers override these when names collide. |
 | `doubleTapInterval` | `number` | `100` | Default interval in milliseconds between the two taps in `doubleTap()`. Can be overridden per-call via `doubleTap({ intervalMs: 150 })`. |
-| `resetAppDeepLink` | `string` | `undefined` | Deep link URI to navigate to between test files for a soft app reset. When set, Tapsmith opens this deep link instead of force-stopping and relaunching the app between files. Faster than a full restart when the app has a reset route that clears state and navigates to the desired start screen. Do not expose this route in production builds. |
-| `resetAppWaitMs` | `number` | `750` | Time in milliseconds to wait after navigating the `resetAppDeepLink` before starting the next test file. Gives the app time to finish resetting. |
+| `appReset` | `'auto' \| 'clear' \| 'restart' \| 'warm' \| 'none'` | `'auto'` | How the app is reset to a known state before tests (see [Test isolation](writing-tests.md#test-isolation)). `auto` = `warm` when the app's in-app reset hooks are detected ([`@tapsmith/react-native`](warm-reset.md)) or `resetAppDeepLink` is set, otherwise `clear`. Overridable per project and per `test.use()` scope. |
+| `appResetScope` | `'auto' \| 'file' \| 'test'` | `'auto'` | Reset once per test file, or before every test. `auto` = `file` — one reset at file/scope entry. Set `'test'` on scopes that need a reset before every test (still warm when the app mounts `@tapsmith/react-native`). |
+| `appResetColdEvery` | `number` | `10` | With `appReset: 'warm'`, deliver every Nth reset cold (terminate + relaunch) so long all-warm iOS simulator sessions can't drift from a fresh launch. `0` disables. |
+| `ui.prepareBetweenRuns` | `boolean` | `true` | [UI mode](ui-mode.md): prepare the device (run the declared app reset) in the background between runs. Set `false` when resets have side effects the team must control (backend calls in `onReset`, rate limits) or on personal physical devices. A person's explicit toggle in the device chip menu still wins for them. |
+| `ui.prepareDelayMs` | `number` | `0` | [UI mode](ui-mode.md): quiet time in milliseconds after a run before background preparation starts. |
+| `resetAppDeepLink` | `string` | `undefined` | Deep link the app handles by clearing its own state and navigating to the start screen. Setting it makes `appReset: 'auto'` resolve to `warm`. Do not expose this route in production builds. |
+| `resetAppWaitMs` | `number` | `750` | Time in milliseconds to wait after navigating the `resetAppDeepLink` before continuing. Gives the app time to finish resetting. |
 | `testIgnore` | `string[]` | `[]` | Glob patterns for excluding test files from discovery. Files matching any pattern are skipped even if they match `testMatch`. |
 
 ### `ScreenshotMode`
@@ -506,7 +511,8 @@ on its own device when you edit a test.
 Inside a project, the `use` field accepts the same device-shaping fields
 as the top-level config (`platform`, `avd`, `simulator`, `app`, `apk`,
 `package`, `iosXctestrun`, `launchEmulators`, etc.) plus the existing
-`timeout`, `screenshot`, `retries`, `trace`, and `appState` overrides.
+`timeout`, `screenshot`, `retries`, `trace`, `video`, `appReset`,
+`appResetScope`, and `appState` overrides.
 
 > **Note:** A single project must not mix Android (`avd`/`apk`) and iOS
 > (`simulator`/`app`) fields. Tapsmith validates this at startup.
@@ -530,9 +536,11 @@ In practice, most users set this via the CLI instead:
 npx tapsmith test --shard=1/4
 ```
 
-### Soft App Reset via Deep Link
+### Warm App Reset
 
-If your app supports a deep link that resets state (faster than a full force-stop/relaunch cycle), configure it:
+The fastest reset is one the app performs itself. React Native / Expo apps get it by mounting `@tapsmith/react-native` once — Tapsmith detects the hooks automatically and `appReset: 'auto'` becomes `warm · per file` — the same isolation as before, at a fraction of the cost (a warm reset takes ~1 s where clear + relaunch takes 5-10 s). Scopes that need per-test isolation opt in with `appResetScope: 'test'`; see the [Warm app reset guide](warm-reset.md).
+
+Apps without the module can expose a deep link that resets state (much faster than a full clear + relaunch). `appReset: 'auto'` then resolves to `warm · per file`:
 
 ```typescript
 import { defineConfig } from "tapsmith";
@@ -545,9 +553,9 @@ export default defineConfig({
 });
 ```
 
-Between test files, Tapsmith navigates the deep link instead of clearing app data and restarting the agent session. The deep link handler should clear app state and land on whatever screen your tests expect to start from. Keep this handler out of production builds, for example behind a test-only build flavor or equivalent guard. This is significantly faster for apps that support it.
+Tapsmith navigates the deep link instead of clearing app data and relaunching. The deep link handler should clear app state and land on whatever screen your tests expect to start from. Keep this handler out of production builds, for example behind a test-only build flavor or equivalent guard. The reset appears in the trace as a `resetApp` step in the **APP RESET** section preceding **BEFORE ALL** (or **BEFORE EACH** with `appResetScope: 'test'`); if the deep link fails, Tapsmith falls back to a full clear and records why.
 
-On Android and physical iOS devices the reset deep link is delivered to the running app. On iOS simulators the between-file reset cold-relaunches the app with the URL so every file starts from a fresh process; deep links opened *inside* a test file (including `device.openDeepLink()` calls to the reset link) are delivered warm when possible.
+The reset is delivered to the running app (warm). On iOS simulators the daemon bounds the warm window: every `appResetColdEvery` resets (default 10), on a retry attempt, or after two warm resets in a row fail to verify, the next reset cold-relaunches the app with the URL instead — and the trace says so (`cold relaunch: warm-window bound reached (10 resets)`). Deep links opened *inside* a test with `device.openDeepLink()` are always delivered warm when possible.
 
 ### API Request Fixture
 

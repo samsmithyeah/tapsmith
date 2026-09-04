@@ -140,12 +140,19 @@ jobs:
           path: test-app/android/app/build/outputs/apk/release/app-release.apk
           key: test-app-android-${{ hashFiles('test-app/app/**', 'test-app/assets/**',
             'test-app/plugins/**', 'test-app/package-lock.json',
-            'test-app/app.json') }}
+            'test-app/app.json', 'test-app/metro.config.js',
+            'packages/tapsmith-react-native/src/**',
+            'packages/tapsmith-react-native/package.json',
+            'packages/tapsmith-react-native/tsconfig*.json') }}
 
       - uses: actions/setup-node@v4
         if: steps.test-app-cache.outputs.cache-hit != 'true'
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            test-app/package-lock.json
+            packages/tapsmith-react-native/package-lock.json
 
       - uses: actions/setup-java@v4
         if: steps.test-app-cache.outputs.cache-hit != 'true'
@@ -153,9 +160,19 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Build @tapsmith/react-native (test-app dependency)
+        if: steps.test-app-cache.outputs.cache-hit != 'true'
+        working-directory: packages/tapsmith-react-native
+        run: |
+          npm ci
+          npm run build
+
       - name: Install dependencies and prebuild
         if: steps.test-app-cache.outputs.cache-hit != 'true'
         working-directory: test-app
+        env:
+          # Release builds strip __DEV__; the flag keeps the in-app reset hooks on.
+          EXPO_PUBLIC_TAPSMITH_HOOKS: "1"
         run: |
           npm ci --legacy-peer-deps
           npx expo prebuild --platform android
@@ -163,6 +180,8 @@ jobs:
       - name: Build release APK
         if: steps.test-app-cache.outputs.cache-hit != 'true'
         working-directory: test-app/android
+        env:
+          EXPO_PUBLIC_TAPSMITH_HOOKS: "1"
         run: ./gradlew assembleRelease
 
       - uses: actions/upload-artifact@v4
@@ -323,7 +342,10 @@ jobs:
           path: ${{ env.AUTH_STATE_ARCHIVE }}
           key: auth-state-android-${{ env.AUTH_STATE_CACHE_VERSION }}-${{
             hashFiles('test-app/app/**', 'test-app/assets/**', 'test-app/plugins/**',
-            'test-app/package-lock.json', 'test-app/app.json') }}-${{
+            'test-app/package-lock.json', 'test-app/app.json',
+            'test-app/metro.config.js', 'packages/tapsmith-react-native/src/**',
+            'packages/tapsmith-react-native/package.json',
+            'packages/tapsmith-react-native/tsconfig*.json') }}-${{
             hashFiles('e2e/tests/auth.setup.ts', 'e2e/fixtures.ts', 'e2e/screens/**') }}
 
       - name: Run E2E tests

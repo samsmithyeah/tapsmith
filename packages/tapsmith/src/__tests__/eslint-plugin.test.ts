@@ -15,6 +15,10 @@ interface ASTNode {
   key?: ASTNode;
   value?: unknown;
   loc?: { start: { line: number }; end: { line: number } };
+  body?: ASTNode | ASTNode[];
+  expression?: ASTNode;
+  argument?: ASTNode;
+  params?: ASTNode[];
 }
 
 interface Comment {
@@ -333,14 +337,130 @@ describe('prefer-accessible-selectors rule', () => {
   });
 });
 
+// ─── prefer-app-reset-option ───
+
+/** `await <expr>` wrapped in an ExpressionStatement. */
+function awaitStmt(expr: ASTNode): ASTNode {
+  return { type: 'ExpressionStatement', expression: { type: 'AwaitExpression', argument: expr } };
+}
+
+/** `test.beforeEach(async ({ device }) => { ...stmts })` */
+function makeBeforeEach(stmts: ASTNode[], callee: ASTNode = {
+  type: 'MemberExpression',
+  object: { type: 'Identifier', name: 'test' },
+  property: { type: 'Identifier', name: 'beforeEach' },
+  computed: false,
+}): ASTNode {
+  return {
+    type: 'CallExpression',
+    callee,
+    arguments: [{
+      type: 'ArrowFunctionExpression',
+      params: [{ type: 'ObjectPattern' }],
+      body: { type: 'BlockStatement', body: stmts },
+    }],
+    loc: { start: { line: 3 }, end: { line: 5 } },
+  };
+}
+
+describe('prefer-app-reset-option rule', () => {
+  const rule = plugin.rules['prefer-app-reset-option'];
+
+  it('has correct metadata', () => {
+    expect(rule.meta.type).toBe('suggestion');
+    expect(rule.meta.messages.preferRestart).toBeDefined();
+    expect(rule.meta.messages.preferClear).toBeDefined();
+  });
+
+  it('suggests appReset: restart for a beforeEach that only restarts the app', () => {
+    const reports: ReportDescriptor[] = [];
+    const visitor = rule.create(makeContext(reports));
+
+    visitor.CallExpression(makeBeforeEach([awaitStmt(makeMethodCall('restartApp'))]));
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0].messageId).toBe('preferRestart');
+  });
+
+  it('suggests appReset: clear for clearAppData + launchApp', () => {
+    const reports: ReportDescriptor[] = [];
+    const visitor = rule.create(makeContext(reports));
+
+    visitor.CallExpression(makeBeforeEach([
+      awaitStmt(makeMethodCall('clearAppData', stringLit('com.example.app'))),
+      awaitStmt(makeMethodCall('launchApp', stringLit('com.example.app'))),
+    ]));
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0].messageId).toBe('preferClear');
+  });
+
+  it('suggests appReset: clear for launchApp({ clearData: true })', () => {
+    const reports: ReportDescriptor[] = [];
+    const visitor = rule.create(makeContext(reports));
+    const launch = makeMethodCall('launchApp', stringLit('com.example.app'));
+    launch.arguments!.push(objectExpr([{ key: 'clearData', value: true }]));
+
+    visitor.CallExpression(makeBeforeEach([awaitStmt(launch)]));
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0].messageId).toBe('preferClear');
+  });
+
+  it('reports a bare `beforeEach(...)` identifier call and an expression-bodied arrow', () => {
+    const reports: ReportDescriptor[] = [];
+    const visitor = rule.create(makeContext(reports));
+
+    visitor.CallExpression({
+      type: 'CallExpression',
+      callee: { type: 'Identifier', name: 'beforeEach' },
+      arguments: [{ type: 'ArrowFunctionExpression', params: [], body: makeMethodCall('restartApp') }],
+    });
+
+    expect(reports).toHaveLength(1);
+  });
+
+  it('stays quiet when the hook does more than reset', () => {
+    const reports: ReportDescriptor[] = [];
+    const visitor = rule.create(makeContext(reports));
+
+    visitor.CallExpression(makeBeforeEach([
+      awaitStmt(makeMethodCall('restartApp')),
+      awaitStmt(makeMethodCall('tap')),
+    ]));
+    visitor.CallExpression(makeBeforeEach([
+      { type: 'VariableDeclaration' },
+      awaitStmt(makeMethodCall('restartApp')),
+    ]));
+
+    expect(reports).toHaveLength(0);
+  });
+
+  it('stays quiet for launchApp without clearData and for other hooks', () => {
+    const reports: ReportDescriptor[] = [];
+    const visitor = rule.create(makeContext(reports));
+
+    visitor.CallExpression(makeBeforeEach([awaitStmt(makeMethodCall('launchApp', stringLit('com.example.app')))]));
+    visitor.CallExpression(makeBeforeEach([awaitStmt(makeMethodCall('restartApp'))], {
+      type: 'MemberExpression',
+      object: { type: 'Identifier', name: 'test' },
+      property: { type: 'Identifier', name: 'beforeAll' },
+      computed: false,
+    }));
+
+    expect(reports).toHaveLength(0);
+  });
+});
+
 // ─── Plugin exports ───
 
 describe('plugin exports', () => {
-  it('exports rules object with all three rules', () => {
+  it('exports rules object with all four rules', () => {
     expect(plugin.rules).toBeDefined();
     expect(plugin.rules['prefer-role']).toBeDefined();
     expect(plugin.rules['no-bare-locator-xpath']).toBeDefined();
     expect(plugin.rules['prefer-accessible-selectors']).toBeDefined();
+    expect(plugin.rules['prefer-app-reset-option']).toBeDefined();
   });
 
   it('exports recommended config', () => {
@@ -350,6 +470,7 @@ describe('plugin exports', () => {
       'tapsmith/prefer-role': 'warn',
       'tapsmith/no-bare-locator-xpath': 'error',
       'tapsmith/prefer-accessible-selectors': 'warn',
+      'tapsmith/prefer-app-reset-option': 'warn',
     });
   });
 });

@@ -8,6 +8,8 @@
  * @see PILOT-87
  */
 
+import type { WorkerReadiness } from './device-readiness.js';
+export type { WorkerReadiness };
 import type { AnyTraceEvent } from '../trace/types.js';
 
 // ─── Shared Types ───
@@ -74,7 +76,14 @@ export interface WorkerInfo {
   platform?: 'android' | 'ios'
   /** Logical-point → pixel scale. iOS only; unset for Android (= 1). */
   devicePixelRatio?: number
+  isEmulator?: boolean
+  /** Background device preparation state (see device-readiness.ts). */
+  readiness?: WorkerReadiness
+  /** Whether this worker prepares the device between runs. */
+  speculation?: 'on' | 'off'
 }
+
+export type { AppResetPolicy } from '../app-reset.js';
 
 // ─── Test Tree ───
 
@@ -93,6 +102,31 @@ export interface TestTreeNode {
   watchEnabled?: boolean
   /** For project nodes: names of projects this depends on. */
   dependencies?: string[]
+  /**
+   * Declared isolation options in effect for this node (project `use` merged
+   * with the file's `test.use()` cascade). Absent when nothing is declared —
+   * the runner then resolves `auto` at run time.
+   */
+  use?: TestTreeUseOptions
+}
+
+export interface TestTreeUseOptions {
+  appReset?: 'auto' | 'clear' | 'restart' | 'warm' | 'none'
+  appResetScope?: 'auto' | 'file' | 'test'
+  appState?: string
+}
+
+/**
+ * The isolation a test actually ran under: the declared options with `auto`
+ * resolved by the runner (hooks detected → warm, …). Sent with `test-start`
+ * so UI mode's Metadata tab can show the same Isolation row as the trace
+ * viewer, which reads it from the packaged archive.
+ */
+export interface TestIsolation {
+  appReset: 'clear' | 'restart' | 'warm' | 'none'
+  appResetScope: 'file' | 'test'
+  /** Saved app state restored before the test, when the scope declared one. */
+  appState?: string
 }
 
 export type TestNodeStatus =
@@ -124,6 +158,10 @@ export interface RunStartMessage {
 
 export interface RunEndMessage {
   type: 'run-end'
+  /** Milliseconds from run start to the first traced action of the first test. */
+  timeToFirstActionMs?: number
+  /** How the first file's isolation was satisfied. */
+  preflight?: { origin: 'prepared' | 'inline' | 'skipped' | 'unknown' }
   /** 'stopped' = the user stopped the run before it finished. */
   status: 'passed' | 'failed' | 'stopped'
   duration: number
@@ -149,6 +187,8 @@ export interface TestStartMessage {
    * that ran). The SPA must not treat it as a new execution: no status
    * reset to 'running', no clearing of the test's accumulated trace. */
   attributionOnly?: boolean
+  /** Resolved isolation for this execution (absent on attribution-only re-tags). */
+  isolation?: TestIsolation
 }
 
 export interface TestStatusMessage {
@@ -235,6 +275,47 @@ export interface WorkerStatusMessage {
   passed: number
   failed: number
   skipped: number
+  /** Background device preparation state. */
+  readiness?: import('./device-readiness.js').WorkerReadiness
+  speculation?: 'on' | 'off'
+}
+
+/**
+ * Something happened to a device outside a traced test: a background
+ * preparation, a validation, a worker recycle, a burst of mirror gestures.
+ * Same start/end merge-by-id shape as `mcp-tool-call`.
+ */
+export interface DeviceActivityMessage {
+  type: 'device-activity'
+  id: string
+  workerId: number
+  kind: 'prepare' | 'validate' | 'recycle' | 'mirror' | 'respawn'
+  status: 'started' | 'completed' | 'error' | 'cancelled'
+  /** e.g. "Prepare device (clear)", "Mirror: 3 taps" */
+  label: string
+  /** Last progress line, error message, or outcome summary. */
+  detail?: string
+  policy?: import('../app-reset.js').AppResetPolicy
+  forFile?: string
+  timestamp: number
+  durationMs?: number
+}
+
+export interface UIPreferences {
+  /** Prepare the device (run the declared app reset) in the background between runs. */
+  prepareBetweenRuns: boolean
+  /** Quiet time after a run before the device is prepared (0 = immediately). */
+  prepareDelayMs: number
+}
+
+// No grace by default: warm resets are sub-second, and the trace already holds
+// the post-action screenshots, so waiting only delays the next run. The mirror
+// interaction hold (ui-server.ts) still applies when the user is poking the device.
+export const DEFAULT_UI_PREFERENCES: UIPreferences = { prepareBetweenRuns: true, prepareDelayMs: 0 };
+
+export interface PreferencesMessage {
+  type: 'preferences'
+  preferences: UIPreferences
 }
 
 export interface WorkersInfoMessage {
@@ -356,6 +437,8 @@ export type ServerMessage =
   | McpStatusMessage
   | McpToolCallMessage
   | RunProgressMessage
+  | DeviceActivityMessage
+  | PreferencesMessage
 
 // ─── Client → Server messages ───
 
@@ -529,6 +612,40 @@ export interface RespawnWorkerCommand {
   workerId: number
 }
 
+/**
+ * Restart a worker's Node process against its existing daemon so the next run
+ * imports fresh code (page objects, fixtures, helpers — anything the ESM cache
+ * would otherwise keep). The device is untouched.
+ */
+export interface RecycleWorkerCommand {
+  type: 'recycle-worker'
+  workerId: number
+}
+
+/** Client preferences the server needs to act on (persisted client-side). */
+export interface SetPreferencesCommand {
+  type: 'set-preferences'
+  preferences: Partial<UIPreferences>
+}
+
+/** Prepare the device now (even with background preparation off). */
+export interface PrepareNowCommand {
+  type: 'prepare-now'
+  workerId?: number
+}
+
+export interface CancelPrepareCommand {
+  type: 'cancel-prepare'
+  workerId?: number
+}
+
+/** The node the user has selected — the strongest hint for what runs next. */
+export interface SelectNodeCommand {
+  type: 'select-node'
+  filePath?: string
+  projectName?: string
+}
+
 /** Union of all client → server JSON messages. */
 export type ClientMessage =
   | RunTestCommand
@@ -553,6 +670,11 @@ export type ClientMessage =
   | SelectWorkerCommand
   | SelectWorkerViewCommand
   | RespawnWorkerCommand
+  | RecycleWorkerCommand
+  | SetPreferencesCommand
+  | PrepareNowCommand
+  | CancelPrepareCommand
+  | SelectNodeCommand
 
 // ─── Binary frame helpers ───
 
@@ -604,87 +726,7 @@ export function decodeBinaryFrame(data: ArrayBuffer): DecodedBinaryFrame {
   };
 }
 
-// ─── IPC protocol (child process ↔ UI server) ───
-
-export interface UIRunMessage {
-  type: 'run'
-  daemonAddress: string
-  deviceSerial: string
-  filePath: string
-  config: import('../worker-protocol.js').SerializedConfig
-  screenshotDir?: string
-  projectUseOptions?: import('../worker-protocol.js').RunFileUseOptions
-  projectName?: string
-  /** Filter to a specific test by fullName (for single-test runs). */
-  testFilter?: string
-}
-
-export interface UIRunTestStartMessage {
-  type: 'test-start'
-  fullName: string
-  filePath: string
-  /** Re-tag of trace attribution for a finished test (see TestStartMessage). */
-  attributionOnly?: boolean
-}
-
-export interface UIRunTestEndMessage {
-  type: 'test-end'
-  result: import('../worker-protocol.js').SerializedTestResult
-}
-
-export interface UIRunFileDoneMessage {
-  type: 'file-done'
-  filePath: string
-  results: import('../worker-protocol.js').SerializedTestResult[]
-  suite: import('../worker-protocol.js').SerializedSuiteResult
-}
-
-export interface UIRunTraceEventMessage {
-  type: 'trace-event'
-  event: AnyTraceEvent
-  /** Lifecycle stage. Omitted = legacy completed. */
-  lifecycle?: 'started' | 'completed'
-  screenshotBefore?: string
-  screenshotAfter?: string
-  hierarchyBefore?: string
-  hierarchyAfter?: string
-}
-
-export interface UIRunSourceMessage {
-  type: 'source'
-  path: string
-  fileName: string
-  content: string
-}
-
-export interface UIRunNetworkMessage {
-  type: 'network'
-  entries: import('../trace/types.js').NetworkEntry[]
-  bodies?: Record<string, string>
-}
-
-export interface UIRunErrorMessage {
-  type: 'error'
-  error: { message: string; stack?: string }
-}
-
-/** Run child → server: live progress for a slow device action (preflight
- * reset etc.). Empty/absent message = action finished, clear the indicator.
- * @see PILOT-232 */
-export interface UIRunProgressMessage {
-  type: 'progress'
-  message?: string
-}
-
-export type UIRunChildMessage =
-  | UIRunTestStartMessage
-  | UIRunTestEndMessage
-  | UIRunFileDoneMessage
-  | UIRunTraceEventMessage
-  | UIRunSourceMessage
-  | UIRunNetworkMessage
-  | UIRunErrorMessage
-  | UIRunProgressMessage
+// ─── IPC protocol (child processes ↔ UI server) ───
 
 // ─── Discovery IPC ───
 
@@ -720,6 +762,21 @@ export interface UIWorkerInitMessage {
   config: import('../worker-protocol.js').SerializedConfig
   screenshotDir?: string
   freshEmulator?: boolean
+  /**
+   * The daemon at `daemonPort` already has this device selected, the agent
+   * running and the app launched (the CLI's primary-device setup). Skip
+   * install / startAgent / the cold launch: connect, re-select the device and
+   * verify the session — the launch that already happened is this worker's
+   * prepared state for the first file.
+   */
+  adoptPrimary?: boolean
+  /**
+   * With `adoptPrimary`: the CLI's startup launch has not been consumed by
+   * any test yet, so it is this worker's `clear · file` prepared state. Only
+   * the initial spawn sets this — a respawned worker re-adopts a daemon whose
+   * app has run tests since, and must not claim a reset that never ran.
+   */
+  adoptPrepared?: boolean
 }
 
 /** Server → UI worker: run a test file. */
@@ -729,6 +786,23 @@ export interface UIWorkerRunFileMessage {
   projectUseOptions?: import('../worker-protocol.js').RunFileUseOptions
   projectName?: string
   testFilter?: string
+  /** The device already satisfies this file's policy (background preparation). */
+  preparedFor?: import('../app-reset.js').PreparedState
+}
+
+/** Server → UI worker: reset the app in the background to `policy`. */
+export interface UIWorkerPrepareMessage {
+  type: 'prepare'
+  prepareId: string
+  policy: import('../app-reset.js').AppResetPolicy
+  projectUseOptions?: import('../worker-protocol.js').RunFileUseOptions
+  projectName?: string
+  forFile?: string
+}
+
+export interface UIWorkerCancelPrepareMessage {
+  type: 'cancel-prepare'
+  prepareId: string
 }
 
 /** Server → UI worker: shut down gracefully. */
@@ -746,11 +820,54 @@ export type UIWorkerMessage =
   | UIWorkerRunFileMessage
   | UIWorkerShutdownMessage
   | UIWorkerAbortMessage
+  | UIWorkerPrepareMessage
+  | UIWorkerCancelPrepareMessage
 
 /** UI worker → server: worker is ready. */
 export interface UIWorkerReadyMessage {
   type: 'ready'
   workerId: number
+  /** Policy the startup launch left the app in, when it did launch. */
+  policy?: import('../app-reset.js').AppResetPolicy
+  /** Runtime reset capabilities probed after launch (in-app hooks detected?). */
+  capabilities?: import('../app-reset.js').ResetCapabilities
+}
+
+/**
+ * UI worker → server: the worker's runtime reset capabilities changed since
+ * `ready` (e.g. a reset detected in-app hooks the startup probe missed). The
+ * server merges it into its per-worker snapshot so policy resolution for
+ * background preparation agrees with the runner's own.
+ */
+export interface UIWorkerCapabilitiesMessage {
+  type: 'capabilities'
+  workerId: number
+  capabilities: import('../app-reset.js').ResetCapabilities
+}
+
+/** UI worker → server: a background preparation finished. */
+export interface UIWorkerPreparedMessage {
+  type: 'prepared'
+  workerId: number
+  prepareId: string
+  policy: import('../app-reset.js').AppResetPolicy
+  startedAt: number
+  durationMs: number
+  steps: string[]
+  /**
+   * Set when the device already satisfied the policy (e.g. the startup
+   * launch): the preparation that did the work, so the UI and the runner's
+   * summary row credit it rather than this no-op pass.
+   */
+  satisfiedBy?: import('../app-reset.js').PreparedState
+}
+
+export interface UIWorkerPrepareFailedMessage {
+  type: 'prepare-failed'
+  workerId: number
+  prepareId: string
+  error: { message: string }
+  cancelled: boolean
 }
 
 /** UI worker → server: progress during initialization, and live slow-device-
@@ -770,6 +887,8 @@ export interface UIWorkerTestStartMessage {
   filePath: string
   /** Re-tag of trace attribution for a finished test (see TestStartMessage). */
   attributionOnly?: boolean
+  /** Resolved isolation for this execution (see TestStartMessage). */
+  isolation?: TestIsolation
 }
 
 /** UI worker → server: test completed. */
@@ -835,3 +954,6 @@ export type UIWorkerChildMessage =
   | UIWorkerNetworkMessage
   | UIWorkerFileDoneMessage
   | UIWorkerErrorMessage
+  | UIWorkerPreparedMessage
+  | UIWorkerPrepareFailedMessage
+  | UIWorkerCapabilitiesMessage

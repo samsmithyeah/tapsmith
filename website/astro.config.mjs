@@ -40,6 +40,7 @@ export default defineConfig({
             { label: 'Trace Viewer', slug: 'guides/trace-viewer' },
             { label: 'Watch Mode', slug: 'guides/watch-mode' },
             { label: 'UI Mode', slug: 'guides/ui-mode' },
+            { label: 'Warm App Reset', slug: 'guides/warm-reset' },
             { label: 'Parallel Execution', slug: 'guides/parallel-and-sharding' },
             { label: 'Debugging', slug: 'guides/debugging' },
             { label: 'MCP Server', slug: 'guides/mcp-server' },

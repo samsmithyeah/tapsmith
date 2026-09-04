@@ -68,6 +68,22 @@ describe("Deep links (Android)", () => {
 // ─── Device Navigation ───
 
 describe("Device navigation", () => {
+  test("unlock() on an already-unlocked device leaves the foreground app untouched", async ({ device }) => {
+    // The legacy unlock sequence (MENU key + swipe up) used to land on the
+    // foreground app and scroll its root list to the bottom. UI mode unlocks
+    // right before a file whose reset was already satisfied by background
+    // preparation, so nothing undid the scroll and the first assertions
+    // failed on a "prepared" device.
+    await launchAppReady(device)
+    await expect(device.getByText("Test Screens", { exact: true })).toBeVisible()
+
+    await device.unlock()
+
+    await expectAppReady(device)
+    await expect(device.getByText("Test Screens", { exact: true })).toBeVisible()
+    await expect(device.getByText("Login Form", { exact: true })).toBeVisible()
+  })
+
   test("pressHome() goes to home screen and app can be relaunched", async ({ device }) => {
     await launchAppReady(device)
     await device.pressHome()

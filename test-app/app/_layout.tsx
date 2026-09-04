@@ -1,26 +1,22 @@
+import { TapsmithTestHooks } from "@tapsmith/react-native"
+import * as Linking from "expo-linking"
 import { Stack } from "expo-router"
-import { StyleSheet, Text, View } from "react-native"
+import { StyleSheet, View } from "react-native"
 import { AuthProvider, useAuth } from "./auth-context"
 
 /**
- * A tiny always-present text element whose content changes on every
- * resetAppState() call. Warm in-process deep-link delivery on iOS is verified
- * by requiring the a11y hierarchy to change from its pre-open state; a
- * `__reset?path=X` link that lands on the same screen the app was already
- * showing would otherwise produce an identical hierarchy and force the agent's
- * expensive cold-relaunch fallback (~15-22s per test on CI). Must stay
- * accessibility-visible: opacity 0 or aria-hidden would drop it from the
- * hierarchy dump and defeat the purpose.
+ * Tapsmith's in-app reset hooks. Renders the always-present marker Tapsmith
+ * detects (so `appReset: 'auto'` becomes a warm, per-test reset) and handles
+ * the reset links it opens: clear app state, then let expo-router land on the
+ * requested route. The legacy `/__reset` route stays for the explicit
+ * `resetAppDeepLink` configuration exercised by `tapsmith.config.ios-mixed.mjs`.
+ *
+ * Enabled in dev builds and in release builds made with
+ * `EXPO_PUBLIC_TAPSMITH_HOOKS=1` (the e2e workflows set it).
  */
-function ResetEpochMarker() {
-  const { resetEpoch } = useAuth()
-  return (
-    <View pointerEvents="none" style={styles.epochMarker}>
-      <Text style={styles.epochText} testID="reset-epoch">
-        {`reset-epoch:${resetEpoch}`}
-      </Text>
-    </View>
-  )
+function TapsmithHooks() {
+  const { resetAppState } = useAuth()
+  return <TapsmithTestHooks urlPrefix={Linking.createURL("/")} onReset={resetAppState} />
 }
 
 export default function RootLayout() {
@@ -52,7 +48,7 @@ export default function RootLayout() {
           <Stack.Screen name="api-calls" options={{ title: "API Calls" }} />
           <Stack.Screen name="webview" options={{ title: "WebView" }} />
         </Stack>
-        <ResetEpochMarker />
+        <TapsmithHooks />
       </View>
     </AuthProvider>
   )
@@ -61,14 +57,5 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  epochMarker: {
-    bottom: 2,
-    position: "absolute",
-    right: 4,
-  },
-  epochText: {
-    color: "#c7c7c7",
-    fontSize: 8,
   },
 })

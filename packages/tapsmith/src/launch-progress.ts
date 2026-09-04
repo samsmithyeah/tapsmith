@@ -297,6 +297,15 @@ export function createUiLaunchSteps(input: UiLaunchPlanInput): LaunchStep[] {
           : "no package configured",
       },
     );
+    // Multi-device UI mode adds its own `ui-workers` step below.
+    if (mode === "ui" && input.workerCount <= 1) {
+      steps.push({
+        id: "ui-workers",
+        label: "Worker",
+        state: "pending",
+        detail: "attach a persistent test worker to the primary device",
+      });
+    }
   }
 
   if (mode === "ui" && input.workerCount > 1) {

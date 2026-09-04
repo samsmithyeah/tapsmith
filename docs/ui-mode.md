@@ -66,6 +66,8 @@ To connect an agent:
 claude mcp add tapsmith --transport http http://localhost:<port>/mcp
 ```
 
+The **Device activity** panel (the "MCP" button in the top rail) keeps these connect instructions — endpoint URL and the `claude mcp add` one-liner, both copyable — pinned above the feed whenever no agent is attached.
+
 Both the UI user and the MCP agent share the same test session. Runs triggered by either side appear in the UI, and mutual exclusion ensures only one test run happens at a time.
 
 See [MCP Server](mcp-server.md) for the full list of tools and usage patterns.
@@ -102,13 +104,29 @@ export default defineConfig({
 
 Running a test from the "Pixel 6" project routes it to the Android emulator; running one from "iPhone 16" routes it to the iOS simulator. The UI handles this routing transparently.
 
-## Multi-worker UI
+## Workers
 
-When `workers > 1`, the UI server initializes persistent worker processes (one per device), the same way watch mode does. Files are dispatched across workers in parallel, and per-worker device screens are displayed in the UI.
+Every UI session runs tests in a persistent worker process per device. With a single device, that one worker attaches to the daemon and agent the CLI already set up — nothing is provisioned twice, and there is no per-run process start-up: clicking Run goes straight to the runner (the declared app reset, then your tests).
+
+When `workers > 1`, one worker per device is started, files are dispatched across them in parallel, and per-worker device screens are displayed in the UI.
 
 ```bash
 npx tapsmith test --ui --workers 4
 ```
+
+### The device is prepared before you click Run
+
+After a run finishes (and after startup), the worker resets the app in the background to the state the next run will need — the declared `appReset` policy of the file you have selected, or the file you last ran. When you click Run, the worker only verifies the session (well under a second) and the trace records the reset as **satisfied by background preparation** instead of paying for it inline. The run summary tells you what you got: *First action after 0.6s (device was prepared)* versus *(app reset ran inline)*.
+
+The device chip in the top rail shows the state: **ready** (prepared, with what it was prepared for and how long it took in the tooltip), **preparing…**, **stale** (something touched the device since — an MCP agent's tap, a gesture on the mirror — and it will be prepared again after a short pause), or nothing when preparation between runs is off. Preparation starts as soon as a run ends (a warm reset is sub-second, and the trace keeps every post-action screenshot), but holds off while you are interacting with the mirror so the screen is not yanked away under your finger. After a run you **stopped**, or one where a test **failed** on that device, the app is held as-is so you can inspect it — preparation re-arms when you select a different file, click **Prepare device now**, or start the next run.
+
+Right-click the chip for **Prepare device now**, **Cancel preparation**, and the **Prepare device between runs** toggle (remembered in this browser). Background preparations, mirror gestures and worker recycles all appear in the **Device activity** panel alongside MCP tool calls; a segmented filter (**All | Agent | Device**) narrows the feed to one stream, with a "N hidden" count so filtered rows are never mistaken for lost ones. The filter resets to All each session — the interleaved view is where cause meets effect (an agent's tap next to the re-preparation it triggered).
+
+Teams can set the session default in the config — `ui: { prepareBetweenRuns: false }`, or `ui: { prepareDelayMs: 5000 }` for a quiet period after each run (useful when `onReset` has backend side effects, or on personal physical devices). An explicit choice in the chip menu still wins for that person.
+
+### Fresh code on every run
+
+Test files are re-imported on every run. Files they import — page objects, fixtures, helpers — live in the worker's module cache, so when one of those changes under your project root the UI recycles the worker (a ~1–2 s process restart against the same daemon; the device is untouched). A change during a run is applied as soon as the run ends. Use **Respawn worker** if a device session ever needs to be rebuilt from scratch.
 
 ## Mutual exclusion
 

@@ -1155,3 +1155,143 @@ describe('Device action progress events', () => {
     }
   });
 });
+
+// ─── resetApp ───
+
+describe('Device.resetApp()', () => {
+  it('sends the configured appResetColdEvery (0 = off) with mid-test resets', async () => {
+    const resetApp = vi.fn(async () => ({
+      requestId: '1', success: true, errorType: '', errorMessage: '', screenshot: Buffer.alloc(0),
+      modeRequested: 'APP_RESET_MODE_WARM', modeUsed: 'APP_RESET_MODE_WARM', fellBack: false, coldLaunch: false,
+      reason: '', durationMs: 10, hooksDetected: true, epochBefore: 1, epochAfter: 2, steps: [],
+    }));
+    const client = makeMockClient({ resetApp } as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app', appResetColdEvery: 0 });
+
+    await device.resetApp();
+
+    expect(resetApp).toHaveBeenCalledWith('com.example.app', expect.objectContaining({ coldEveryNResets: 0 }));
+  });
+
+  it('a scope override applied by the runner changes what mid-test resets send', async () => {
+    const resetApp = vi.fn(async () => ({
+      requestId: '1', success: true, errorType: '', errorMessage: '', screenshot: Buffer.alloc(0),
+      modeRequested: 'APP_RESET_MODE_WARM', modeUsed: 'APP_RESET_MODE_WARM', fellBack: false, coldLaunch: false,
+      reason: '', durationMs: 10, hooksDetected: true, epochBefore: 1, epochAfter: 2, steps: [],
+    }));
+    const client = makeMockClient({ resetApp } as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app', appResetColdEvery: 10 });
+
+    device._setAppResetColdEvery(0);
+    await device.resetApp();
+    expect(resetApp).toHaveBeenLastCalledWith('com.example.app', expect.objectContaining({ coldEveryNResets: 0 }));
+
+    device._setAppResetColdEvery(10);
+    await device.resetApp();
+    expect(resetApp).toHaveBeenLastCalledWith('com.example.app', expect.objectContaining({ coldEveryNResets: 10 }));
+  });
+
+  it('runs the daemon ladder and maps the structured outcome', async () => {
+    const resetApp = vi.fn(async () => ({
+      requestId: '1', success: true, errorType: '', errorMessage: '', screenshot: Buffer.alloc(0),
+      modeRequested: 'APP_RESET_MODE_WARM', modeUsed: 'APP_RESET_MODE_RESTART', fellBack: true, coldLaunch: true,
+      reason: 'warm reset via in-app hooks failed (epoch did not advance within 3000ms)',
+      durationMs: 1234, hooksDetected: true, epochBefore: 3, epochAfter: 0,
+      steps: [
+        { name: 'warm-hooks', durationMs: 3000, ok: false, detail: 'epoch did not advance within 3000ms' },
+        { name: 'restart', durationMs: 900, ok: true, detail: '' },
+      ],
+    }));
+    const client = makeMockClient({ resetApp } as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app' });
+
+    const result = await device.resetApp({ target: '/login' });
+
+    expect(resetApp).toHaveBeenCalledWith('com.example.app', {
+      mode: 'warm', allowFallback: true, resetDeepLink: undefined, forceCold: false,
+      // Honours the configured warm-window bound (default 10) like the
+      // runner's own resets — never "unbounded" for lack of an option.
+      coldEveryNResets: 10, waitForIdle: undefined, targetPath: '/login',
+    });
+    expect(result).toEqual({
+      modeRequested: 'warm', modeUsed: 'restart', fellBack: true, coldLaunch: true,
+      reason: 'warm reset via in-app hooks failed (epoch did not advance within 3000ms)',
+      durationMs: 1234, hooksDetected: true, epochBefore: 3, epochAfter: 0,
+      steps: [
+        { name: 'warm-hooks', durationMs: 3000, ok: false, detail: 'epoch did not advance within 3000ms' },
+        { name: 'restart', durationMs: 900, ok: true },
+      ],
+    });
+  });
+
+  it('throws with the daemon error when the ladder is exhausted', async () => {
+    const resetApp = vi.fn(async () => ({
+      requestId: '1', success: false, errorType: 'RESET_FAILED', errorMessage: 'clear failed (pm clear did not report success)',
+      screenshot: Buffer.alloc(0), modeRequested: 'APP_RESET_MODE_CLEAR', modeUsed: 'APP_RESET_MODE_CLEAR',
+      fellBack: false, coldLaunch: false, reason: '', durationMs: 10, hooksDetected: false, epochBefore: 0, epochAfter: 0, steps: [],
+    }));
+    const client = makeMockClient({ resetApp } as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app' });
+
+    await expect(device.resetApp({ mode: 'clear', fallback: false })).rejects.toThrow('clear failed');
+  });
+
+  it('retry attempts force a cold delivery', async () => {
+    const resetApp = vi.fn(async () => ({
+      requestId: '1', success: true, errorType: '', errorMessage: '', screenshot: Buffer.alloc(0),
+      modeRequested: 'APP_RESET_MODE_WARM', modeUsed: 'APP_RESET_MODE_WARM', fellBack: false, coldLaunch: true,
+      reason: 'cold relaunch: retry attempt', durationMs: 5000, hooksDetected: false, epochBefore: 0, epochAfter: 0, steps: [],
+    }));
+    const client = makeMockClient({ resetApp } as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app' });
+    device._setForceColdDeepLinks(true);
+
+    await device.resetApp();
+
+    expect(resetApp).toHaveBeenCalledWith('com.example.app', expect.objectContaining({ forceCold: true }));
+  });
+});
+
+describe('Device.close() network capture teardown', () => {
+  function fakeStream() {
+    return { on: vi.fn(), write: vi.fn(), end: vi.fn() };
+  }
+
+  it('releases the proxy for real (keepRunning:false) when capture was started', async () => {
+    const stopNetworkCapture = vi.fn(async () => ({
+      requestId: '1', success: true, entries: [], errorMessage: '',
+    }));
+    const client = makeMockClient({
+      stopNetworkCapture,
+      networkRouteStream: vi.fn(() => fakeStream()),
+      close: vi.fn(),
+    } as unknown as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app' });
+
+    // The runner keeps the proxy alive across files (keepRunning:true); the
+    // session ending is where it is torn down for good.
+    await device._startNetworkCapture();
+    await device._stopNetworkCapture({ keepRunning: true });
+    stopNetworkCapture.mockClear();
+
+    await device.close();
+
+    expect(stopNetworkCapture).toHaveBeenCalledTimes(1);
+    expect(stopNetworkCapture).toHaveBeenCalledWith({ keepRunning: false });
+  });
+
+  it('does not stop capture on close when it was never started', async () => {
+    const stopNetworkCapture = vi.fn(async () => ({
+      requestId: '1', success: true, entries: [], errorMessage: '',
+    }));
+    const client = makeMockClient({
+      stopNetworkCapture,
+      close: vi.fn(),
+    } as unknown as Partial<TapsmithGrpcClient>);
+    const device = new Device(client, { package: 'com.example.app' });
+
+    await device.close();
+
+    expect(stopNetworkCapture).not.toHaveBeenCalled();
+  });
+});

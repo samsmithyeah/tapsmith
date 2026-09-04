@@ -19,6 +19,14 @@ export class ActionsPane {
     return this.page.getByTestId("action-item")
   }
 
+  /**
+   * Section headers ("APP RESET", "BEFORE ALL", "TEST BODY", …). A group with
+   * no visible rows renders no header, so this only lists sections with content.
+   */
+  get groups() {
+    return this.page.getByTestId("action-group")
+  }
+
   item(name: string) {
     return this.items.filter({ hasText: name })
   }
@@ -30,6 +38,16 @@ export class ActionsPane {
   /** Rows still awaiting their `lifecycle: "completed"` event. */
   get inProgressItems() {
     return this.items.and(this.page.locator('[aria-busy="true"]'))
+  }
+
+  /** The "Metadata" header tab (tests only — files and suites have no metadata). */
+  get metadataTab() {
+    return this.page.locator(".actions-header-tab", { hasText: "Metadata" })
+  }
+
+  /** The Isolation row of the Metadata tab: the reset mode and scope the test ran under. */
+  get isolation() {
+    return this.page.getByTestId("metadata-isolation")
   }
 
   /**

@@ -15,7 +15,7 @@ import {
   test,
   type Route,
 } from "../fixtures.js"
-import { resetApp } from "../utils/app-reset.js"
+import { openScreen, resetApp } from "../utils/app-reset.js"
 
 function routeFetchNoCacheOptions(route: Route) {
   const headers = { ...route.request().headers }
@@ -83,7 +83,7 @@ describe("Network mocking", () => {
   })
 
   test.beforeEach(async ({ device, apiCallsScreen }) => {
-    await resetApp(device, "/api-calls")
+    await openScreen(device, "/api-calls")
     await expect(apiCallsScreen.heading).toBeVisible()
   })
 

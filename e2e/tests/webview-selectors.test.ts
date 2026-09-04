@@ -3,13 +3,13 @@
  * for WebView elements actually works at runtime.
  */
 import { beforeAll, describe, expect, test } from "tapsmith"
-import { resetApp } from "../utils/app-reset.js"
+import { openScreen } from "../utils/app-reset.js"
 
 describe("WebView selector playground parity", () => {
   test.use({ timeout: 90_000 })
 
   beforeAll(async ({ device }) => {
-    await resetApp(device, "/webview")
+    await openScreen(device, "/webview")
     await expect(device.getByText("Embedded WebView")).toBeVisible()
   })
 

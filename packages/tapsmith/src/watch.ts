@@ -61,6 +61,14 @@ export interface WatchModeContext {
   testFiles: string[]
   screenshotDir?: string
   launchedEmulators: LaunchedEmulator[]
+  /**
+   * Sticky reset capabilities for the primary device, shared with the CLI's
+   * startup launch (which probes for in-app hooks). Threaded into every
+   * watch-run child — they are forked fresh per run — and updated from each
+   * child's `file-done`, so `appReset: 'auto'` keeps resolving to warm resets
+   * across re-runs instead of falling back to clear · file.
+   */
+  resetCapabilities?: import('./app-reset.js').ResetCapabilities
   /** Resolved projects with test files populated. */
   projects?: ResolvedProject[]
   /** Dependency-ordered project waves from topologicalSort(). */
@@ -818,6 +826,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         screenshotDir: ctx.screenshotDir,
         projectUseOptions,
         projectName,
+        resetCapabilities: ctx.resetCapabilities,
       };
 
       child.on('message', (response: WatchRunChildMessage) => {
@@ -832,6 +841,11 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
           }
           case 'file-done': {
             settled = true;
+            // Fold what the child learned into the sticky store, so the next
+            // fresh child starts already-detected (a probe never demotes).
+            if (ctx.resetCapabilities && response.resetCapabilities) {
+              Object.assign(ctx.resetCapabilities, response.resetCapabilities);
+            }
             const results = response.results.map(deserializeTestResult);
             const suite = deserializeSuiteResult(response.suite);
             resolve({ results, suite });

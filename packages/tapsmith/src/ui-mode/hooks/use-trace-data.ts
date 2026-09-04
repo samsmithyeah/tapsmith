@@ -8,6 +8,7 @@
 import { useState, useRef } from 'preact/hooks';
 import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, NetworkEntry } from '../../trace/types.js';
 import type { InFlightAction } from '../../trace-viewer/types.js';
+import type { TestIsolation } from '../ui-protocol.js';
 
 // Re-export so existing callers (main.tsx) keep their import path.
 export type { InFlightAction };
@@ -32,6 +33,8 @@ export interface TestTraceData {
   videoPath?: string;
   /** Currently in-flight action/assertion (UI mode live streaming only). */
   inFlightAction?: InFlightAction | null;
+  /** Isolation the test ran under (from `test-start`); shown in the Metadata tab. */
+  isolation?: TestIsolation;
 }
 
 // ─── Helpers ───

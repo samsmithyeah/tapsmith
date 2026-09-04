@@ -6,12 +6,51 @@
 
 import { test, expect } from "../fixtures.js"
 import { GESTURES_FILE, singleFileTree } from "../messages/scenarios.js"
-import { action, actionStarted } from "../messages/trace.js"
+import { action, actionCompleted, actionStarted, group } from "../messages/trace.js"
 
 const DOUBLE_TAP = "Gestures screen > double tap registers double tap gesture"
 const TEST_NAME = "double tap registers double tap gesture"
 
 test.describe("Run lifecycle", () => {
+  test.describe("Isolation metadata", () => {
+    // The Isolation row lives in the shared ActionsPanel, but UI mode
+    // synthesises its metadata client-side — so the row rendered in the trace
+    // viewer and never here until `test-start` began carrying the resolved
+    // policy.
+    test("shows the isolation a test ran under, resolved by the runner", async ({ app, explorer, actions }) => {
+      const ui = app
+      await explorer.expandAll()
+
+      ui.send({ type: "run-start", fileCount: 1 })
+      ui.send({
+        type: "test-start",
+        fullName: DOUBLE_TAP,
+        filePath: GESTURES_FILE,
+        isolation: { appReset: "warm", appResetScope: "test" },
+      })
+      ui.send(...action({ testFullName: DOUBLE_TAP, actionIndex: 0, action: "tap", selector: "getByRole('button')" }))
+      ui.send({ type: "test-status", fullName: DOUBLE_TAP, filePath: GESTURES_FILE, status: "passed", duration: 900 })
+
+      await explorer.node(TEST_NAME).click()
+      await actions.metadataTab.click()
+      await expect(actions.isolation).toHaveText("warm · per test")
+    })
+
+    test("shows no Isolation row when the runner sent none", async ({ app, explorer, actions }) => {
+      const ui = app
+      await explorer.expandAll()
+
+      ui.send({ type: "run-start", fileCount: 1 })
+      ui.send({ type: "test-start", fullName: DOUBLE_TAP, filePath: GESTURES_FILE })
+      ui.send({ type: "test-status", fullName: DOUBLE_TAP, filePath: GESTURES_FILE, status: "passed", duration: 900 })
+
+      await explorer.node(TEST_NAME).click()
+      await actions.metadataTab.click()
+      await expect(actions.metadataTab).toHaveClass(/active/)
+      await expect(actions.isolation).toHaveCount(0)
+    })
+  })
+
   test.describe("#103 — a hard refresh must not start a run", () => {
     // Fixed in e9ce4ef. The bare-key shortcut handler ignored modifiers, so
     // Cmd+Shift+R matched `r` and fired run-all at the daemon on its way out;
@@ -226,6 +265,36 @@ test.describe("Run lifecycle", () => {
       await expect(actions.item("waitFor")).toBeVisible()
     })
 
+    // The panel hides sections with nothing in them. The in-flight action is
+    // rendered outside the completed-item walk, so the first action of a
+    // group used to show headless until it completed and became a real row —
+    // most visibly the first BEFORE EACH action right after an APP RESET row.
+    test("shows the section header of a group whose first action is still in flight", async ({
+      app,
+      explorer,
+      actions,
+    }) => {
+      const ui = app
+      await explorer.expandAll()
+
+      ui.send({ type: "test-start", fullName: DOUBLE_TAP, filePath: GESTURES_FILE })
+      await explorer.clickNode(TEST_NAME)
+
+      ui.send(group({ testFullName: DOUBLE_TAP, type: "group-start", name: "App reset", actionIndex: 0 }))
+      ui.send(...action({ testFullName: DOUBLE_TAP, actionIndex: 0, action: "appReset" }))
+      ui.send(group({ testFullName: DOUBLE_TAP, type: "group-end", name: "App reset", actionIndex: 0 }))
+      ui.send(group({ testFullName: DOUBLE_TAP, type: "group-start", name: "beforeEach Hooks", actionIndex: 1 }))
+      ui.send(actionStarted({ testFullName: DOUBLE_TAP, actionIndex: 1, action: "openDeepLink" }))
+
+      await expect(actions.inProgressItems).toHaveCount(1)
+      await expect(actions.groups).toHaveText(["APP RESET", "BEFORE EACH"])
+
+      // …and the header stays once the action completes.
+      ui.send(actionCompleted({ testFullName: DOUBLE_TAP, actionIndex: 1, action: "openDeepLink" }))
+      await expect(actions.inProgressItems).toHaveCount(0)
+      await expect(actions.groups).toHaveText(["APP RESET", "BEFORE EACH"])
+    })
+
     test("clears a lingering in-flight action at run-end", async ({ app, explorer, actions }) => {
       const ui = app
       await explorer.expandAll()
@@ -249,6 +318,25 @@ test.describe("Run lifecycle", () => {
       })
 
       await expect(actions.inProgressItems).toHaveCount(0)
+    })
+  })
+
+  test.describe("filmstrip", () => {
+    // UI mode synthesises trace metadata with no start time, so the filmstrip
+    // anchors on the earliest streamed event. Pins that live labels read from
+    // zero and stay in step with the trace viewer's anchoring rule.
+    test("labels frames relative to the first streamed event", async ({ app, explorer, filmstrip }) => {
+      const ui = app
+      await explorer.expandAll()
+
+      ui.send({ type: "test-start", fullName: DOUBLE_TAP, filePath: GESTURES_FILE })
+      await explorer.clickNode(TEST_NAME)
+      ui.send(...action({ testFullName: DOUBLE_TAP, actionIndex: 0, action: "appReset" }))
+      ui.send(...action({ testFullName: DOUBLE_TAP, actionIndex: 1, action: "tap" }))
+
+      await expect(filmstrip.frames).toHaveCount(2)
+      // Completed events land 100ms apart in the builder.
+      await expect(filmstrip.labels).toHaveText(["0ms", "100ms"])
     })
   })
 

@@ -1,12 +1,10 @@
 import "dotenv/config"
 import { defineConfig } from "tapsmith"
-import { RESET_APP_DEEP_LINK } from "./reset-app-deep-link.mjs"
 
 export default defineConfig({
   platform: "ios",
   app: "../test-app/build/Build/Products/Release-iphonesimulator/TapsmithTestApp.app",
   package: "dev.tapsmith.testapp",
-  resetAppDeepLink: RESET_APP_DEEP_LINK,
   timeout: 10_000,
   retries: 0,
   screenshot: "only-on-failure",

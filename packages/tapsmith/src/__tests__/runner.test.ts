@@ -49,7 +49,9 @@ function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
 
 /** Minimal RunOptions for test execution. */
 function makeOpts(overrides: Partial<RunOptions> = {}): RunOptions {
-  return { config: makeConfig(), ...overrides };
+  // resetCapabilities is required by design (see RunOptions); unit tests have
+  // no device to probe, so an empty object is the honest value.
+  return { config: makeConfig(), resetCapabilities: {}, ...overrides };
 }
 
 describe('collectResults()', () => {
@@ -756,10 +758,10 @@ describe('runner execution', () => {
       }));
 
       expect(result.tests[0].status).toBe('skipped');
-      // The hook still runs, but nothing is re-tagged and no hook collector
-      // is started — there is no test to attribute the events to, and
+      // Nothing ran in this scope, so its hooks do not run either (Playwright
+      // semantics) — there is no test to attribute hook events to, and
       // streaming them would pollute whichever test the UI last tagged.
-      expect(hookRan).toBe(true);
+      expect(hookRan).toBe(false);
       expect(startCalls).toEqual([]);
       expect(startManagedSpy).not.toHaveBeenCalled();
     } finally {
@@ -2072,6 +2074,114 @@ describe('beforeAll trace replay into packaged traces', () => {
           `trace for "${test.name}" should contain the beforeAll openDeepLink action`,
         ).toBe(true);
       }
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('scope setup attribution across nested describes', () => {
+  const traceConfig = { mode: 'on', network: false, screenshots: false, snapshots: false, sources: false } as const;
+  function makeDevice() {
+    return {
+      tracing: new Tracing(async () => undefined, async () => undefined),
+      waitForIdle: vi.fn(async () => {}),
+      _startDeviceLogStream: vi.fn(),
+      _stopDeviceLogStream: vi.fn(),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
+    };
+  }
+  function recordSetupAction(action: string): void {
+    getActiveTraceCollector()!.addActionEvent({
+      category: 'device', action, duration: 5, success: true, log: [],
+      hasScreenshotBefore: false, hasScreenshotAfter: false, hasHierarchyBefore: false, hasHierarchyAfter: false,
+    });
+  }
+  function traceActions(tracePath: string): string[] {
+    const files = unzipSync(new Uint8Array(fs.readFileSync(tracePath)));
+    return Buffer.from(files['trace.json']).toString('utf8').trim().split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as { type: string; action?: string })
+      .filter((e) => e.type === 'action').map((e) => e.action!);
+  }
+
+  it('does not run beforeAll/afterAll for a describe whose tests are all filtered out', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-filtered-scope-'));
+    const ran: string[] = [];
+    const startCalls: Array<{ fullName: string; attributionOnly: boolean }> = [];
+    try {
+      pushContext();
+      tapsmithDescribe('text fields', () => {
+        tapsmithBeforeAll(async () => { ran.push('beforeAll:text fields'); });
+        tapsmithAfterAll(async () => { ran.push('afterAll:text fields'); });
+        tapsmithTest('finds by label', async () => { ran.push('test:finds by label'); });
+      });
+      tapsmithDescribe('switches', () => {
+        tapsmithBeforeAll(async () => { ran.push('beforeAll:switches'); });
+        tapsmithAfterAll(async () => { ran.push('afterAll:switches'); });
+        tapsmithTest('finds switch', async () => { ran.push('test:finds switch'); });
+      });
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({ rootDir: tempRoot, outputDir: 'out', trace: traceConfig }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
+        device: makeDevice() as any,
+        testFilter: 'finds by label',
+        onTestStart: async (fullName, options) => {
+          startCalls.push({ fullName, attributionOnly: options?.attributionOnly ?? false });
+        },
+      }));
+
+      expect(ran).toEqual(['beforeAll:text fields', 'test:finds by label', 'afterAll:text fields']);
+      expect(collectResults(result).map((t) => [t.fullName, t.status])).toEqual([
+        ['text fields > finds by label', 'passed'],
+        ['switches > finds switch', 'skipped'],
+      ]);
+      // Only the running test is ever announced (start + afterAll re-tag) —
+      // never a filtered one.
+      expect(startCalls).toEqual([
+        { fullName: 'text fields > finds by label', attributionOnly: false },
+        { fullName: 'text fields > finds by label', attributionOnly: true },
+      ]);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('announces the first nested test once for root setup and replays it into every nested test', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-nested-setup-'));
+    const startCalls: string[] = [];
+    try {
+      pushContext();
+      tapsmithBeforeAll(async () => { recordSetupAction('rootSetup'); });
+      tapsmithDescribe('inner', () => {
+        tapsmithBeforeAll(async () => { recordSetupAction('innerSetup'); });
+        tapsmithTest('first', async () => {});
+        tapsmithTest('second', async () => {});
+      });
+      tapsmithDescribe('other', () => {
+        tapsmithTest('third', async () => {});
+      });
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({ rootDir: tempRoot, outputDir: 'out', trace: traceConfig }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner tracing mock
+        device: makeDevice() as any,
+        onTestStart: async (fullName) => { startCalls.push(fullName); },
+      }));
+
+      const tests = collectResults(result);
+      expect(tests.map((t) => t.status)).toEqual(['passed', 'passed', 'passed']);
+      // The root beforeAll is attributed to the first test that runs (inside
+      // `inner`), and that test is announced exactly once even though the
+      // nested scope has its own beforeAll.
+      expect(startCalls).toEqual(['inner > first', 'inner > second', 'other > third']);
+      expect(traceActions(tests[0].tracePath!)).toEqual(['rootSetup', 'innerSetup']);
+      expect(traceActions(tests[1].tracePath!)).toEqual(['rootSetup', 'innerSetup']);
+      // A sibling scope without its own setup still inherits the root setup.
+      expect(traceActions(tests[2].tracePath!)).toEqual(['rootSetup']);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
