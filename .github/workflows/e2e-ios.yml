@@ -599,13 +599,12 @@ jobs:
   # 4-core KVM runner and on a developer Mac). The job still runs and reports,
   # so the iOS group path stays visible, but it does not block the PR until it
   # moves to a larger runner (`macos-latest-xlarge`), where it should be made
-  # required again.
+  # required again (drop the test step's `continue-on-error`).
   e2e-multi-device:
     name: Multi-device
     needs: [ build-sdk, build-daemon, build-agent, build-test-app ]
     runs-on: macos-latest
     timeout-minutes: 60
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -809,11 +808,18 @@ jobs:
           done
 
       - name: Run two-device E2E tests
+        id: two-device
+        # Advisory on this runner size — see the job comment above.
+        continue-on-error: true
         working-directory: e2e
         env:
           TAPSMITH_DAEMON_LOG: /tmp/tapsmith-daemon-ios-multi.log
         # Primary pinned with --device, member pinned through the CI config.
         run: npx tapsmith test -c tapsmith.config.ios-multi-ci.mjs --trace on --device "$TAPSMITH_IOS_UDID"
+
+      - name: Report advisory outcome
+        if: steps.two-device.outcome != 'success'
+        run: echo "::warning::Two-device iOS suite did not pass on the standard macOS runner (advisory — see the e2e-multi-device job comment)."
 
       - name: Upload test results
         if: always()
