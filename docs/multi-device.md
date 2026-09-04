@@ -181,7 +181,9 @@ Device groups work in every run mode. Each mode holds one group per worker:
   the group's two devices up front and pin the member with `device` (from an
   environment variable the workflow exports): a second cold device launched
   on demand once the primary is up can outlast the boot and agent-start
-  waits on a busy hosted runner. Those jobs run the
+  waits on a busy hosted runner. Two booted simulators also exceed what a
+  standard hosted macOS runner can drive at usable speed, so the iOS job is
+  advisory there; give it a larger runner to make it a required check. Those jobs run the
   `e2e/tapsmith.config.{android,ios}-multi-ci.mjs` configs, whose app paths
   point at the artifacts the workflow stages under `e2e/fixtures/`; the
   `*-multi.mjs` configs beside them are the local-development versions that
