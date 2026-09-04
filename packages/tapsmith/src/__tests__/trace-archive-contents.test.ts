@@ -262,6 +262,9 @@ describe('generated trace archive', () => {
     return {
       config: makeConfig({ rootDir: tempRoot, outputDir: 'out', ...config }),
       device,
+      // Required by design (see RunOptions) — nothing here declares a reset
+      // policy, so an empty capability set is the honest value.
+      resetCapabilities: {},
       ...extra,
     };
   }
