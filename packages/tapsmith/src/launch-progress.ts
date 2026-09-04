@@ -2,7 +2,7 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import type { ChildProcess, ForkOptions } from "node:child_process";
 import type { Writable } from "node:stream";
-import type { TapsmithConfig } from "./config.js";
+import { deviceGroupSize, type TapsmithConfig } from "./config.js";
 import type { ResolvedProject } from "./project.js";
 
 const RESET = "\x1b[0m";
@@ -297,6 +297,17 @@ export function createUiLaunchSteps(input: UiLaunchPlanInput): LaunchStep[] {
           : "no package configured",
       },
     );
+    // A `use.devices` project brings up the rest of its group right after the
+    // primary; the sequential CLI reports that under this step.
+    if (deviceGroupSize(input.config) > 1) {
+      const members = deviceGroupSize(input.config) - 1;
+      steps.push({
+        id: "worker-devices",
+        label: "Device group",
+        state: "pending",
+        detail: `provision ${plural(members, "more device")} for the group`,
+      });
+    }
     // Multi-device UI mode adds its own `ui-workers` step below.
     if (mode === "ui" && input.workerCount <= 1) {
       steps.push({
