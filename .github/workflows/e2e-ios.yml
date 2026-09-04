@@ -638,7 +638,16 @@ jobs:
           if [ -n "$UDID" ]; then
             echo "Booting $SIM ($UDID)"
             echo "TAPSMITH_IOS_UDID=$UDID" >> $GITHUB_ENV
+            # The group's second member boots here too, as a clone carrying the
+            # same name: Tapsmith reuses booted simulators whose name matches
+            # `simulator`, so it finds both warm instead of cloning a cold one
+            # after the primary is up — which took 5 min to boot and then
+            # outlasted the agent start timeout on these 3-core runners.
+            CLONE=$(xcrun simctl clone "$UDID" "$SIM")
+            echo "Cloned $SIM -> $CLONE for the group's second device"
+            echo "TAPSMITH_IOS_UDID2=$CLONE" >> $GITHUB_ENV
             xcrun simctl boot "$UDID" 2>/dev/null || true
+            xcrun simctl boot "$CLONE" 2>/dev/null || true
           fi
 
       # ─── Fetch build outputs: cache first, artifact on a miss ───
@@ -763,33 +772,41 @@ jobs:
         working-directory: e2e
         run: npm ci
 
-      - name: Wait for simulator boot
+      - name: Wait for both simulators to boot
         run: |
           if [ -z "$TAPSMITH_IOS_UDID" ]; then
             echo "No simulator UDID resolved; skipping wait."
             exit 0
           fi
-          TIMEOUT=120
-          while [ $TIMEOUT -gt 0 ]; do
-            STATE=$(xcrun simctl list devices -j | python3 -c "
+          TIMEOUT=300
+          for UDID in "$TAPSMITH_IOS_UDID" "$TAPSMITH_IOS_UDID2"; do
+            while [ $TIMEOUT -gt 0 ]; do
+              STATE=$(xcrun simctl list devices -j | python3 -c "
           import json,sys
           d=json.load(sys.stdin)
           for devs in d['devices'].values():
             for dev in devs:
-              if dev['udid']=='$TAPSMITH_IOS_UDID':
+              if dev['udid']=='$UDID':
                 print(dev['state']); sys.exit()
           ")
-            if [ "$STATE" = "Booted" ]; then break; fi
-            sleep 2
-            TIMEOUT=$((TIMEOUT - 2))
+              if [ "$STATE" = "Booted" ]; then break; fi
+              sleep 2
+              TIMEOUT=$((TIMEOUT - 2))
+            done
+            echo "Simulator $UDID state: $STATE"
+            if [ "$STATE" != "Booted" ]; then
+              echo "::error::Simulator $UDID failed to boot within 300s"
+              exit 1
+            fi
           done
-          echo "Simulator state: $STATE"
 
       - name: Run two-device E2E tests
         working-directory: e2e
         env:
           TAPSMITH_DAEMON_LOG: /tmp/tapsmith-daemon-ios-multi.log
-        run: npx tapsmith test -c tapsmith.config.ios-multi-ci.mjs --trace on
+        # The primary is pinned: two booted simulators share the name, and the
+        # member is whichever booted match is not the primary.
+        run: npx tapsmith test -c tapsmith.config.ios-multi-ci.mjs --trace on --device "$TAPSMITH_IOS_UDID"
 
       - name: Upload test results
         if: always()

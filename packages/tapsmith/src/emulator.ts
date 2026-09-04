@@ -955,7 +955,15 @@ export function filterPreferInstalledApp(
  * Wait for an emulator to finish booting.
  * Polls `adb -s <serial> shell getprop sys.boot_completed` until it returns "1".
  */
-export async function waitForBoot(serial: string, timeoutMs = 120_000): Promise<void> {
+/**
+ * How long a launched emulator gets to reach `sys.boot_completed`. A cold
+ * boot on a hosted CI runner (software GPU, shared cores, often beside
+ * another emulator) regularly needs more than the two minutes that suffice
+ * on a developer machine.
+ */
+export const EMULATOR_BOOT_TIMEOUT_MS = process.env.CI ? 300_000 : 120_000;
+
+export async function waitForBoot(serial: string, timeoutMs = EMULATOR_BOOT_TIMEOUT_MS): Promise<void> {
   const start = Date.now();
   const pollInterval = 2_000;
 

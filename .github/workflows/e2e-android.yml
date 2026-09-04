@@ -508,34 +508,47 @@ jobs:
             --device "pixel_6" \
             --force
 
-      - name: Boot emulator
+      # Both members of the group boot here, side by side, rather than letting
+      # Tapsmith launch the second: a cold `-read-only` instance started after
+      # the first one is already up (and the app installed) has blown through
+      # the 120 s boot wait on these 4-core runners. Two cold boots in parallel
+      # finish while the SDK and E2E dependencies install.
+      - name: Boot two emulators
         run: |
-          nohup emulator -avd "${{ env.AVD_NAME }}" \
+          nohup emulator -avd "${{ env.AVD_NAME }}" -port 5554 \
             -no-window -no-audio -no-snapshot-save \
             -gpu swiftshader_indirect \
             -no-boot-anim \
-            -memory 4096 \
-            &>/tmp/emulator.log &
-          echo "Waiting for emulator to boot..."
-          adb wait-for-device
-          # Poll until boot_completed
-          TIMEOUT=120
-          while [ $TIMEOUT -gt 0 ]; do
-            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-            if [ "$BOOT" = "1" ]; then break; fi
-            sleep 2
-            TIMEOUT=$((TIMEOUT - 2))
+            -memory 3072 \
+            &>/tmp/emulator-5554.log &
+          # A second instance of the same AVD must be read-only.
+          nohup emulator -avd "${{ env.AVD_NAME }}" -port 5556 -read-only \
+            -no-window -no-audio -no-snapshot-load -no-snapshot-save \
+            -gpu swiftshader_indirect \
+            -no-boot-anim \
+            -memory 3072 \
+            &>/tmp/emulator-5556.log &
+          echo "Waiting for both emulators to boot..."
+          TIMEOUT=300
+          for SERIAL in emulator-5554 emulator-5556; do
+            adb -s "$SERIAL" wait-for-device
+            while [ $TIMEOUT -gt 0 ]; do
+              BOOT=$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+              if [ "$BOOT" = "1" ]; then break; fi
+              sleep 2
+              TIMEOUT=$((TIMEOUT - 2))
+            done
+            if [ "$BOOT" != "1" ]; then
+              echo "::error::$SERIAL failed to boot within 300s"
+              tail -30 "/tmp/$SERIAL.log"
+              exit 1
+            fi
+            # Disable animations for test stability
+            adb -s "$SERIAL" shell settings put global window_animation_scale 0
+            adb -s "$SERIAL" shell settings put global transition_animation_scale 0
+            adb -s "$SERIAL" shell settings put global animator_duration_scale 0
+            echo "$SERIAL booted and ready ($(adb -s "$SERIAL" shell getprop ro.build.display.id))"
           done
-          if [ "$BOOT" != "1" ]; then
-            echo "::error::Emulator failed to boot within 120s"
-            cat /tmp/emulator.log | tail -30
-            exit 1
-          fi
-          # Disable animations for test stability
-          adb shell settings put global window_animation_scale 0
-          adb shell settings put global transition_animation_scale 0
-          adb shell settings put global animator_duration_scale 0
-          echo "Emulator booted and ready ($(adb shell getprop ro.build.display.id))"
 
       - name: Install SDK dependencies
         working-directory: packages/tapsmith
