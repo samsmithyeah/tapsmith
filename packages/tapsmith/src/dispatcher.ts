@@ -698,8 +698,15 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   // devices (and daemons) per worker, so device counts below are workers ×
   // group size. Pinned members (`{ device }`) name their devices outright,
   // which fixes the bucket to a single worker.
-  const groupSize = deviceGroupSize(config);
-  const deviceGroup = resolveDeviceGroup(config);
+  //
+  // `use.devices` is project-level, so the root config never declares a
+  // group. Every project of this run shares one device signature (the group
+  // is part of it — a second signature would have gone through
+  // runMultiBucket, whose `config` already is the bucket's), so the first
+  // project's effective config is the group's authority.
+  const groupConfig = opts.projects?.[0]?.effectiveConfig ?? config;
+  const groupSize = deviceGroupSize(groupConfig);
+  const deviceGroup = resolveDeviceGroup({ devices: groupConfig.devices, device: config.device ?? groupConfig.device });
   const pinnedMemberSerials = deviceGroup.slice(1).flatMap((e) => (e.device ? [e.device] : []));
   const maxUsefulWorkers = pinnedMemberSerials.length > 0 ? 1 : Math.min(opts.workers, maxFilesInWave);
   const progressWorkerTotal = opts.launchProgressWorkerTotal ?? maxUsefulWorkers;
@@ -1303,6 +1310,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         initializeWorker({
           workerId: slot.workerId,
           deviceSerial: candidateSerial,
+          deviceName: deviceGroup[0].name,
           members: slot.members.map((ports, i) => ({
             name: deviceGroup[i + 1].name,
             deviceSerial: serials[i + 1],
@@ -1869,6 +1877,8 @@ function cleanupWorkerResources(worker: WorkerHandle): void {
 interface InitializeWorkerOptions {
   workerId: number
   deviceSerial: string
+  /** The primary's group entry name (`InitMessage.deviceName`). */
+  deviceName: string
   /** The rest of the worker's device group, each needing its own daemon. */
   members: Array<{ name: string; deviceSerial: string; daemonPort: number; agentPort: number; fresh: boolean }>
   daemonBin: string
@@ -2050,6 +2060,7 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
         type: 'init',
         workerId: worker.id,
         deviceSerial: worker.deviceSerial,
+        deviceName: opts.deviceName,
         daemonPort: worker.daemonPort,
         config: serializedConfig,
         freshEmulator: opts.freshEmulator === true ? true : undefined,

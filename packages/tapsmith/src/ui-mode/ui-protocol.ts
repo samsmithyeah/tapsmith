@@ -815,6 +815,8 @@ export interface UIWorkerInitMessage {
   type: 'init'
   workerId: number
   deviceSerial: string
+  /** The primary's group entry name — see `InitMessage.deviceName`. */
+  deviceName: string
   daemonPort: number
   config: import('../worker-protocol.js').SerializedConfig
   screenshotDir?: string

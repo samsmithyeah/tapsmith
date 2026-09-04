@@ -66,6 +66,8 @@ export interface LaunchProgressSink {
   start(id: LaunchStepId, detail?: string): void;
   complete(id: LaunchStepId, detail?: string): void;
   fail(id: LaunchStepId, detail?: string): void;
+  /** Whether any step has already been marked failed. */
+  hasFailure(): boolean;
   skip(id: LaunchStepId, detail?: string): void;
   update(
     id: LaunchStepId,
@@ -555,6 +557,10 @@ export class UiLaunchProgress implements LaunchProgressSink {
 
   fail(id: LaunchStepId, detail?: string): void {
     this.update(id, { state: "failed", detail });
+  }
+
+  hasFailure(): boolean {
+    return this.steps.some((step) => step.state === "failed");
   }
 
   skip(id: LaunchStepId, detail?: string): void {

@@ -24,11 +24,13 @@ export function registerSessionInfoTool(server: McpServer, dispatcher: TestDispa
         `unavailable — ${t.error ?? 'no reason was recorded'}`;
       if (targets.length > 1) {
         for (const t of targets) {
-          const label = t.platform ?? 'device';
+          // A target without a platform (single-platform config, nothing on the
+          // project) gets no parenthetical rather than a literal "(device)".
+          const label = t.platform ? ` (${t.platform})` : '';
           // A group member is named the way its tests name it; the name is
           // what the device tools accept in place of the serial.
           const who = t.name ? ` ${t.name}${t.group ? ` [${t.group}]` : ''}` : '';
-          lines.push(`Device (${label})${who}: ${t.device ?? unavailable(t)}`);
+          lines.push(`Device${label}${who}: ${t.device ?? unavailable(t)}`);
         }
       } else if (targets.length === 1) {
         // The target's own serial before `info.device`: a dispatcher may fill

@@ -554,7 +554,7 @@ jobs:
         working-directory: e2e
         run: |
           SERIAL=$(adb devices | grep -w device | head -1 | awk '{print $1}')
-          npx tapsmith test -c tapsmith.config.android-multi.mjs \
+          npx tapsmith test -c tapsmith.config.android-multi-ci.mjs \
             --trace on \
             --device "$SERIAL"
 

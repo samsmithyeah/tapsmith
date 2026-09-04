@@ -2,11 +2,13 @@ import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { unzipSync } from 'fflate';
 import {
   test as tapsmithTest,
   describe as tapsmithDescribe,
   collectResults,
+  runTestFile,
   _internal,
   type RunDevice,
   type RunOptions,
@@ -47,6 +49,7 @@ function makeDevice(name: string) {
   let timeoutMs = 30_000;
   const device = {
     _traceDeviceId: name,
+    _client: { _setAbortSignal: vi.fn() },
     tracing: new Tracing(async () => Buffer.from(`${name}-png`), async () => undefined),
     waitForIdle: vi.fn(async () => {}),
     takeScreenshot: vi.fn(async () => ({ success: true, data: Buffer.from(`${name}-shot`) })),
@@ -114,6 +117,60 @@ function makeOpts(group: ReturnType<typeof makeDevice>[], config: TapsmithConfig
     ...extra,
   };
 }
+
+describe('runner refuses a group that does not match the project', () => {
+  // `use.devices` is project-level. An embedder that resolved the group from
+  // the root config hands a two-device project one device; the file must not
+  // run with a `devices` fixture missing the member its tests destructure.
+  it('fails the file when the embedder handed fewer devices than `use.devices` declares', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-group-size-'));
+    const filePath = path.join(tempDir, 'pair.mjs');
+    const runnerUrl = pathToFileURL(path.resolve('src/runner.ts')).href;
+    try {
+      fs.writeFileSync(filePath, `
+        import { test } from ${JSON.stringify(runnerUrl)};
+        test('chat', async ({ devices }) => { await devices[1].tap(); });
+      `);
+      const alice = makeDevice('alice');
+      await expect(runTestFile(pathToFileURL(filePath).href, makeOpts([alice], makeConfig({ devices: undefined }), {
+        projectName: 'pair',
+        projectUseOptions: { devices: [{ name: 'alice' }, { name: 'bob' }] },
+        bustImportCache: true,
+      }))).rejects.toThrow(/Project "pair" declares a device group of 2 .* was given 1 device\(s\) \(alice=emulator-alice\)/);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs a group that matches, and a single-device project without `use.devices`', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-group-size-ok-'));
+    const filePath = path.join(tempDir, 'solo.mjs');
+    const runnerUrl = pathToFileURL(path.resolve('src/runner.ts')).href;
+    try {
+      fs.writeFileSync(filePath, `
+        import { test } from ${JSON.stringify(runnerUrl)};
+        test('one', async () => {});
+      `);
+      const alice = makeDevice('alice');
+      const bob = makeDevice('bob');
+      const paired = await runTestFile(pathToFileURL(filePath).href, makeOpts([alice, bob], makeConfig({ devices: undefined }), {
+        projectUseOptions: { devices: 2 },
+        bustImportCache: true,
+      }));
+      expect(collectResults(paired).map((t) => t.status)).toEqual(['passed']);
+      // A second file: two imports of one URL in the same millisecond share
+      // the module cache despite `bustImportCache`, and register nothing.
+      const soloPath = path.join(tempDir, 'solo-again.mjs');
+      fs.copyFileSync(filePath, soloPath);
+      const solo = await runTestFile(pathToFileURL(soloPath).href, makeOpts([alice], makeConfig({ devices: undefined }), {
+        bustImportCache: true,
+      }));
+      expect(collectResults(solo).map((t) => t.status)).toEqual(['passed']);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('runner with a device group', () => {
   it('exposes the group as the `devices` fixture with `device` aliasing the primary', async () => {

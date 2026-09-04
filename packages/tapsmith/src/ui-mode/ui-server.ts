@@ -23,7 +23,7 @@ import { McpSessionRouter } from '../mcp/http-session-router.js';
 import { configureMcpConnection } from '../mcp/connection.js';
 import { matchRequestedFiles, fileFailureEntry } from '../mcp/headless-dispatcher.js';
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
-import type { TapsmithConfig } from '../config.js';
+import type { DeviceGroupEntry, TapsmithConfig } from '../config.js';
 import { findDaemonBin } from '../daemon-bin.js';
 import { resolveChildLoader } from '../child-scripts.js';
 import { TapsmithGrpcClient } from '../grpc-client.js';
@@ -41,7 +41,6 @@ import {
   deserializeTestResult,
   deserializeSuiteResult,
   serializeConfig,
-  configFromSerialized,
   type SerializedConfig,
   type RunFileUseOptions,
 } from '../worker-protocol.js';
@@ -166,6 +165,14 @@ export interface UIServerContext {
    * workers only. A `use.devices` project's workers list all their members.
    */
   workerGroups?: string[][]
+  /**
+   * The device group every worker drives, primary first — `use.devices`
+   * resolved from the session's *project* config. `use.devices` is
+   * project-level, so `config` (the root) never declares it; a server that
+   * derived the group from `config` ran a two-device project on one device.
+   * Multi-bucket sessions override this per worker through `configByDevice`.
+   */
+  deviceGroup: DeviceGroupEntry[]
   /**
    * Group members the CLI's sequential setup already opened beside the
    * primary (daemon running, agent up, app launched). The worker adopting
@@ -1096,14 +1103,30 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         testFiles: p.testFiles,
         dependencies: p.dependencies,
       }));
-      // The same per-platform view the headless dispatcher reports. Workers
-      // spawn on the first run, so before then this is the primary device —
-      // which is genuinely all the session is driving at that point.
+      // The same per-platform view the headless dispatcher reports, with a
+      // `use.devices` group listed member by member under its project.
+      // Workers spawn on the first run, so before then this is the primary
+      // device and the members the CLI opened beside it — which is genuinely
+      // all the session is driving at that point.
       const live = uiWorkers.filter((w) => !w.retired);
+      const primaryPlatform = singleWorkerPlatform ?? ctx.config.platform;
       const deviceTargets: DeviceTarget[] = live.length > 0
-        ? live.map((w) => ({ platform: resolveWorkerPlatform(ctx, w), device: w.deviceSerial }))
+        ? live.flatMap((w) => {
+            const platform = resolveWorkerPlatform(ctx, w);
+            const devices = workerDevicesInfo(w);
+            if (devices.length === 1) return [{ platform, device: w.deviceSerial }];
+            const group = groupProjectName(w.deviceSerial);
+            return devices.map((d) => ({ platform, device: d.deviceSerial, name: d.name, group }));
+          })
         : ctx.deviceSerial
-          ? [{ platform: singleWorkerPlatform ?? ctx.config.platform, device: ctx.deviceSerial }]
+          ? ctx.deviceGroup.length > 1
+            ? [
+                { platform: primaryPlatform, device: ctx.deviceSerial, name: ctx.deviceGroup[0].name, group: groupProjectName(ctx.deviceSerial) },
+                ...(ctx.primaryGroupMembers ?? []).map((m) => ({
+                  platform: primaryPlatform, device: m.serial, name: m.name, group: groupProjectName(ctx.deviceSerial!),
+                })),
+              ]
+            : [{ platform: primaryPlatform, device: ctx.deviceSerial }]
           : [];
       return {
         platform: singleWorkerPlatform ?? ctx.config.platform,
@@ -1115,6 +1138,17 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         deviceTargets,
         configPath: ctx.configPath,
       };
+    },
+    resolveDeviceName(name) {
+      // Live workers first (each lists its group, primary first); before the
+      // workers spawn, the primary the CLI set up and the members it opened.
+      for (const worker of uiWorkers) {
+        if (worker.retired) continue;
+        const match = workerDevicesInfo(worker).find((d) => d.name === name);
+        if (match) return match.deviceSerial;
+      }
+      if (ctx.deviceSerial && ctx.deviceGroup[0]?.name === name) return ctx.deviceSerial;
+      return ctx.primaryGroupMembers?.find((m) => m.name === name)?.serial;
     },
     toggleWatch(filePath, options) {
       const { testFilter, project } = options ?? {};
@@ -1516,6 +1550,24 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
   }
 
   /**
+   * The group a worker's devices form, primary first: its bucket's config in
+   * a multi-bucket session, the session's project group otherwise.
+   */
+  function workerDeviceGroup(deviceSerial: string): DeviceGroupEntry[] {
+    const bucketConfig = ctx.configByDevice?.get(deviceSerial);
+    return bucketConfig
+      ? resolveDeviceGroup({ devices: bucketConfig.devices, device: deviceSerial })
+      : ctx.deviceGroup;
+  }
+
+  /** The `use.devices` project a worker's group belongs to — the `group` label in session info. */
+  function groupProjectName(deviceSerial: string): string | undefined {
+    const bucket = ctx.bucketByDevice?.get(deviceSerial);
+    return realProjects().find((p) => deviceGroupSize(p.effectiveConfig) > 1
+      && (bucket === undefined || ctx.bucketByProject?.get(p.name) === bucket))?.name;
+  }
+
+  /**
    * The primary device the CLI provisioned (daemon + agent + launched app).
    * A worker for that serial attaches to it instead of provisioning again.
    * Not used in multi-bucket sessions, where the primary's config may not be
@@ -1740,9 +1792,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     // daemon of its own — adopted from the CLI when it opened them beside
     // the primary, spawned here otherwise.
     const memberSerials = workerGroups[id]?.slice(1) ?? [];
-    const groupNames = resolveDeviceGroup(configFromSerialized(
-      ctx.configByDevice?.get(deviceSerial) ?? serializedConfig, `localhost:${daemonPort}`,
-    ));
+    const groupNames = workerDeviceGroup(deviceSerial);
     if (memberSerials.length !== groupNames.length - 1) {
       throw new Error(
         `worker ${id}: config declares a device group of ${groupNames.length} but ${memberSerials.length + 1} device(s) were provisioned for it`,
@@ -1928,6 +1978,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         type: 'init',
         workerId: id,
         deviceSerial,
+        deviceName: groupNames[0].name,
         daemonPort,
         config: workerConfig,
         screenshotDir: ctx.screenshotDir,
@@ -3100,9 +3151,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
   /** The devices of a worker's group as `workers-info` describes them, primary first. */
   function workerDevicesInfo(worker: UIWorkerHandle): WorkerDeviceInfo[] {
     const platform = resolveWorkerPlatform(ctx, worker);
-    const groupNames = resolveDeviceGroup(configFromSerialized(
-      ctx.configByDevice?.get(worker.deviceSerial) ?? serializedConfig, `localhost:${worker.daemonPort}`,
-    ));
+    const groupNames = workerDeviceGroup(worker.deviceSerial);
     const describe = (index: number, serial: string, displayName: string | undefined): WorkerDeviceInfo => ({
       index,
       name: groupNames[index]?.name ?? `device-${index + 1}`,

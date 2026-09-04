@@ -243,6 +243,7 @@ const LINK_MAP = {
   'ui-mode.md': '/guides/ui-mode/',
   'warm-reset.md': '/guides/warm-reset/',
   'parallel-and-sharding.md': '/guides/parallel-and-sharding/',
+  'multi-device.md': '/guides/multi-device/',
   'debugging.md': '/guides/debugging/',
   'mcp-server.md': '/guides/mcp-server/',
   'agents.md': '/guides/agents/',

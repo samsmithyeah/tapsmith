@@ -178,4 +178,8 @@ Device groups work in every run mode. Each mode holds one group per worker:
   matrix boots one device per runner. Tapsmith's own `Multi-device` jobs in
   `e2e-android.yml` and `e2e-ios.yml` boot one device and let Tapsmith launch
   or clone the second; the suite they run (`e2e/tests/multi-device/`) has two
-  users chatting through a server the test hosts.
+  users chatting through a server the test hosts. Those jobs run the
+  `e2e/tapsmith.config.{android,ios}-multi-ci.mjs` configs, whose app paths
+  point at the artifacts the workflow stages under `e2e/fixtures/`; the
+  `*-multi.mjs` configs beside them are the local-development versions that
+  use the repo's own build output.

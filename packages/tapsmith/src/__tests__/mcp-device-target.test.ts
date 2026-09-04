@@ -30,6 +30,7 @@ function dispatcherWith(projects: Array<{ name: string; platform?: string }>): T
         dependencies: [],
       })),
     }),
+    resolveDeviceName: () => undefined,
     toggleWatch: () => ({ enabled: false }),
   };
 }

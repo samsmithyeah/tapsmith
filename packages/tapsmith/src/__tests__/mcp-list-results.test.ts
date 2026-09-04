@@ -45,6 +45,7 @@ function dispatcherWith(results: TestResultEntry[]): TestDispatcher {
     getProjects: () => [],
     getTestTree: () => [],
     getSessionInfo: () => ({ timeout: 0, retries: 0, projects: [] }),
+    resolveDeviceName: () => undefined,
     toggleWatch: () => ({ enabled: false }),
   };
 }

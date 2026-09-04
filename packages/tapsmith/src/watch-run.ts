@@ -10,7 +10,6 @@
  */
 
 import { runTestFile, collectResults, type RunDevice } from './runner.js';
-import { resolveDeviceGroup } from './config.js';
 import { ensureSessionReady } from './session-preflight.js';
 import type { ResetCapabilities } from './app-reset.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
@@ -56,6 +55,8 @@ export interface WatchRunMessage {
   /** The primary device's daemon and serial (`devices[0]`). */
   daemonAddress: string
   deviceSerial: string
+  /** The primary's group entry name — see `InitMessage.deviceName`. */
+  deviceName: string
   filePath: string
   config: SerializedConfig
   screenshotDir?: string
@@ -153,15 +154,7 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
   const config = configFromSerialized(msg.config, msg.daemonAddress);
   config.device = msg.deviceSerial;
   const label = msg.label ?? 'Watch';
-
-  const group = resolveDeviceGroup(config);
   const members = msg.groupMembers ?? [];
-  if (members.length !== group.length - 1) {
-    throw new Error(
-      `${label}: config declares a device group of ${group.length} but the run was given `
-      + `${members.length + 1} device(s) (${[msg.deviceSerial, ...members.map((m) => m.deviceSerial)].join(', ')})`,
-    );
-  }
 
   // Every daemon already holds its device with the agent running (the CLI's
   // startup, or a previous run): attach rather than provision. Without a
@@ -170,9 +163,9 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
   // watch idled — the other run paths do the same in their startup launch.
   const sessions = await openDeviceGroup(
     [
-      { name: group[0].name, serial: msg.deviceSerial, daemonAddress: msg.daemonAddress, adopt: true, seedCapabilities: msg.resetCapabilities },
-      ...members.map((m, i) => ({
-        name: group[i + 1].name,
+      { name: msg.deviceName, serial: msg.deviceSerial, daemonAddress: msg.daemonAddress, adopt: true, seedCapabilities: msg.resetCapabilities },
+      ...members.map((m) => ({
+        name: m.name,
         serial: m.deviceSerial,
         daemonAddress: m.daemonAddress,
         adopt: true,

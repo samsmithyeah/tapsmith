@@ -14,7 +14,7 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { runTestFile, collectResults, type RunDevice } from '../runner.js';
-import { resolveDeviceGroup, type TapsmithConfig } from '../config.js';
+import type { TapsmithConfig } from '../config.js';
 import {
   serializeTestResult,
   serializeSuiteResult,
@@ -151,14 +151,9 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
     config.trace = 'on';
   }
 
-  const group = resolveDeviceGroup(config);
+  // The server resolved the group from the project's config (see
+  // `InitMessage.deviceName`); the runner checks the count per file.
   const members = msg.groupMembers ?? [];
-  if (members.length !== group.length - 1) {
-    throw new Error(
-      `UI Worker ${workerId}: config declares a device group of ${group.length} but the server provided `
-      + `${members.length + 1} device(s) (${[msg.deviceSerial, ...members.map((m) => m.deviceSerial)].join(', ')})`,
-    );
-  }
 
   // Adopting the primary device: the CLI already installed the app, started
   // the agent and cold-launched. Verify the session and — on the initial
@@ -170,15 +165,15 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
   sessions = await openDeviceGroup(
     [
       {
-        name: group[0].name,
+        name: msg.deviceName,
         serial: msg.deviceSerial,
         daemonAddress,
         adopt: msg.adoptPrimary,
         adoptPrepared: msg.adoptPrepared,
         freshDevice: msg.freshEmulator,
       },
-      ...members.map((m, i) => ({
-        name: group[i + 1].name,
+      ...members.map((m) => ({
+        name: m.name,
         serial: m.deviceSerial,
         daemonAddress: `localhost:${m.daemonPort}`,
         freshDevice: m.freshEmulator,

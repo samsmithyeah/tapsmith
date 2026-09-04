@@ -789,7 +789,7 @@ jobs:
         working-directory: e2e
         env:
           TAPSMITH_DAEMON_LOG: /tmp/tapsmith-daemon-ios-multi.log
-        run: npx tapsmith test -c tapsmith.config.ios-multi.mjs --trace on
+        run: npx tapsmith test -c tapsmith.config.ios-multi-ci.mjs --trace on
 
       - name: Upload test results
         if: always()

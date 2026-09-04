@@ -149,9 +149,11 @@ export interface TestDispatcher {
   getSessionInfo(): SessionInfo
   /**
    * The serial behind a `use.devices` group name (`alice`), so device tools
-   * can take the name a test author uses instead of a serial. Optional: only
-   * dispatchers that hold group targets know any names.
+   * can take the name a test author uses instead of a serial; `undefined`
+   * when no device goes by that name. Required — an optional method let the
+   * UI-mode dispatcher omit it, and group names silently stopped resolving
+   * over UI-mode MCP while the unit tests (mocking it) stayed green.
    */
-  resolveDeviceName?(name: string): string | undefined
+  resolveDeviceName(name: string): string | undefined
   toggleWatch(filePath: string, options?: { testFilter?: string; project?: string }): { enabled: boolean }
 }

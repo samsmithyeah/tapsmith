@@ -29,12 +29,11 @@ import {
   deserializeTestResult,
   deserializeSuiteResult,
   serializeConfig,
-  configFromSerialized,
   type SerializedConfig,
   type RunFileUseOptions,
 } from './worker-protocol.js';
 import type { WatchRunMessage, WatchRunChildMessage } from './watch-run.js';
-import { resolveDeviceGroup } from './config.js';
+import { resolveDeviceGroup, type DeviceGroupEntry } from './config.js';
 import { startDaemon } from './device-session.js';
 import type {
   UIWorkerMessage,
@@ -78,7 +77,28 @@ export interface WatchModeContext {
    * re-runs. Single-device runs omit it. The capabilities are sticky per
    * device like `resetCapabilities`, folded back from each child's `file-done`.
    */
-  groupMembers?: Array<{ name: string; deviceSerial: string; daemonAddress: string; resetCapabilities: import('./app-reset.js').ResetCapabilities }>
+  groupMembers?: Array<{
+    name: string
+    deviceSerial: string
+    daemonAddress: string
+    resetCapabilities: import('./app-reset.js').ResetCapabilities
+    /** Tear the member's session and daemon down; watch owns the exit, so it calls this from `cleanup()`. */
+    close: () => void
+  }>
+  /**
+   * The device group every worker drives, primary first — `use.devices`
+   * resolved from the session's *project* config (`config` is the root, which
+   * never declares a group). Multi-bucket sessions override it per worker
+   * through `configByDevice`.
+   */
+  deviceGroup: DeviceGroupEntry[]
+  /**
+   * Kill the primary's daemon when the CLI spawned it (a no-op when attached
+   * to a daemon it does not own). Watch owns the exit, so nothing after
+   * `cleanup()` gets a chance to; without this the daemon outlived every
+   * watch session.
+   */
+  closePrimaryDaemon: () => void
   /** Resolved projects with test files populated. */
   projects?: ResolvedProject[]
   /** Dependency-ordered project waves from topologicalSort(). */
@@ -157,6 +177,14 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
 
 
   const serializedConfig: SerializedConfig = serializeConfig(ctx.config);
+
+  /** A worker's device group, primary first: its bucket's config, or the session's group. */
+  function workerDeviceGroup(deviceSerial: string): DeviceGroupEntry[] {
+    const bucketConfig = ctx.configByDevice?.get(deviceSerial);
+    return bucketConfig
+      ? resolveDeviceGroup({ devices: bucketConfig.devices, device: deviceSerial })
+      : ctx.deviceGroup;
+  }
 
   // Resolve tsx binary for forking TypeScript files
   const jsScript = path.resolve(import.meta.dirname, 'watch-run.js');
@@ -275,7 +303,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
   ): Promise<WatchWorkerHandle> {
     const workerConfig = ctx.configByDevice?.get(deviceSerial) ?? serializedConfig;
     const workerBucketSig = ctx.bucketByDevice?.get(deviceSerial);
-    const groupNames = resolveDeviceGroup(configFromSerialized(workerConfig, `localhost:${daemonPort}`));
+    const groupNames = workerDeviceGroup(deviceSerial);
     if (members.length !== groupNames.length - 1) {
       throw new Error(`worker ${id}: config declares a device group of ${groupNames.length} but ${members.length + 1} device(s) were provisioned for it`);
     }
@@ -356,6 +384,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         type: 'init',
         workerId: id,
         deviceSerial,
+        deviceName: groupNames[0].name,
         daemonPort,
         config: workerConfig,
         screenshotDir: ctx.screenshotDir,
@@ -877,6 +906,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         type: 'run',
         daemonAddress: ctx.daemonAddress,
         deviceSerial: ctx.deviceSerial,
+        deviceName: ctx.deviceGroup[0].name,
         filePath,
         config: serializedConfig,
         screenshotDir: ctx.screenshotDir,
@@ -1099,8 +1129,12 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       process.stdin.setRawMode(false);
     }
 
+    // The group members' daemons are the CLI's, kept alive across re-runs;
+    // nothing else exits after this, so they go here or leak.
+    for (const member of ctx.groupMembers ?? []) member.close();
     ctx.device.close();
     ctx.client.close();
+    ctx.closePrimaryDaemon();
 
     preserveEmulatorsForReuse(ctx.launchedEmulators);
 

@@ -281,6 +281,7 @@ function makeDispatcher(): TestDispatcher {
       retries: 0,
       projects: [],
     }),
+    resolveDeviceName: () => undefined,
     toggleWatch: () => ({ enabled: true }),
   };
 }

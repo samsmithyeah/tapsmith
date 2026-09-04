@@ -11,7 +11,7 @@
 
 import * as path from 'node:path';
 import { runTestFile, collectResults, markFileRetryFlakes, type RunDevice } from './runner.js';
-import { resolveDeviceGroup, type TapsmithConfig } from './config.js';
+import type { TapsmithConfig } from './config.js';
 import type {
   MainToWorkerMessage,
   WorkerToMainMessage,
@@ -62,23 +62,14 @@ async function handleInit(msg: InitMessage): Promise<void> {
   rootGrep = deserializeRegExpArray(msg.config.grep);
   rootGrepInvert = deserializeRegExpArray(msg.config.grepInvert);
 
-  // The group's names come from the config; the dispatcher hands over the
-  // serial + daemon for each member. A mismatch means an embedder forgot to
-  // provision the whole group — fail loudly rather than run tests against a
-  // `devices` fixture missing the members they destructure.
-  const group = resolveDeviceGroup(config);
+  // The dispatcher resolved the group from the project's config and hands
+  // over a name + serial + daemon per device; the runner checks the count
+  // against the project's `use.devices` when each file runs.
   const members = msg.groupMembers ?? [];
-  if (members.length !== group.length - 1) {
-    throw new Error(
-      `Worker ${workerId}: config declares a device group of ${group.length} but the dispatcher provided `
-      + `${members.length + 1} device(s) (${[msg.deviceSerial, ...members.map((m) => m.deviceSerial)].join(', ')})`,
-    );
-  }
-
   const specs = [
-    { name: group[0].name, serial: msg.deviceSerial, daemonAddress, freshDevice: msg.freshEmulator },
-    ...members.map((m, i) => ({
-      name: group[i + 1].name,
+    { name: msg.deviceName, serial: msg.deviceSerial, daemonAddress, freshDevice: msg.freshEmulator },
+    ...members.map((m) => ({
+      name: m.name,
       serial: m.deviceSerial,
       daemonAddress: `localhost:${m.daemonPort}`,
       freshDevice: m.freshEmulator,

@@ -784,8 +784,13 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     };
     return [
       ...[...this._targets].flatMap(([key, t]) => {
-        const platform = toPlatform(key);
-        if (!t.members || t.members.length === 0) return [{ platform, device: t.deviceSerial }];
+        if (!t.members || t.members.length === 0) return [{ platform: toPlatform(key), device: t.deviceSerial }];
+        // A group target's key carries the platform only when the project sets
+        // one; a single-platform config keeps it on the root, and the members
+        // are still Android (or iOS) devices, not "device"s.
+        const platform = toPlatform(key)
+          ?? this._projects.find((p) => targetKeyFor(p.effectiveConfig) === key)?.effectiveConfig.platform
+          ?? this._config?.platform;
         const groupName = this._projectForTargetKey(key);
         const primaryName = this._projectForTargetKey(key, true);
         return [
@@ -924,6 +929,10 @@ export class HeadlessTestDispatcher implements TestDispatcher {
 
     const target = await this._ensureTargetForProject(projectName);
     const serializedConfig = this._configForProject(projectName);
+    // The primary's group name comes from the project's config (`use.devices`
+    // is project-level); the child takes the names as given.
+    const runProject = projectName ? this._projects.find((p) => p.name === projectName) : undefined;
+    const deviceName = resolveDeviceGroup(runProject?.effectiveConfig ?? this._config ?? {})[0].name;
 
     const scripts = this._scripts!;
     return new Promise((resolve, reject) => {
@@ -1026,6 +1035,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         type: 'run',
         daemonAddress: target.address,
         deviceSerial: target.deviceSerial,
+        deviceName,
         filePath,
         config: serializedConfig,
         screenshotDir: undefined,

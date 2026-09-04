@@ -16,6 +16,13 @@ export interface InitMessage {
   workerId: number
   /** The group's primary device (`devices[0]`). */
   deviceSerial: string
+  /**
+   * The primary's group entry name (`alice`; `device-1` without `use.devices`).
+   * The embedder resolves the group from the *project's* config — `use.devices`
+   * is project-level, so the root config the worker is handed never declares
+   * one — and the child takes the names as given rather than re-deriving them.
+   */
+  deviceName: string
   daemonPort: number
   config: SerializedConfig
   /** True when the emulator was freshly launched for this run (needs warmup). */
@@ -23,7 +30,7 @@ export interface InitMessage {
   /**
    * The rest of the device group (`devices[1..]`), each on its own daemon.
    * Present only for group projects (`use.devices`); a single-device worker
-   * omits it. The primary's name is `config.devices`' first entry.
+   * omits it.
    */
   groupMembers?: WorkerGroupMember[]
 }
@@ -80,6 +87,13 @@ export interface RunFileUseOptions {
   appResetColdEvery?: number
   baseURL?: string
   extraHTTPHeaders?: Record<string, string>
+  /**
+   * The project's device group (`use.devices`), verbatim. The runner checks
+   * it against the devices it was actually handed, so an embedder that
+   * provisioned the wrong number fails loudly instead of running tests whose
+   * `devices` fixture is missing the members they destructure.
+   */
+  devices?: TapsmithConfig['devices']
 }
 
 export interface ShutdownMessage {

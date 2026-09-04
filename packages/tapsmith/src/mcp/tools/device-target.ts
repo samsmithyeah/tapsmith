@@ -53,7 +53,7 @@ export async function deviceClientFor(
   // A group name (`alice`) names a device the way its tests do; resolve it to
   // the serial the connection pool knows.
   const device = request.device
-    ? dispatcher?.resolveDeviceName?.(request.device) ?? request.device
+    ? dispatcher?.resolveDeviceName(request.device) ?? request.device
     : undefined;
   const { client } = await resolveDeviceTarget({ device, project });
   return client;

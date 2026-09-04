@@ -825,6 +825,26 @@ async function openSequentialGroupMembers(
 ): Promise<DeviceSession[]> {
   const members = group.slice(1);
   progress?.start('worker-devices', `preparing ${members.length} more device(s) for the group`);
+  try {
+    return await openGroupMembersOnFreshDaemons(cfg, group, launchedEmulators, forceInstall, progress);
+  } catch (err) {
+    // Whatever failed — provisioning, a daemon, a session — it is this step's
+    // failure. The caller marks the primary failed only when the primary is;
+    // a group failure used to leave this row spinning under a "✗ Primary
+    // device" that had in fact come up fine.
+    progress?.fail('worker-devices', err instanceof Error ? err.message : String(err));
+    throw err;
+  }
+}
+
+async function openGroupMembersOnFreshDaemons(
+  cfg: TapsmithConfig,
+  group: DeviceGroupEntry[],
+  launchedEmulators: LaunchedEmulator[],
+  forceInstall: boolean,
+  progress?: LaunchProgressSink,
+): Promise<DeviceSession[]> {
+  const members = group.slice(1);
   const provisioned = await provisionGroupMemberDevices(cfg, group, progress);
   launchedEmulators.push(...provisioned.launched);
 
@@ -872,7 +892,6 @@ async function openSequentialGroupMembers(
     for (const spec of specs) {
       try { spec.daemonProcess.kill(); } catch { /* already gone */ }
     }
-    progress?.fail('worker-devices', err instanceof Error ? err.message : String(err));
     throw err;
   }
 }
@@ -2331,7 +2350,11 @@ async function main(): Promise<void> {
         launchProgress,
       );
     } catch (err) {
-      launchProgress?.fail('primary-device', (err as Error).message);
+      // The setup marks the step that actually failed (primary, install,
+      // agent, launch, device group); this only catches a failure that
+      // happened before any step was reached. Re-labelling the primary here
+      // used to print "✗ Primary device" for a group member that failed.
+      if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', (err as Error).message);
       console.error(red((err as Error).message));
       sequentialExitCode = 1;
       return;
@@ -2412,6 +2435,9 @@ async function main(): Promise<void> {
         projectWaves: hasProjects ? projectWaves : undefined,
         workers: uiWorkersOverride,
         workerGroups: uiWorkerGroups,
+        // `use.devices` lives on the project; `config` is the root and never
+        // declares it.
+        deviceGroup: resolveDeviceGroup(currentSequentialState.effectiveConfig),
         primaryGroupMembers: currentSequentialState.sessions.slice(1).map((s) => ({
           name: s.name, serial: s.serial, daemonAddress: s.daemonAddress,
         })),
@@ -2427,6 +2453,9 @@ async function main(): Promise<void> {
       // Keep alive until user exits
       const cleanupAndExit = () => {
         uiServer.close();
+        // The group members the sequential setup opened beside the primary run
+        // on daemons this process spawned; the server only releases its own.
+        for (const member of currentSequentialState?.sessions.slice(1) ?? []) closeDeviceSession(member);
         if (spawnedDaemonProcess) {
           try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
         }
@@ -2490,7 +2519,14 @@ async function main(): Promise<void> {
         // child attaches to them the way it attaches to the primary's.
         groupMembers: currentSequentialState.sessions.slice(1).map((s) => ({
           name: s.name, deviceSerial: s.serial, daemonAddress: s.daemonAddress, resetCapabilities: s.capabilities,
+          close: () => closeDeviceSession(s),
         })),
+        deviceGroup: resolveDeviceGroup(currentSequentialState.effectiveConfig),
+        closePrimaryDaemon: () => {
+          if (spawnedDaemonProcess) {
+            try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
+          }
+        },
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
         workers: watchWorkersOverride,

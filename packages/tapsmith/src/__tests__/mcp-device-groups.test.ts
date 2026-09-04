@@ -36,10 +36,10 @@ describe('device tools accept a group member name', () => {
     expect(hoisted.requests).toEqual([{ device: 'emulator-5556', project: undefined }]);
   });
 
-  it('passes a serial through untouched, and works without a name-aware dispatcher', async () => {
+  it('passes a serial through untouched, and works without a dispatcher at all', async () => {
     hoisted.requests.length = 0;
     await deviceClientFor({ device: 'emulator-5554' }, fakeDispatcher({}));
-    await deviceClientFor({ device: 'SIM-1' }, { ensureInitialized: async () => {} } as unknown as TestDispatcher);
+    await deviceClientFor({ device: 'SIM-1' }, undefined);
     expect(hoisted.requests.map((r) => r.device)).toEqual(['emulator-5554', 'SIM-1']);
   });
 });
@@ -80,6 +80,31 @@ describe('group projects get their own target', () => {
       { platform: 'android', device: 'EMU-1' },
       { platform: 'android', device: 'EMU-2', name: 'alice', group: 'chat' },
       { platform: 'android', device: 'EMU-3', name: 'bob', group: 'chat' },
+    ]);
+  });
+
+  it('labels a group target with the root platform when the project sets none', () => {
+    // A single-platform config keeps `platform` on the root; the group's
+    // target key then carries no platform, and session_info used to print a
+    // literal "Device (device) alice [pair]".
+    const pair = { name: 'pair', effectiveConfig: { devices: [{ name: 'alice' }, { name: 'bob' }] } };
+    const dispatcher = new HeadlessTestDispatcher({});
+    const internals = dispatcher as unknown as {
+      _targets: Map<string, { address: string; deviceSerial: string; members?: Array<{ name: string; address: string; deviceSerial: string }> }>
+      _projects: unknown[]
+      _config: { platform?: string } | null
+    };
+    internals._projects = [{ ...pair, testFiles: [], dependencies: [], testMatch: [], testIgnore: [], deviceSignature: '' }];
+    internals._config = { platform: 'android' };
+    internals._targets.set(platformKeyForProject([pair], 'pair', undefined), {
+      address: '127.0.0.1:50060',
+      deviceSerial: 'EMU-2',
+      members: [{ name: 'bob', address: '127.0.0.1:50061', deviceSerial: 'EMU-3' }],
+    });
+
+    expect(dispatcher.getSessionInfo().deviceTargets).toEqual([
+      { platform: 'android', device: 'EMU-2', name: 'alice', group: 'pair' },
+      { platform: 'android', device: 'EMU-3', name: 'bob', group: 'pair' },
     ]);
   });
 });

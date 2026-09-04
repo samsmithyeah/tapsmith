@@ -41,7 +41,7 @@ import {
   type ResetCapabilities,
 } from './app-reset.js';
 import { executeAppReset, type ExecuteAppResetOptions, type SessionPreflightContext } from './session-preflight.js';
-import { validateAppResetOptions, validateDevicesOption } from './config.js';
+import { deviceGroupSize, validateAppResetOptions, validateDevicesOption } from './config.js';
 import { onActionProgress } from './action-progress.js';
 import { runInAttemptContext, type AttemptToken } from './attempt-fence.js';
 import { matchesTestFilter } from './test-filter.js';
@@ -2490,6 +2490,26 @@ export function markFileRetryFlakes(firstAttempt: SuiteResult, retried: SuiteRes
  * Run a single test file. The file is imported (which registers tests via the
  * global `test` / `describe` functions), then executed sequentially.
  */
+/**
+ * The devices an embedder handed the runner must be the project's declared
+ * group. `use.devices` is project-level, so an embedder that resolved the
+ * group from the root config provisions one device for a two-device project;
+ * the tests would then destructure `devices` members that do not exist and
+ * fail on the first `bob.tap()` with an error that names nothing useful.
+ * Every run path shares this check, so a missed embedder fails here, loudly.
+ */
+function assertDeviceGroupMatches(opts: RunOptions, declared: TapsmithConfig['devices']): void {
+  if (declared === undefined || opts.devices.length === 0) return;
+  const wanted = deviceGroupSize({ devices: declared });
+  if (opts.devices.length === wanted) return;
+  throw new Error(
+    `${opts.projectName ? `Project "${opts.projectName}"` : 'The project'} declares a device group of ${wanted} `
+    + `(use.devices) but the run was given ${opts.devices.length} device(s) `
+    + `(${opts.devices.map((d) => `${d.name}=${d.serial ?? '?'}`).join(', ')}). `
+    + 'The embedder resolved the group from the wrong config — this is a Tapsmith bug, please report it.',
+  );
+}
+
 export async function runTestFile(
   filePath: string,
   opts: RunOptions,
@@ -2515,6 +2535,7 @@ export async function runTestFile(
   if (opts.projectUseOptions) {
     rootCtx.useOptions = { ...opts.projectUseOptions, ...rootCtx.useOptions };
   }
+  assertDeviceGroupMatches(opts, rootCtx.useOptions?.devices);
 
   // Build a merged registry from all per-test/hook registries in the file.
   // Using getFixtureRegistry() (the mutable global) would only reflect the
