@@ -351,6 +351,45 @@ test("catches a claimed screenshot with no member behind it", () => {
   )
 })
 
+test("catches per-action screenshot capture having stopped entirely", () => {
+  // Every screenshot check is claim-driven, so if no step claims one they all
+  // skip and the terminal capture alone would satisfy the rest.
+  assertFails((p) => {
+    for (const e of p.events) e.hasScreenshotBefore = false
+    p.screenshots = { "screenshots/action-003-before.png": screenPng([10, 10, 10]) }
+    p.metadata.screenshotCount = 1
+  }, /no step recorded a before-screenshot — per-action capture is not running at all/)
+})
+
+test("tolerates a step that legitimately claims no screenshot", () => {
+  // The runner's app reset passes skipBeforeCapture, so "some" is the invariant,
+  // not "all".
+  assert.deepEqual(
+    failuresFor((p) => {
+      p.events[0].hasScreenshotBefore = false
+      p.events[0].hasHierarchyBefore = false
+      delete p.screenshots["screenshots/action-000-before.png"]
+      delete p.hierarchies["hierarchy/action-000-before.xml"]
+      p.metadata.screenshotCount = 3
+    }),
+    [],
+  )
+})
+
+test("distinguishes a missing dump from a missing named selector", () => {
+  // Named selector present but its dump absent — the capture timed out.
+  assertFails((p) => {
+    p.events[2].hasHierarchyBefore = false
+    delete p.hierarchies["hierarchy/action-002-before.xml"]
+  }, /1 action\(s\) recorded a named selector but none has a hierarchy snapshot/)
+
+  // No named selector at all — a different diagnosis.
+  assertFails(
+    (p) => { delete p.events[2].selector },
+    /no action recorded a named selector/,
+  )
+})
+
 test("catches a screenshot member no step claims", () => {
   assertFails(
     (p) => { p.screenshots["screenshots/action-007-before.png"] = screenPng([9, 9, 9]) },

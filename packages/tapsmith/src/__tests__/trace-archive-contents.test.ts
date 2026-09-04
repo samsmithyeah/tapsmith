@@ -458,13 +458,24 @@ describe('generated trace archive', () => {
     // so the mock can time each entry against the recorded actions instead of
     // guessing at wall clock. Both entries start between action 1 and action
     // 2 — the only window that makes `actionIndex === 1` the right answer.
+    //
+    // The runner wraps the drain in try/catch, so an `expect` in here would be
+    // swallowed into a warning and surface later as an unexplained empty
+    // network.json. Record what the mock saw and assert it after the run.
+    const observed: { timestamps: number[]; chosen: number[] } = { timestamps: [], chosen: [] };
     const startBetweenActions = (): number => {
       const timestamps = (getActiveTraceCollector()?.events ?? [])
         .filter((e) => e.type === 'action')
         .map((e) => e.timestamp);
-      expect(timestamps).toHaveLength(3);
-      expect(timestamps[2]).toBeGreaterThan(timestamps[1] + 1);
-      return Math.floor((timestamps[1] + timestamps[2]) / 2);
+      observed.timestamps = timestamps;
+      // Midpoint of the gap between action 1 and action 2. If the premise ever
+      // breaks the assertions below say so, rather than the entry silently
+      // landing on the wrong step.
+      const chosen = timestamps.length === 3
+        ? Math.floor((timestamps[1] + timestamps[2]) / 2)
+        : Number.NaN;
+      observed.chosen.push(chosen);
+      return chosen;
     };
 
     // Two entries: one full request/response pair, and one bodyless entry, so
@@ -529,6 +540,12 @@ describe('generated trace archive', () => {
 
     expect(result.tests[0].error?.message).toBeUndefined();
     expect(result.tests[0].status).toBe('passed');
+
+    // What the mock actually saw, asserted where a failure is legible.
+    expect(observed.timestamps).toHaveLength(3);
+    expect(observed.timestamps[2]).toBeGreaterThan(observed.timestamps[1] + 1);
+    expect(observed.chosen.every((t) => Number.isFinite(t))).toBe(true);
+
     const archive = readArchive(result.tests[0].tracePath!);
 
     expect(archive.network).toHaveLength(2);

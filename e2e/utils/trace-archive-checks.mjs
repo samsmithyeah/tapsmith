@@ -234,6 +234,18 @@ function checkScreenshots(archive, r) {
   const members = Object.keys(archive.files).filter((f) => f.startsWith("screenshots/")).sort()
   if (!r.check(members.length > 0, "the archive contains no screenshots")) return
 
+  // Positive material, the counterpart to `verifiedPairings > 0` for hierarchy
+  // and `entries.length > 0` for network. Every check below is claim-driven, so
+  // if per-step captures stopped being recorded altogether — the pre-action
+  // gate or the `hasScreenshotBefore` wiring regressing — each one would skip
+  // and the terminal capture alone would satisfy the rest. Not every step
+  // claims one by design (the runner's app reset passes skipBeforeCapture), so
+  // this asserts "some", not "all".
+  r.check(
+    archive.steps.some((s) => s.hasScreenshotBefore),
+    "no step recorded a before-screenshot — per-action capture is not running at all",
+  )
+
   for (const step of archive.steps) {
     if (!step.hasScreenshotBefore) continue
     r.check(
@@ -420,11 +432,28 @@ function checkHierarchies(archive, r) {
       verifiedPairings++
     }
   }
-  r.check(
-    verifiedPairings > 0,
-    "no action recorded a named selector, so capture/step pairing could not be cross-checked " +
-      "against real device data",
+  // Two very different reasons this can come up empty, and conflating them
+  // sends a triager the wrong way. The driven test contributes exactly one
+  // cross-checkable action, so the "its dump is missing" case is a live risk:
+  // captures are best-effort with a 5s timeout, and a slow a11y dump drops the
+  // claim without failing the run.
+  const namedActions = archive.steps.filter(
+    (s) => s.type === "action" && selectorName(s.selector) !== null,
   )
+  if (namedActions.length === 0) {
+    r.check(
+      false,
+      "no action recorded a named selector, so capture/step pairing could not be cross-checked " +
+        "against real device data",
+    )
+  } else {
+    r.check(
+      verifiedPairings > 0,
+      `${namedActions.length} action(s) recorded a named selector but none has a hierarchy ` +
+        "snapshot to check it against — the dump likely timed out (captures are best-effort), " +
+        "so pairing went unverified",
+    )
+  }
   r.note(
     `${members.length} hierarchy snapshots, ${verifiedPairings} cross-checked against ` +
       "their action's selector",
