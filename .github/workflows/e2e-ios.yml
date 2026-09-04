@@ -638,16 +638,7 @@ jobs:
           if [ -n "$UDID" ]; then
             echo "Booting $SIM ($UDID)"
             echo "TAPSMITH_IOS_UDID=$UDID" >> $GITHUB_ENV
-            # The group's second member boots here too, as a clone the CI config
-            # pins as `bob` (TAPSMITH_IOS_UDID2), so both are warm before the
-            # tests start: cloning a cold one after the primary was up took 5 min
-            # to boot and then outlasted the agent start timeout on these
-            # 3-core runners.
-            CLONE=$(xcrun simctl clone "$UDID" "$SIM")
-            echo "Cloned $SIM -> $CLONE for the group's second device"
-            echo "TAPSMITH_IOS_UDID2=$CLONE" >> $GITHUB_ENV
             xcrun simctl boot "$UDID" 2>/dev/null || true
-            xcrun simctl boot "$CLONE" 2>/dev/null || true
           fi
 
       # ─── Fetch build outputs: cache first, artifact on a miss ───
@@ -752,6 +743,19 @@ jobs:
           fi
           echo "TAPSMITH_IOS_XCTESTRUN=$XCTESTRUN" >> $GITHUB_ENV
           echo "Resolved xctestrun: $XCTESTRUN"
+
+      # The group's second member: a clone the CI config pins as `bob`
+      # (TAPSMITH_IOS_UDID2), booted now so it is warm before the tests start —
+      # cloning a cold one after the primary was up took 5 min to boot and then
+      # outlasted the agent start timeout on these 3-core runners. It boots
+      # after the cache restores on purpose: two simulators booting during
+      # them starved `hashFiles()` past its 120 s limit.
+      - name: Clone and boot the second simulator
+        run: |
+          CLONE=$(xcrun simctl clone "$TAPSMITH_IOS_UDID" "$TAPSMITH_IOS_SIMULATOR")
+          echo "Cloned $TAPSMITH_IOS_SIMULATOR -> $CLONE for the group's second device"
+          echo "TAPSMITH_IOS_UDID2=$CLONE" >> $GITHUB_ENV
+          xcrun simctl boot "$CLONE" 2>/dev/null || true
 
       - name: Extract test app
         if: steps.test-app-cache.outputs.cache-hit != 'true'
