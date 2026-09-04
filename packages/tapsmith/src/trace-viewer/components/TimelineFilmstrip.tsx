@@ -37,10 +37,12 @@ interface Props {
 }
 
 function formatRelativeTime(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = ms / 1000;
-  if (seconds < 10) return `${seconds.toFixed(1)}s`;
-  return `${Math.round(seconds)}s`;
+  const sign = ms < 0 ? '-' : '';
+  const abs = Math.abs(ms);
+  if (abs < 1000) return `${sign}${abs}ms`;
+  const seconds = abs / 1000;
+  if (seconds < 10) return `${sign}${seconds.toFixed(1)}s`;
+  return `${sign}${Math.round(seconds)}s`;
 }
 
 export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex, onSelect, hasTrace, onRunTest, isTestPending, nodeType, containerSummary, onRunContainer }: Props) {
@@ -126,11 +128,23 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
     );
   }
 
-  const firstTimestamp = metadata.startTime > 0
-    ? metadata.startTime
-    : events.length > 0
-      ? (events[0].startTime ?? events[0].timestamp)
-      : 0;
+  // Anchor the strip at the earliest thing in it, not the test's start: the
+  // runner replays inherited scope setup (the file-entry app reset, beforeAll
+  // hooks) into every test's trace, and for every test after the first that
+  // setup ran before the test began. Measured from the test start those
+  // frames read as negative offsets, which look like a clock error.
+  // Labels are placed by `timestamp`, so it must count towards the anchor: a
+  // synthesized `startTime` is clamped up to the test start and would hide a
+  // completion that predates it.
+  const earliestEvent = events.reduce<number | undefined>((min, e) => {
+    const t = Math.min(e.timestamp, e.startTime ?? e.timestamp);
+    return min === undefined || t < min ? t : min;
+  }, undefined);
+  const firstTimestamp = metadata.startTime > 0 && earliestEvent !== undefined
+    ? Math.min(metadata.startTime, earliestEvent)
+    : metadata.startTime > 0
+      ? metadata.startTime
+      : earliestEvent ?? 0;
   const hasTestName = !!metadata.testName;
   const hasDeviceSerial = !!metadata.device.serial;
   const fileName = metadata.testFile ? metadata.testFile.split('/').pop() : undefined;
@@ -176,7 +190,7 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
                   {i + 1}
                 </div>
               )}
-              <div class="timeline-time-label film-label">{relativeTime}</div>
+              <div class="timeline-time-label film-label" data-testid="film-label">{relativeTime}</div>
             </div>
           );
         })}

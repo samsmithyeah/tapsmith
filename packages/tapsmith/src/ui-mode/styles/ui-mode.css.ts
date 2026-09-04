@@ -1873,7 +1873,12 @@ html, body, #app {
 .timeline-thumb:hover { opacity: 1; border-color: var(--border-strong); }
 .timeline-thumb.selected { opacity: 1; border-color: var(--accent); box-shadow: 0 0 0 2px oklch(0.78 0.15 var(--accent-h) / 0.2); }
 .timeline-thumb.failed { opacity: 1; border-color: var(--fail); border-width: 2px; box-shadow: 0 0 0 2px oklch(0.68 0.2 25 / 0.2); }
-.timeline-placeholder { width: 40px; height: calc(var(--filmstrip-h, 130px) - 40px); border-radius: 5px; background: var(--bg-elev-2); border: 1.5px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--fg-muted); flex-shrink: 0; cursor: pointer; transition: all 0.12s; }
+/* The placeholder also carries .film-thumb, whose width: auto would otherwise win by source order
+   and collapse the box to its label. The compound selector keeps our sizing regardless of order; the
+   aspect ratio matches a phone screenshot so the box sits flush with its neighbouring thumbnails.
+   Thumbnails are border-box images whose ratio applies to the content area, so the placeholder uses
+   content-box with the 3px of border taken off its height to land on identical outer dimensions. */
+.timeline-placeholder, .film-thumb.timeline-placeholder { box-sizing: content-box; width: auto; aspect-ratio: 9 / 19.5; height: calc(var(--filmstrip-h, 130px) - 40px - 3px); border-radius: 5px; background: var(--bg-elev-2); border: 1.5px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--fg-muted); flex-shrink: 0; cursor: pointer; transition: all 0.12s; }
 .timeline-placeholder:hover { border-color: var(--border-strong); }
 .timeline-placeholder.selected { border-color: var(--accent); box-shadow: 0 0 0 2px oklch(0.78 0.15 var(--accent-h) / 0.2); }
 .timeline-time-label { position: absolute; transform: translateX(-50%); font-variant-numeric: tabular-nums; }

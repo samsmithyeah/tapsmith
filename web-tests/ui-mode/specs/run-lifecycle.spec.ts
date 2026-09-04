@@ -6,7 +6,7 @@
 
 import { test, expect } from "../fixtures.js"
 import { GESTURES_FILE, singleFileTree } from "../messages/scenarios.js"
-import { action, actionStarted } from "../messages/trace.js"
+import { action, actionCompleted, actionStarted, group } from "../messages/trace.js"
 
 const DOUBLE_TAP = "Gestures screen > double tap registers double tap gesture"
 const TEST_NAME = "double tap registers double tap gesture"
@@ -265,6 +265,36 @@ test.describe("Run lifecycle", () => {
       await expect(actions.item("waitFor")).toBeVisible()
     })
 
+    // The panel hides sections with nothing in them. The in-flight action is
+    // rendered outside the completed-item walk, so the first action of a
+    // group used to show headless until it completed and became a real row —
+    // most visibly the first BEFORE EACH action right after an APP RESET row.
+    test("shows the section header of a group whose first action is still in flight", async ({
+      app,
+      explorer,
+      actions,
+    }) => {
+      const ui = app
+      await explorer.expandAll()
+
+      ui.send({ type: "test-start", fullName: DOUBLE_TAP, filePath: GESTURES_FILE })
+      await explorer.clickNode(TEST_NAME)
+
+      ui.send(group({ testFullName: DOUBLE_TAP, type: "group-start", name: "App reset", actionIndex: 0 }))
+      ui.send(...action({ testFullName: DOUBLE_TAP, actionIndex: 0, action: "appReset" }))
+      ui.send(group({ testFullName: DOUBLE_TAP, type: "group-end", name: "App reset", actionIndex: 0 }))
+      ui.send(group({ testFullName: DOUBLE_TAP, type: "group-start", name: "beforeEach Hooks", actionIndex: 1 }))
+      ui.send(actionStarted({ testFullName: DOUBLE_TAP, actionIndex: 1, action: "openDeepLink" }))
+
+      await expect(actions.inProgressItems).toHaveCount(1)
+      await expect(actions.groups).toHaveText(["APP RESET", "BEFORE EACH"])
+
+      // …and the header stays once the action completes.
+      ui.send(actionCompleted({ testFullName: DOUBLE_TAP, actionIndex: 1, action: "openDeepLink" }))
+      await expect(actions.inProgressItems).toHaveCount(0)
+      await expect(actions.groups).toHaveText(["APP RESET", "BEFORE EACH"])
+    })
+
     test("clears a lingering in-flight action at run-end", async ({ app, explorer, actions }) => {
       const ui = app
       await explorer.expandAll()
@@ -288,6 +318,25 @@ test.describe("Run lifecycle", () => {
       })
 
       await expect(actions.inProgressItems).toHaveCount(0)
+    })
+  })
+
+  test.describe("filmstrip", () => {
+    // UI mode synthesises trace metadata with no start time, so the filmstrip
+    // anchors on the earliest streamed event. Pins that live labels read from
+    // zero and stay in step with the trace viewer's anchoring rule.
+    test("labels frames relative to the first streamed event", async ({ app, explorer, filmstrip }) => {
+      const ui = app
+      await explorer.expandAll()
+
+      ui.send({ type: "test-start", fullName: DOUBLE_TAP, filePath: GESTURES_FILE })
+      await explorer.clickNode(TEST_NAME)
+      ui.send(...action({ testFullName: DOUBLE_TAP, actionIndex: 0, action: "appReset" }))
+      ui.send(...action({ testFullName: DOUBLE_TAP, actionIndex: 1, action: "tap" }))
+
+      await expect(filmstrip.frames).toHaveCount(2)
+      // Completed events land 100ms apart in the builder.
+      await expect(filmstrip.labels).toHaveText(["0ms", "100ms"])
     })
   })
 

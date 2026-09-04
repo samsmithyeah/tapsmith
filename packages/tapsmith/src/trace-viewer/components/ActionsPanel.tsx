@@ -201,22 +201,6 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
     !filterLower ||
     getLabel(event).toLowerCase().includes(filterLower) ||
     getSelectorDisplay(event).toLowerCase().includes(filterLower);
-  const nonEmptyGroups = new Set<number>();
-  {
-    const open: number[] = [];
-    items.forEach((item, i) => {
-      if (item.kind === 'group-start') open.push(i);
-      else if (item.kind === 'group-end') open.pop();
-      else if (rowMatchesFilter(item.event)) for (const g of open) nonEmptyGroups.add(g);
-    });
-  }
-
-  // Compute max duration across all actions for the heatmap
-  const maxDur = items.reduce((max, item) => {
-    if (item.kind !== 'action' || !('event' in item)) return max;
-    return Math.max(max, displayDuration(item.event));
-  }, 1);
-
   // Index assigned to the in-flight row — slots in right after the last
   // completed action so its actionIndex matches the global index that the
   // matching `addActionEvent` will eventually own. Auto-pin in main.tsx
@@ -227,6 +211,27 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
     || inFlightAction.label.toLowerCase().includes(filterLower)
     || inFlightSelector.toLowerCase().includes(filterLower);
   const showInFlight = !!inFlightAction && inFlightMatchesFilter;
+
+  const nonEmptyGroups = new Set<number>();
+  {
+    const open: number[] = [];
+    items.forEach((item, i) => {
+      if (item.kind === 'group-start') open.push(i);
+      else if (item.kind === 'group-end') open.pop();
+      else if (rowMatchesFilter(item.event)) for (const g of open) nonEmptyGroups.add(g);
+    });
+    // The in-flight action streams into whichever groups are still open at the
+    // tail, so its section header must show before its row completes —
+    // otherwise the first action of every group renders headless until it
+    // finishes and becomes a real row.
+    if (showInFlight) for (const g of open) nonEmptyGroups.add(g);
+  }
+
+  // Compute max duration across all actions for the heatmap
+  const maxDur = items.reduce((max, item) => {
+    if (item.kind !== 'action' || !('event' in item)) return max;
+    return Math.max(max, displayDuration(item.event));
+  }, 1);
 
   return (
     <div class="actions-panel">

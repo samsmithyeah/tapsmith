@@ -15,6 +15,16 @@ export class FilmstripPane {
     return this.page.getByTestId("timeline-meta")
   }
 
+  /** Offset label under each frame, e.g. "0ms", "1.2s". */
+  get labels() {
+    return this.page.getByTestId("film-label")
+  }
+
+  /** The numbered box a frame shows when no screenshot exists at or before its step. */
+  get placeholders() {
+    return this.frames.locator(".timeline-placeholder")
+  }
+
   // ─── Flows ───
 
   async selectFrame(index: number) {
