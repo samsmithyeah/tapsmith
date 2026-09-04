@@ -137,11 +137,14 @@ interface ActionOptions {
   sourceLocation?: SourceLocation
   /** Full call stack, innermost frame first. `sourceLocation` is `stack[0]`. */
   stack?: SourceLocation[]
+  /** Group name of the device that acted (multi-device traces). */
+  deviceId?: string
 }
 
 export function actionEvent(o: ActionOptions): ActionTraceEvent {
   return {
     type: "action",
+    deviceId: o.deviceId,
     category: o.category ?? "tap",
     action: o.action,
     selector: o.selector,
@@ -171,9 +174,12 @@ export function assertionEvent(o: {
   negated?: boolean
   sourceLocation?: SourceLocation
   stack?: SourceLocation[]
+  /** Group name of the device that was asserted on (multi-device traces). */
+  deviceId?: string
 }): AssertionTraceEvent {
   return {
     type: "assertion",
+    deviceId: o.deviceId,
     assertion: o.assertion,
     selector: o.selector,
     actionIndex: o.actionIndex,
