@@ -175,7 +175,7 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
       >
         {activeTab === 'call' && <CallTab event={event} metadata={metadata} />}
         {activeTab === 'log' && <LogTab event={event} />}
-        {activeTab === 'console' && <ConsoleTab event={event} events={consoleEvents} />}
+        {activeTab === 'console' && <ConsoleTab event={event} events={consoleEvents} metadata={metadata} />}
         {activeTab === 'source' && <SourceTab event={event} sources={sources} previewHighlight={previewHighlight} />}
         {activeTab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} />}
         {activeTab === 'locator' && locatorTab}
@@ -326,14 +326,61 @@ function LogTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | und
 // ─── Console Tab ───
 
 type SourceFilter = 'all' | 'test' | 'device' | 'daemon'
+type ConsoleTimeMode = 'relative' | 'absolute'
+type ConsoleSortColumn = 'time' | 'level' | 'source' | 'message'
+type ConsoleSortDirection = 'asc' | 'desc'
+
+const CONSOLE_COLUMNS: Array<{ key: ConsoleSortColumn; label: string; class: string }> = [
+  { key: 'time', label: 'Time', class: 'log-time' },
+  { key: 'level', label: 'Level', class: 'log-level' },
+  { key: 'source', label: 'Source', class: 'log-source' },
+  { key: 'message', label: 'Message', class: 'log-message' },
+];
 
 const LEVEL_ORDER: ConsoleLevel[] = ['error', 'warn', 'info', 'log', 'debug'];
 
-function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; events: ConsoleTraceEvent[] }) {
+/**
+ * Offset of a console entry from the start of the test, e.g. `+1.234s`.
+ * Fixed three decimals keep the column aligned in the monospace list.
+ */
+function formatConsoleOffset(ms: number): string {
+  const clamped = Math.max(0, ms);
+  return `+${(clamped / 1000).toFixed(3)}s`;
+}
+
+/** Absolute wall-clock time with millisecond precision. */
+function formatConsoleWallClock(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number, w = 2) => String(n).padStart(w, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+function ConsoleTab({ event, events: consoleEvents, metadata }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; events: ConsoleTraceEvent[]; metadata: TraceMetadata }) {
   const [search, setSearch] = useState('');
+  // Offsets are relative to the test start. UI mode never has one: the SPA is
+  // not told when a test began (`ui-mode/main.tsx` builds its live metadata with
+  // `startTime: 0`), so it always falls back to the earliest console entry.
+  // Offsets there are therefore relative to the first log line, which is what
+  // `docs/trace-viewer.md` documents. The filmstrip has the same no-start-time
+  // problem and takes the same fallback, but it also clamps a *present*
+  // `startTime` against its earliest event; console entries are stamped on
+  // ingestion and so never precede the test start, which is why this doesn't.
+  const timeBase = useMemo(() => {
+    if (metadata.startTime > 0) return metadata.startTime;
+    let min = Infinity;
+    for (const e of consoleEvents) if (e.timestamp < min) min = e.timestamp;
+    return min === Infinity ? 0 : min;
+  }, [metadata.startTime, consoleEvents]);
   const [levelFilter, setLevelFilter] = useState<Set<ConsoleLevel>>(new Set(LEVEL_ORDER));
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [scopeToAction, setScopeToAction] = useState(false);
+  // Read back through a validating narrow rather than a cast: a stale or
+  // hand-edited storage value would otherwise match neither pill, leaving both
+  // unlit while the list silently rendered wall-clock times.
+  const [storedTimeMode, setTimeMode] = usePersistedString('tapsmith-console-time', 'relative');
+  const timeMode: ConsoleTimeMode = storedTimeMode === 'absolute' ? 'absolute' : 'relative';
+  const [sortColumn, setSortColumn] = useState<ConsoleSortColumn>('time');
+  const [sortDirection, setSortDirection] = useState<ConsoleSortDirection>('asc');
 
   const presentSources = useMemo(() => {
     const s = new Set<SourceFilter>();
@@ -352,14 +399,37 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
 
   const filtered = useMemo(() => {
     const lf = search.toLowerCase();
-    return consoleEvents.filter(e => {
+    const result = consoleEvents.filter(e => {
       if (!levelFilter.has(e.level as ConsoleLevel)) return false;
       if (sourceFilter !== 'all' && e.source !== sourceFilter) return false;
       if (scopeToAction && event && Math.abs(e.actionIndex - event.actionIndex) > 1) return false;
       if (lf && !e.message.toLowerCase().includes(lf)) return false;
       return true;
     });
-  }, [consoleEvents, search, levelFilter, sourceFilter, scopeToAction, event]);
+    // Array.prototype.sort is stable, so entries that tie on the chosen column
+    // keep their chronological order — sorting by level still reads as a log.
+    result.sort((a, b) => {
+      let cmp = 0;
+      switch (sortColumn) {
+        case 'time': cmp = a.timestamp - b.timestamp; break;
+        // Severity order, not alphabetical: error < warn < info < log < debug.
+        case 'level': cmp = LEVEL_ORDER.indexOf(a.level) - LEVEL_ORDER.indexOf(b.level); break;
+        case 'source': cmp = a.source.localeCompare(b.source); break;
+        case 'message': cmp = a.message.localeCompare(b.message); break;
+      }
+      return sortDirection === 'asc' ? cmp : -cmp;
+    });
+    return result;
+  }, [consoleEvents, search, levelFilter, sourceFilter, scopeToAction, event, sortColumn, sortDirection]);
+
+  const handleSort = (col: ConsoleSortColumn) => {
+    if (sortColumn === col) {
+      setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(col);
+      setSortDirection('asc');
+    }
+  };
 
   const toggleLevel = (level: ConsoleLevel) => {
     setLevelFilter(prev => {
@@ -408,6 +478,17 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
             </div>
           </>
         )}
+        <div class="con-pill-sep" />
+        <div class="con-pills" role="group" aria-label="Timestamp format">
+          {(['relative', 'absolute'] as ConsoleTimeMode[]).map(m => (
+            <button
+              key={m}
+              class={`con-pill${timeMode === m ? ' active' : ''}`}
+              aria-pressed={timeMode === m}
+              onClick={() => setTimeMode(m)}
+            >{m}</button>
+          ))}
+        </div>
         {event && (
           <>
             <div class="con-pill-sep" />
@@ -418,11 +499,30 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
           </>
         )}
       </div>
+      <div class="log-entry con-header" role="group" aria-label="Sort console output">
+        {CONSOLE_COLUMNS.map(col => (
+          <button
+            key={col.key}
+            class={`con-th ${col.class}${sortColumn === col.key ? ' active' : ''}`}
+            aria-pressed={sortColumn === col.key}
+            data-sort-direction={sortColumn === col.key ? sortDirection : undefined}
+            onClick={() => handleSort(col.key)}
+          >
+            {col.label}
+            {sortColumn === col.key && <span class="con-sort-indicator">{sortDirection === 'asc' ? '\u25B2' : '\u25BC'}</span>}
+          </button>
+        ))}
+      </div>
       <div class="con-list" role="log" aria-label="Console output">
         {filtered.length === 0
           ? <div class="no-content" data-testid="no-content">No matching log entries</div>
           : filtered.map((ev, i) => (
             <div key={i} class="log-entry" data-testid="log-entry">
+              <span
+                class="log-time"
+                data-testid="log-time"
+                title={timeMode === 'relative' ? formatConsoleWallClock(ev.timestamp) : formatConsoleOffset(ev.timestamp - timeBase)}
+              >{timeMode === 'relative' ? formatConsoleOffset(ev.timestamp - timeBase) : formatConsoleWallClock(ev.timestamp)}</span>
               <span class={`log-level ${ev.level}`}>{ev.level}</span>
               <span class="log-source">{ev.source}</span>
               <span class="log-message">{ev.message}</span>

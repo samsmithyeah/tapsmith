@@ -14,6 +14,7 @@ import { TestExplorerPane } from "./panes/test-explorer.pane.js"
 import { RunControlsPane } from "./panes/run-controls.pane.js"
 import { ActionsPane } from "../panes/actions.pane.js"
 import { FilmstripPane } from "../panes/filmstrip.pane.js"
+import { DetailTabsPane } from "../panes/detail-tabs.pane.js"
 import { DevicePane } from "./panes/device.pane.js"
 import { McpPane } from "./panes/mcp.pane.js"
 import { idleSeed, singleFileTree } from "./messages/scenarios.js"
@@ -30,6 +31,7 @@ type Fixtures = {
   runControls: RunControlsPane
   actions: ActionsPane
   filmstrip: FilmstripPane
+  detailTabs: DetailTabsPane
   device: DevicePane
   mcp: McpPane
   /** The SPA loaded and idle with a one-file tree — the common starting point. */
@@ -61,6 +63,10 @@ export const test = base.extend<Fixtures>({
 
   filmstrip: async ({ page }, use) => {
     await use(new FilmstripPane(page))
+  },
+
+  detailTabs: async ({ page }, use) => {
+    await use(new DetailTabsPane(page))
   },
 
   device: async ({ page }, use) => {

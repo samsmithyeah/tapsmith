@@ -200,6 +200,8 @@ export function consoleEvent(o: {
   level: ConsoleTraceEvent["level"]
   message: string
   source?: ConsoleTraceEvent["source"]
+  /** Offset from the trace's start time in ms. Defaults to 100ms per action index. */
+  offsetMs?: number
 }): ConsoleTraceEvent {
   return {
     type: "console",
@@ -207,7 +209,7 @@ export function consoleEvent(o: {
     message: o.message,
     source: o.source ?? "device",
     actionIndex: o.actionIndex,
-    timestamp: BASE_TIME + o.actionIndex * 100,
+    timestamp: BASE_TIME + (o.offsetMs ?? o.actionIndex * 100),
   }
 }
 
