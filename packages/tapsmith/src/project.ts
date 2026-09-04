@@ -5,7 +5,7 @@
  * dependency constraints and shared `use` options.
  */
 
-import { effectiveConfigForProject, type TapsmithConfig, type ProjectConfig, type UseOptions } from './config.js';
+import { deviceGroupSize, effectiveConfigForProject, resolveDeviceGroup, type TapsmithConfig, type ProjectConfig, type UseOptions } from './config.js';
 import { matchesTestFile } from './test-file-discovery.js';
 
 // ─── Types ───
@@ -51,25 +51,33 @@ export interface ResolvedProject {
  */
 export function deviceSignature(config: TapsmithConfig): string {
   const platform = config.platform ?? 'android';
-  if (platform === 'ios') {
-    return [
+  const base = platform === 'ios'
+    ? [
       'ios',
       config.simulator ?? '',
       config.device ?? '',
       config.package ?? '',
       config.app ?? '',
       config.iosXctestrun ?? '',
-    ].join('|');
+    ]
+    : [
+      'android',
+      config.avd ?? '',
+      config.device ?? '',
+      config.package ?? '',
+      config.apk ?? '',
+      config.deviceStrategy ?? '',
+      config.launchEmulators ? '1' : '0',
+    ];
+  // A "worker" is a device group: a project driving two devices per test
+  // cannot share a worker pool with one driving a single device, even when
+  // every other device-shaping field agrees. Single-device signatures are
+  // unchanged so existing bucket keys stay stable.
+  if (deviceGroupSize(config) > 1) {
+    const group = resolveDeviceGroup(config);
+    base.push(`devices=${group.map((e) => `${e.name}${e.device ? `@${e.device}` : ''}`).join(',')}`);
   }
-  return [
-    'android',
-    config.avd ?? '',
-    config.device ?? '',
-    config.package ?? '',
-    config.apk ?? '',
-    config.deviceStrategy ?? '',
-    config.launchEmulators ? '1' : '0',
-  ].join('|');
+  return base.join('|');
 }
 
 // ─── Worker allocation ───

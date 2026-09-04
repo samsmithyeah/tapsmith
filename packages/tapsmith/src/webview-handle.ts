@@ -112,6 +112,8 @@ function normalizeNthIndex(nthIndex: number, count: number): number {
 
 export interface WebViewTraceContext {
   collector: TraceCollector
+  /** Group name of the device hosting this WebView (multi-device tests). */
+  deviceId?: string
   takeScreenshot: () => Promise<Buffer | undefined>
   captureHierarchy: () => Promise<string | undefined>
 }
@@ -256,6 +258,7 @@ export class WebViewHandle {
       selector: selectorStr,
       sourceLocation,
       stack,
+      deviceId: ctx.deviceId,
       log: [`webview.${action}(${selectorStr ?? ''})`],
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -282,6 +285,7 @@ export class WebViewHandle {
         hasHierarchyAfter: false,
         sourceLocation,
         stack,
+        deviceId: ctx.deviceId,
       });
     }, stack);
 
@@ -302,6 +306,7 @@ export class WebViewHandle {
           hasHierarchyAfter: false,
           sourceLocation,
           stack,
+          deviceId: ctx.deviceId,
         });
       }
       throw err;
@@ -336,6 +341,7 @@ export class WebViewHandle {
       hasHierarchyAfter: false,
       sourceLocation,
       stack,
+      deviceId: ctx.deviceId,
     });
 
     return result;

@@ -151,6 +151,13 @@ export class Device {
   /** Programmatic tracing API. */
   readonly tracing: Tracing;
 
+  /**
+   * @internal — Group name of this device in a multi-device test (`alice`,
+   * `device-2`). Stamped as `deviceId` on every trace event it produces so a
+   * shared trace can tell the devices apart. Unset for single-device runs.
+   */
+  _traceDeviceId?: string;
+
   /** @internal — Cached device info from the daemon (model, osVersion, etc.). */
   _cachedDeviceInfo: { model?: string; osVersion?: string; isEmulator?: boolean } | null = null;
 
@@ -373,6 +380,7 @@ export class Device {
     const collector = this._traceCollector;
     const ctx = collector ? {
       collector,
+      deviceId: this._traceDeviceId,
       takeScreenshot: () => this._takeScreenshotBuffer(),
       captureHierarchy: () => this._captureHierarchy(),
       findElement: (sel: Selector, timeout: number) => this._client.findElement(sel, timeout),
@@ -442,6 +450,7 @@ export class Device {
   private _handle(selector: Selector): ElementHandle {
     const traceCapture = this._traceCollector ? {
       collector: this._traceCollector,
+      deviceId: this._traceDeviceId,
       takeScreenshot: () => this._takeScreenshotBuffer(),
       captureHierarchy: () => this._captureHierarchy(),
       ...(this._platform === 'ios' ? {
@@ -955,7 +964,7 @@ export class Device {
       const message = entry.tag
         ? `[${entry.tag}] ${entry.message}`
         : entry.message;
-      collector.addLogcatEntry(level, message);
+      collector.addLogcatEntry(level, message, this._traceDeviceId);
     });
 
     stream.on('error', (err: Error) => {
@@ -1004,7 +1013,7 @@ export class Device {
       const message = entry.target
         ? `[${entry.target}] ${entry.message}`
         : entry.message;
-      collector.addDaemonLogEntry(level, message);
+      collector.addDaemonLogEntry(level, message, this._traceDeviceId);
     });
 
     stream.on('error', (err: Error) => {
@@ -1677,6 +1686,7 @@ export class Device {
     if (this._traceCollector) {
       handle._traceCtx = {
         collector: this._traceCollector,
+        deviceId: this._traceDeviceId,
         takeScreenshot: () => this._takeScreenshotBuffer(),
         captureHierarchy: () => this._captureHierarchy(),
       };

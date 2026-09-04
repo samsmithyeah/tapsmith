@@ -14,10 +14,31 @@ import { normalizeGrep, type AppResetMode, type AppResetScope, type TapsmithConf
 export interface InitMessage {
   type: 'init'
   workerId: number
+  /** The group's primary device (`devices[0]`). */
   deviceSerial: string
   daemonPort: number
   config: SerializedConfig
   /** True when the emulator was freshly launched for this run (needs warmup). */
+  freshEmulator?: boolean
+  /**
+   * The rest of the device group (`devices[1..]`), each on its own daemon.
+   * Present only for group projects (`use.devices`); a single-device worker
+   * omits it. The primary's name is `config.devices`' first entry.
+   */
+  groupMembers?: WorkerGroupMember[]
+}
+
+/**
+ * One secondary device of a worker's group, with the daemon that drives it.
+ * Shared by every child protocol (headless workers, UI workers, watch/MCP run
+ * children) so a group is described the same way everywhere.
+ */
+export interface WorkerGroupMember {
+  /** Group entry name from `use.devices` (e.g. `bob`). */
+  name: string
+  deviceSerial: string
+  daemonPort: number
+  /** Freshly provisioned for this run (needs reinstall + warmup). */
   freshEmulator?: boolean
 }
 
@@ -265,6 +286,8 @@ export interface SerializedConfig {
   appResetColdEvery?: number
   baseURL?: string
   extraHTTPHeaders?: Record<string, string>
+  /** Device group declaration (`use.devices`), verbatim — plain data already. */
+  devices?: TapsmithConfig['devices']
   /** RegExp filters for test fullNames. Source/flags are serialized for IPC. */
   grep?: SerializedRegExp[]
   grepInvert?: SerializedRegExp[]
@@ -300,6 +323,7 @@ export function serializeConfig(config: TapsmithConfig): SerializedConfig {
     appResetColdEvery: config.appResetColdEvery,
     baseURL: config.baseURL,
     extraHTTPHeaders: config.extraHTTPHeaders,
+    devices: config.devices,
     grep: serializeRegExpArray(normalizeGrep(config.grep)),
     grepInvert: serializeRegExpArray(normalizeGrep(config.grepInvert)),
   };
@@ -340,6 +364,7 @@ export function configFromSerialized(s: SerializedConfig, daemonAddress: string)
     appResetColdEvery: s.appResetColdEvery,
     baseURL: s.baseURL,
     extraHTTPHeaders: s.extraHTTPHeaders,
+    devices: s.devices,
     grep: deserializeRegExpArray(s.grep),
     grepInvert: deserializeRegExpArray(s.grepInvert),
   };

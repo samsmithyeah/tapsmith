@@ -28,7 +28,7 @@ import { appendEventsToTrace, packageTrace, readTraceActionCount } from './trace
 import { TraceCollector, screenshotFileName, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
 import type { AnyTraceEvent } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
-import type { TraceDeviceInfo } from './trace/types.js';
+import type { NetworkEntry, TraceDeviceInfo } from './trace/types.js';
 import { TestAbortedError, isAbortError } from './abort.js';
 import {
   appResetAction,
@@ -41,31 +41,66 @@ import {
   type ResetCapabilities,
 } from './app-reset.js';
 import { executeAppReset, type ExecuteAppResetOptions, type SessionPreflightContext } from './session-preflight.js';
-import { validateAppResetOptions } from './config.js';
+import { validateAppResetOptions, validateDevicesOption } from './config.js';
 import { onActionProgress } from './action-progress.js';
 import { runInAttemptContext, type AttemptToken } from './attempt-fence.js';
 import { matchesTestFilter } from './test-filter.js';
 
 // ─── Trace Device Info ───
 
-async function buildTraceDeviceInfo(opts: RunOptions): Promise<TraceDeviceInfo> {
-  const serial = opts.config.device ?? 'unknown';
+async function buildTraceDeviceInfo(opts: RunOptions, rd: RunDevice, index: number): Promise<TraceDeviceInfo> {
+  // The primary's serial historically came from `config.device`; group
+  // members carry their own.
+  const serial = rd.serial ?? (index === 0 ? opts.config.device : undefined) ?? 'unknown';
+  const platform = opts.config.platform ?? 'android';
   const info: TraceDeviceInfo = {
     serial,
+    name: rd.name,
+    platform,
     isEmulator: serial.startsWith('emulator-'),
-    devicePixelRatio: opts.config.platform === 'ios' && opts.config.device
-      ? getSimulatorScreenScale(opts.config.device)
+    devicePixelRatio: platform === 'ios' && serial !== 'unknown'
+      ? getSimulatorScreenScale(serial)
       : undefined,
   };
-  if (opts.device?._fetchDeviceInfo) {
+  if (rd.device?._fetchDeviceInfo) {
     try {
-      const cached = await opts.device._fetchDeviceInfo(serial);
+      const cached = await rd.device._fetchDeviceInfo(serial);
       if (cached.model) info.model = cached.model;
       if (cached.osVersion) info.osVersion = cached.osVersion;
       if (cached.isEmulator != null) info.isEmulator = cached.isEmulator;
     } catch { /* best-effort enrichment */ }
   }
   return info;
+}
+
+/**
+ * Trace metadata for every device of the run: `device` (the primary, kept for
+ * readers of older traces) and `devices` (the whole group, primary first).
+ */
+async function traceDeviceMetadata(opts: RunOptions): Promise<{ device: TraceDeviceInfo; devices: TraceDeviceInfo[] }> {
+  const group = opts.devices.length > 0 ? opts.devices : [{ name: 'device-1', device: undefined as unknown as Device }];
+  const devices = await Promise.all(group.map((rd, i) => buildTraceDeviceInfo(opts, rd, i)));
+  return { device: devices[0], devices };
+}
+
+/** The primary device of the run (`devices[0]`), if any. */
+function primaryDevice(opts: RunOptions): Device | undefined {
+  return opts.devices[0]?.device;
+}
+
+/** Every device of the run, primary first. */
+function allDevices(opts: RunOptions): Device[] {
+  return opts.devices.map((d) => d.device);
+}
+
+/** Run `fn` against every device concurrently, swallowing per-device errors. */
+async function forEachDeviceBestEffort(opts: RunOptions, fn: (device: Device) => Promise<unknown> | unknown): Promise<void> {
+  await Promise.allSettled(allDevices(opts).map(async (d) => { await fn(d); }));
+}
+
+/** Devices whose embedder supplied a session context — the ones the runner can reset. */
+function resettableDevices(opts: RunOptions): Array<RunDevice & { sessionContext: SessionPreflightContext }> {
+  return opts.devices.filter((d): d is RunDevice & { sessionContext: SessionPreflightContext } => !!d.sessionContext);
 }
 
 // ─── Result types ───
@@ -197,7 +232,15 @@ export interface SuiteResult {
 // ─── Fixtures ───
 
 export interface TestFixtures {
+  /** The primary device — an alias for `devices[0]`. */
   device: Device;
+  /**
+   * Every device this test drives, in the order declared by the project's
+   * `use.devices`. One entry without `devices` configured. Destructure by
+   * position (`{ devices: [alice, bob] }`) to drive two app sessions from one
+   * test — the mobile analogue of Playwright's multi-context tests.
+   */
+  devices: Device[];
   /** API request context for making HTTP calls during tests. */
   request: APIRequestContext;
   /** Name of the project running this test, if projects are configured. */
@@ -399,6 +442,17 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
           throw new Error('test.use() retries must be a non-negative number');
         }
         validateAppResetOptions(options, 'test.use()');
+        if (options.devices !== undefined) {
+          // Every other device-shaping key is silently ignored here (the worker
+          // is bound before the file is imported); a group declared this way
+          // would leave the test destructuring devices that never exist, so
+          // fail with the fix instead.
+          throw new Error(
+            'test.use({ devices }) is not supported: the device group is bound to the worker before any test runs. '
+            + 'Declare it on a project instead: projects: [{ name, testMatch, use: { devices: 2 } }].',
+          );
+        }
+        validateDevicesOption(options, 'test.use()');
         const ctx = currentContext();
         ctx.useOptions = { ...ctx.useOptions, ...options };
       },
@@ -519,9 +573,45 @@ export interface TestStartOptions {
   policy?: AppResetPolicy;
 }
 
+/**
+ * One device of a run, as the embedder hands it to the runner. `devices[0]`
+ * is the primary: it records the trace, hosts video recording, and is what
+ * the `device` fixture resolves to.
+ */
+export interface RunDevice {
+  /** Group entry name (`alice`, `device-1`) — the trace's `deviceId` for this device. */
+  name: string;
+  device: Device;
+  /** Serial / UDID, for trace metadata. Falls back to `config.device` for the primary. */
+  serial?: string;
+  /**
+   * Session context used to execute the declared app reset policy
+   * (`appReset` / `appResetScope` / `appState`) on this device as traced
+   * fixture setup. Without it the runner performs no reset on the device
+   * (unit tests, embedders that manage isolation themselves).
+   */
+  sessionContext?: SessionPreflightContext;
+  /**
+   * A reset that already happened on this device before the file started
+   * (the startup launch of a fresh install, a background preparation).
+   * Consumed once: the first reset the file would perform is skipped when
+   * this satisfies it.
+   */
+  prepared?: PreparedState;
+}
+
 export interface RunOptions {
   config: TapsmithConfig;
-  device?: Device;
+  /**
+   * The devices this file's tests drive, primary first — deliberately
+   * REQUIRED, like `resetCapabilities`. Every embedder (sequential CLI,
+   * worker-runner, ui-worker, watch-run — which also serves the MCP
+   * dispatcher) must thread its whole device group here: a group project
+   * whose embedder passed only the primary would hand tests a `devices`
+   * fixture missing the members they destructure. Pass `[]` only for runs
+   * with no device at all (unit tests of the runner itself).
+   */
+  devices: RunDevice[];
   screenshotDir?: string;
   reporter?: TapsmithReporter;
   /**
@@ -553,19 +643,6 @@ export interface RunOptions {
   /** Project name — stamped on test results for reporter grouping. */
   projectName?: string;
   /**
-   * Device session context used to execute the declared app reset policy
-   * (`appReset` / `appResetScope` / `appState`) as traced fixture setup.
-   * Without it the runner performs no app resets (unit tests, embedders that
-   * manage isolation themselves).
-   */
-  sessionContext?: SessionPreflightContext;
-  /**
-   * A reset that already happened before this file started (the startup
-   * launch of a fresh install, a background preparation). Consumed once: the
-   * first reset the file would perform is skipped when this satisfies it.
-   */
-  preparedDevice?: PreparedState;
-  /**
    * Runtime capabilities used to resolve `appReset: 'auto'` — deliberately
    * REQUIRED, not optional. Every embedder (sequential CLI, worker-runner,
    * ui-worker, watch-run — which also serves the MCP dispatcher) must thread
@@ -575,8 +652,12 @@ export interface RunOptions {
    * contexts with no device capability probing (unit tests).
    */
   resetCapabilities: ResetCapabilities;
-  /** @internal — shared holder so `preparedDevice` is consumed exactly once per file. */
-  _prepared?: { current?: PreparedState };
+  /**
+   * @internal — per-device prepared state, keyed by device name, shared down
+   * the describe tree so each device's preparation is consumed exactly once
+   * per file (by whichever scope resets that device first).
+   */
+  _prepared?: Map<string, PreparedState>;
   /**
    * @internal — the policy most recently applied to the device within this
    * file (by any scope's entry reset or a per-test reset). Scope-entry
@@ -625,6 +706,25 @@ export interface RunOptions {
   bustImportCache?: boolean;
   /** When aborted, skip remaining tests but still run afterEach/afterAll hooks. */
   abortSignal?: AbortSignal;
+}
+
+/**
+ * Capture a screenshot from every device of the run. The primary's path is
+ * returned (and linked on the result); the other devices' files carry their
+ * group name as a suffix so a two-user failure shows both screens.
+ */
+async function captureFailureScreenshots(
+  opts: RunOptions,
+  screenshotDir: string | undefined,
+  testName: string,
+): Promise<string | undefined> {
+  if (opts.devices.length === 0 || !screenshotDir) return undefined;
+  const paths = await Promise.all(opts.devices.map((rd, i) => captureFailureScreenshot(
+    rd.device,
+    screenshotDir,
+    opts.devices.length > 1 && i > 0 ? `${testName}-${rd.name}` : testName,
+  )));
+  return paths[0];
 }
 
 async function captureFailureScreenshot(
@@ -740,7 +840,7 @@ async function invokeHookWithTestScope(
   }
 }
 
-const builtinFixtureNames = new Set(['device', 'request', 'projectName', 'platform']);
+const builtinFixtureNames = new Set(['device', 'devices', 'request', 'projectName', 'platform']);
 
 function validateHookFixtures(
   hook: HookEntry,
@@ -916,37 +1016,81 @@ const APP_RESET_GROUP = 'App reset';
  */
 async function runTracedAppReset(
   collector: TraceCollector | null,
-  ctx: SessionPreflightContext,
+  opts: RunOptions,
   policy: AppResetPolicy,
-  options: ExecuteAppResetOptions,
-): Promise<AppResetReport> {
+  options: Omit<ExecuteAppResetOptions, 'prepared'>,
+): Promise<Map<string, AppResetReport>> {
   collector?.startGroup(APP_RESET_GROUP);
   const started = Date.now();
+  const reports = new Map<string, AppResetReport>();
   try {
-    const report = await executeAppReset(ctx, policy, options);
-    // `appReset: 'none'` does nothing worth a row (the policy is in the trace
-    // metadata); prepared / fallback outcomes get a summary row.
-    const isNone = appResetAction(policy).kind === 'none';
-    if (collector && !isNone && (report.origin !== 'inline' || report.fellBack)) {
-      collector.addActionEvent({
-        category: 'device',
-        action: 'appReset',
-        duration: report.durationMs,
-        startTime: started,
-        endTime: started + report.durationMs,
-        success: true,
-        detail: report.reason ?? describeAction(policy),
-        origin: report.origin,
-        log: report.steps.map((s) => `${s.name}: ${s.durationMs}ms${s.ok ? '' : ` — failed: ${s.detail ?? 'unknown error'}`}`),
-        hasScreenshotBefore: false,
-        hasScreenshotAfter: false,
-        hasHierarchyBefore: false,
-        hasHierarchyAfter: false,
-      });
-    }
-    return report;
+    // Every device of the group resets concurrently — the devices are
+    // independent and a serial reset would double the isolation cost of every
+    // two-user test. Each device consumes its own prepared state. A failure on
+    // any device fails the reset (the group is atomic: a test cannot start
+    // with one user ready and the other not).
+    const resets = resettableDevices(opts).map(async (rd) => {
+      const prepared = opts._prepared?.get(rd.name);
+      const report = await executeAppReset(
+        { ...rd.sessionContext, config: { ...opts.config, device: rd.serial ?? opts.config.device } },
+        policy,
+        { ...options, prepared },
+      );
+      reports.set(rd.name, report);
+      // `appReset: 'none'` does nothing worth a row (the policy is in the trace
+      // metadata); prepared / fallback outcomes get a summary row per device.
+      const isNone = appResetAction(policy).kind === 'none';
+      if (collector && !isNone && (report.origin !== 'inline' || report.fellBack)) {
+        collector.addActionEvent({
+          category: 'device',
+          action: 'appReset',
+          duration: report.durationMs,
+          startTime: started,
+          endTime: started + report.durationMs,
+          success: true,
+          detail: report.reason ?? describeAction(policy),
+          origin: report.origin,
+          log: report.steps.map((s) => `${s.name}: ${s.durationMs}ms${s.ok ? '' : ` — failed: ${s.detail ?? 'unknown error'}`}`),
+          hasScreenshotBefore: false,
+          hasScreenshotAfter: false,
+          hasHierarchyBefore: false,
+          hasHierarchyAfter: false,
+          ...(rd.device._traceDeviceId ? { deviceId: rd.device._traceDeviceId } : {}),
+        });
+      }
+    });
+    await Promise.all(resets);
+    return reports;
   } finally {
     collector?.endGroup();
+  }
+}
+
+/**
+ * After a scope-entry reset: every device now holds exactly this policy's
+ * state, and nothing has touched the app since — so the reset doubles as
+ * preparation for the next reset in the file. A reset that was itself
+ * satisfied by a prepared device carries the original preparation forward, so
+ * the trace keeps naming its source.
+ */
+function recordPreparedAfterReset(
+  opts: RunOptions,
+  policy: AppResetPolicy,
+  reports: Map<string, AppResetReport>,
+  source: string,
+): void {
+  if (!opts._prepared) return;
+  for (const [name, report] of reports) {
+    if (appResetAction(policy).kind === 'none') {
+      opts._prepared.delete(name);
+      continue;
+    }
+    opts._prepared.set(name, report.satisfiedBy ?? {
+      policy,
+      preparedAt: Date.now(),
+      durationMs: report.durationMs,
+      source,
+    });
   }
 }
 
@@ -967,7 +1111,7 @@ async function runSuiteContext(
   // in this file), falling back to the lexical parent before anything ran.
   const appliedPolicy = opts._applied?.current ?? parentPolicy;
   const policyChanged = !isRoot && !appResetPolicyEquals(policy, appliedPolicy);
-  const canReset = !!opts.sessionContext && !!opts.config.package && !!opts.device;
+  const canReset = !!opts.config.package && resettableDevices(opts).length > 0;
   // File-scope policies reset on entering the file and whenever a nested
   // describe declares a different policy (e.g. test.use({ appState })).
   // Test-scope policies reset before every test instead, so a scope only
@@ -987,25 +1131,26 @@ async function runSuiteContext(
       : ctx.beforeAll.length > 0
   );
   const inheritedActionCount = inherited.recordings.reduce((n, r) => n + r.actionCount, 0);
-  const resetContext = (): SessionPreflightContext => ({ ...opts.sessionContext!, config: opts.config });
+  const devices = allDevices(opts);
+  const primary = primaryDevice(opts);
 
-  // Propagate timeout override to the device so assertion auto-wait uses it
-  const prevDeviceTimeout = scopeTimeout && opts.device
-    ? opts.device._getDefaultTimeout()
+  // Propagate timeout override to every device so assertion auto-wait uses it
+  const prevDeviceTimeouts = scopeTimeout
+    ? devices.map((d) => d._getDefaultTimeout())
     : undefined;
-  if (scopeTimeout && opts.device) {
-    opts.device._setDefaultTimeout(scopeTimeout);
+  if (scopeTimeout) {
+    for (const d of devices) d._setDefaultTimeout(scopeTimeout);
   }
   // Likewise `appResetColdEvery`: the runner's own resets read it from
   // `opts.config`, but a mid-test `device.resetApp()` reads the device's copy,
   // which was set once at construction — without this a scope's override
   // would reach the policy path and silently miss explicit resets.
   const scopeColdEvery = ctx.useOptions?.appResetColdEvery;
-  const prevDeviceColdEvery = scopeColdEvery !== undefined && opts.device
-    ? opts.device._getAppResetColdEvery()
+  const prevDeviceColdEvery = scopeColdEvery !== undefined
+    ? devices.map((d) => d._getAppResetColdEvery())
     : undefined;
-  if (scopeColdEvery !== undefined && opts.device) {
-    opts.device._setAppResetColdEvery(scopeColdEvery);
+  if (scopeColdEvery !== undefined) {
+    for (const d of devices) d._setAppResetColdEvery(scopeColdEvery);
   }
 
   const result: SuiteResult = { name: parentPrefix, tests: [], suites: [], durationMs: 0 };
@@ -1029,7 +1174,7 @@ async function runSuiteContext(
   // visible for every test in the suite (UI mode + trace viewer).
   let beforeAllCollector: TraceCollector | null = null;
   let beforeAllFirstFullName: string | undefined;
-  if (scopeHasRunnable && (ctx.beforeAll.length > 0 || needsScopeReset) && opts.device) {
+  if (scopeHasRunnable && (ctx.beforeAll.length > 0 || needsScopeReset) && primary) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
     if (shouldRecord(traceConfig.mode, 0)) {
       // Tag beforeAll trace events with the first test that will run in
@@ -1048,14 +1193,14 @@ async function runSuiteContext(
       // Trigger _startManaged to fire the monkey-patch (ui-run.ts sets up
       // the event callback), then transfer the callback to a standalone
       // collector and clear the managed one.
-      const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
+      const managedCollector = primary.tracing._startManaged(traceConfig, tempDir);
       beforeAllCollector = new TraceCollector(traceConfig, tempDir);
       beforeAllCollector.setTimelineOrigin(suiteStart);
       // Continue numbering after any enclosing scope's setup actions.
       if (inheritedActionCount > 0) beforeAllCollector.setActionIndexOffset(inheritedActionCount);
       const cb = managedCollector.getEventCallback();
       if (cb) beforeAllCollector.setEventCallback(cb);
-      opts.device.tracing._stopManaged();
+      primary.tracing._stopManaged();
 
       // Fold the enclosing scopes' setup into this collector first, so this
       // scope's recording is chronological (root reset → root hooks → this
@@ -1070,7 +1215,7 @@ async function runSuiteContext(
     }
   }
   const suiteFixtures: Record<string, unknown> = {
-    ...(opts.device ? { device: opts.device } : {}),
+    ...(primary ? { device: primary, devices } : {}),
     ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
     platform: resolvePlatformFixture(opts.config),
     ...(opts.workerFixtures ?? {}),
@@ -1094,45 +1239,33 @@ async function runSuiteContext(
         // state is cleared by the first reset of the file (any scope), so a
         // nested describe reached before anything touched the app can use it
         // just as the root scope would; later scopes find it already spent.
-        const prepared = opts._prepared?.current;
-        let report: AppResetReport;
+        let reports: Map<string, AppResetReport>;
         try {
-          report = await runTracedAppReset(beforeAllCollector, resetContext(), policy, {
+          reports = await runTracedAppReset(beforeAllCollector, opts, policy, {
             phase: isRoot
               ? `file reset for ${path.basename(opts.testFilePath ?? '')}`
               : `reset for ${parentPrefix}`,
             // Cold vs warm delivery of the hook is the daemon's policy
             // (appResetColdEvery); only retries force it from here.
             forceCold: false,
-            prepared,
           });
         } catch (err) {
           if (isRoot) fileEntryResetError = err instanceof Error ? err : new Error(String(err));
           throw err;
         }
         if (opts._applied) opts._applied.current = policy;
-        // The device now holds exactly this policy's state, and nothing has
-        // touched the app since — so the reset doubles as preparation for the
-        // next reset in the file. Without this, `test.use({ appResetScope:
-        // 'test' })` inside a describe pays twice at file entry: the root's
-        // file-scoped reset, then the first per-test reset a moment later.
-        // `satisfies()` turns that second reset into a summary row instead.
-        // A reset that was itself satisfied by a prepared device carries the
-        // original preparation forward, so the trace keeps naming its source.
-        if (opts._prepared) {
-          opts._prepared.current = appResetAction(policy).kind === 'none'
-            ? undefined
-            : report.satisfiedBy ?? {
-              policy,
-              preparedAt: Date.now(),
-              durationMs: report.durationMs,
-              source: isRoot ? 'the file-entry reset' : `the entry reset for ${parentPrefix}`,
-            };
-        }
+        // Without this, `test.use({ appResetScope: 'test' })` inside a
+        // describe pays twice at file entry: the root's file-scoped reset,
+        // then the first per-test reset a moment later. `satisfies()` turns
+        // that second reset into a summary row instead.
+        recordPreparedAfterReset(
+          opts, policy, reports,
+          isRoot ? 'the file-entry reset' : `the entry reset for ${parentPrefix}`,
+        );
       }
       // User hooks may touch the app: whatever state the entry reset left is
       // no longer known-good for a later reset to reuse.
-      if (ctx.beforeAll.length > 0 && opts._prepared) opts._prepared.current = undefined;
+      if (ctx.beforeAll.length > 0) opts._prepared?.clear();
       // The hooks group holds only the user's beforeAll code.
       beforeAllCollector?.startGroup('beforeAll Hooks');
       for (const hook of ctx.beforeAll) {
@@ -1176,7 +1309,7 @@ async function runSuiteContext(
     let beforeAllScreenshot: string | undefined;
     if (opts.config.screenshot !== 'never') {
       const label = parentPrefix ? `beforeAll_${parentPrefix}` : 'beforeAll';
-      beforeAllScreenshot = await captureFailureScreenshot(opts.device, opts.screenshotDir, label);
+      beforeAllScreenshot = await captureFailureScreenshots(opts, opts.screenshotDir, label);
     }
 
     // Package whatever the beforeAll collector recorded into a trace ZIP.
@@ -1195,7 +1328,7 @@ async function runSuiteContext(
           testDuration: Date.now() - suiteStart,
           startTime: suiteStart,
           endTime: Date.now(),
-          device: await buildTraceDeviceInfo(opts),
+          ...(await traceDeviceMetadata(opts)),
           tapsmithVersion: getPackageVersion(),
           error: beforeAllError.message,
           outputDir,
@@ -1317,7 +1450,7 @@ async function runSuiteContext(
       // straight into the retry (e.g. a display that stopped updating while
       // the a11y tree stayed healthy, observed on CI July 2026). Attempt 0
       // resets the flag so a previous test's retry doesn't leak into it.
-      opts.device?._setForceColdDeepLinks?.(attempt > 0);
+      for (const d of devices) d._setForceColdDeepLinks?.(attempt > 0);
       // Reset per-attempt state. Only the final attempt's artifacts are
       // reported — prior attempt traces/videos are retained on disk via
       // shouldRetain() but not linked from the TestResult.
@@ -1332,9 +1465,12 @@ async function runSuiteContext(
       const recording = shouldRecord(traceConfig.mode, attempt);
       let traceCollector: TraceCollector | null = null;
 
-      if (recording && opts.device) {
+      if (recording && primary) {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-'));
-        traceCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
+        // One collector per test, owned by the primary's Tracing; the other
+        // devices of the group record into it through the process-wide active
+        // collector (their own Tracing holds none), tagging events by device.
+        traceCollector = primary.tracing._startManaged(traceConfig, tempDir);
         traceCollector.setTimelineOrigin(attemptStart);
         setActiveTraceCollector(traceCollector);
 
@@ -1353,43 +1489,50 @@ async function runSuiteContext(
         // loudly (once per run — same failure applies to every test) so
         // users whose trace has no network entries know exactly why and
         // exactly what to do.
+        // Every device of the group captures on its own daemon's proxy.
         if (traceConfig.network) {
-          try {
-            const res = await opts.device._startNetworkCapture();
-            if (!res.success && res.errorMessage) {
-              _warnCaptureOnce('Network capture disabled', res.errorMessage);
-            } else if (res.errorMessage) {
-              _warnCaptureOnce('Network capture warning', res.errorMessage);
+          await Promise.all(devices.map(async (d) => {
+            try {
+              const res = await d._startNetworkCapture();
+              if (!res.success && res.errorMessage) {
+                _warnCaptureOnce('Network capture disabled', res.errorMessage);
+              } else if (res.errorMessage) {
+                _warnCaptureOnce('Network capture warning', res.errorMessage);
+              }
+            } catch (err) {
+              _warnCaptureOnce(
+                'Network capture failed to start',
+                err instanceof Error ? err.message : String(err),
+              );
             }
-          } catch (err) {
-            _warnCaptureOnce(
-              'Network capture failed to start',
-              err instanceof Error ? err.message : String(err),
-            );
-          }
+          }));
         }
 
         // Start device log streaming if configured
         if (traceConfig.deviceLogs && traceCollector) {
-          try {
-            opts.device._startDeviceLogStream(traceCollector);
-          } catch (err) {
-            _warnCaptureOnce(
-              'Device log streaming failed to start',
-              err instanceof Error ? err.message : String(err),
-            );
+          for (const d of devices) {
+            try {
+              d._startDeviceLogStream(traceCollector);
+            } catch (err) {
+              _warnCaptureOnce(
+                'Device log streaming failed to start',
+                err instanceof Error ? err.message : String(err),
+              );
+            }
           }
         }
 
         // Start daemon log streaming if configured
         if (traceConfig.daemonLogs && traceCollector) {
-          try {
-            opts.device._startDaemonLogStream(traceCollector);
-          } catch (err) {
-            _warnCaptureOnce(
-              'Daemon log streaming failed to start',
-              err instanceof Error ? err.message : String(err),
-            );
+          for (const d of devices) {
+            try {
+              d._startDaemonLogStream(traceCollector);
+            } catch (err) {
+              _warnCaptureOnce(
+                'Daemon log streaming failed to start',
+                err instanceof Error ? err.message : String(err),
+              );
+            }
           }
         }
       }
@@ -1399,10 +1542,12 @@ async function runSuiteContext(
       // here are surfaced via _warnCaptureOnce and never abort the run; the
       // daemon already returns structured errors in `errorMessage` rather
       // than throwing for missing-ffmpeg / unmatched-AVF-device cases.
+      // Video is recorded on the primary device only: a multi-device test
+      // would need per-device files and a shared timeline anchor to be useful.
       const videoRecording = shouldRecord(videoConfig.mode, attempt);
-      if (videoRecording && opts.device) {
+      if (videoRecording && primary) {
         try {
-          const res = await opts.device._startVideoRecording(
+          const res = await primary._startVideoRecording(
             videoConfig.size ? { size: videoConfig.size } : undefined,
           );
           if (!res.success) {
@@ -1479,7 +1624,7 @@ async function runSuiteContext(
           // ungrouped top-level events in the trace viewer.
           const hasTestScopedFixtures = registry.byScope('test').size > 0;
           const hasBeforeEachWork =
-            !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0 || hasTestScopedFixtures;
+            !!opts.beforeEachTest || !!primary || allBeforeEach.length > 0 || hasTestScopedFixtures;
           // Per-test app reset (appResetScope: 'test'). Runs on every attempt
           // so a retry genuinely starts from the declared state; retries
           // deliver the warm hook cold (see _setForceColdDeepLinks above).
@@ -1489,18 +1634,16 @@ async function runSuiteContext(
           // beforeEachTest recovery — a dead app just takes the ladder's
           // restart rung, and the trace says so.
           if (policy.scope === 'test' && canReset) {
-            const prepared = opts._prepared?.current;
-            await runTracedAppReset(traceCollector, resetContext(), policy, {
+            await runTracedAppReset(traceCollector, opts, policy, {
               phase: `before test ${fullName}`,
               forceCold: attempt > 0,
-              prepared,
             });
-            if (opts._prepared) opts._prepared.current = undefined;
+            opts._prepared?.clear();
             if (opts._applied) opts._applied.current = policy;
           }
           // The test (and its beforeEach hooks) is about to touch the app, so
           // an entry reset's state is no longer reusable by a later reset.
-          if (opts._prepared) opts._prepared.current = undefined;
+          opts._prepared?.clear();
 
           if (hasBeforeEachWork) {
             traceCollector?.startGroup('beforeEach Hooks');
@@ -1516,13 +1659,8 @@ async function runSuiteContext(
           // previous test actions (toasts, animations, async operations) have
           // settled before hooks and assertions start, preventing flakiness
           // under load (e.g. parallel workers sharing host CPU).
-          if (opts.device) {
-            try {
-              await opts.device.waitForIdle();
-            } catch {
-              // Best effort — don't fail the test if idle wait times out
-            }
-          }
+          // Best effort — don't fail the test if an idle wait times out.
+          await forEachDeviceBestEffort(opts, (d) => d.waitForIdle());
 
           if (hasTestScopedFixtures) {
             // Collect the fixture names destructured by the test and its hooks.
@@ -1694,16 +1832,16 @@ async function runSuiteContext(
           // If a WebView/CDP operation is the thing that hit the runner timeout,
           // close it before screenshot/network teardown so stale async work does
           // not bleed into the next test.
-          if (error.message.startsWith('Test timed out after ') && opts.device?._disposeWebViewManager) {
-            await opts.device._disposeWebViewManager();
+          if (error.message.startsWith('Test timed out after ')) {
+            await forEachDeviceBestEffort(opts, (d) => d._disposeWebViewManager?.());
           }
 
           // Screenshot on failure — skipped on user stop: the capture RPC
           // would be cancelled anyway, and a stop isn't a failure worth
           // documenting.
           if (opts.config.screenshot !== 'never' && !isAbortError(error)) {
-            screenshotPath = await captureFailureScreenshot(
-              opts.device,
+            screenshotPath = await captureFailureScreenshots(
+              opts,
               opts.screenshotDir,
               fullName,
             );
@@ -1736,13 +1874,9 @@ async function runSuiteContext(
 
       // Clean up route interception between tests so routes don't leak
       // across tests within the same describe block.
-      if (opts.device?._routeManager?.hasRoutes) {
-        try {
-          await opts.device._routeManager.removeAllRoutes();
-        } catch {
-          // best-effort cleanup
-        }
-      }
+      await forEachDeviceBestEffort(opts, async (d) => {
+        if (d._routeManager?.hasRoutes) await d._routeManager.removeAllRoutes();
+      });
 
       // Collect soft assertion failures (PILOT-43)
       const softErrors = flushSoftErrors();
@@ -1758,8 +1892,8 @@ async function runSuiteContext(
         }
 
         if (!screenshotPath && opts.config.screenshot !== 'never' && !opts.abortSignal?.aborted) {
-          screenshotPath = await captureFailureScreenshot(
-            opts.device,
+          screenshotPath = await captureFailureScreenshots(
+            opts,
             opts.screenshotDir,
             fullName,
           );
@@ -1768,107 +1902,120 @@ async function runSuiteContext(
 
       // Screenshot on success if mode is "always"
       if (status === 'passed' && opts.config.screenshot === 'always') {
-        screenshotPath = await captureFailureScreenshot(
-          opts.device,
+        screenshotPath = await captureFailureScreenshots(
+          opts,
           opts.screenshotDir,
           fullName,
         );
       }
 
       // Finalize trace recording
-      if (traceCollector && opts.device) {
-        const device = opts.device;
-
+      if (traceCollector && primary) {
         // Stop device + daemon log streaming first — no async cleanup needed.
         // Stopping per-test (not just on Device.close) keeps the streams from
         // outliving the test they belong to: on a shared Device, a later test
         // with logs disabled would otherwise keep streaming into this finalized
         // collector (leak + cross-test pollution).
-        device._stopDeviceLogStream();
-        device._stopDaemonLogStream();
+        for (const d of devices) {
+          d._stopDeviceLogStream();
+          d._stopDaemonLogStream();
+        }
 
         // Drain per-test network entries BEFORE disposing the route manager —
         // the proxy may still have in-flight requests that need the gRPC
         // stream alive to receive route decisions. The daemon keeps the
         // proxy/routing alive here; runTestFile performs the hard teardown
         // once after the file so soft-reset tests do not churn device routing.
-        let rawNetworkEntries: Awaited<ReturnType<typeof device._stopNetworkCapture>>['entries'] | undefined;
+        // Each device's daemon runs its own proxy with its own index space,
+        // so entries are collected per device and re-indexed when merged.
+        type RawEntries = Awaited<ReturnType<Device['_stopNetworkCapture']>>['entries'];
+        const rawNetworkByDevice: Array<{ deviceId?: string; entries: RawEntries }> = [];
         if (traceConfig.network) {
-          try {
-            const res = await device._stopNetworkCapture({ keepRunning: true });
-            if (res.success) {
-              // Apply user-supplied host filters, if any. On physical iOS
-              // and Android emulators the proxy is system-wide and captures
-              // every app's traffic — this is how users scrub system
-              // services (captive portal, analytics, Google/iCloud sync)
-              // out of their trace archives. iOS simulators filter per-PID
-              // via the macOS Network Extension redirector, so filters are
-              // usually redundant for sim runs but still honoured.
-              const { filterEntriesByHosts } = await import('./trace/filter-hosts.js');
-              rawNetworkEntries = filterEntriesByHosts(res.entries, {
-                allow: traceConfig.networkHosts,
-                deny: traceConfig.networkIgnoreHosts,
-              });
-              if (
-                traceConfig.networkHosts &&
-                traceConfig.networkHosts.length > 0 &&
-                res.entries.length > 0 &&
-                rawNetworkEntries.length === 0
-              ) {
-                console.warn(
-                  `[tapsmith] trace.networkHosts allowlist matched 0 of ${res.entries.length} captured entries — trace will have no network data.`,
-                );
+          const { filterEntriesByHosts } = await import('./trace/filter-hosts.js');
+          for (const d of devices) {
+            try {
+              const res = await d._stopNetworkCapture({ keepRunning: true });
+              if (res.success) {
+                // Apply user-supplied host filters, if any. On physical iOS
+                // and Android emulators the proxy is system-wide and captures
+                // every app's traffic — this is how users scrub system
+                // services (captive portal, analytics, Google/iCloud sync)
+                // out of their trace archives. iOS simulators filter per-PID
+                // via the macOS Network Extension redirector, so filters are
+                // usually redundant for sim runs but still honoured.
+                const filtered = filterEntriesByHosts(res.entries, {
+                  allow: traceConfig.networkHosts,
+                  deny: traceConfig.networkIgnoreHosts,
+                });
+                if (
+                  traceConfig.networkHosts &&
+                  traceConfig.networkHosts.length > 0 &&
+                  res.entries.length > 0 &&
+                  filtered.length === 0
+                ) {
+                  console.warn(
+                    `[tapsmith] trace.networkHosts allowlist matched 0 of ${res.entries.length} captured entries — trace will have no network data.`,
+                  );
+                }
+                rawNetworkByDevice.push({ deviceId: d._traceDeviceId, entries: filtered });
+              } else {
+                console.warn(`[tapsmith] Network capture stopped with error: ${res.errorMessage}`);
               }
-            } else {
-              console.warn(`[tapsmith] Network capture stopped with error: ${res.errorMessage}`);
+            } catch (err) {
+              console.warn(`[tapsmith] Failed to stop network capture: ${err instanceof Error ? err.message : err}`);
             }
-          } catch (err) {
-            console.warn(`[tapsmith] Failed to stop network capture: ${err instanceof Error ? err.message : err}`);
           }
         }
 
-        // Keep the route stream installed while network capture is being
-        // reused across tests. Registered routes were removed above, and the
-        // file-level hard teardown disposes the stream after stopping capture.
-        if (!traceConfig.network && device._disposeRouteManager) {
-          await device._disposeRouteManager();
-        }
-        // Return to the native context but keep the WebView connection cached
-        // across tests — reconnecting per test churns webinspectord on iOS and
-        // triggers wedged/stale page sessions (PILOT-288). A dead connection
-        // is detected and re-established on next use; the file-level hard
-        // teardown closes it for real.
-        if (device._resetWebViewContext) {
-          device._resetWebViewContext();
+        for (const d of devices) {
+          // Keep the route stream installed while network capture is being
+          // reused across tests. Registered routes were removed above, and the
+          // file-level hard teardown disposes the stream after stopping capture.
+          if (!traceConfig.network && d._disposeRouteManager) {
+            await d._disposeRouteManager();
+          }
+          // Return to the native context but keep the WebView connection cached
+          // across tests — reconnecting per test churns webinspectord on iOS and
+          // triggers wedged/stale page sessions (PILOT-288). A dead connection
+          // is detected and re-established on next use; the file-level hard
+          // teardown closes it for real.
+          if (d._resetWebViewContext) {
+            d._resetWebViewContext();
+          }
         }
 
         // Capture a final screenshot so the last action has an "after" view.
         // The trace viewer uses the next action's before-screenshot as "after",
-        // so this provides the terminal state.
+        // so this provides the terminal state. One per device, on consecutive
+        // indices (primary first) — a shared index would make the second
+        // device's frame overwrite the first's on disk.
         if (traceCollector.config.screenshots) {
-          try {
-            const tracing = device.tracing;
-            const { actionIndex: finalIdx } = await traceCollector.captureBeforeAction(
-              tracing['_getScreenshot'],
-              tracing['_getHierarchy'],
-            );
-            // Flush to UI mode live stream — emit a lightweight event so the
-            // screenshot buffer reaches the frontend.
-            traceCollector.emitPendingCaptures(finalIdx);
-          } catch {
-            // Best-effort: on a stopped run this screenshot RPC rejects with
-            // TestAbortedError — letting it escape would skip the rest of
-            // the finalization, including the video-recording stop below,
-            // leaking the recorder on the daemon (PILOT-235).
+          for (const d of devices) {
+            try {
+              const tracing = d.tracing;
+              const { actionIndex: finalIdx } = await traceCollector.captureBeforeAction(
+                tracing['_getScreenshot'],
+                tracing['_getHierarchy'],
+              );
+              // Flush to UI mode live stream — emit a lightweight event so the
+              // screenshot buffer reaches the frontend.
+              traceCollector.emitPendingCaptures(finalIdx);
+              if (devices.length > 1) traceCollector.setActionIndexOffset(finalIdx + 1);
+            } catch {
+              // Best-effort: on a stopped run this screenshot RPC rejects with
+              // TestAbortedError — letting it escape would skip the rest of
+              // the finalization, including the video-recording stop below,
+              // leaking the recorder on the daemon (PILOT-235).
+            }
           }
         }
 
-        const collector = device.tracing._stopManaged();
+        const collector = primary.tracing._stopManaged();
         setActiveTraceCollector(null);
 
         // Map network entries, associating each with the closest preceding action
-        let networkEntries: import('./trace/types.js').NetworkEntry[] | undefined;
-        if (rawNetworkEntries && collector) {
+        let networkEntries: NetworkEntry[] | undefined;
+        if (rawNetworkByDevice.length > 0 && collector) {
           // Build sorted list of action timestamps with their indices
           const actionTimestamps = collector.events
             .filter((e): e is import('./trace/types.js').ActionTraceEvent | import('./trace/types.js').AssertionTraceEvent =>
@@ -1885,11 +2032,12 @@ async function runSuiteContext(
             return best;
           };
 
-          networkEntries = rawNetworkEntries.map((e, i) => {
+          networkEntries = rawNetworkByDevice.flatMap(({ deviceId, entries }) => entries.map((e) => ({ deviceId, e }))).map(({ deviceId, e }, i) => {
             const requestHeaders = e.requestHeadersJson ? JSON.parse(e.requestHeadersJson) : {};
             const responseHeaders = e.responseHeadersJson ? JSON.parse(e.responseHeadersJson) : {};
             return {
               index: i,
+              ...(deviceId ? { deviceId } : {}),
               actionIndex: findActionIndex(e.startTimeMs),
               startTime: e.startTimeMs,
               endTime: e.startTimeMs + e.durationMs,
@@ -1950,7 +2098,7 @@ async function runSuiteContext(
                 testDuration: Date.now() - attemptStart,
                 startTime: attemptStart,
                 endTime: Date.now(),
-                device: await buildTraceDeviceInfo(opts),
+                ...(await traceDeviceMetadata(opts)),
                 tapsmithVersion: version,
                 error: error?.message,
                 outputDir,
@@ -1968,22 +2116,25 @@ async function runSuiteContext(
           }
           collector.cleanup();
         }
-      } else if (opts.device?._disposeRouteManager) {
+      } else {
         // No tracing — still need to clean up routes and reset the WebView
         // context (the connection itself stays cached across tests, see the
         // traced path above / PILOT-288).
-        await opts.device._disposeRouteManager();
-        if (opts.device._resetWebViewContext) {
-          opts.device._resetWebViewContext();
+        for (const d of devices) {
+          if (!d._disposeRouteManager) continue;
+          await d._disposeRouteManager();
+          if (d._resetWebViewContext) {
+            d._resetWebViewContext();
+          }
         }
       }
 
       // Stop video recording and decide whether to keep the MP4 (PILOT-114).
       // Always stop if we started — even when retain decides to discard, the
       // child process must be cleaned up so the next test can start fresh.
-      if (videoRecording && opts.device) {
+      if (videoRecording && primary) {
         try {
-          const res = await opts.device._stopVideoRecording();
+          const res = await primary._stopVideoRecording();
           const retainVideo = shouldRetain(
             videoConfig.mode,
             status === 'passed',
@@ -2152,7 +2303,7 @@ async function runSuiteContext(
   // actions are visible in headless runs too (the archive was written when
   // the test finished — beforeAll-style replay into a live collector is no
   // longer possible at this point).
-  if (scopeHasRunnable && ctx.afterAll.length > 0 && opts.device) {
+  if (scopeHasRunnable && ctx.afterAll.length > 0 && primary) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
     // Find the last test that actually ran, to tag events. Derived from the
     // recorded results (which include nested suites, already executed by
@@ -2179,27 +2330,28 @@ async function runSuiteContext(
       // The collector records with UNSHIFTED indices — UI mode's live stream
       // applies its own shift to events arriving after an attribution-only
       // re-tag (main.tsx hookShiftRef) — so the offset is applied at append
-      // time instead: past the archive's actionCount, +1 to skip the
-      // terminal end-of-test screenshot registered at index actionCount
-      // without an event. That mirrors the UI's shift (highest seen index
-      // including markers, +1), keeping stream and archive indices aligned.
+      // time instead: past the archive's actionCount, plus one per device to
+      // skip the terminal end-of-test screenshots registered from index
+      // actionCount without an event. That mirrors the UI's shift (highest
+      // seen index including markers, +1), keeping stream and archive
+      // indices aligned.
       const targetTracePath = lastRunTest.tracePath;
       let actionIndexOffset = 0;
       if (targetTracePath) {
         try {
-          actionIndexOffset = readTraceActionCount(targetTracePath) + 1;
+          actionIndexOffset = readTraceActionCount(targetTracePath) + Math.max(1, devices.length);
         } catch {
           // Unreadable archive — skip the amendment.
         }
       }
 
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-aa-'));
-      const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
+      const managedCollector = primary.tracing._startManaged(traceConfig, tempDir);
       const afterAllCollector = new TraceCollector(traceConfig, tempDir);
       afterAllCollector.setTimelineOrigin(Date.now());
       const cb = managedCollector.getEventCallback();
       if (cb) afterAllCollector.setEventCallback(cb);
-      opts.device.tracing._stopManaged();
+      primary.tracing._stopManaged();
 
       try {
         afterAllCollector.startGroup('afterAll Hooks');
@@ -2252,12 +2404,12 @@ async function runSuiteContext(
   }
 
   } finally {
-    // Restore previous device timeout when leaving this scope
-    if (prevDeviceTimeout !== undefined && opts.device) {
-      opts.device._setDefaultTimeout(prevDeviceTimeout);
+    // Restore previous device timeouts when leaving this scope
+    if (prevDeviceTimeouts) {
+      devices.forEach((d, i) => d._setDefaultTimeout(prevDeviceTimeouts[i]));
     }
-    if (prevDeviceColdEvery !== undefined && opts.device) {
-      opts.device._setAppResetColdEvery(prevDeviceColdEvery);
+    if (prevDeviceColdEvery) {
+      devices.forEach((d, i) => d._setAppResetColdEvery(prevDeviceColdEvery[i]));
     }
   }
 
@@ -2377,8 +2529,9 @@ export async function runTestFile(
   }
 
   // Resolve worker-scoped fixtures once for the entire file
+  const primary = primaryDevice(opts);
   const baseFixtures: Record<string, unknown> = {
-    ...(opts.device ? { device: opts.device } : {}),
+    ...(primary ? { device: primary, devices: allDevices(opts) } : {}),
     ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
     platform: resolvePlatformFixture(opts.config),
   };
@@ -2399,7 +2552,7 @@ export async function runTestFile(
     ...opts,
     workerFixtures,
     testFilePath: filePath,
-    _prepared: { current: opts.preparedDevice },
+    _prepared: new Map(opts.devices.flatMap((d) => (d.prepared ? [[d.name, d.prepared] as const] : []))),
     _applied: {},
     _abortFileController: abortFileController,
     abortSignal: abortFileController
@@ -2413,19 +2566,20 @@ export async function runTestFile(
   // ElementHandle, and expect all share this client instance, so a user stop
   // (or abortFileOnError) cancels the current device call instead of riding
   // out its timeout (PILOT-222).
-  fileOpts.device?._client._setAbortSignal(fileOpts.abortSignal);
+  for (const d of allDevices(fileOpts)) d._client._setAbortSignal(fileOpts.abortSignal);
 
   try {
     return await runSuiteContext(rootCtx, '', [], [], fileOpts);
   } finally {
-    fileOpts.device?._client._setAbortSignal(undefined);
+    for (const d of allDevices(fileOpts)) d._client._setAbortSignal(undefined);
     try {
       if (workerTeardown) {
         await workerTeardown();
       }
     } finally {
       const traceConfig = resolveTraceConfig(fileOpts.config.trace);
-      if (fileOpts.device && traceConfig.mode !== 'off' && traceConfig.network) {
+      for (const d of allDevices(fileOpts)) {
+      if (traceConfig.mode !== 'off' && traceConfig.network) {
         try {
           // Keep the proxy (and its port) alive across files, draining only.
           // A warm reset keeps the app process between files, so its HTTP
@@ -2436,7 +2590,7 @@ export async function runTestFile(
           // — long enough to blow route-mock assertions. The proxy is released
           // for real at Device.close() (session end); the daemon also cleans
           // up on shutdown. Mirrors the iOS macOS system-proxy session model.
-          await fileOpts.device._stopNetworkCapture({ keepRunning: true });
+          await d._stopNetworkCapture({ keepRunning: true });
         } catch {
           // Best-effort; the daemon cleans up the proxy on shutdown regardless.
         }
@@ -2448,14 +2602,15 @@ export async function runTestFile(
       // assertion). Routes are already removed per-test, and Device.close()
       // disposes the manager for real. When network is off, dispose here as
       // before (nothing keeps it alive).
-      if (fileOpts.device?._disposeRouteManager
+      if (d._disposeRouteManager
         && !(traceConfig.mode !== 'off' && traceConfig.network)) {
-        await fileOpts.device._disposeRouteManager();
+        await d._disposeRouteManager();
       }
       // Hard teardown of the cross-test cached WebView connection (kept
       // alive between tests, see per-test teardown / PILOT-288).
-      if (fileOpts.device?._disposeWebViewManager) {
-        await fileOpts.device._disposeWebViewManager();
+      if (d._disposeWebViewManager) {
+        await d._disposeWebViewManager();
+      }
       }
     }
   }

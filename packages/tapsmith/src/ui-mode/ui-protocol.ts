@@ -777,6 +777,12 @@ export interface UIWorkerInitMessage {
    * app has run tests since, and must not claim a reset that never ran.
    */
   adoptPrepared?: boolean
+  /**
+   * The rest of the device group (`devices[1..]`) for a `use.devices`
+   * project, each on a daemon the server spawned for it. Omitted for
+   * single-device workers.
+   */
+  groupMembers?: import('../worker-protocol.js').WorkerGroupMember[]
 }
 
 /** Server → UI worker: run a test file. */

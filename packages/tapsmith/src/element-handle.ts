@@ -1430,6 +1430,7 @@ export class ElementHandle {
       selector: JSON.stringify(selectorToProto(this._selector)),
       sourceLocation,
       stack,
+      deviceId: trace.deviceId,
       log: [],
       hasScreenshotBefore: false,
       hasHierarchyBefore: false,
@@ -1457,6 +1458,7 @@ export class ElementHandle {
       bounds,
       sourceLocation,
       stack,
+      deviceId: trace.deviceId,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -1491,6 +1493,7 @@ export class ElementHandle {
       errorStack: errStack,
       sourceLocation,
       stack,
+      deviceId: trace.deviceId,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -1510,6 +1513,7 @@ export class ElementHandle {
     const trace = this._traceCapture;
     const ctx = trace ? {
       collector: trace.collector,
+      deviceId: trace.deviceId,
       takeScreenshot: trace.takeScreenshot,
       captureHierarchy: trace.captureHierarchy,
       findElement: (sel: Selector, timeout: number) => this._client.findElement(sel, timeout),
@@ -1545,7 +1549,7 @@ export class ElementHandle {
     const sourceLocation = stack[0];
     const selector = JSON.stringify(selectorToProto(this._selector));
     trace.collector._emitActionStarted({
-      category, action, selector, sourceLocation, stack, log: [],
+      category, action, selector, sourceLocation, stack, log: [], deviceId: trace.deviceId,
       hasScreenshotBefore: false, hasHierarchyBefore: false,
     });
     try {
@@ -1575,7 +1579,7 @@ export class ElementHandle {
         trace.collector.addActionEvent({
           category, action, selector,
           duration: durationMs, success: false, error: errMsg, errorStack: errStack,
-          waitTime: durationMs, sourceLocation, stack,
+          waitTime: durationMs, sourceLocation, stack, deviceId: trace.deviceId,
           hasScreenshotBefore: !!captures.screenshotBefore, hasScreenshotAfter: false,
           hasHierarchyBefore: !!captures.hierarchyBefore, hasHierarchyAfter: false,
           log: [`${action} failed: ${errMsg}`],

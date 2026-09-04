@@ -11,13 +11,22 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, EXPLICIT_WORKERS, isExplicitWorkers, type TapsmithConfig } from './config.js';
+import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, EXPLICIT_WORKERS, isExplicitWorkers, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
 import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
-import { runTestFile, collectResults, markFileRetryFlakes, type TestResult, type SuiteResult } from './runner.js';
+import { runTestFile, collectResults, markFileRetryFlakes, type RunDevice, type TestResult, type SuiteResult } from './runner.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
+import {
+  closeDeviceSession,
+  consumePrepared,
+  openDeviceGroup,
+  recoverDeviceSessions,
+  resolveDaemonBin,
+  startDaemon,
+  type DeviceSession,
+} from './device-session.js';
 import type { PreparedState, ResetCapabilities } from './app-reset.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
@@ -322,6 +331,8 @@ let sequentialFatalHandlersInstalled = false;
 // stale first-run closure (matters if main() runs more than once in a process).
 let activeSequentialConfig: TapsmithConfig | undefined;
 let activeSequentialDeviceGetter: (() => string | undefined) | undefined;
+/** Sessions of the current device group beyond the primary (their daemons are ours to kill). */
+let activeSequentialMembersGetter: (() => DeviceSession[]) | undefined;
 
 /**
  * Install process-wide handlers so a *crash* in single-worker (sequential) mode
@@ -334,9 +345,11 @@ let activeSequentialDeviceGetter: (() => string | undefined) | undefined;
 function installSequentialFatalHandlers(
   config: TapsmithConfig,
   getActiveDevice?: () => string | undefined,
+  getActiveMembers?: () => DeviceSession[],
 ): void {
   activeSequentialConfig = config;
   activeSequentialDeviceGetter = getActiveDevice;
+  activeSequentialMembersGetter = getActiveMembers;
 
   if (sequentialFatalHandlersInstalled) return;
   sequentialFatalHandlersInstalled = true;
@@ -357,6 +370,12 @@ function installSequentialFatalHandlers(
     }
     if (spawnedDaemonProcess) {
       try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
+    }
+    for (const member of activeSequentialMembersGetter?.() ?? []) {
+      if (activeConfig.platform === 'ios') {
+        try { killAgentRunnersForSimulators([member.serial]); } catch { /* best effort */ }
+      }
+      closeDeviceSession(member);
     }
     setImmediate(() => process.exit(1));
   };
@@ -540,6 +559,12 @@ interface SequentialDeviceState {
    * reset so it can skip work the launch already did. Absent when there is
    * no package to launch. */
   prepared?: PreparedState
+  /**
+   * The device group, primary first. The primary's session wraps the fields
+   * above; the others (`use.devices` projects) each run on a daemon this
+   * state spawned and owns.
+   */
+  sessions: DeviceSession[]
 }
 
 /**
@@ -1014,6 +1039,45 @@ async function setupSequentialDevice(
     progress?.skip('app-launch', 'no package configured');
   }
 
+  const group = resolveDeviceGroup(cfg);
+  const primarySession: DeviceSession = {
+    name: group[0].name,
+    serial: cfg.device,
+    daemonAddress,
+    client,
+    device,
+    config: cfg,
+    label: `Device ${cfg.device}`,
+    capabilities,
+    prepared,
+    context: {
+      label: `Device ${cfg.device}`,
+      config: cfg,
+      device,
+      client,
+      agentApkPath: resolvedAgentApk,
+      agentTestApkPath: resolvedAgentTestApk,
+      iosXctestrunPath: resolvedIosXctestrun,
+      iosAppPath: resolvedIosAppPath,
+      deviceSerial: cfg.device,
+      networkTracingEnabled,
+      capabilities,
+    },
+  };
+  let sessions: DeviceSession[] = [primarySession];
+  if (group.length > 1) {
+    device._traceDeviceId = group[0].name;
+    try {
+      const members = await openSequentialGroupMembers(cfg, group, launchedEmulators, forceInstall, progress);
+      sessions = [primarySession, ...members];
+    } catch (err) {
+      // The primary is up; a group that cannot complete is a failed setup.
+      try { device.close(); } catch { /* already closed */ }
+      try { client.close(); } catch { /* already closed */ }
+      throw err;
+    }
+  }
+
   return {
     effectiveConfig: cfg,
     client,
@@ -1027,7 +1091,121 @@ async function setupSequentialDevice(
     signature,
     capabilities,
     prepared,
+    sessions,
   };
+}
+
+/**
+ * Bring up the rest of a `use.devices` group next to the primary: provision
+ * (or pin) a device per member, spawn a daemon for each on free ports, and
+ * open a session on it — install, agent, cold launch. Members open
+ * concurrently; any failure tears the opened ones down and fails setup.
+ */
+async function openSequentialGroupMembers(
+  cfg: TapsmithConfig,
+  group: DeviceGroupEntry[],
+  launchedEmulators: LaunchedEmulator[],
+  forceInstall: boolean,
+  progress?: LaunchProgressSink,
+): Promise<DeviceSession[]> {
+  const members = group.slice(1);
+  progress?.start('worker-devices', `preparing ${members.length} more device(s) for the group`);
+  const provisioned = await provisionGroupMemberDevices(cfg, group, progress);
+  launchedEmulators.push(...provisioned.launched);
+
+  const daemonBin = resolveDaemonBin(cfg);
+  const traceConfig = resolveTraceConfig(cfg.trace);
+  const specs = [];
+  for (const [i, entry] of members.entries()) {
+    const serial = provisioned.serials[i];
+    if (cfg.platform !== 'ios' && traceConfig.mode !== 'off' && traceConfig.network) {
+      // Same as the primary: capture needs adb root on Android.
+      ensureAdbRoot(serial);
+    }
+    const port = await pickFreePort();
+    let agentPort = await pickFreePort();
+    while (agentPort === port) agentPort = await pickFreePort();
+    progress?.update('worker-devices', { state: 'running', detail: `${entry.name}: starting daemon on localhost:${port} for ${serial}` });
+    const daemon = await startDaemon({
+      daemonBin, port, agentPort, platform: cfg.platform,
+      describe: `daemon for ${entry.name}`,
+    });
+    specs.push({
+      name: entry.name,
+      serial,
+      daemonAddress: daemon.address,
+      daemonProcess: daemon.process,
+      agentPort,
+      freshDevice: provisioned.fresh.has(serial),
+    });
+  }
+
+  try {
+    const sessions = await openDeviceGroup(specs, cfg, {
+      label: 'Device',
+      forceInstall,
+      launchPhase: 'startup launch',
+      // Tag the primary too (done by the caller) — a group's trace tells its
+      // devices apart by name.
+      onProgress: (message) => progress?.update('worker-devices', { state: 'running', detail: message }),
+    });
+    for (const s of sessions) s.device._traceDeviceId = s.name;
+    progress?.complete('worker-devices', `${sessions.length} more device(s): ${sessions.map((s) => `${s.name}=${s.serial}`).join(', ')}`);
+    if (!progress) console.log(dim(`Device group: ${[group[0].name, ...sessions.map((s) => s.name)].join(', ')}`));
+    return sessions;
+  } catch (err) {
+    for (const spec of specs) {
+      try { spec.daemonProcess.kill(); } catch { /* already gone */ }
+    }
+    progress?.fail('worker-devices', err instanceof Error ? err.message : String(err));
+    throw err;
+  }
+}
+
+/**
+ * A device for every member of the group beyond the primary (`cfg.device`),
+ * in member order. Pinned members (`{ device }`) use their serial; the rest
+ * are provisioned like extra worker devices — booted emulators/simulators
+ * first, then launched/cloned ones. Physical iOS members must be pinned:
+ * there is no way to auto-pick a second USB device.
+ */
+async function provisionGroupMemberDevices(
+  cfg: TapsmithConfig,
+  group: DeviceGroupEntry[],
+  progress?: LaunchProgressSink,
+): Promise<{ serials: string[]; launched: LaunchedEmulator[]; fresh: Set<string> }> {
+  const members = group.slice(1);
+  const pinned = members.flatMap((m) => (m.device ? [m.device] : []));
+  const unpinned = members.filter((m) => !m.device);
+  if (unpinned.length === 0) {
+    return { serials: members.map((m) => m.device!), launched: [], fresh: new Set() };
+  }
+  if (cfg.platform === 'ios' && !cfg.simulator) {
+    throw new Error(
+      `Device group members on physical iOS must be pinned: set \`device\` on ${unpinned.map((m) => `"${m.name}"`).join(', ')} `
+      + '(a paired UDID from `xcrun devicectl list devices`). Tapsmith can auto-pick only one physical device.',
+    );
+  }
+  const provision = await provisionMultiWorkerDevices(cfg, 'Device group', {
+    quiet: true,
+    progress,
+    wanted: group.length,
+    pinned,
+  });
+  const primary = cfg.device;
+  const pool = (provision.deviceSerials ?? []).filter((s) => s !== primary && !pinned.includes(s));
+  if (pool.length < unpinned.length) {
+    throw new Error(
+      `use.devices asks for ${group.length} device(s) but only ${pool.length + pinned.length + 1} could be provisioned `
+      + `(${[primary, ...pinned, ...pool].filter(Boolean).join(', ')}). `
+      + (cfg.platform === 'ios'
+        ? 'Boot more simulators matching `simulator`, or pin members with `device`.'
+        : 'Connect more devices, set `avd` so emulators can be launched, or pin members with `device`.'),
+    );
+  }
+  let next = 0;
+  const serials = members.map((m) => m.device ?? pool[next++]);
+  return { serials, launched: provision.launched, fresh: provision.freshSerials };
 }
 
 /**
@@ -1036,6 +1214,7 @@ async function setupSequentialDevice(
  * spawned daemon process, and preserves any launched emulators for reuse.
  */
 function teardownSequentialDevice(state: SequentialDeviceState): void {
+  for (const member of state.sessions.slice(1)) closeDeviceSession(member);
   try { state.device.close(); } catch { /* already closed */ }
   try { state.client.close(); } catch { /* already closed */ }
   if (spawnedDaemonProcess) {
@@ -1405,11 +1584,21 @@ function parseArgs(argv: string[]): CliArgs {
 async function provisionMultiWorkerDevices(
   config: Awaited<ReturnType<typeof loadConfig>>,
   modeName: string,
-  opts?: { quiet?: boolean; progress?: LaunchProgressSink },
-): Promise<{ deviceSerials: string[] | undefined; launched: LaunchedEmulator[] }> {
+  opts?: {
+    quiet?: boolean
+    progress?: LaunchProgressSink
+    /** Devices wanted in total, primary included. Defaults to `config.workers`. */
+    wanted?: number
+    /** Serials that must be part of the set (pinned group members), after the primary. */
+    pinned?: string[]
+  },
+): Promise<{ deviceSerials: string[] | undefined; launched: LaunchedEmulator[]; freshSerials: Set<string> }> {
   let launched: LaunchedEmulator[] = [];
-  if (config.workers <= 1) return { deviceSerials: undefined, launched };
-  opts?.progress?.start('worker-devices', `preparing ${config.workers} worker device(s)`);
+  const freshSerials = new Set<string>();
+  const wanted = opts?.wanted ?? config.workers;
+  if (wanted <= 1) return { deviceSerials: undefined, launched, freshSerials };
+  const pinned = (opts?.pinned ?? []).filter((s) => s !== config.device);
+  if (opts?.wanted === undefined) opts?.progress?.start('worker-devices', `preparing ${wanted} worker device(s)`);
 
   let serials: string[];
   let reusedSimulatorCount = 0;
@@ -1427,7 +1616,9 @@ async function provisionMultiWorkerDevices(
       }
     }
     const compatible = listCompatibleBootedSimulators(config.device!);
-    const others = compatible.filter((s) => s.udid !== config.device).slice(0, config.workers - 1);
+    const others = compatible
+      .filter((s) => s.udid !== config.device && !pinned.includes(s.udid))
+      .slice(0, Math.max(0, wanted - 1 - pinned.length));
     if (others.length > 0) {
       reusedSimulatorCount += others.length;
       if (opts?.progress) {
@@ -1441,12 +1632,12 @@ async function provisionMultiWorkerDevices(
         }
       }
     }
-    serials = [config.device!, ...others.map((s) => s.udid)].filter(Boolean);
+    serials = [config.device!, ...pinned, ...others.map((s) => s.udid)].filter(Boolean);
 
-    if (serials.length < config.workers && config.simulator) {
+    if (serials.length < wanted && config.simulator) {
       const provision = provisionSimulators({
         simulatorName: config.simulator,
-        workers: config.workers,
+        workers: wanted,
         existingUdids: serials,
         appPath: config.app ? path.resolve(config.rootDir, config.app) : undefined,
         reusableUdids,
@@ -1457,18 +1648,19 @@ async function provisionMultiWorkerDevices(
         },
       });
       reusedSimulatorCount += provision.reusedUdids.length;
+      for (const u of provision.freshUdids) freshSerials.add(u);
       serials = provision.allUdids;
     }
   } else {
     const allConnected = listConnectedDeviceSerials();
-    const others = allConnected.filter((s) => s !== config.device);
-    serials = [config.device!, ...others].filter(Boolean);
+    const others = allConnected.filter((s) => s !== config.device && !pinned.includes(s));
+    serials = [config.device!, ...pinned, ...others].filter(Boolean);
 
-    if (serials.length < config.workers && config.launchEmulators) {
+    if (serials.length < wanted && config.launchEmulators) {
       const provision = await provisionEmulators({
         existingSerials: serials,
         occupiedSerials: allConnected,
-        workers: config.workers,
+        workers: wanted,
         avd: config.avd,
         onProgress: (message, level) => {
           if (!opts?.progress) return;
@@ -1477,23 +1669,24 @@ async function provisionMultiWorkerDevices(
         },
       });
       launched = provision.launched;
+      for (const e of provision.launched) freshSerials.add(e.serial);
       serials = provision.allSerials;
     }
   }
 
   if (serials.length < 2) {
-    opts?.progress?.skip('worker-devices', `${serials.length} device(s) available; using single-worker mode`);
+    if (opts?.wanted === undefined) opts?.progress?.skip('worker-devices', `${serials.length} device(s) available; using single-worker mode`);
     if (!opts?.quiet && !opts?.progress) {
       process.stderr.write(
         `${YELLOW}Only ${serials.length} device(s) available. ${modeName} needs 2+ devices for parallel. Using single-worker mode.${RESET}\n`,
       );
     }
-    return { deviceSerials: undefined, launched };
+    return { deviceSerials: undefined, launched, freshSerials };
   }
 
   const reuseSuffix = reusedSimulatorCount > 0 ? ` (${reusedSimulatorCount} reused)` : '';
-  opts?.progress?.complete('worker-devices', `${serials.length} device(s)${reuseSuffix}: ${serials.join(', ')}`);
-  return { deviceSerials: serials, launched };
+  if (opts?.wanted === undefined) opts?.progress?.complete('worker-devices', `${serials.length} device(s)${reuseSuffix}: ${serials.join(', ')}`);
+  return { deviceSerials: serials, launched, freshSerials };
 }
 
 interface PerProjectProvisionResult {
@@ -2306,10 +2499,6 @@ async function main(): Promise<void> {
   let device: Device | undefined;
   let disposeActionProgressPrinter: (() => void) | undefined;
   let currentSequentialState: SequentialDeviceState | undefined;
-  let resolvedAgentApk: string | undefined;
-  let resolvedAgentTestApk: string | undefined;
-  let resolvedIosXctestrun: string | undefined;
-  let resolvedIosAppPath: string | undefined;
   let sequentialExitCode = 1;
   let sequentialErrorEscaping = false;
   const sequentialStart = Date.now();
@@ -2317,7 +2506,11 @@ async function main(): Promise<void> {
   // Route a crash through teardown so we don't orphan the daemon + its
   // xcodebuild runner (PILOT-230). Mutually exclusive with the parallel
   // dispatcher path, so it won't double-install with runParallel's handlers.
-  installSequentialFatalHandlers(config, () => currentSequentialState?.deviceSerial);
+  installSequentialFatalHandlers(
+    config,
+    () => currentSequentialState?.deviceSerial,
+    () => currentSequentialState?.sessions.slice(1) ?? [],
+  );
 
   // Detect heterogeneous device-targeting projects. When projects share a
   // single signature, sequential mode runs unchanged. When they differ,
@@ -2361,10 +2554,6 @@ async function main(): Promise<void> {
     client = currentSequentialState.client;
     device = currentSequentialState.device;
     launchedEmulators = currentSequentialState.launchedEmulators;
-    resolvedAgentApk = currentSequentialState.resolvedAgentApk;
-    resolvedAgentTestApk = currentSequentialState.resolvedAgentTestApk;
-    resolvedIosXctestrun = currentSequentialState.resolvedIosXctestrun;
-    resolvedIosAppPath = currentSequentialState.resolvedIosAppPath;
     // Mirror the chosen device serial onto the root config so any code path
     // still reading from `config.device` (UI/watch handoff) sees it.
     config.device = currentSequentialState.deviceSerial;
@@ -2538,7 +2727,6 @@ async function main(): Promise<void> {
         ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
         : undefined;
 
-    let fileIndex = 0;
     const failedProjects = new Set<string>();
     const projectsWithFiles = projects.filter((p) => p.testFiles.length > 0);
     const showProjectHeaders = projectsWithFiles.length > 1;
@@ -2594,13 +2782,6 @@ async function main(): Promise<void> {
           client = currentSequentialState.client;
           device = currentSequentialState.device;
           launchedEmulators = currentSequentialState.launchedEmulators;
-          resolvedAgentApk = currentSequentialState.resolvedAgentApk;
-          resolvedAgentTestApk = currentSequentialState.resolvedAgentTestApk;
-          resolvedIosXctestrun = currentSequentialState.resolvedIosXctestrun;
-          resolvedIosAppPath = currentSequentialState.resolvedIosAppPath;
-          // After switching, the launchConfiguredApp on first file is not
-          // needed because setupSequentialDevice already launched the app.
-          fileIndex = 0;
         }
 
         if (showProjectHeaders && project.testFiles.length > 0) {
@@ -2615,38 +2796,21 @@ async function main(): Promise<void> {
           // The between-file app reset is the runner's job (declared policy,
           // recorded in the trace as fixture setup). The first file after a
           // device launch inherits what that launch actually did as its
-          // prepared state — never a hand-built claim.
-          const preparedDevice: PreparedState | undefined = fileIndex === 0
-            ? currentSequentialState?.prepared
-            : undefined;
-
+          // prepared state — never a hand-built claim. Each session's
+          // prepared state is consumed exactly once, by the first file.
           reporter.onTestFileStart(file);
 
           const projectGrepRe = normalizeGrep(project.grep);
           const projectGrepInvertRe = normalizeGrep(project.grepInvert);
           const suiteResult = await runTestFileWithRecovery(file, {
             config: projectConfig,
-            device: device!,
-            client: client!,
+            sessions: currentSequentialState!.sessions,
             screenshotDir,
             reporter,
             projectUseOptions: project.use,
             projectName: projectLabel(project),
             projectGrep: projectGrepRe.length > 0 ? projectGrepRe : undefined,
             projectGrepInvert: projectGrepInvertRe.length > 0 ? projectGrepInvertRe : undefined,
-            preparedDevice,
-            sessionContext: {
-              label: `Device ${projectConfig.device}`,
-              config: projectConfig,
-              device: device!,
-              client: client!,
-              capabilities: currentSequentialState?.capabilities ?? {},
-              agentApkPath: resolvedAgentApk,
-              agentTestApkPath: resolvedAgentTestApk,
-              iosXctestrunPath: resolvedIosXctestrun,
-              iosAppPath: resolvedIosAppPath,
-              deviceSerial: projectConfig.device,
-            },
           });
 
           const fileResults = collectResults(suiteResult);
@@ -2654,7 +2818,6 @@ async function main(): Promise<void> {
           allSuites.push(suiteResult);
 
           reporter.onTestFileEnd(file, fileResults);
-          fileIndex++;
 
           if (fileResults.some((r) => r.status === 'failed')) {
             projectFailed = true;
@@ -2691,6 +2854,7 @@ async function main(): Promise<void> {
     throw err;
   } finally {
     disposeActionProgressPrinter?.();
+    for (const member of currentSequentialState?.sessions.slice(1) ?? []) closeDeviceSession(member);
     device?.close();
     client?.close();
     if (spawnedDaemonProcess) {
@@ -2719,27 +2883,34 @@ async function runTestFileWithRecovery(
   file: string,
   opts: {
     config: TapsmithConfig
-    device: Device
-    client: TapsmithGrpcClient
+    /** The device group, primary first. */
+    sessions: DeviceSession[]
     screenshotDir: string | undefined
     reporter: ReporterDispatcher
     projectUseOptions?: Record<string, unknown>
     projectName?: string
     projectGrep?: RegExp[]
     projectGrepInvert?: RegExp[]
-    sessionContext: import('./session-preflight.js').SessionPreflightContext
-    preparedDevice?: PreparedState
   },
 ): Promise<SuiteResult> {
   const grep = normalizeGrep(opts.config.grep);
   const grepInvert = normalizeGrep(opts.config.grepInvert);
+  const { sessions } = opts;
   let firstAttemptSuite: SuiteResult | undefined;
-  let recoveredPrepared: PreparedState | undefined;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const suite = await runTestFile(file, {
         config: opts.config,
-        device: opts.device,
+        // Each session's prepared state (the startup launch on the first
+        // file, a recovery relaunch on a retry — itself a fresh `clear`) is
+        // consumed here, exactly once.
+        devices: sessions.map((s): RunDevice => ({
+          name: s.name,
+          device: s.device,
+          serial: s.serial,
+          sessionContext: { ...s.context, config: { ...opts.config, device: s.serial } },
+          prepared: consumePrepared(s),
+        })),
         screenshotDir: opts.screenshotDir,
         reporter: opts.reporter,
         beforeEachTest: async (fullName) => {
@@ -2747,33 +2918,28 @@ async function runTestFileWithRecovery(
           // beforeAll-established state (navigation, auth) is gone. Throw the
           // infra-shaped error so the file retries and beforeAll re-runs —
           // otherwise the test runs against the recovered app's home screen
-          // and fails with a misleading assertion error.
-          let recovered = false;
-          let recoveryReason = '';
-          await ensureSessionReady(
-            opts.sessionContext,
+          // and fails with a misleading assertion error. Every device of the
+          // group is checked; a recovery on any of them retries the file.
+          const recoveries: string[] = [];
+          await Promise.all(sessions.map((s) => ensureSessionReady(
+            { ...s.context, config: { ...opts.config, device: s.serial } },
             `before test ${fullName}`,
             undefined,
             {
               onRecovery: (err) => {
-                recovered = true;
-                recoveryReason = err instanceof Error ? err.message : String(err);
+                const reason = err instanceof Error ? err.message : String(err);
+                recoveries.push(sessions.length > 1 ? `${s.name}: ${reason}` : reason);
               },
             },
-          );
-          if (recovered) {
-            const detail = recoveryReason ? `: ${recoveryReason}` : '';
+          )));
+          if (recoveries.length > 0) {
             throw new Error(
-              `session recovered during before test ${fullName}; retrying file so beforeAll hooks run against the recovered app${detail}`,
+              `session recovered during before test ${fullName}; retrying file so beforeAll hooks run against the recovered app: ${recoveries.join('; ')}`,
             );
           }
         },
         abortFileOnError: isRecoverableInfrastructureError,
-        sessionContext: opts.sessionContext,
-        resetCapabilities: opts.sessionContext.capabilities ?? {},
-        // Only the first attempt can reuse the pre-launch state; a retry
-        // follows a recovery relaunch, which is itself a fresh `clear`.
-        preparedDevice: attempt === 1 ? opts.preparedDevice : recoveredPrepared,
+        resetCapabilities: sessions[0].capabilities,
         // In-process retries need the same ESM cache busting as worker
         // retries; otherwise import() returns the cached module and the
         // retry registers no tests.
@@ -2812,7 +2978,7 @@ async function runTestFileWithRecovery(
       process.stderr.write(
         dim(`Recovering session after infrastructure error in ${path.basename(file)}: ${infraFailure.error?.message ?? 'unknown'}\n`),
       );
-      recoveredPrepared = await launchConfiguredApp(opts.sessionContext, `recovery for ${path.basename(file)}`);
+      await recoverDeviceSessions(sessions, `recovery for ${path.basename(file)}`);
     } catch (err) {
       if (!isRecoverableInfrastructureError(err) || attempt === 2) {
         // If the retry itself crashed, return the first attempt's results
@@ -2823,7 +2989,7 @@ async function runTestFileWithRecovery(
       process.stderr.write(
         dim(`Recovering session after infrastructure error in ${path.basename(file)}: ${err instanceof Error ? err.message : err}\n`),
       );
-      recoveredPrepared = await launchConfiguredApp(opts.sessionContext, `recovery for ${path.basename(file)}`);
+      await recoverDeviceSessions(sessions, `recovery for ${path.basename(file)}`);
     }
   }
   // Unreachable — loop always returns or throws

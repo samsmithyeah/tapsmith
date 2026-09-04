@@ -27,6 +27,25 @@ export type Platform = 'android' | 'ios';
 
 export type { TraceMode, TraceConfig, VideoMode, VideoConfig };
 
+/**
+ * One member of a device group — see {@link TapsmithConfig.devices}.
+ */
+export interface DeviceGroupEntry {
+  /**
+   * How tests and traces refer to this device: `devices[i]` in the fixture
+   * order, the `deviceId` on every trace event it produces, the suffix on its
+   * failure screenshots, and the `device` argument MCP tools accept. Must be
+   * unique within the group.
+   */
+  name: string;
+  /**
+   * Pin this member to a specific serial / UDID. Optional for emulators and
+   * simulators (Tapsmith provisions them); required for physical iOS devices
+   * beyond the first, which cannot be auto-picked.
+   */
+  device?: string;
+}
+
 export interface TapsmithConfig {
   /**
    * Target platform. Required for iOS; defaults to Android behavior when unset.
@@ -69,6 +88,30 @@ export interface TapsmithConfig {
    * Prefer `avd` for parallel emulator provisioning.
    */
   device?: string;
+
+  /**
+   * Drive several devices from one test — the mobile analogue of Playwright's
+   * multi-context tests (two users chatting with each other). A "context" on
+   * mobile is a whole device: every member gets its own daemon, agent and app
+   * install, is reset per the declared `appReset` policy, and records into the
+   * same trace tagged with its name.
+   *
+   * - a number: that many devices, named `device-1`, `device-2`, …
+   * - an array: named members, optionally pinned to a serial / UDID.
+   *
+   * Tests receive them as the `devices` fixture (`device` stays an alias for
+   * `devices[0]`). Device-shaping, so project-level only — a `test.use()`
+   * cannot change the group a worker holds. Each two-device test costs two
+   * device slots, so a group project halves the parallelism of its bucket.
+   *
+   * @example
+   * projects: [{
+   *   name: 'chat',
+   *   testMatch: '**\/multi-user/**',
+   *   use: { devices: [{ name: 'alice' }, { name: 'bob' }] },
+   * }]
+   */
+  devices?: number | DeviceGroupEntry[];
 
   /**
    * How Tapsmith chooses devices when `device` is not explicitly set.
@@ -309,6 +352,7 @@ export type UseOptions = Partial<Pick<TapsmithConfig,
   | 'video'
   | 'platform'
   | 'device'
+  | 'devices'
   | 'avd'
   | 'simulator'
   | 'apk'
@@ -438,7 +482,92 @@ function applyConfigDefaults(
   }
   validateAppResetOptions(raw);
   validateUiOptions(raw);
+  validateDevicesOption(raw);
   return config;
+}
+
+// ─── Device groups ───
+
+/** Name given to the members of a `devices: N` group. */
+function defaultDeviceName(index: number): string {
+  return `device-${index + 1}`;
+}
+
+/**
+ * Reject malformed `devices` values at load time, naming the accepted shapes,
+ * instead of letting a typo provision a wrong-sized group. Shared by root
+ * config loading and project `use` (via `effectiveConfigForProject`).
+ */
+export function validateDevicesOption(
+  options: Pick<Partial<TapsmithConfig>, 'devices'>,
+  source = 'config',
+): void {
+  const devices = options.devices;
+  if (devices === undefined) return;
+  if (typeof devices === 'number') {
+    if (!Number.isInteger(devices) || devices < 1) {
+      throw new Error(`${source}: devices must be a positive integer or an array of { name, device? } entries (got ${JSON.stringify(devices)})`);
+    }
+    return;
+  }
+  if (!Array.isArray(devices) || devices.length === 0) {
+    throw new Error(`${source}: devices must be a positive integer or a non-empty array of { name, device? } entries (got ${JSON.stringify(devices)})`);
+  }
+  const names = new Set<string>();
+  const serials = new Set<string>();
+  for (const [i, entry] of devices.entries()) {
+    if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string' || entry.name.trim() === '') {
+      throw new Error(`${source}: devices[${i}] must be an object with a non-empty string \`name\` (got ${JSON.stringify(entry)})`);
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(entry.name)) {
+      throw new Error(`${source}: devices[${i}].name "${entry.name}" may only contain letters, digits, '-' and '_' (it names trace and screenshot files)`);
+    }
+    if (names.has(entry.name)) {
+      throw new Error(`${source}: devices[${i}].name "${entry.name}" is used by another entry; names must be unique within the group`);
+    }
+    names.add(entry.name);
+    if (entry.device !== undefined) {
+      if (typeof entry.device !== 'string' || entry.device.trim() === '') {
+        throw new Error(`${source}: devices[${i}].device must be a non-empty serial / UDID when set (got ${JSON.stringify(entry.device)})`);
+      }
+      if (serials.has(entry.device)) {
+        throw new Error(`${source}: devices[${i}].device "${entry.device}" is pinned by another entry; one device cannot serve two members`);
+      }
+      serials.add(entry.device);
+    }
+  }
+}
+
+/**
+ * The device group a config declares, normalised to named entries with the
+ * primary first. A config without `devices` is a group of one whose primary
+ * is `config.device` (when pinned). `config.device` also pins the primary of
+ * an explicit group whose first entry leaves `device` unset, so
+ * `--device <serial>` keeps meaning "run the primary on this device".
+ */
+export function resolveDeviceGroup(
+  config: Pick<TapsmithConfig, 'devices' | 'device'>,
+): DeviceGroupEntry[] {
+  const devices = config.devices;
+  let entries: DeviceGroupEntry[];
+  if (devices === undefined) {
+    entries = [{ name: defaultDeviceName(0) }];
+  } else if (typeof devices === 'number') {
+    entries = Array.from({ length: devices }, (_, i) => ({ name: defaultDeviceName(i) }));
+  } else {
+    entries = devices.map((e) => ({ name: e.name, ...(e.device ? { device: e.device } : {}) }));
+  }
+  if (entries[0] && !entries[0].device && config.device) {
+    entries[0] = { ...entries[0], device: config.device };
+  }
+  return entries;
+}
+
+/** Number of devices every test of this config drives (1 without `devices`). */
+export function deviceGroupSize(config: Pick<TapsmithConfig, 'devices'>): number {
+  const devices = config.devices;
+  if (devices === undefined) return 1;
+  return typeof devices === 'number' ? devices : devices.length;
 }
 
 /** Fail fast on malformed `ui` config values instead of silently ignoring them. */

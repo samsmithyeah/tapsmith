@@ -261,7 +261,7 @@ describe('generated trace archive', () => {
   function makeOpts(device: Device, config: Partial<TapsmithConfig>, extra: Partial<RunOptions> = {}): RunOptions {
     return {
       config: makeConfig({ rootDir: tempRoot, outputDir: 'out', ...config }),
-      device,
+      devices: [{ name: 'device-1', device }],
       // Required by design (see RunOptions) — nothing here declares a reset
       // policy, so an empty capability set is the honest value.
       resetCapabilities: {},

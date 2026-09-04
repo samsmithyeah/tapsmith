@@ -19,6 +19,8 @@ const MIN_TRACE_FALLBACK_TIMEOUT_MS = 250;
 
 export interface TraceContext {
   collector: TraceCollector
+  /** Group name of the acting device — tags every event this action emits. */
+  deviceId?: string
   takeScreenshot: () => Promise<Buffer | undefined>
   captureHierarchy: () => Promise<string | undefined>
   findElement?: (selector: Selector, timeoutMs: number) => Promise<{ found: boolean; element?: ElementInfo }>
@@ -180,7 +182,7 @@ export async function tracedAction(
   // emit at the same actionIndex with lifecycle='completed'.
   ctx.collector._emitActionStarted({
     category, action, selector: selectorStr, inputValue: extra?.inputValue,
-    bounds, point, sourceLocation, stack, log: [...log],
+    bounds, point, sourceLocation, stack, log: [...log], deviceId: ctx.deviceId,
     hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
     hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
   });
@@ -205,7 +207,7 @@ export async function tracedAction(
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
-      sourceLocation, stack,
+      sourceLocation, stack, deviceId: ctx.deviceId,
     });
   }, stack);
 
@@ -255,7 +257,7 @@ export async function tracedAction(
     hasScreenshotAfter: false,
     hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
     hasHierarchyAfter: false,
-    sourceLocation, stack,
+    sourceLocation, stack, deviceId: ctx.deviceId,
   });
 
   if (caughtErr !== undefined) {

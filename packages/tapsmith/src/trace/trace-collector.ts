@@ -85,6 +85,8 @@ async function captureWithTimeout<T>(
  */
 export interface TraceCapture {
   collector: TraceCollector
+  /** Group name of the device these events come from (multi-device tests). */
+  deviceId?: string
   takeScreenshot: () => Promise<Buffer | undefined>
   captureHierarchy: () => Promise<string | undefined>
   captureTraceState?: (options: {
@@ -853,7 +855,7 @@ export class TraceCollector {
 
   // ── Console ──
 
-  private _addConsoleEvent(level: ConsoleLevel, message: string, source: 'test' | 'device' | 'daemon'): void {
+  private _addConsoleEvent(level: ConsoleLevel, message: string, source: 'test' | 'device' | 'daemon', deviceId?: string): void {
     this._flushPendingGroups();
     const event = {
       type: 'console',
@@ -862,17 +864,18 @@ export class TraceCollector {
       source,
       actionIndex: this._actionIndex,
       timestamp: Date.now(),
+      ...(deviceId ? { deviceId } : {}),
     } as ConsoleTraceEvent;
     this._events.push(event);
     this._onEvent?.(event);
   }
 
-  addLogcatEntry(level: ConsoleLevel, message: string): void {
-    this._addConsoleEvent(level, message, 'device');
+  addLogcatEntry(level: ConsoleLevel, message: string, deviceId?: string): void {
+    this._addConsoleEvent(level, message, 'device', deviceId);
   }
 
-  addDaemonLogEntry(level: ConsoleLevel, message: string): void {
-    this._addConsoleEvent(level, message, 'daemon');
+  addDaemonLogEntry(level: ConsoleLevel, message: string, deviceId?: string): void {
+    this._addConsoleEvent(level, message, 'daemon', deviceId);
   }
 
   // ── Error ──
