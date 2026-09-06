@@ -5,7 +5,7 @@ import type { TestDispatcher } from '../test-dispatcher.js';
 export function registerListDevicesTool(server: McpServer, dispatcher?: TestDispatcher): void {
   server.tool(
     'tapsmith_list_devices',
-    'List all connected mobile devices and emulators across all platforms. Returns serial numbers, platform (android/ios), model, and state. A device that belongs to a `use.devices` group also carries its member name (e.g. "alice") and project; device tools (snapshot, tap, etc.) accept that name or the serial as their `device` parameter.',
+    'List all connected mobile devices and emulators across all platforms. Returns serial numbers, platform (android/ios), model, and state. Once the session has provisioned a `use.devices` group (a test run or device tool does that; listing alone does not), each member also carries its group name (e.g. "alice") and project; device tools (snapshot, tap, etc.) accept that name or the serial as their `device` parameter.',
     {},
     async () => {
       let devices = await listAllDevices();

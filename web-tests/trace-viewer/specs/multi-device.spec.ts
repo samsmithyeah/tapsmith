@@ -321,6 +321,20 @@ test.describe("Multi-device trace", () => {
       await expect(network.columnHeaders).not.toContainText(["Device"])
       await expect(network.pill("All devices")).toHaveCount(0)
     })
+
+    // A single-device run still records a one-entry group so its events carry a
+    // `deviceId`, but that name is the runner's: nobody configured `device-1`.
+    test("a single-device trace's Call tab names the device without the synthetic group name", async ({ viewer, detailTabs, actions }) => {
+      const device = { serial: "emulator-5554", model: "Pixel A", isEmulator: true }
+      await viewer.open({
+        metadata: { device, devices: [{ ...device, name: "device-1", platform: "android" as const }] },
+        events: [actionEvent({ actionIndex: 0, action: "tap", deviceId: "device-1" })],
+      })
+      await actions.items.nth(0).click()
+      await detailTabs.select("Call")
+      await expect(detailTabs.callGrid).toContainText("Pixel A · emulator-5554")
+      await expect(detailTabs.callGrid).not.toContainText("device-1")
+    })
   })
 
   test.describe("Filmstrip lanes", () => {

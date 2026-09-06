@@ -28,6 +28,9 @@ export class ChatScreen {
 
   async send(text: string) {
     await this.messageField.type(text)
-    await this.sendButton.tap()
+    // Submit from the keyboard rather than tapping Send: on iOS the software
+    // keyboard covers the button, and a tap on a covered element reports
+    // success without ever reaching it (the message is never posted).
+    await this.device.pressKey("enter")
   }
 }

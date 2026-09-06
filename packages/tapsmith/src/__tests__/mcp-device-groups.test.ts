@@ -7,12 +7,17 @@ import type { TestDispatcher, SessionInfo } from '../mcp/test-dispatcher.js';
 
 const hoisted = vi.hoisted(() => ({
   requests: [] as Array<{ device?: string; project?: { name: string; platform?: string } }>,
+  /** Serials the mocked pool knows; a `device` outside it fails the way the real pool does. */
+  known: undefined as string[] | undefined,
 }));
 
 vi.mock('../mcp/connection.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../mcp/connection.js')>()),
   resolveDeviceTarget: async (request?: { device?: string; project?: { name: string; platform?: string } }) => {
     hoisted.requests.push(request ?? {});
+    if (hoisted.known && request?.device && !hoisted.known.includes(request.device)) {
+      throw new Error(`Device "${request.device}" not found in any connected daemon. Available devices: ${hoisted.known.join(', ')}`);
+    }
     return { client: {} as never, device: request?.device };
   },
 }));
@@ -25,7 +30,12 @@ function fakeDispatcher(names: Record<string, string>): TestDispatcher {
     ensureInitialized: async () => {},
     ensureDevicesReady: async () => {},
     resolveDeviceName: (name: string) => names[name],
-    getSessionInfo: (): SessionInfo => ({ timeout: 0, retries: 0, projects: [] }),
+    getSessionInfo: (): SessionInfo => ({
+      timeout: 0,
+      retries: 0,
+      projects: [],
+      deviceTargets: Object.entries(names).map(([name, device]) => ({ name, device, group: 'chat' })),
+    }),
   } as unknown as TestDispatcher;
 }
 
@@ -41,6 +51,21 @@ describe('device tools accept a group member name', () => {
     await deviceClientFor({ device: 'emulator-5554' }, fakeDispatcher({}));
     await deviceClientFor({ device: 'SIM-1' }, undefined);
     expect(hoisted.requests.map((r) => r.device)).toEqual(['emulator-5554', 'SIM-1']);
+  });
+
+  // The pool's own message lists serials, which is all it knows. A caller who
+  // mistyped a member name needs the names the session would have accepted.
+  it('lists the group names alongside the serials when `device` matches neither', async () => {
+    hoisted.known = ['emulator-5554', 'emulator-5556'];
+    try {
+      await expect(deviceClientFor({ device: 'nobody' }, fakeDispatcher({ alice: 'emulator-5554', bob: 'emulator-5556' })))
+        .rejects.toThrow(/Device "nobody" not found.*Available devices: emulator-5554, emulator-5556\. Group names: alice, bob$/s);
+      // Nothing to add when the session declares no group.
+      await expect(deviceClientFor({ device: 'nobody' }, fakeDispatcher({})))
+        .rejects.toThrow(/Available devices: emulator-5554, emulator-5556$/);
+    } finally {
+      hoisted.known = undefined;
+    }
   });
 });
 

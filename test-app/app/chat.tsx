@@ -204,6 +204,8 @@ export default function ChatScreen() {
               autoCorrect={false}
               autoComplete="off"
               textContentType="none"
+              returnKeyType="send"
+              onSubmitEditing={send}
               accessibilityLabel="Message"
               testID="chat-message-input"
             />

@@ -55,8 +55,39 @@ export async function deviceClientFor(
   const device = request.device
     ? dispatcher?.resolveDeviceName(request.device) ?? request.device
     : undefined;
-  const { client } = await resolveDeviceTarget({ device, project });
-  return client;
+  try {
+    const { client } = await resolveDeviceTarget({ device, project });
+    return client;
+  } catch (err) {
+    throw withGroupNames(err, request.device, dispatcher);
+  }
+}
+
+/**
+ * An unknown `device` is answered with the group names the session accepts,
+ * not just its serials. The pool lists what it can see — serials — but a
+ * caller who wrote `alice` and got `Available devices: emulator-5554, …`
+ * could not tell that `alice` was a typo rather than the wrong kind of name.
+ *
+ * @internal — exported for unit testing.
+ */
+export function withGroupNames(err: unknown, requested: string | undefined, dispatcher?: TestDispatcher): unknown {
+  if (!(err instanceof Error) || requested === undefined || !/\bnot found\b/.test(err.message)) return err;
+  const names = groupNamesOf(dispatcher);
+  if (names.length === 0) return err;
+  return new Error(`${err.message}. Group names: ${names.join(', ')}`);
+}
+
+/** Group member names the session's device tools accept, in target order. */
+function groupNamesOf(dispatcher?: TestDispatcher): string[] {
+  if (!dispatcher) return [];
+  let targets: Array<{ name?: string }> = [];
+  try {
+    targets = dispatcher.getSessionInfo().deviceTargets ?? [];
+  } catch {
+    return [];
+  }
+  return [...new Set(targets.map((t) => t.name).filter((n): n is string => Boolean(n)))];
 }
 
 async function resolveProject(

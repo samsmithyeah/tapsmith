@@ -46,6 +46,19 @@ function deviceForEvent(
   return group.find((d) => d.name === event.deviceId) ?? metadata.device;
 }
 
+/**
+ * The Call tab's "Device" line. The group name (`alice`) leads only when the
+ * test declared a group: a single-device run still records one (`device-1`)
+ * so its events have a `deviceId`, but that name is the runner's, not the
+ * author's, and showing it read as a device the user never configured.
+ */
+function deviceLine(metadata: TraceMetadata, event: { deviceId?: string }): string | undefined {
+  const d = deviceForEvent(metadata, event);
+  if (!d?.serial) return undefined;
+  const grouped = metadata.devices !== undefined && metadata.devices.length > 1;
+  return [grouped ? d.name : undefined, d.model, d.serial].filter(Boolean).join(' · ');
+}
+
 export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode, previewHighlight, group }: Props) {
   const testError = metadata.error;
   // Device names of a multi-device trace, for the per-device filters.
@@ -259,10 +272,10 @@ function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTrace
           {event.success ? 'passed' : 'failed'}
         </span>
         {(() => {
-          const d = deviceForEvent(metadata, event);
-          return d?.serial ? <>
+          const line = deviceLine(metadata, event);
+          return line ? <>
             <span class="call-label">Device</span>
-            <span class="call-value">{d.name ? `${d.name} · ` : ''}{d.model ? `${d.model} · ` : ''}{d.serial}</span>
+            <span class="call-value">{line}</span>
           </> : null;
         })()}
         {event.sourceLocation && <>
@@ -310,10 +323,10 @@ function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTrace
         <span class="call-value mono">{event.gapBefore}ms</span>
       </>}
       {(() => {
-        const d = deviceForEvent(metadata, event);
-        return d?.serial ? <>
+        const line = deviceLine(metadata, event);
+        return line ? <>
           <span class="call-label">Device</span>
-          <span class="call-value">{d.name ? `${d.name} · ` : ''}{d.model ? `${d.model} · ` : ''}{d.serial}</span>
+          <span class="call-value">{line}</span>
         </> : null;
       })()}
       {event.sourceLocation && <>

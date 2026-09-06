@@ -16,6 +16,9 @@ export default defineConfig({
   package: "dev.tapsmith.testapp",
   simulator: process.env.TAPSMITH_IOS_SIMULATOR || "iPhone 17",
   timeout: 15_000,
+  // Same as the -ci sibling: without a per-character delay the simulator drops
+  // keystrokes under load (`type("bob")` has landed as "bb").
+  typingDelay: 10,
   retries: 0,
   screenshot: "only-on-failure",
   trace: { mode: "retain-on-failure", daemonLogs: true },
