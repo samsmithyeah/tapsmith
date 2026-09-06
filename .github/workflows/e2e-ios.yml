@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # Manual runs exist for the `Multi-device` job, which is disabled on push
+  # and pull_request (see the job's comment).
+  workflow_dispatch:
 
 concurrency:
   group: e2e-ios-${{ github.head_ref || github.run_id }}
@@ -592,17 +595,20 @@ jobs:
   # halves the parallelism of whatever hosts it. The workflow boots the first
   # simulator exactly as a shard does; Tapsmith clones and boots the second
   # itself (`simulator` + provisioning), as it does on a developer machine.
-  # Advisory on hosted runners: the standard 3-core macOS runner cannot host
-  # two booted simulators at usable speed — with both up, the app install
+  # DISABLED on push and pull_request: the standard 3-core macOS runner cannot
+  # host two booted simulators at usable speed — with both up, the app install
   # takes minutes and XCUITest's own ~60 s launch of the app under test times
   # out before the agent can start (the same suite passes on Android's
-  # 4-core KVM runner and on a developer Mac). The job still runs and reports,
-  # so the iOS group path stays visible, but it does not block the PR until it
-  # moves to a larger runner (`macos-latest-xlarge`), where it should be made
-  # required again (drop the test step's `continue-on-error`).
+  # 4-core KVM runner and on a developer Mac). Running it anyway spent an hour
+  # of macOS runner time to report a failure nobody can act on, so it is now
+  # manual-only (`workflow_dispatch`).
+  #
+  # To re-enable: give it a larger runner (`macos-latest-xlarge`), drop the
+  # `if:` below and the test step's `continue-on-error`.
   e2e-multi-device:
     name: Multi-device
     needs: [ build-sdk, build-daemon, build-agent, build-test-app ]
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -809,7 +815,9 @@ jobs:
 
       - name: Run two-device E2E tests
         id: two-device
-        # Advisory on this runner size — see the job comment above.
+        # Advisory on this runner size — see the job comment above. Kept so a
+        # manual run still uploads its results instead of stopping at the
+        # expected failure.
         continue-on-error: true
         working-directory: e2e
         env:
@@ -819,7 +827,7 @@ jobs:
 
       - name: Report advisory outcome
         if: steps.two-device.outcome != 'success'
-        run: echo "::warning::Two-device iOS suite did not pass on the standard macOS runner (advisory — see the e2e-multi-device job comment)."
+        run: echo "::warning::Two-device iOS suite did not pass on this runner (advisory — see the e2e-multi-device job comment)."
 
       - name: Upload test results
         if: always()
