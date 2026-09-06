@@ -11,7 +11,7 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, deviceGroupSize, EXPLICIT_WORKERS, isExplicitWorkers, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
+import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, deviceGroupSize, assignGroupMemberDevices, EXPLICIT_WORKERS, isExplicitWorkers, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
 import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
@@ -923,12 +923,16 @@ async function provisionGroupMemberDevices(
   const provision = await provisionMultiWorkerDevices(cfg, 'Device group', {
     quiet: true,
     progress,
+    // The caller owns the "Device group" launch row (openSequentialGroupMembers).
+    reportProgress: false,
     wanted: group.length,
     pinned,
   });
   const primary = cfg.device;
-  const pool = (provision.deviceSerials ?? []).filter((s) => s !== primary && !pinned.includes(s));
-  if (pool.length < unpinned.length) {
+  const provisionedSerials = provision.deviceSerials ?? [];
+  const serials = assignGroupMemberDevices(group, primary, provisionedSerials);
+  if (!serials) {
+    const pool = provisionedSerials.filter((s) => s !== primary && !pinned.includes(s));
     throw new Error(
       `use.devices asks for ${group.length} device(s) but only ${pool.length + pinned.length + 1} could be provisioned `
       + `(${[primary, ...pinned, ...pool].filter(Boolean).join(', ')}). `
@@ -937,8 +941,6 @@ async function provisionGroupMemberDevices(
         : 'Connect more devices, set `avd` so emulators can be launched, or pin members with `device`.'),
     );
   }
-  let next = 0;
-  const serials = members.map((m) => m.device ?? pool[next++]);
   return { serials, launched: provision.launched, fresh: provision.freshSerials };
 }
 
@@ -1325,6 +1327,12 @@ async function provisionMultiWorkerDevices(
     wanted?: number
     /** Serials that must be part of the set (pinned group members), after the primary. */
     pinned?: string[]
+    /**
+     * Whether this call owns the `worker-devices` launch row (start / skip /
+     * complete). `false` when the caller reports that row itself and only
+     * wants the intermediate `update`s; defaults to `true`.
+     */
+    reportProgress?: boolean
   },
 ): Promise<{ deviceSerials: string[] | undefined; launched: LaunchedEmulator[]; freshSerials: Set<string> }> {
   let launched: LaunchedEmulator[] = [];
@@ -1332,7 +1340,8 @@ async function provisionMultiWorkerDevices(
   const wanted = opts?.wanted ?? config.workers;
   if (wanted <= 1) return { deviceSerials: undefined, launched, freshSerials };
   const pinned = (opts?.pinned ?? []).filter((s) => s !== config.device);
-  if (opts?.wanted === undefined) opts?.progress?.start('worker-devices', `preparing ${wanted} worker device(s)`);
+  const rowProgress = opts?.reportProgress === false ? undefined : opts?.progress;
+  rowProgress?.start('worker-devices', `preparing ${wanted} worker device(s)`);
 
   let serials: string[];
   let reusedSimulatorCount = 0;
@@ -1409,7 +1418,7 @@ async function provisionMultiWorkerDevices(
   }
 
   if (serials.length < 2) {
-    if (opts?.wanted === undefined) opts?.progress?.skip('worker-devices', `${serials.length} device(s) available; using single-worker mode`);
+    rowProgress?.skip('worker-devices', `${serials.length} device(s) available; using single-worker mode`);
     if (!opts?.quiet && !opts?.progress) {
       process.stderr.write(
         `${YELLOW}Only ${serials.length} device(s) available. ${modeName} needs 2+ devices for parallel. Using single-worker mode.${RESET}\n`,
@@ -1419,7 +1428,7 @@ async function provisionMultiWorkerDevices(
   }
 
   const reuseSuffix = reusedSimulatorCount > 0 ? ` (${reusedSimulatorCount} reused)` : '';
-  if (opts?.wanted === undefined) opts?.progress?.complete('worker-devices', `${serials.length} device(s)${reuseSuffix}: ${serials.join(', ')}`);
+  rowProgress?.complete('worker-devices', `${serials.length} device(s)${reuseSuffix}: ${serials.join(', ')}`);
   return { deviceSerials: serials, launched, freshSerials };
 }
 
@@ -1451,6 +1460,9 @@ async function provisionWorkerGroups(
     groups.push(rest.slice(i, i + groupSize));
   }
   if (groups.length < 2) {
+    // Enough devices for one group but not two: the row above completed, so
+    // downgrade it to the same skip a plain device shortfall reports.
+    opts?.progress?.skip('worker-devices', `${provision.deviceSerials.length} device(s) available; using single-worker mode`);
     if (!opts?.quiet && !opts?.progress) {
       process.stderr.write(
         `${YELLOW}Only ${provision.deviceSerials.length} device(s) available. ${modeName} needs ${2 * groupSize}+ for parallel. Using single-worker mode.${RESET}\n`,
@@ -1486,15 +1498,21 @@ async function provisionDevicesForBucket(
   if (desiredWorkers <= 0) return { serials: [], launched: [], reusedSimulatorCount: 0 };
   if (pinnedMembers.length > 0) {
     // A pinned group is exactly one worker: the primary (pinned or the first
-    // device found), then the named members in order.
-    const primary = effectiveConfig.device
-      ? { serials: [effectiveConfig.device], launched: [] as LaunchedEmulator[], reusedSimulatorCount: 0 }
-      : await provisionDevicesForBucket({ ...effectiveConfig, devices: undefined }, 1 + pinnedMembers.length, progress);
-    const first = primary.serials.find((s) => !pinnedMembers.includes(s));
+    // device found), then the members in order — each keeping its pin, the
+    // unpinned ones taking the next free device provisioned here. Nothing to
+    // provision when every entry is pinned.
+    const group = resolveDeviceGroup(effectiveConfig);
+    const pool = group.every((e) => e.device)
+      ? { serials: [] as string[], launched: [] as LaunchedEmulator[], reusedSimulatorCount: 0 }
+      : await provisionDevicesForBucket({ ...effectiveConfig, devices: undefined }, group.length, progress);
+    const first = group[0].device ?? pool.serials.find((s) => !pinnedMembers.includes(s));
+    const members = first ? assignGroupMemberDevices(group, first, pool.serials) : undefined;
     return {
-      serials: first ? [first, ...pinnedMembers] : pinnedMembers,
-      launched: primary.launched,
-      reusedSimulatorCount: primary.reusedSimulatorCount,
+      // Short of devices: hand back what there is, so the caller's
+      // `< groupSize` check reports the shortfall with the real list.
+      serials: members ? [first!, ...members] : first ? [first, ...pinnedMembers] : pinnedMembers,
+      launched: pool.launched,
+      reusedSimulatorCount: pool.reusedSimulatorCount,
     };
   }
 

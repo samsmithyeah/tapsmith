@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { TraceCollector } from '../trace/trace-collector.js';
+import { runInAttemptContext } from '../attempt-fence.js';
 import type { TraceConfig } from '../trace/types.js';
 
 // Two devices acting at once (PILOT-310) each capture a before-screenshot and
@@ -112,6 +113,30 @@ describe('TraceCollector action index reservation', () => {
     expect(actionIndex).toBe(7);
     c.addActionEvent(actionEvent('tap'), actionIndex);
     expect(c.currentActionIndex).toBe(8);
+  });
+
+  it('spends the index of an action fenced mid-flight, so terminal frames land where the viewer looks', async () => {
+    const c = new TraceCollector(makeConfig(), tempDir());
+    const first = await c.captureBeforeAction(async () => undefined, async () => undefined);
+    c.addActionEvent(actionEvent('tap'), first.actionIndex);
+
+    // A test times out while its second tap is between capture and emit; the
+    // runner closes the attempt token and the emit is fenced.
+    const token = { closed: false };
+    await runInAttemptContext(token, async () => {
+      const inFlight = await c.captureBeforeAction(async () => Buffer.from('zombie'), async () => undefined);
+      token.closed = true;
+      c.addActionEvent(actionEvent('tap'), inFlight.actionIndex);
+      // A stray call issued after the fence closed reserves too.
+      const stray = await c.captureBeforeAction(async () => undefined, async () => undefined);
+      c.addAssertionEvent({ assertion: 'toBeVisible', passed: true, soft: false, negated: false, duration: 1, attempts: 1 }, stray.actionIndex);
+    });
+    expect(c.events.filter((e) => e.type !== 'console')).toHaveLength(1);
+
+    // `actionCount` (currentActionIndex) is what the terminal screenshots are
+    // reserved from, and what the viewer adds the device ordinal to.
+    const terminal = await c.captureBeforeAction(async () => Buffer.from('end'), async () => undefined);
+    expect(terminal.actionIndex).toBe(c.currentActionIndex);
   });
 
   it('tags device and daemon log lines with the device that produced them', () => {

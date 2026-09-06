@@ -367,6 +367,18 @@ export class TraceCollector {
   }
 
   /**
+   * A fenced emit (the attempt ended while its action was in flight) records
+   * nothing, but the index its capture reserved is still spent: leave it
+   * behind `_actionIndex` and `actionCount` falls short of the next
+   * reservation, so the terminal screenshots the runner reserves afterwards
+   * land past where the viewer looks for them (`actionCount + ordinal`) and
+   * the afterAll amendment offset can collide with them.
+   */
+  private _dropFencedReservation(reserved: number | undefined): void {
+    if (reserved !== undefined) this._actionIndex = Math.max(this._actionIndex, reserved + 1);
+  }
+
+  /**
    * @internal — Record an already-formed event replayed from another
    * collector (beforeAll hooks) so it lands in this collector's packaged
    * trace, not just the UI-mode live stream. The event keeps its original
@@ -706,7 +718,7 @@ export class TraceCollector {
     /** The index `captureBeforeAction` reserved for this action, when it captured. */
     reservedActionIndex?: number,
   ): void {
-    if (isCurrentAttemptClosed()) return;
+    if (isCurrentAttemptClosed()) return this._dropFencedReservation(reservedActionIndex);
     this._flushPendingGroups();
     const actionIndex = this._indexForEmit(reservedActionIndex);
     const now = Date.now();
@@ -731,7 +743,7 @@ export class TraceCollector {
     /** The index `captureBeforeAction` reserved for this assertion, when it captured. */
     reservedActionIndex?: number,
   ): void {
-    if (isCurrentAttemptClosed()) return;
+    if (isCurrentAttemptClosed()) return this._dropFencedReservation(reservedActionIndex);
     this._flushPendingGroups();
     const actionIndex = this._indexForEmit(reservedActionIndex);
     const now = Date.now();

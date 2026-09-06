@@ -652,10 +652,14 @@ export async function openDeviceGroup(
   },
 ): Promise<DeviceSession[]> {
   if (specs.length === 0) return [];
+  // Same fast-fail as a single session: a physical iOS group with no
+  // device xctestrun stops here with the `build-ios-agent` hint, not in
+  // xcodebuild. Adopting members have a running agent and need none.
   const artifacts = await resolveAgentArtifacts(
     { ...config, device: specs[0].serial },
     specs[0].serial,
     (m) => opts.onProgress?.(m, specs[0]),
+    { requireXctestrun: specs.some((spec) => !spec.adopt) },
   );
   const results = await Promise.allSettled(specs.map((spec) => openDeviceSession(spec, config, {
     ...opts,
@@ -716,8 +720,11 @@ export async function recoverDeviceSessions(sessions: DeviceSession[], phase: st
  * it — the daemon and the ADB forward it left on the device. Idempotent.
  */
 export function closeDeviceSession(session: DeviceSession): void {
-  try { session.device.close(); } catch { /* already closed */ }
-  if (session.ownsClient !== false) {
+  // The Device holds the same client instance: a plain `device.close()`
+  // would close a caller-owned one behind the guard below.
+  const ownsClient = session.ownsClient !== false;
+  session.device._close({ closeClient: ownsClient }).catch(() => { /* already closed */ });
+  if (ownsClient) {
     try { session.client.close(); } catch { /* already closed */ }
   }
   if (session.daemonProcess) {

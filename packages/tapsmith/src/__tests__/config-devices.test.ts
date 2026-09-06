@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  assignGroupMemberDevices,
   defineConfig,
   deviceGroupSize,
   effectiveConfigForProject,
@@ -90,6 +91,37 @@ describe('resolveDeviceGroup / deviceGroupSize', () => {
     // An explicit pin on the first member wins over `config.device`.
     expect(resolveDeviceGroup(makeConfig({ device: 'emulator-5554', devices: [{ name: 'alice', device: 'X' }] }))[0])
       .toEqual({ name: 'alice', device: 'X' });
+  });
+});
+
+describe('assignGroupMemberDevices', () => {
+  // Every embedder (sequential CLI, parallel dispatcher, per-bucket
+  // provisioning) turns a provisioned device list into a group through this
+  // one function; two of them used to drop the unpinned members of a
+  // partially pinned group.
+  const mixed = [{ name: 'alice' }, { name: 'bob', device: 'X' }, { name: 'carol' }];
+
+  it('keeps pins and fills the unpinned members from the pool in declaration order', () => {
+    expect(assignGroupMemberDevices(mixed, 'P', ['P', 'X', 'A', 'B'])).toEqual(['X', 'A']);
+    // The pool need not contain the pinned device (a serial adb has not listed yet).
+    expect(assignGroupMemberDevices(mixed, 'P', ['P', 'A'])).toEqual(['X', 'A']);
+  });
+
+  it('never hands out the primary or a pinned device as a free one', () => {
+    expect(assignGroupMemberDevices(mixed, 'P', ['X', 'P', 'A'])).toEqual(['X', 'A']);
+    expect(assignGroupMemberDevices([{ name: 'a' }, { name: 'b' }, { name: 'c', device: 'Z' }], 'P', ['P', 'Z', 'Q']))
+      .toEqual(['Q', 'Z']);
+  });
+
+  it('is undefined when the pool cannot fill every unpinned member', () => {
+    expect(assignGroupMemberDevices(mixed, 'P', ['P', 'X'])).toBeUndefined();
+    expect(assignGroupMemberDevices(mixed, 'P', [])).toBeUndefined();
+  });
+
+  it('needs no pool for a fully pinned group and none for a group of one', () => {
+    expect(assignGroupMemberDevices([{ name: 'a', device: 'P' }, { name: 'b', device: 'X' }], 'P', [])).toEqual(['X']);
+    expect(assignGroupMemberDevices([{ name: 'a' }], 'P', [])).toEqual([]);
+    expect(assignGroupMemberDevices([{ name: 'a' }, { name: 'b' }], undefined, ['Q'])).toEqual(['Q']);
   });
 });
 

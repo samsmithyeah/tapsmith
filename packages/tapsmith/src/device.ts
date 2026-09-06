@@ -1215,7 +1215,9 @@ export class Device {
     const sourceLocation = stack[0];
     const targetPackageName = packageName ?? this.defaultPackageName;
     const selector = targetPackageName ? `package=${targetPackageName}` : undefined;
-    const { captures: beforeCaptures } = await collector.captureBeforeAction(
+    // The capture reserves this action's index; every emit below must hand it
+    // back, or the event lands one index past its own before-screenshot.
+    const { actionIndex, captures: beforeCaptures } = await collector.captureBeforeAction(
       () => this._takeScreenshotBuffer(),
       () => this._captureHierarchy(),
     );
@@ -1233,7 +1235,7 @@ export class Device {
       log: connectLog,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
-    });
+    }, actionIndex);
 
     const start = Date.now();
     let failedByTimeout = false;
@@ -1255,7 +1257,7 @@ export class Device {
         hasHierarchyAfter: false,
         sourceLocation,
         stack,
-      });
+      }, actionIndex);
     }, stack);
 
     let handle: WebViewHandle | undefined;
@@ -1279,7 +1281,7 @@ export class Device {
           hasHierarchyAfter: false,
           sourceLocation,
           stack,
-        });
+        }, actionIndex);
       }
       throw err;
     }
@@ -1302,7 +1304,7 @@ export class Device {
       hasHierarchyAfter: false,
       sourceLocation,
       stack,
-    });
+    }, actionIndex);
 
     return handle;
   }
@@ -1749,6 +1751,15 @@ export class Device {
   }
 
   async close(): Promise<void> {
+    await this._close({ closeClient: true });
+  }
+
+  /**
+   * @internal — `close()` for a Device whose gRPC client belongs to someone
+   * else (a session adopting the CLI's shared client): tears down everything
+   * this Device started but leaves the client open for its owner.
+   */
+  async _close(opts: { closeClient: boolean }): Promise<void> {
     // Stop device log stream (synchronous)
     this._stopDeviceLogStream();
     this._stopDaemonLogStream();
@@ -1777,7 +1788,7 @@ export class Device {
       this._activeWebView = null;
     }
 
-    this._client.close();
+    if (opts.closeClient) this._client.close();
   }
 }
 

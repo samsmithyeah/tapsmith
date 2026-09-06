@@ -14,7 +14,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { normalizeGrep, resolveDeviceStrategy, type TapsmithConfig } from './config.js';
 import { findDaemonBin } from './daemon-bin.js';
-import { deviceGroupSize, resolveDeviceGroup } from './config.js';
+import { assignGroupMemberDevices, deviceGroupSize, resolveDeviceGroup } from './config.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import type { TestResult, SuiteResult } from './runner.js';
 import type { TapsmithReporter, FullResult } from './reporter.js';
@@ -1183,8 +1183,9 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     }
 
     if (pinnedMemberSerials.length > 0) {
-      // A pinned group: its one worker holds exactly the named devices, with
-      // the primary from `config.device` or the first unpinned device found.
+      // A pinned group: its one worker holds the primary (from `config.device`
+      // or the first unpinned device found), then the members in order — each
+      // keeping its pin, the unpinned ones taking the next free device.
       const primary = deviceGroup[0].device ?? deviceSerials.find((s) => !pinnedMemberSerials.includes(s));
       if (!primary) {
         launchProgress?.fail('worker-devices', 'no device left for the group primary');
@@ -1193,7 +1194,12 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           + 'Pin it too with `device`, or boot another device.',
         );
       }
-      deviceSerials = [primary, ...pinnedMemberSerials];
+      const members = assignGroupMemberDevices(deviceGroup, primary, deviceSerials);
+      // Short of devices: keep what there is so the check below reports the
+      // shortfall with the real list.
+      deviceSerials = members
+        ? [primary, ...members]
+        : [primary, ...pinnedMemberSerials, ...deviceSerials.filter((s) => s !== primary && !pinnedMemberSerials.includes(s))];
     }
     if (deviceSerials.length < groupSize) {
       launchProgress?.fail('worker-devices', `device group needs ${groupSize} device(s); ${deviceSerials.length} available`);

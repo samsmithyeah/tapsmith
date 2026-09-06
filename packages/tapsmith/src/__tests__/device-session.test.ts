@@ -60,6 +60,9 @@ vi.mock('../device.js', () => ({
       }),
       waitForIdle: vi.fn(async () => {}),
       terminateApp: vi.fn(async () => {}),
+      // `_close` is what closeDeviceSession calls (it decides whether the
+      // shared gRPC client goes with the Device); `close()` is its public form.
+      _close: vi.fn(async () => {}),
       close: vi.fn(),
     };
     mocks.devices.push(device);
@@ -194,7 +197,7 @@ describe('openDeviceSession', () => {
       { label: 'Worker 1' },
     )).rejects.toThrow(/^Worker 1 \(emulator-5556\): Failed to start agent: Failed to connect to agent socket/);
     // A failed open leaves nothing behind.
-    expect(mocks.devices.at(-1)!.close).toHaveBeenCalled();
+    expect(mocks.devices.at(-1)!._close).toHaveBeenCalledWith({ closeClient: true });
     expect(mocks.clients.at(-1)!.close).toHaveBeenCalled();
   });
 
@@ -290,6 +293,8 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     expect(mocks.clients).toHaveLength(0);
     closeDeviceSession(session);
     expect(client.close).not.toHaveBeenCalled();
+    // The Device shares that client instance, so it must not close it either.
+    expect(mocks.devices.at(-1)!._close).toHaveBeenCalledWith({ closeClient: false });
 
     mocks.failAgentFor.add('emulator-5556');
     await expect(openDeviceSession(
@@ -358,7 +363,7 @@ describe('openDeviceGroup', () => {
       makeConfig(),
       { label: 'Worker 0' },
     )).rejects.toThrow(/Failed to connect to agent socket/);
-    for (const device of mocks.devices) expect(device.close).toHaveBeenCalled();
+    for (const device of mocks.devices) expect(device._close).toHaveBeenCalled();
   });
 
   it('prefixes progress with the member name for groups, not for single devices', async () => {
@@ -402,7 +407,7 @@ describe('recovery and teardown', () => {
     );
     closeDeviceSession(session);
     closeDeviceSession(session);
-    expect(mocks.devices[0].close).toHaveBeenCalled();
+    expect(mocks.devices[0]._close).toHaveBeenCalledWith({ closeClient: true });
     expect(mocks.clients[0].close).toHaveBeenCalled();
     expect(daemon.kill).toHaveBeenCalledTimes(1);
   });

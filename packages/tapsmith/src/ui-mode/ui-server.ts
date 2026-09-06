@@ -2797,7 +2797,14 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       // group member daemons it spawned): the old daemons have to be gone
       // first, not merely signalled. An adopting worker keeps the CLI's.
       if (!adopt) releaseWorkerResources(worker);
-      else for (const m of worker.members) if (m.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
+      else {
+        // The replacement opens fresh member screen clients (adopted members
+        // included), so the old ones go with the old process.
+        for (const m of worker.members) {
+          if (m.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
+          m.screenClient?.close();
+        }
+      }
       await awaitDaemonExit(worker);
       const daemonPort = adopt?.daemonPort ?? baseDaemonPort + 100 + worker.id;
 

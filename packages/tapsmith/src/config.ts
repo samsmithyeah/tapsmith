@@ -581,6 +581,35 @@ export function deviceGroupSize(config: Pick<TapsmithConfig, 'devices'>): number
   return typeof devices === 'number' ? devices : devices.length;
 }
 
+/**
+ * The device each *member* of a group (every entry after the primary) runs
+ * on: a pinned member keeps its `device`, an unpinned one takes the next
+ * device of `pool` that is neither the primary nor pinned elsewhere, in
+ * declaration order. Returns `undefined` when the pool cannot fill every
+ * unpinned member.
+ *
+ * Every embedder that turns a provisioned device list into a group goes
+ * through here, so a partially pinned group (`[{name:'a'}, {name:'b',
+ * device:'X'}, {name:'c'}]`) resolves the same way sequentially, in parallel
+ * workers and per bucket — two of those used to drop the unpinned members.
+ */
+export function assignGroupMemberDevices(
+  group: DeviceGroupEntry[],
+  primary: string | undefined,
+  pool: string[],
+): string[] | undefined {
+  const pinned = new Set(group.flatMap((e) => (e.device ? [e.device] : [])));
+  const free = pool.filter((s) => s !== primary && !pinned.has(s));
+  let next = 0;
+  const serials: string[] = [];
+  for (const member of group.slice(1)) {
+    const serial = member.device ?? free[next++];
+    if (serial === undefined) return undefined;
+    serials.push(serial);
+  }
+  return serials;
+}
+
 /** Fail fast on malformed `ui` config values instead of silently ignoring them. */
 function validateUiOptions(raw: Partial<TapsmithConfig>): void {
   if (raw.ui === undefined) return;
