@@ -72,6 +72,8 @@ export interface TestTreeEntry {
   children?: TestTreeEntry[]
   /** Declared isolation options (appReset / appResetScope / appState) when any are set. */
   use?: { appReset?: string; appResetScope?: string; appState?: string }
+  /** Project nodes only: member names of a `use.devices` project, in group order. */
+  devices?: string[]
 }
 
 export interface ProjectInfo {
@@ -80,6 +82,8 @@ export interface ProjectInfo {
   package?: string
   testFiles: string[]
   dependencies: string[]
+  /** Member names of a `use.devices` project, in group order; absent for a single device. */
+  devices?: string[]
 }
 
 /** A platform's device, or why it has none. */

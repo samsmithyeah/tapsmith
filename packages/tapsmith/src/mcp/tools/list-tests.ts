@@ -7,7 +7,7 @@ const MAX_LISTED_DISCOVERY_ERRORS = 10;
 export function registerListTestsTool(server: McpServer, dispatcher: TestDispatcher): void {
   server.tool(
     'tapsmith_list_tests',
-    'List all test files, projects, and test names discovered by the current MCP test session. Returns the full test tree grouped by project (e.g. "android", "ios"), with absolute file paths, describe blocks, and individual test names. Call this before tapsmith_run_tests to get the exact file paths, test names, and project names needed as arguments.',
+    'List all test files, projects, and test names discovered by the current MCP test session. Returns the full test tree grouped by project (e.g. "android", "ios"), with absolute file paths, describe blocks, and individual test names. A project whose tests drive several devices at once (`use.devices`) lists its device names (e.g. "alice", "bob"); tapsmith_run_tests runs it against all of them, and device tools accept those names as `device`. Call this before tapsmith_run_tests to get the exact file paths, test names, and project names needed as arguments.',
     {},
     async () => {
       await dispatcher.ensureInitialized?.();
@@ -58,7 +58,7 @@ function formatTree(nodes: TestTreeEntry[], lines: string[], depth: number): voi
     const iso = formatIsolation(node.use);
     switch (node.type) {
       case 'project':
-        lines.push(`${indent}[project] ${node.name}${iso}`);
+        lines.push(`${indent}[project] ${node.name}${formatDevices(node.devices)}${iso}`);
         break;
       case 'file':
         lines.push(`${indent}[file] ${node.filePath}${iso}`);
@@ -72,6 +72,15 @@ function formatTree(nodes: TestTreeEntry[], lines: string[], depth: number): voi
     }
     if (node.children) formatTree(node.children, lines, depth + 1);
   }
+}
+
+/**
+ * The group a `use.devices` project drives, so a consumer can tell from the
+ * tree that its tests need several devices and which names address them.
+ */
+function formatDevices(devices: string[] | undefined): string {
+  if (!devices || devices.length <= 1) return '';
+  return `  (drives ${devices.length} devices: ${devices.join(', ')})`;
 }
 
 /**

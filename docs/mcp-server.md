@@ -106,9 +106,13 @@ acted on: its daemon is pointed elsewhere.
 
 For a project that drives several devices per test (`use.devices`, see
 [Multi-device tests](./multi-device.md)), `device` also accepts a member's
-**name** — `device: "bob"` — and `tapsmith_session_info` lists every member
-with its name and project. `tapsmith_run_tests` runs such a project against
-all of its devices.
+**name** — `device: "bob"`. Such a project is discoverable without reading the
+config: `tapsmith_list_tests` marks it `(drives 2 devices: alice, bob)`,
+`tapsmith_session_info` lists the members beside the project and, once they
+are provisioned, one `Device` line per member, and `tapsmith_list_devices`
+labels each member with its `name` and `project`. `tapsmith_run_tests` runs
+such a project against all of its devices, and every failure step it reports
+(as does `tapsmith_list_results`) names the device it ran on.
 
 The same rule governs `tapsmith_run_tests`, with one addition: if a requested
 file runs under more than one project, the run is **refused** until you pass

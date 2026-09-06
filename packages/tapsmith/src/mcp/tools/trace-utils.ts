@@ -15,12 +15,25 @@ export interface TraceEvent {
   level?: string
   message?: string
   source?: string
+  /** Group member that produced the event, on a multi-device trace. */
+  deviceId?: string
 }
 
 export interface TraceSummary {
   steps: string[]
   deviceLogs: string[]
   failureScreenshot?: Buffer
+}
+
+/** Whether `metadata.json` lists more than one device (a `use.devices` trace). */
+function isMultiDeviceTrace(metadataJson: string | undefined): boolean {
+  if (!metadataJson) return false;
+  try {
+    const meta = JSON.parse(metadataJson) as { devices?: unknown };
+    return Array.isArray(meta.devices) && meta.devices.length > 1;
+  } catch {
+    return false;
+  }
 }
 
 export function readTraceSummary(tracePath: string, maxSteps = 10): TraceSummary | undefined {
@@ -32,6 +45,12 @@ export function readTraceSummary(tracePath: string, maxSteps = 10): TraceSummary
 
     const steps: string[] = [];
     const deviceLogs: string[] = [];
+
+    // A trace recorded on a device group names the device on every step and
+    // log line (`bob: tap`), the way tapsmith_read_trace does — a two-user
+    // failure otherwise reads with no owner. Single-device traces are unchanged.
+    const multiDevice = isMultiDeviceTrace(files['metadata.json'] ? decode(files['metadata.json']) : undefined);
+    const who = (event: TraceEvent): string => (multiDevice && event.deviceId ? `${event.deviceId}: ` : '');
 
     if (files['trace.json']) {
       const events: TraceEvent[] = decode(files['trace.json'])
@@ -50,9 +69,9 @@ export function readTraceSummary(tracePath: string, maxSteps = 10): TraceSummary
         const dur = shownDuration ? ` (${shownDuration}ms)` : '';
         if (event.type === 'action') {
           const sel = event.selector ? ` on ${event.selector}` : '';
-          steps.push(`[${status}] ${event.action ?? 'action'}${sel}${dur}`);
+          steps.push(`[${status}] ${who(event)}${event.action ?? 'action'}${sel}${dur}`);
         } else if (event.type === 'assertion') {
-          steps.push(`[${status}] expect ${event.assertion ?? 'assertion'}${dur}`);
+          steps.push(`[${status}] ${who(event)}expect ${event.assertion ?? 'assertion'}${dur}`);
           if (event.error) {
             if (event.expected !== undefined) steps.push(`  Expected: ${JSON.stringify(event.expected)}`);
             if (event.actual !== undefined) steps.push(`  Actual: ${JSON.stringify(event.actual)}`);
@@ -71,7 +90,7 @@ export function readTraceSummary(tracePath: string, maxSteps = 10): TraceSummary
       );
       const deviceLogTail = deviceLogEvents.slice(-maxDeviceLogs);
       for (const ev of deviceLogTail) {
-        deviceLogs.push(`[${ev.level?.toUpperCase()}] ${ev.message ?? ''}`);
+        deviceLogs.push(`[${ev.level?.toUpperCase()}] ${who(ev)}${ev.message ?? ''}`);
       }
       if (deviceLogEvents.length > maxDeviceLogs) {
         deviceLogs.unshift(`... ${deviceLogEvents.length - maxDeviceLogs} earlier device log(s) omitted`);

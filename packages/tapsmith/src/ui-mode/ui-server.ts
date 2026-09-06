@@ -59,7 +59,7 @@ import type {
   TestTreeUseOptions,
 } from './ui-protocol.js';
 import { encodeScreenFrame, mirrorKey, type TestNodeStatus, type WorkerDeviceInfo } from './ui-protocol.js';
-import { deviceGroupSize, resolveDeviceGroup } from '../config.js';
+import { deviceGroupSize, resolveDeviceGroup, deviceGroupNames } from '../config.js';
 import { startDaemon, waitForDaemon } from '../device-session.js';
 import { RunQueue } from '../watch-queue.js';
 import { DeviceReadiness, toWireReadiness, type Candidate, type ReadinessCommand, type ReadinessEvent, type StaleReason } from './device-readiness.js';
@@ -1002,6 +1002,13 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       entry.children = node.children.map(toTreeEntry);
     }
     if (node.use) entry.use = node.use;
+    // A `use.devices` project names its members so an MCP consumer learns
+    // both that the tests need a group and what to pass as `device`.
+    if (node.type === 'project') {
+      const project = realProjects().find((p) => p.name === node.name);
+      const devices = project ? deviceGroupNames(project.effectiveConfig) : undefined;
+      if (devices) entry.devices = devices;
+    }
     return entry;
   }
 
@@ -1102,6 +1109,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         package: p.effectiveConfig.package,
         testFiles: p.testFiles,
         dependencies: p.dependencies,
+        devices: deviceGroupNames(p.effectiveConfig),
       }));
       // The same per-platform view the headless dispatcher reports, with a
       // `use.devices` group listed member by member under its project.

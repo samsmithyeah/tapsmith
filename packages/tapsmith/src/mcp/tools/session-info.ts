@@ -57,6 +57,9 @@ export function registerSessionInfoTool(server: McpServer, dispatcher: TestDispa
           const details: string[] = [];
           if (p.platform) details.push(p.platform);
           if (p.package) details.push(p.package);
+          // A group project names its members here as well as in the Device
+          // lines above, which only exist once the devices are provisioned.
+          if (p.devices && p.devices.length > 1) details.push(`devices: ${p.devices.join(', ')}`);
           details.push(`${p.testFiles.length} file(s)`);
           if (p.dependencies.length > 0) details.push(`depends on: ${p.dependencies.join(', ')}`);
           lines.push(`- **${p.name}**: ${details.join(' | ')}`);

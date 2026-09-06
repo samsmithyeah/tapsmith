@@ -18,7 +18,7 @@ import {
 import type { WatchRunMessage, WatchRunChildMessage } from '../watch-run.js';
 import { RunQueue } from '../watch-queue.js';
 import { ensurePlatformTarget, platformTargetIsLive, type PlatformTarget } from './connection.js';
-import { deviceGroupSize, resolveDeviceGroup, type TapsmithConfig } from '../config.js';
+import { deviceGroupNames, deviceGroupSize, resolveDeviceGroup, type TapsmithConfig } from '../config.js';
 import { deviceSignature } from '../project.js';
 import { matchesTestFilter } from '../test-filter.js';
 import type {
@@ -516,6 +516,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         package: p.effectiveConfig.package,
         testFiles: p.testFiles,
         dependencies: p.dependencies,
+        devices: deviceGroupNames(p.effectiveConfig),
       }));
     return {
       platform: this._config?.platform,
@@ -906,6 +907,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
             filePath: '',
             status: 'idle',
             children,
+            devices: deviceGroupNames(project.effectiveConfig),
           });
         }
       }

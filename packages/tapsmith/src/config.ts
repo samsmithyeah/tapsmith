@@ -564,6 +564,17 @@ export function resolveDeviceGroup(
 }
 
 /** Number of devices every test of this config drives (1 without `devices`). */
+/**
+ * The member names of a `use.devices` project (`['alice', 'bob']`), or
+ * `undefined` for a single-device project. What MCP consumers see beside a
+ * project so they know its tests need a group and which names the device
+ * tools accept.
+ */
+export function deviceGroupNames(config: Pick<TapsmithConfig, 'devices' | 'device'>): string[] | undefined {
+  if (deviceGroupSize(config) <= 1) return undefined;
+  return resolveDeviceGroup(config).map((d) => d.name);
+}
+
 export function deviceGroupSize(config: Pick<TapsmithConfig, 'devices'>): number {
   const devices = config.devices;
   if (devices === undefined) return 1;
