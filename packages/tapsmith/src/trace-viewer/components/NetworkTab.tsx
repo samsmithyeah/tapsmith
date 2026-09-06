@@ -2,6 +2,7 @@ import * as preact from 'preact';
 import { useState, useMemo } from 'preact/hooks';
 import type { NetworkEntry } from '../../trace/types.js';
 import { decodeBodyForDisplay, isProtobufContentType } from '../../trace/grpc-protobuf.js';
+import { deviceHueAt } from './device-frames.js';
 
 // ─── Injected Styles ───
 
@@ -21,6 +22,9 @@ const NETWORK_STYLES = `
   .net-pill:hover { color: var(--color-text-secondary); border-color: var(--color-text-faintest); }
   .net-pill.active { color: var(--color-text-primary); border-color: var(--color-accent); background: var(--color-highlight); }
   .net-pill-sep { width: 1px; background: var(--color-border); margin: 2px 4px; align-self: stretch; }
+  .net-pill-device { text-transform: none; }
+  .net-pill-device.active { border-color: oklch(0.65 0.13 var(--device-h, var(--accent-h))); background: oklch(0.65 0.13 var(--device-h, var(--accent-h)) / 0.14); color: var(--color-text-primary); }
+  .net-device .action-device-tag { margin-left: 0; }
 
   .net-main { flex: 1; display: flex; min-height: 0; overflow: hidden; gap: 0; }
   .net-list { flex: 1; min-width: 0; overflow: auto; }
@@ -430,10 +434,11 @@ export function NetworkTab({ entries, bodies, deviceNames }: Props) {
                 aria-pressed={deviceFilter === 'all'}
                 onClick={() => setDeviceFilter('all')}
               >All devices</button>
-              {deviceNames!.map((name) => (
+              {deviceNames!.map((name, i) => (
                 <button
                   key={name}
-                  class={`net-pill${deviceFilter === name ? ' active' : ''}`}
+                  class={`net-pill net-pill-device${deviceFilter === name ? ' active' : ''}`}
+                  style={{ '--device-h': String(deviceHueAt(i)) }}
                   aria-pressed={deviceFilter === name}
                   onClick={() => setDeviceFilter(name)}
                 >{name}</button>
@@ -465,13 +470,38 @@ export function NetworkTab({ entries, bodies, deviceNames }: Props) {
       <div class="net-main">
         <div class={`net-list${selected ? ' with-detail' : ''}`}>
           <table class="net-table">
+            {/* One <col> per rendered column: the widths are positional, so a
+                Device column needs its own entry or every width shifts one
+                column right and Name collapses. With devices the fixed columns
+                tighten so Name keeps the room it has on a single-device trace. */}
             <colgroup>
               {selected ? (
+                showDevices ? (
+                  <>
+                    <col style={{ width: '42%' }} />
+                    <col style={{ width: '56px' }} />
+                    <col style={{ width: '56px' }} />
+                    <col style={{ width: '56px' }} />
+                    <col style={{ width: '64px' }} />
+                  </>
+                ) : (
+                  <>
+                    <col style={{ width: '52%' }} />
+                    <col style={{ width: '60px' }} />
+                    <col style={{ width: '60px' }} />
+                    <col style={{ width: '70px' }} />
+                  </>
+                )
+              ) : showDevices ? (
                 <>
-                  <col style={{ width: '52%' }} />
-                  <col style={{ width: '60px' }} />
+                  <col />
+                  <col style={{ width: '56px' }} />
+                  <col style={{ width: '64px' }} />
                   <col style={{ width: '60px' }} />
                   <col style={{ width: '70px' }} />
+                  <col style={{ width: '70px' }} />
+                  <col style={{ width: '80px' }} />
+                  <col style={{ width: '110px' }} />
                 </>
               ) : (
                 <>
@@ -516,7 +546,13 @@ export function NetworkTab({ entries, bodies, deviceNames }: Props) {
                         {routeBadge(entry.routeAction)}
                       </div>
                     </td>
-                    {showDevices && <td class="net-device" data-testid="net-device">{entry.deviceId ?? '—'}</td>}
+                    {showDevices && (
+                      <td class="net-device" data-testid="net-device">
+                        {entry.deviceId
+                          ? <span class="action-device-tag" style={{ '--device-h': String(deviceHueAt(deviceNames!.indexOf(entry.deviceId))) }}>{entry.deviceId}</span>
+                          : '—'}
+                      </td>
+                    )}
                     <td class={methodClass(entry.method)}>{entry.method}</td>
                     <td class={`net-status-text ${statusTextClass(bucket)}`}>
                       {entry.routeAction === 'aborted' ? 'ABORTED' : (entry.status || '—')}

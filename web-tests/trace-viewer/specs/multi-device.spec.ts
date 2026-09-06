@@ -263,6 +263,49 @@ test.describe("Multi-device trace", () => {
       await expect(network.rows).toHaveCount(2)
     })
 
+    test("console rows name their device in the mixed stream", async ({ viewer, actions, detailTabs }) => {
+      await viewer.open(PAIR)
+      await actions.items.nth(0).click()
+      await detailTabs.select("Console")
+      const pills = detailTabs.consoleEntries.getByTestId("log-device")
+      await expect(pills).toHaveText(["alice", "bob", "bob"])
+      // Same hue as the device's pill everywhere else, so the rows sort by colour.
+      const hue = (i: number) => pills.nth(i).evaluate((el) => el.style.getPropertyValue("--device-h"))
+      expect(await hue(0)).not.toBe(await hue(1))
+      expect(await hue(1)).toBe(await hue(2))
+    })
+
+    test("the Errors tab names whose screen an action failed on", async ({ viewer, actions, detailTabs }) => {
+      await viewer.open({
+        ...PAIR,
+        events: [
+          ...PAIR.events,
+          assertionEvent({ actionIndex: 3, assertion: "toBeVisible", deviceId: "bob", selector: 'getByText("Sent")', passed: false, error: "expected Sent to be visible" }),
+        ],
+      })
+      await actions.items.nth(0).click()
+      await detailTabs.select("Errors")
+      await expect(detailTabs.errorEntries).toHaveCount(1)
+      await expect(detailTabs.errorEntries.first().getByTestId("error-device")).toHaveText("bob")
+    })
+
+    test("the Network tab's device pills and column share the device hue", async ({ viewer, detailTabs, network }) => {
+      await viewer.open(PAIR)
+      await detailTabs.select("Network")
+      const hueOf = (loc: ReturnType<typeof network.pill>) => loc.evaluate((el) => el.style.getPropertyValue("--device-h"))
+      const alice = await hueOf(network.pill("alice"))
+      const bob = await hueOf(network.pill("bob"))
+      expect(alice).not.toBe("")
+      expect(bob).not.toBe(alice)
+      const cell = network.row("who=bob").getByTestId("net-device").locator(".action-device-tag")
+      await expect(cell).toHaveText("bob")
+      expect(await cell.evaluate((el) => el.style.getPropertyValue("--device-h"))).toBe(bob)
+      // The extra column gets its own width entry: without one every width
+      // shifted a column right and Name shrank to a sliver.
+      const [nameHeader, deviceHeader] = await Promise.all([network.columnHeaders.nth(0).boundingBox(), network.columnHeaders.nth(1).boundingBox()])
+      expect(nameHeader!.width).toBeGreaterThan(deviceHeader!.width)
+    })
+
     test("a single-device trace shows no device pills or column", async ({ viewer, detailTabs, network, actions }) => {
       await viewer.open({
         events: [
@@ -300,6 +343,68 @@ test.describe("Multi-device trace", () => {
       expect(strip!.y + strip!.height).toBeLessThanOrEqual(tab!.y + 1)
       await actions.metadataTab.click({ timeout: 3_000 })
       await expect(actions.metadataDevices).toHaveCount(2)
+    })
+
+    test("the lanes fit their box without a scrollbar and share one column grid", async ({ viewer, filmstrip }) => {
+      await viewer.open(PAIR)
+      // Three frames fit in any viewport, so nothing should scroll. The label
+      // column used to push every lane 56px past the strip, so a scrollbar
+      // showed however few frames there were.
+      const overflow = await filmstrip.laneStrip.evaluate((el) => el.scrollWidth - el.clientWidth)
+      expect(overflow).toBe(0)
+      // Every lane lays its frames on the same columns: bob's tap (index 1)
+      // sits in the gap alice's lane leaves between her two frames, so the
+      // rows read as one chronological strip.
+      const [alice0, alice1] = await Promise.all((await filmstrip.laneFrames("alice").all()).map((f) => f.boundingBox()))
+      const bob = await filmstrip.laneFrames("bob").first().boundingBox()
+      expect(alice0 && alice1 && bob).toBeTruthy()
+      expect(bob!.x).toBeGreaterThanOrEqual(alice0!.x + alice0!.width - 1)
+      expect(bob!.x + bob!.width).toBeLessThanOrEqual(alice1!.x + 1)
+    })
+
+    test("labels every lane with the device's own hue and lights the acting one", async ({ viewer, actions, filmstrip }) => {
+      await viewer.open(PAIR)
+      // The lane pill, the actions-list pill and the screenshot pane all take
+      // their colour from the device's position in the group, so alice's tags
+      // match each other and differ from bob's everywhere.
+      const hueOf = (loc: ReturnType<typeof filmstrip.lane>) => loc.evaluate((el) => el.style.getPropertyValue("--device-h"))
+      const aliceHue = await hueOf(filmstrip.lane("alice"))
+      const bobHue = await hueOf(filmstrip.lane("bob"))
+      expect(aliceHue).not.toBe("")
+      expect(bobHue).not.toBe(aliceHue)
+      await expect(actions.deviceTags.first()).toHaveCSS("background-color", /oklch/)
+      expect(await actions.deviceTags.nth(1).evaluate((el) => el.style.getPropertyValue("--device-h"))).toBe(bobHue)
+      // Selecting bob's tap lights bob's lane and dims alice's.
+      await filmstrip.laneFrames("bob").first().click()
+      await expect(filmstrip.lane("bob")).toHaveAttribute("data-acting", "true")
+      await expect(filmstrip.lane("alice")).toHaveAttribute("data-acting", "false")
+      await expect(filmstrip.lane("alice").getByTestId("film-lane-label")).toHaveCSS("opacity", "0.5")
+      await expect(filmstrip.lane("bob").getByTestId("film-lane-label")).toHaveCSS("opacity", "1")
+      // The tooltip carries what the pill has no room for.
+      await expect(filmstrip.lane("bob").getByTestId("film-lane-label")).toHaveAttribute("title", "Pixel B \u00b7 emulator-5556")
+    })
+
+    test("shares one time axis under the lanes instead of a label per lane", async ({ viewer, filmstrip }) => {
+      await viewer.open(PAIR)
+      // One offset per action, in event order, none inside the lanes.
+      await expect(filmstrip.axisLabels).toHaveCount(3)
+      await expect(filmstrip.lanes.getByTestId("film-label")).toHaveCount(0)
+      // Each axis label sits under its column: bob's tap is the second action.
+      const bob = await filmstrip.laneFrames("bob").first().boundingBox()
+      const label = await filmstrip.axisLabels.nth(1).boundingBox()
+      expect(Math.abs(bob!.x + bob!.width / 2 - (label!.x + label!.width / 2))).toBeLessThanOrEqual(1)
+      await filmstrip.laneFrames("bob").first().click()
+      await expect(filmstrip.axisLabels.nth(1)).toHaveClass(/active/)
+    })
+
+    test("grows the strip so every lane keeps a legible thumbnail", async ({ viewer, filmstrip }) => {
+      await viewer.open(PAIR)
+      // 42px of fixed budget plus 52px per lane (see laneStripMinHeight); the
+      // default 130px strip would leave two lanes with 33px thumbnails.
+      const strip = await filmstrip.laneStrip.locator("..").boundingBox()
+      expect(strip!.height).toBeGreaterThanOrEqual(146 - 1)
+      const thumb = await filmstrip.laneFrames("alice").first().locator("img, .timeline-placeholder").first().boundingBox()
+      expect(thumb!.height).toBeGreaterThanOrEqual(44)
     })
 
     test("a single-device trace has no lanes", async ({ viewer, filmstrip }) => {

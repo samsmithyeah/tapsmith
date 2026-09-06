@@ -4,7 +4,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks'
 import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo, DeviceActivityMessage, UIPreferences } from './ui-protocol.js';
 import { inferDevicePlatform, DEFAULT_UI_PREFERENCES, type DevicePlatform } from './ui-protocol.js';
 import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata, TraceDeviceInfo, SourceLocation } from '../trace/types.js';
-import { actingDevice, frameIndexForDevice, hierarchyForDeviceFrame, type DeviceGroupView } from '../trace-viewer/components/device-frames.js';
+import { actingDevice, frameIndexForDevice, hierarchyForDeviceFrame, isMultiDevice, laneStripMinHeight, type DeviceGroupView } from '../trace-viewer/components/device-frames.js';
 import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { useWebSocket } from './hooks/use-websocket.js';
 import {
@@ -1736,6 +1736,7 @@ function App() {
           onSetPending={handleSetPending}
         />
       }
+      filmstripMinHeight={hasTrace && isMultiDevice(metadata) ? laneStripMinHeight(metadata.devices!.length) : undefined}
       filmstrip={
         <TimelineFilmstrip
           events={actionEvents}

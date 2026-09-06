@@ -53,6 +53,40 @@ export function actingDevice(
   return group.devices[0]?.name ?? '';
 }
 
+/**
+ * OKLCH hues that tell one device's tags from another's, by group position.
+ * The primary keeps the accent hue; the rest are spaced so neighbours never
+ * share a family. Every tag for a device — its filmstrip lane, its pill in the
+ * actions list, its screenshot pane, the console and hierarchy filters — uses
+ * the same hue, so the eye matches them without reading the name.
+ */
+const DEVICE_HUES = [57, 250, 150, 320, 200, 95];
+
+/** The hue every tag for `deviceName` is tinted with; stable across runs. */
+export function deviceHue(group: Pick<DeviceGroupView, 'devices'>, deviceName: string): number {
+  return deviceHueAt(deviceOrdinal(group, deviceName));
+}
+
+/** The hue for a group position, for callers that hold device names in group order (see `deviceNamesFor`). */
+export function deviceHueAt(ordinal: number): number {
+  return DEVICE_HUES[Math.max(0, ordinal) % DEVICE_HUES.length];
+}
+
+/** Inline style for a device tag: `--device-h` feeds the tag's oklch colours in the stylesheet. */
+export function deviceTagStyle(group: Pick<DeviceGroupView, 'devices'>, deviceName: string): Record<string, string> {
+  return { '--device-h': String(deviceHue(group, deviceName)) };
+}
+
+/**
+ * The shortest filmstrip that keeps every lane's thumbnails legible: the
+ * stylesheet's fixed budget (summary line 18px + time axis 14px + 10px kept
+ * for the horizontal scrollbar) plus, per lane, a 48px thumbnail and 4px of
+ * padding. Mirrors the `.film-lanes` calc in both stylesheets.
+ */
+export function laneStripMinHeight(laneCount: number): number {
+  return 42 + laneCount * 52;
+}
+
 /** Whether a trace was recorded on more than one device. */
 export function isMultiDevice(metadata: { devices?: TraceDeviceInfo[] } | undefined): boolean {
   return !!metadata?.devices && metadata.devices.length > 1;

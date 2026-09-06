@@ -8,7 +8,7 @@ import { resolveSourceView } from './source-view-utils.js';
 import { HierarchyTree } from './HierarchyTree.js';
 import type { Bounds } from './HierarchyTree.js';
 import { NetworkTab } from './NetworkTab.js';
-import { actingDevice, deviceNamesFor, frameIndexForDevice, hierarchyForDeviceFrame, type DeviceGroupView } from './device-frames.js';
+import { actingDevice, deviceNamesFor, deviceTagStyle, frameIndexForDevice, hierarchyForDeviceFrame, type DeviceGroupView } from './device-frames.js';
 import { parseSelectorParts } from './ActionsPanel.js';
 
 interface Props {
@@ -201,7 +201,7 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
         {activeTab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} group={group} />}
         {activeTab === 'locator' && locatorTab}
         {activeTab === 'network' && <NetworkTab entries={networkEntries} bodies={networkBodies} deviceNames={deviceNames} />}
-        {activeTab === 'errors' && <ErrorsTab event={event} events={events} testError={testError} sources={sources} />}
+        {activeTab === 'errors' && <ErrorsTab event={event} events={events} testError={testError} sources={sources} metadata={metadata} />}
       </div>
     </div>
   );
@@ -518,6 +518,7 @@ function ConsoleTab({ event, events: consoleEvents, metadata, deviceNames = [] }
                 <button
                   key={`device-${name}`}
                   class={`con-pill con-pill-device${sourceFilter === name ? ' active' : ''}`}
+                  style={deviceTagStyle({ devices: metadata.devices ?? [] }, name)}
                   aria-pressed={sourceFilter === name}
                   data-testid="console-device-pill"
                   onClick={() => setSourceFilter(name)}
@@ -573,6 +574,9 @@ function ConsoleTab({ event, events: consoleEvents, metadata, deviceNames = [] }
               >{timeMode === 'relative' ? formatConsoleOffset(ev.timestamp - timeBase) : formatConsoleWallClock(ev.timestamp)}</span>
               <span class={`log-level ${ev.level}`}>{ev.level}</span>
               <span class="log-source">{ev.source}</span>
+              {deviceNames.length > 1 && ev.deviceId && (
+                <span class="action-device-tag log-device" data-testid="log-device" style={deviceTagStyle({ devices: metadata.devices ?? [] }, ev.deviceId)}>{ev.deviceId}</span>
+              )}
               <span class="log-message">{ev.message}</span>
             </div>
           ))
@@ -846,7 +850,8 @@ function HierarchyTabWrapper({ event, hierarchies, onNodeSelect, group }: {
       {group!.devices.map((d) => (
         <button
           key={d.name}
-          class={`con-pill${shownDevice === d.name ? ' active' : ''}`}
+          class={`con-pill con-pill-device${shownDevice === d.name ? ' active' : ''}`}
+          style={deviceTagStyle(group!, d.name ?? '')}
           aria-pressed={shownDevice === d.name}
           data-testid="hierarchy-device-pill"
           onClick={() => setChosen(d.name)}
@@ -890,12 +895,15 @@ function buildCodeFrame(sources: Map<string, string>, loc: { file: string; line:
   return formatCodeSnippetPlain(snippet);
 }
 
-function ErrorsTab({ event, events, testError, sources }: {
+function ErrorsTab({ event, events, testError, sources, metadata }: {
   event: ActionTraceEvent | AssertionTraceEvent | undefined
   events: AnyTraceEvent[]
   testError?: string
   sources: Map<string, string>
+  metadata: TraceMetadata
 }) {
+  // On a multi-device trace each entry names whose screen it failed on.
+  const group = metadata.devices && metadata.devices.length > 1 ? { devices: metadata.devices } : undefined;
   const failedEvents = events.filter((e): e is ActionTraceEvent | AssertionTraceEvent =>
     (e.type === 'action' && !(e as ActionTraceEvent).success) ||
     (e.type === 'assertion' && !(e as AssertionTraceEvent).passed),
@@ -917,6 +925,7 @@ function ErrorsTab({ event, events, testError, sources }: {
           ev={ev}
           isSelected={!!event && event.actionIndex === ev.actionIndex && event.type === ev.type}
           sources={sources}
+          group={group}
         />
       ))}
       {showTestError && (
@@ -929,7 +938,12 @@ function ErrorsTab({ event, events, testError, sources }: {
   );
 }
 
-function ErrorEntry({ ev, isSelected, sources }: { ev: ActionTraceEvent | AssertionTraceEvent; isSelected: boolean; sources: Map<string, string> }) {
+function ErrorEntry({ ev, isSelected, sources, group }: {
+  ev: ActionTraceEvent | AssertionTraceEvent
+  isSelected: boolean
+  sources: Map<string, string>
+  group?: Pick<DeviceGroupView, 'devices'>
+}) {
   const title = errorTitle(ev);
   const log = ev.type === 'action' ? ev.log : undefined;
   const stack = ev.type === 'action' ? ev.errorStack : undefined;
@@ -944,7 +958,12 @@ function ErrorEntry({ ev, isSelected, sources }: { ev: ActionTraceEvent | Assert
 
   return (
     <div class={`error-entry${isSelected ? ' error-entry-selected' : ''}`} data-testid="error-entry">
-      <div class="error-title"><AlertTriangle size={14} class="error-title-icon" />{title}</div>
+      <div class="error-title">
+        <AlertTriangle size={14} class="error-title-icon" />{title}
+        {group && ev.deviceId && (
+          <span class="action-device-tag" data-testid="error-device" style={deviceTagStyle(group, ev.deviceId)} title={`Failed on ${ev.deviceId}`}>{ev.deviceId}</span>
+        )}
+      </div>
 
       {hasGrid && (
         <div class="error-grid">

@@ -25,15 +25,20 @@ interface LayoutProps {
   mcpPanel?: ComponentChildren
   layout?: 'three' | 'device-first' | 'focus'
   filmstripCollapsed?: boolean
+  /** Floor for the strip's height — a multi-device trace needs room for every lane (see `laneStripMinHeight`). */
+  filmstripMinHeight?: number
 }
 
-export function Layout({ topBar, errorBanner, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs, devicePane, mcpPanel, layout = 'three', filmstripCollapsed }: LayoutProps) {
+export function Layout({ topBar, errorBanner, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs, devicePane, mcpPanel, layout = 'three', filmstripCollapsed, filmstripMinHeight }: LayoutProps) {
   const [explorerWidth, setExplorerWidth] = usePersistedJSON('tapsmith-explorer-width', 280);
   const [actionsWidth, setActionsWidth] = usePersistedJSON('tapsmith-actions-width', 380);
   const [filmstripHeight, setFilmstripHeight] = usePersistedJSON('tapsmith-filmstrip-height', 130);
   const [detailHeight, setDetailHeight] = usePersistedJSON('tapsmith-detail-height', 250);
   const [deviceWidth, setDeviceWidth] = usePersistedJSON('tapsmith-device-width', 300);
   const [mcpHeight, setMcpHeight] = usePersistedJSON('tapsmith-mcp-height', 200);
+  // The user's drag height is what persists; the floor only applies while the
+  // shown trace needs it, so a single-device trace keeps the chosen size.
+  const shownFilmstripHeight = Math.max(filmstripHeight, filmstripMinHeight ?? 0);
 
   const makeColResize = useCallback((
     getter: () => number,
@@ -104,7 +109,7 @@ export function Layout({ topBar, errorBanner, testExplorer, filmstrip, actionsPa
   const handleFilmstripResize = useCallback((e: MouseEvent) => {
     e.preventDefault();
     const startY = e.clientY;
-    const startHeight = filmstripHeight;
+    const startHeight = shownFilmstripHeight;
     const onMove = (ev: MouseEvent) => {
       const delta = ev.clientY - startY;
       setFilmstripHeight(Math.max(60, Math.min(300, startHeight + delta)));
@@ -119,7 +124,7 @@ export function Layout({ topBar, errorBanner, testExplorer, filmstrip, actionsPa
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
-  }, [filmstripHeight]);
+  }, [shownFilmstripHeight]);
 
   const handleMcpResize = useCallback((e: MouseEvent) => {
     e.preventDefault();
@@ -159,7 +164,7 @@ export function Layout({ topBar, errorBanner, testExplorer, filmstrip, actionsPa
           {/* Timeline filmstrip */}
           <div class="ui-filmstrip" style={filmstripCollapsed
             ? { height: '38px', minHeight: '38px' }
-            : { height: `${filmstripHeight}px`, minHeight: `${filmstripHeight}px`, '--filmstrip-h': `${filmstripHeight}px` } as Record<string, string>}>{filmstrip}</div>
+            : { height: `${shownFilmstripHeight}px`, minHeight: `${shownFilmstripHeight}px`, '--filmstrip-h': `${shownFilmstripHeight}px` } as Record<string, string>}>{filmstrip}</div>
           {!filmstripCollapsed && <div class="ui-resize-handle ui-resize-row" onMouseDown={handleFilmstripResize} />}
 
           {/* Middle: Actions + Screenshot */}

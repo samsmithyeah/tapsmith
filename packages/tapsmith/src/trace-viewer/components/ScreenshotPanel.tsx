@@ -10,6 +10,7 @@ import {
   frameIndexForDevice,
   nextFrameIndexForDevice,
   screenshotForFrame,
+  deviceHue,
   type DeviceGroupView,
 } from './device-frames.js';
 
@@ -30,7 +31,7 @@ const SCREENSHOT_STYLES = `
   .bounds-point { position: absolute; width: 16px; height: 16px; margin-left: -8px; margin-top: -8px; border-radius: 50%; background: rgba(255,80,80,0.5); border: 2px solid #ff5050; box-shadow: 0 0 8px rgba(255,80,80,0.4); }
   .screenshot-panes { display: flex; align-items: stretch; justify-content: center; gap: 12px; width: 100%; height: 100%; min-height: 0; }
   .screenshot-pane { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; border: 1px solid transparent; border-radius: 10px; padding: 4px; cursor: pointer; }
-  .screenshot-pane.acting { border-color: var(--color-accent, #4fc1ff); }
+  .screenshot-pane.acting { border-color: oklch(0.7 0.14 var(--device-h, var(--accent-h, 57))); }
   .screenshot-pane.active:not(.acting) { border-color: var(--color-text-muted, #888); border-style: dashed; }
   .screenshot-pane-label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--color-text-muted, #888); padding: 0 4px 4px; }
   .screenshot-pane-label .action-device-tag { margin-left: 0; }
@@ -545,6 +546,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
                 <ScreenshotDevicePane
                   key={name}
                   name={name}
+                  hue={deviceHue(group, name)}
                   acting={isActing}
                   active={isActive}
                   url={url}
@@ -749,6 +751,8 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
 
 interface ScreenshotDevicePaneProps {
   name: string
+  /** The device's tag hue (see `deviceHue`), tinting its badge and acting border. */
+  hue: number
   acting: boolean
   active: boolean
   url: string | undefined
@@ -776,7 +780,7 @@ interface ScreenshotDevicePaneProps {
  * active (a pick then lands on the next click); the active pane hit-tests.
  */
 function ScreenshotDevicePane({
-  name, acting, active, url, stage, platform, devicePixelRatio, bounds, point,
+  name, hue, acting, active, url, stage, platform, devicePixelRatio, bounds, point,
   highlightBounds, hoverBounds, selectorHighlights, pickMode, onActivate, onPickPoint, onPickHover, scale,
 }: ScreenshotDevicePaneProps) {
   const [naturalSize, setNaturalSize] = useState<NaturalSize | null>(null);
@@ -936,6 +940,7 @@ function ScreenshotDevicePane({
   return (
     <div
       class={`screenshot-pane${acting ? ' acting' : ''}${active ? ' active' : ''}`}
+      style={{ '--device-h': String(hue) }}
       data-testid="screenshot-pane"
       data-device={name}
       data-acting={acting}

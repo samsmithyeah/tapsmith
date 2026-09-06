@@ -36,6 +36,8 @@ import {
   hierarchyForDeviceFrame,
   nextFrameIndexForDevice,
   type DeviceGroupView,
+  isMultiDevice,
+  laneStripMinHeight,
 } from "./components/device-frames.js";
 import type { HierarchyNode, Bounds } from "./components/hierarchy-utils.js";
 import { traceViewerStyles } from "./styles/trace-viewer.css.js";
@@ -474,6 +476,11 @@ function App() {
   const handleFilmstripResize = useCallback((delta: number) => {
     setFilmstripHeight((h) => Math.max(60, Math.min(300, h + delta)));
   }, []);
+  // A multi-device trace needs room for every lane; the drag height still persists.
+  const shownFilmstripHeight = Math.max(
+    filmstripHeight,
+    isMultiDevice(trace.metadata) ? laneStripMinHeight(trace.metadata.devices!.length) : 0,
+  );
 
   const handleRightResize = useCallback((delta: number) => {
     setRightWidth((w) =>
@@ -605,9 +612,9 @@ function App() {
       <div
         style={
           {
-            height: `${filmstripHeight}px`,
+            height: `${shownFilmstripHeight}px`,
             flexShrink: 0,
-            "--filmstrip-h": `${filmstripHeight}px`,
+            "--filmstrip-h": `${shownFilmstripHeight}px`,
           } as JSX.CSSProperties
         }
       >

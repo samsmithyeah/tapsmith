@@ -3,6 +3,7 @@ import type { ComponentChildren } from 'preact';
 import { Check, X, Type, Clock, Play, ExternalLink, MoveHorizontal, ArrowUpDown, CircleDot, ChevronDown, Hand, Pointer, Eye, Keyboard, RotateCcw, Target, Globe, Send, AlertTriangle } from 'lucide-preact';
 import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, GroupTraceEvent, TraceMetadata } from '../../trace/types.js';
 import type { InFlightAction } from '../types.js';
+import { deviceTagStyle } from './device-frames.js';
 
 interface Props {
   events: AnyTraceEvent[]
@@ -317,7 +318,7 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
                           <span class="action-origin-tag" data-testid="action-origin">skipped</span>
                         )}
                         {groupDevices && event.deviceId && (
-                          <span class="action-device-tag" data-testid="action-device" title={`Performed on ${event.deviceId}`}>{event.deviceId}</span>
+                          <span class="action-device-tag" data-testid="action-device" style={deviceTagStyle({ devices: groupDevices }, event.deviceId)} title={`Performed on ${event.deviceId}`}>{event.deviceId}</span>
                         )}
                       </span>
                       {event.type === 'action' && !event.selector && event.detail
