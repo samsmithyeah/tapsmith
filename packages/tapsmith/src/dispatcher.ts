@@ -1957,9 +1957,21 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
   // One more daemon per group member, spawned together — they are independent.
   const members: WorkerGroupMemberHandle[] = [];
   try {
-    const memberDaemons = await Promise.all(opts.members.map((m) =>
+    // Settle every spawn before judging: `Promise.all` would reject on the
+    // first failure while its siblings were still starting, and the ones that
+    // then came up would never be captured — or killed.
+    const settled = await Promise.allSettled(opts.members.map((m) =>
       spawnWorkerDaemon(m.daemonPort, m.agentPort, `worker ${workerId} member ${m.name}`)));
+    const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failure) {
+      for (const r of settled) {
+        if (r.status === 'fulfilled') { try { r.value.kill(); } catch { /* already dead */ } }
+      }
+      throw failure.reason;
+    }
+    const memberDaemons = settled.map((r) => (r as PromiseFulfilledResult<ChildProcess>).value);
     opts.members.forEach((m, i) => members.push({
+
       name: m.name,
       deviceSerial: m.deviceSerial,
       daemonPort: m.daemonPort,

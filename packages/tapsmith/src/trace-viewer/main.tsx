@@ -682,7 +682,9 @@ function App() {
             onHierarchyNodeSelect={setHierarchyHighlight}
             pickMode={pickMode}
             group={group}
+            screenshotVariant={screenshotVariant}
             locatorTab={
+
               <SelectorTab
                 hierarchyXml={currentHierarchyXml}
                 pickedNode={pickedNode}

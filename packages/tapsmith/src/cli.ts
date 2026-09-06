@@ -37,7 +37,8 @@ import {
 } from './trace/types.js';
 import { resolveVideoConfig } from './video/types.js';
 import { recordsOnlyOnRetry } from './trace/trace-mode.js';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+
 import {
   clearOfflineEmulatorTransports,
   preserveEmulatorsForReuse,
@@ -850,32 +851,46 @@ async function openGroupMembersOnFreshDaemons(
 
   const daemonBin = resolveDaemonBin(cfg);
   const traceConfig = resolveTraceConfig(cfg.trace);
-  const specs = [];
-  for (const [i, entry] of members.entries()) {
-    const serial = provisioned.serials[i];
-    if (cfg.platform !== 'ios' && traceConfig.mode !== 'off' && traceConfig.network) {
-      // Same as the primary: capture needs adb root on Android.
-      ensureAdbRoot(serial);
+  const specs: Array<Parameters<typeof openDeviceGroup>[0][number] & { daemonProcess: ChildProcess }> = [];
+  const killSpawned = () => {
+
+    for (const spec of specs) {
+      try { spec.daemonProcess.kill(); } catch { /* already gone */ }
     }
-    const port = await pickFreePort();
-    let agentPort = await pickFreePort();
-    while (agentPort === port) agentPort = await pickFreePort();
-    progress?.update('worker-devices', { state: 'running', detail: `${entry.name}: starting daemon on localhost:${port} for ${serial}` });
-    const daemon = await startDaemon({
-      daemonBin, port, agentPort, platform: cfg.platform,
-      describe: `daemon for ${entry.name}`,
-    });
-    specs.push({
-      name: entry.name,
-      serial,
-      daemonAddress: daemon.address,
-      daemonProcess: daemon.process,
-      agentPort,
-      freshDevice: provisioned.fresh.has(serial),
-    });
+  };
+  try {
+    for (const [i, entry] of members.entries()) {
+      const serial = provisioned.serials[i];
+      if (cfg.platform !== 'ios' && traceConfig.mode !== 'off' && traceConfig.network) {
+        // Same as the primary: capture needs adb root on Android.
+        ensureAdbRoot(serial);
+      }
+      const port = await pickFreePort();
+      let agentPort = await pickFreePort();
+      while (agentPort === port) agentPort = await pickFreePort();
+      progress?.update('worker-devices', { state: 'running', detail: `${entry.name}: starting daemon on localhost:${port} for ${serial}` });
+      const daemon = await startDaemon({
+        daemonBin, port, agentPort, platform: cfg.platform,
+        describe: `daemon for ${entry.name}`,
+      });
+      specs.push({
+        name: entry.name,
+        serial,
+        daemonAddress: daemon.address,
+        daemonProcess: daemon.process,
+        agentPort,
+        freshDevice: provisioned.fresh.has(serial),
+      });
+    }
+  } catch (err) {
+    // A daemon that failed to start for member n must not orphan the ones
+    // already running for members 0..n-1 (they would keep their ports).
+    killSpawned();
+    throw err;
   }
 
   try {
+
     const sessions = await openDeviceGroup(specs, cfg, {
       label: 'Device',
       forceInstall,
@@ -889,12 +904,11 @@ async function openGroupMembersOnFreshDaemons(
     if (!progress) console.log(dim(`Device group: ${[group[0].name, ...sessions.map((s) => s.name)].join(', ')}`));
     return sessions;
   } catch (err) {
-    for (const spec of specs) {
-      try { spec.daemonProcess.kill(); } catch { /* already gone */ }
-    }
+    killSpawned();
     throw err;
   }
 }
+
 
 /**
  * A device for every member of the group beyond the primary (`cfg.device`),

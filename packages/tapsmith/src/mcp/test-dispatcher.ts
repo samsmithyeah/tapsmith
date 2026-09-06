@@ -157,7 +157,14 @@ export interface TestDispatcher {
    * when no device goes by that name. Required — an optional method let the
    * UI-mode dispatcher omit it, and group names silently stopped resolving
    * over UI-mode MCP while the unit tests (mocking it) stayed green.
+   *
+   * Names are unique within a group, not across a session: two group
+   * projects (an Android and an iOS one, say) routinely both call their
+   * members `alice` and `bob`. With `project` the name is resolved within
+   * that project's group only; without it, a name that resolves to more than
+   * one device throws rather than picking whichever group came first.
    */
-  resolveDeviceName(name: string): string | undefined
+  resolveDeviceName(name: string, project?: string): string | undefined
+
   toggleWatch(filePath: string, options?: { testFilter?: string; project?: string }): { enabled: boolean }
 }

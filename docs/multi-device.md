@@ -161,9 +161,11 @@ Device groups work in every run mode. Each mode holds one group per worker:
 | Mode | How the group is provisioned |
 | --- | --- |
 | `tapsmith test` (sequential) | The primary is set up as usual; the other members get their own daemons on free ports before the first file runs. Switching to a project with a different group tears the previous one down. |
-| `tapsmith test --workers N` | Each worker receives `N × groupSize` device slots; the dispatcher provisions that many devices and hands each worker its chunk. A group project's own `workers` should be kept low. |
+| `tapsmith test --workers N` | Each worker receives `groupSize` device slots, so the run needs `N × groupSize` devices; the dispatcher provisions that many and hands each worker its chunk. A group project's own `workers` should be kept low. |
+
 | `--ui` and `--watch` | Worker 0 adopts the CLI's group; further workers get their own. The device pane has one tab per member (labelled `<worker> · <name>`), the **All** view tiles every member, and pick mode and mirror gestures target the member whose tab is open. |
-| `tapsmith mcp-server` | A group project resolves its own set of daemons; `tapsmith_run_tests` runs against all of them. Device tools accept a member's **name** (`device: "bob"`) in place of a serial, and `tapsmith_session_info` lists each member. |
+| `tapsmith mcp-server` | A group project resolves its own set of daemons; `tapsmith_run_tests` runs against all of them. Device tools accept a member's **name** (`device: "bob"`) in place of a serial, and `tapsmith_session_info` lists each member. Names are unique per group, not per session: when two projects' groups both have a `bob`, pass `project` as well, or the tool refuses rather than guess. |
+
 
 ## Limits
 
@@ -171,7 +173,8 @@ Device groups work in every run mode. Each mode holds one group per worker:
   and the same app build — a group is one project. A test that needs Android
   *and* iOS in one body is not supported.
 - **One foreground app per device.** A member is a device, so `devices: 3`
-  needs three emulators or simulators.
+  needs three emulators or simulators. A group holds at most 10 members.
+
 - **Boot time.** Emulators and simulators boot serially; a group project's
   startup is roughly `groupSize` times a single device's.
 - **CI.** Give group tests their own job rather than a shard: the per-shard

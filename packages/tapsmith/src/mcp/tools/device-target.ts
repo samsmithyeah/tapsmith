@@ -51,10 +51,12 @@ export async function deviceClientFor(
   // matter, and doing the pointing here left the pool's own account of itself
   // stale for every call that followed.
   // A group name (`alice`) names a device the way its tests do; resolve it to
-  // the serial the connection pool knows.
+  // the serial the connection pool knows — within the requested project's
+  // group when one is named, since `device` wins over `project` below.
   const device = request.device
-    ? dispatcher?.resolveDeviceName(request.device) ?? request.device
+    ? dispatcher?.resolveDeviceName(request.device, request.project) ?? request.device
     : undefined;
+
   try {
     const { client } = await resolveDeviceTarget({ device, project });
     return client;
@@ -64,7 +66,29 @@ export async function deviceClientFor(
 }
 
 /**
+ * The one serial a group name resolves to, from every (project, serial) pair
+ * that answered to it. Several pairs may name the same serial (a UI worker
+ * and the CLI's primary, say) — that is one device. Two different serials
+ * are an ambiguity the caller has to settle with `project`.
+ *
+ * @internal — shared by both MCP dispatchers; exported for unit testing.
+ */
+export function pickResolvedDeviceName(
+  name: string,
+  matches: Array<{ project: string | undefined; serial: string }>,
+): string | undefined {
+  const serials = [...new Set(matches.map((m) => m.serial))];
+  if (serials.length <= 1) return serials[0];
+  const projects = [...new Set(matches.map((m) => m.project).filter((p): p is string => p !== undefined))];
+  throw new Error(
+    `Device name "${name}" belongs to more than one project's group`
+    + `${projects.length > 0 ? ` (${projects.join(', ')})` : ''}. Pass \`project\` to say which one you mean.`,
+  );
+}
+
+/**
  * An unknown `device` is answered with the group names the session accepts,
+
  * not just its serials. The pool lists what it can see — serials — but a
  * caller who wrote `alice` and got `Available devices: emulator-5554, …`
  * could not tell that `alice` was a typo rather than the wrong kind of name.

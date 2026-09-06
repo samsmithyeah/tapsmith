@@ -33,6 +33,8 @@ import type {
 } from './test-dispatcher.js';
 import { classifyEntryStatus, isInterruptedEntry } from './test-dispatcher.js';
 import { loadMcpConfig } from './config-loader.js';
+import { pickResolvedDeviceName } from './tools/device-target.js';
+
 import type { TestTreeNode, UIDiscoverMessage, UIDiscoverChildMessage } from '../ui-mode/ui-protocol.js';
 
 /** Key for a session with no platform of its own (single-platform configs). */
@@ -815,14 +817,25 @@ export class HeadlessTestDispatcher implements TestDispatcher {
    * `alice` is how a two-user test's author refers to a device; the serial is
    * an implementation detail they have to look up otherwise.
    */
-  resolveDeviceName(name: string): string | undefined {
+  resolveDeviceName(name: string, project?: string): string | undefined {
+    // Only the requested project's own target when one is named: every group
+    // may call its members `alice`, and `resolveDeviceTarget` acts on
+    // `device` before it looks at `project`, so a name from another group
+    // would silently route the call to that group's device.
+    const wantedKey = project !== undefined
+      ? platformKeyForProject(this._projects, project, this._config?.platform)
+      : undefined;
+    const matches: Array<{ project: string | undefined; serial: string }> = [];
     for (const [key, target] of this._targets) {
-      if (this._projectForTargetKey(key, true) === name) return target.deviceSerial;
+      if (wantedKey !== undefined && key !== wantedKey) continue;
+      const owner = this._projectForTargetKey(key);
+      if (this._projectForTargetKey(key, true) === name) matches.push({ project: owner, serial: target.deviceSerial });
       const member = target.members?.find((m) => m.name === name);
-      if (member) return member.deviceSerial;
+      if (member) matches.push({ project: owner, serial: member.deviceSerial });
     }
-    return undefined;
+    return pickResolvedDeviceName(name, matches);
   }
+
 
   /**
    * The daemon/device a project's tests must run against.

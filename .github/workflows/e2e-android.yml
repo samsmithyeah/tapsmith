@@ -537,9 +537,11 @@ jobs:
           # Polling `getprop` (not `adb wait-for-device`, which blocks forever
           # for a serial that never registers) keeps a dead emulator a bounded
           # failure with its log attached.
-          TIMEOUT=300
           for SERIAL in emulator-5554 emulator-5556; do
+            # Per emulator: a slow first boot must not eat into the second's budget.
+            TIMEOUT=300
             BOOT=""
+
             while [ $TIMEOUT -gt 0 ]; do
               BOOT=$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
               if [ "$BOOT" = "1" ]; then break; fi

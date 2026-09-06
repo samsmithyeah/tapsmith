@@ -104,6 +104,21 @@ describe('createUiLaunchSteps', () => {
     expect(steps.find((s) => s.id === 'worker-devices')!.detail).toContain('across 2 targets');
   });
 
+  it('reports a device group under one worker-devices row, whichever mode provisions it', () => {
+    const group = baseConfig({ apk: 'app-debug.apk', devices: 2 });
+    // Sequential CLI / single-worker UI: the group comes up right after the primary.
+    const single = createUiLaunchSteps({ config: group, testFileCount: 1, workerCount: 1 });
+    expect(single.filter((s) => s.id === 'worker-devices')).toHaveLength(1);
+    expect(single.find((s) => s.id === 'worker-devices')!.label).toBe('Device group');
+    // Multi-worker UI mode provisions every worker's group under its own
+    // "Worker devices" row; a second row with the same id would never be
+    // updated (steps are keyed by id) and sit pending for the whole launch.
+    const multi = createUiLaunchSteps({ config: group, testFileCount: 4, workerCount: 2 });
+    expect(multi.filter((s) => s.id === 'worker-devices')).toHaveLength(1);
+    expect(multi.find((s) => s.id === 'worker-devices')!.label).toBe('Worker devices');
+  });
+
+
   it('uses worker-focused rows for headless parallel test mode', () => {
     const steps = createUiLaunchSteps({
       config: baseConfig({ apk: 'app-debug.apk', workers: 3 }),

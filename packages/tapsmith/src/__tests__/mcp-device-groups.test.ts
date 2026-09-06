@@ -22,7 +22,8 @@ vi.mock('../mcp/connection.js', async (importOriginal) => ({
   },
 }));
 
-const { deviceClientFor } = await import('../mcp/tools/device-target.js');
+const { deviceClientFor, pickResolvedDeviceName } = await import('../mcp/tools/device-target.js');
+
 const { HeadlessTestDispatcher, platformKeyForProject } = await import('../mcp/headless-dispatcher.js');
 
 function fakeDispatcher(names: Record<string, string>): TestDispatcher {
@@ -131,5 +132,73 @@ describe('group projects get their own target', () => {
       { platform: 'android', device: 'EMU-2', name: 'alice', group: 'pair' },
       { platform: 'android', device: 'EMU-3', name: 'bob', group: 'pair' },
     ]);
+  });
+});
+
+// Member names are unique within a group, not across a session: the Android
+// and iOS multi-device projects both call their users alice and bob. `device`
+// wins over `project` in the target resolver, so resolving a name without the
+// project's scope routed `device: "alice", project: "ios"` to whichever
+// group's alice the session listed first.
+describe('group member names are resolved within the requested project', () => {
+  const projects = [
+    { name: 'android-chat', effectiveConfig: { platform: 'android' as const, devices: [{ name: 'alice' }, { name: 'bob' }] } },
+    { name: 'ios-chat', effectiveConfig: { platform: 'ios' as const, devices: [{ name: 'alice' }, { name: 'bob' }] } },
+  ];
+
+  function twoGroups(): InstanceType<typeof HeadlessTestDispatcher> {
+    const dispatcher = new HeadlessTestDispatcher({});
+    const internals = dispatcher as unknown as {
+      _targets: Map<string, { address: string; deviceSerial: string; members?: Array<{ name: string; address: string; deviceSerial: string }> }>
+      _projects: unknown[]
+    };
+    internals._projects = projects.map((p) => ({ ...p, testFiles: [], dependencies: [], testMatch: [], testIgnore: [], deviceSignature: '' }));
+    internals._targets.set(platformKeyForProject(projects, 'android-chat', undefined), {
+      address: '127.0.0.1:50060', deviceSerial: 'EMU-1',
+      members: [{ name: 'bob', address: '127.0.0.1:50061', deviceSerial: 'EMU-2' }],
+    });
+    internals._targets.set(platformKeyForProject(projects, 'ios-chat', undefined), {
+      address: '127.0.0.1:50070', deviceSerial: 'SIM-1',
+      members: [{ name: 'bob', address: '127.0.0.1:50071', deviceSerial: 'SIM-2' }],
+    });
+    return dispatcher;
+  }
+
+  it('scopes the name to the named project\'s group', () => {
+    const dispatcher = twoGroups();
+    expect(dispatcher.resolveDeviceName('alice', 'android-chat')).toBe('EMU-1');
+    expect(dispatcher.resolveDeviceName('alice', 'ios-chat')).toBe('SIM-1');
+    expect(dispatcher.resolveDeviceName('bob', 'ios-chat')).toBe('SIM-2');
+    // A name the named project's group does not declare is not borrowed from another.
+    expect(dispatcher.resolveDeviceName('carol', 'ios-chat')).toBeUndefined();
+  });
+
+  it('refuses to guess when no project is named and the name means two devices', () => {
+    const dispatcher = twoGroups();
+    expect(() => dispatcher.resolveDeviceName('alice'))
+      .toThrow(/Device name "alice" belongs to more than one project's group \(android-chat, ios-chat\)\. Pass `project`/);
+  });
+
+  it('hands the requested project to the dispatcher before targeting', async () => {
+    const seen: Array<[string, string | undefined]> = [];
+    const dispatcher = {
+      ...fakeDispatcher({}),
+      resolveDeviceName: (name: string, project?: string) => { seen.push([name, project]); return 'SIM-1'; },
+      getSessionInfo: (): SessionInfo => ({
+        timeout: 0, retries: 0,
+        projects: [{ name: 'ios-chat', platform: 'ios', testFiles: [], dependencies: [] }],
+        deviceTargets: [],
+      }),
+    } as unknown as TestDispatcher;
+    hoisted.requests.length = 0;
+    await deviceClientFor({ device: 'alice', project: 'ios-chat' }, dispatcher);
+    expect(seen).toEqual([['alice', 'ios-chat']]);
+    expect(hoisted.requests).toEqual([{ device: 'SIM-1', project: { name: 'ios-chat', platform: 'ios' } }]);
+  });
+
+  it('treats several answers naming the same serial as one device', () => {
+    // A UI worker and the CLI's primary both list the group; that is one alice.
+    expect(pickResolvedDeviceName('alice', [{ project: 'chat', serial: 'EMU-1' }, { project: 'chat', serial: 'EMU-1' }])).toBe('EMU-1');
+    expect(pickResolvedDeviceName('alice', [])).toBeUndefined();
   });
 });

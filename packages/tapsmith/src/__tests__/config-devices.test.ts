@@ -4,7 +4,9 @@ import {
   defineConfig,
   deviceGroupSize,
   effectiveConfigForProject,
+  MAX_DEVICE_GROUP_SIZE,
   resolveDeviceGroup,
+
   validateDevicesOption,
   type TapsmithConfig,
 } from '../config.js';
@@ -31,6 +33,16 @@ describe('validateDevicesOption', () => {
     expect(() => validateDevicesOption({ devices: 1.5 })).toThrow(/positive integer/);
     expect(() => validateDevicesOption({ devices: [] })).toThrow(/non-empty array/);
   });
+
+  it('caps the group at the member-port band the UI and watch allocators reserve per worker', () => {
+    expect(MAX_DEVICE_GROUP_SIZE).toBe(10);
+    expect(() => validateDevicesOption({ devices: 10 })).not.toThrow();
+    expect(() => validateDevicesOption({ devices: 11 })).toThrow(/at most 10/);
+    const eleven = Array.from({ length: 11 }, (_, i) => ({ name: `user-${i}` }));
+    expect(() => validateDevicesOption({ devices: eleven })).toThrow(/at most 10 members/);
+    expect(() => validateDevicesOption({ devices: eleven.slice(0, 10) })).not.toThrow();
+  });
+
 
   it('rejects malformed, duplicate or unsafe member names', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- malformed input on purpose

@@ -353,7 +353,31 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       bucketSignature: workerBucketSig,
     };
 
-    await new Promise<void>((resolve, reject) => {
+    // The handle is only pushed to `watchWorkers` once init succeeds, so
+    // `cleanupWatchWorkers` cannot reach these processes if it does not: a
+    // timed-out or crashed init would leave the whole group's daemons (and
+    // the child) running on their ports behind a "Skipping device" line.
+    try {
+      await initWatchWorkerChild(worker, workerConfig, groupNames, members);
+    } catch (err) {
+      try { child.kill(); } catch { /* already dead */ }
+      for (const d of memberDaemons) { try { d.kill(); } catch { /* already dead */ } }
+      try { daemonProcess.kill(); } catch { /* already dead */ }
+      throw err;
+    }
+
+    return worker;
+  }
+
+  function initWatchWorkerChild(
+    worker: WatchWorkerHandle,
+    workerConfig: SerializedConfig,
+    groupNames: DeviceGroupEntry[],
+    members: Array<{ serial: string; daemonPort: number; agentPort: number }>,
+  ): Promise<void> {
+    const { id, process: child, deviceSerial, daemonPort } = worker;
+    return new Promise<void>((resolve, reject) => {
+
       const timeout = setTimeout(() => reject(new Error(`worker ${id} init timed out`)), 90_000);
 
       const onMessage = (msg: UIWorkerChildMessage) => {
@@ -393,9 +417,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         } : {}),
       } satisfies UIWorkerMessage);
     });
-
-    return worker;
   }
+
 
   interface TaggedFile {
     filePath: string

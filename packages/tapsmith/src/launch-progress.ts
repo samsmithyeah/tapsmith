@@ -300,8 +300,12 @@ export function createUiLaunchSteps(input: UiLaunchPlanInput): LaunchStep[] {
       },
     );
     // A `use.devices` project brings up the rest of its group right after the
-    // primary; the sequential CLI reports that under this step.
-    if (deviceGroupSize(input.config) > 1) {
+    // primary; the sequential CLI reports that under this step. Multi-worker
+    // UI mode reports every worker's group under its own `worker-devices`
+    // step below — a second step with the same id would leave one row
+    // pending forever.
+    if (deviceGroupSize(input.config) > 1 && !(mode === "ui" && input.workerCount > 1)) {
+
       const members = deviceGroupSize(input.config) - 1;
       steps.push({
         id: "worker-devices",

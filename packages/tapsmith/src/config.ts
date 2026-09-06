@@ -494,11 +494,21 @@ function defaultDeviceName(index: number): string {
 }
 
 /**
+ * The largest device group a project may declare. The UI-mode and watch-mode
+ * port allocators give each worker a band of 10 member ports
+ * (`memberPorts()`), so an 11th member would collide with the next worker's
+ * first — and no hosted runner drives more devices than this at usable speed.
+ */
+export const MAX_DEVICE_GROUP_SIZE = 10;
+
+/**
  * Reject malformed `devices` values at load time, naming the accepted shapes,
  * instead of letting a typo provision a wrong-sized group. Shared by root
  * config loading and project `use` (via `effectiveConfigForProject`).
  */
 export function validateDevicesOption(
+
+
   options: Pick<Partial<TapsmithConfig>, 'devices'>,
   source = 'config',
 ): void {
@@ -508,11 +518,18 @@ export function validateDevicesOption(
     if (!Number.isInteger(devices) || devices < 1) {
       throw new Error(`${source}: devices must be a positive integer or an array of { name, device? } entries (got ${JSON.stringify(devices)})`);
     }
+    if (devices > MAX_DEVICE_GROUP_SIZE) {
+      throw new Error(`${source}: devices must be at most ${MAX_DEVICE_GROUP_SIZE} (got ${devices})`);
+    }
     return;
   }
   if (!Array.isArray(devices) || devices.length === 0) {
     throw new Error(`${source}: devices must be a positive integer or a non-empty array of { name, device? } entries (got ${JSON.stringify(devices)})`);
   }
+  if (devices.length > MAX_DEVICE_GROUP_SIZE) {
+    throw new Error(`${source}: devices may declare at most ${MAX_DEVICE_GROUP_SIZE} members (got ${devices.length})`);
+  }
+
   const names = new Set<string>();
   const serials = new Set<string>();
   for (const [i, entry] of devices.entries()) {

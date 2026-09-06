@@ -1059,12 +1059,19 @@ async function runTracedAppReset(
         });
       }
     });
-    await Promise.all(resets);
+    // Settle every device before propagating a failure: with `Promise.all`
+    // the other devices' terminate/clear/relaunch RPCs would still be in
+    // flight while the caller moved on to screenshots, teardown or the
+    // file-abort recovery, and could land after them.
+    const settled = await Promise.allSettled(resets);
+    const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failure) throw failure.reason;
     return reports;
   } finally {
     collector?.endGroup();
   }
 }
+
 
 /**
  * After a scope-entry reset: every device now holds exactly this policy's

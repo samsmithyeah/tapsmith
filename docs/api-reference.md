@@ -1519,7 +1519,7 @@ worker before any test runs:
 | ----------------- | ------------------------------------- | ---------------------------------------- |
 | `platform`        | `'android' \| 'ios'`                  | Target platform for this project         |
 | `device`          | `string`                              | Explicit device serial / iOS UDID        |
-| `devices`         | `number \| { name: string; device?: string }[]` | Drive several devices from one test (`devices: 2`, or named members, optionally pinned to a serial). Tests receive them as the `devices` fixture. `test.use({ devices })` throws. See [Multi-device tests](./multi-device.md). |
+| `devices`         | `number \| { name: string; device?: string }[]` | Drive several devices from one test (`devices: 2`, or named members, optionally pinned to a serial; at most 10). Tests receive them as the `devices` fixture. `test.use({ devices })` throws. See [Multi-device tests](./multi-device.md). |
 | `avd`             | `string`                              | Android AVD name to launch               |
 | `simulator`       | `string`                              | iOS simulator name or UDID               |
 | `apk`             | `string`                              | Path to Android APK under test           |

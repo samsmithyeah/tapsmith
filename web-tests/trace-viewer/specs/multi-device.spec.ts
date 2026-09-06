@@ -235,7 +235,7 @@ test.describe("Multi-device trace", () => {
       await expect(detailTabs.consoleOutput).toContainText("alice booted")
     })
 
-    test("the Hierarchy tab defaults to the acting device and can view the other", async ({ viewer, actions, detailTabs, page }) => {
+    test("the Hierarchy tab defaults to the acting device and can view the other", async ({ viewer, actions, detailTabs, screenshotPanel, page }) => {
       await viewer.open(PAIR)
       await actions.items.nth(1).click()
       await detailTabs.select("Hierarchy")
@@ -244,10 +244,20 @@ test.describe("Multi-device trace", () => {
 
       await detailTabs.hierarchyDevicePill("alice").click()
       await expect(detailTabs.hierarchyDevicePill("alice")).toHaveAttribute("aria-pressed", "true")
-      // alice's state after bob's tap is her next capture: the "Sent" tree.
+      // The other device's tree follows the frame its pane displays. On the
+      // default (Before) stage that is alice's latest capture before bob's
+      // tap: the "Send" tree, not her later "Sent" one.
+      await expect(page.getByRole("tree")).toContainText("Send")
+      await expect(page.getByRole("tree")).not.toContainText("Sent")
+      await expect(page.getByRole("tree")).not.toContainText("Inbox")
+
+      // After stage: her next capture, the "Sent" tree — the same frame the
+      // screenshot pane switches to.
+      await screenshotPanel.selectStage("After")
       await expect(page.getByRole("tree")).toContainText("Sent")
       await expect(page.getByRole("tree")).not.toContainText("Inbox")
     })
+
 
     test("the Network tab names each request's device and filters by it", async ({ viewer, detailTabs, network }) => {
       await viewer.open(PAIR)

@@ -29,7 +29,14 @@ interface Props {
   previewHighlight?: SourceLocation
   /** A multi-device trace's group — drives the per-device console/network filters and the hierarchy toggle. */
   group?: DeviceGroupView
+  /**
+   * The stage the screenshot panel is showing (`before` unless the After tab
+   * is active). The hierarchy toggle picks a non-acting device's frame the
+   * same way its pane does, so tree and screenshot describe the same moment.
+   */
+  screenshotVariant?: 'before' | 'after'
 }
+
 
 type DetailTab = 'call' | 'log' | 'console' | 'source' | 'hierarchy' | 'locator' | 'errors' | 'network'
 
@@ -59,7 +66,8 @@ function deviceLine(metadata: TraceMetadata, event: { deviceId?: string }): stri
   return [grouped ? d.name : undefined, d.model, d.serial].filter(Boolean).join(' · ');
 }
 
-export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode, previewHighlight, group }: Props) {
+export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode, previewHighlight, group, screenshotVariant }: Props) {
+
   const testError = metadata.error;
   // Device names of a multi-device trace, for the per-device filters.
   const deviceNames = useMemo(
@@ -211,7 +219,8 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
         {activeTab === 'log' && <LogTab event={event} />}
         {activeTab === 'console' && <ConsoleTab event={event} events={consoleEvents} metadata={metadata} deviceNames={deviceNames} />}
         {activeTab === 'source' && <SourceTab event={event} sources={sources} previewHighlight={previewHighlight} />}
-        {activeTab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} group={group} />}
+        {activeTab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} group={group} screenshotVariant={screenshotVariant} />}
+
         {activeTab === 'locator' && locatorTab}
         {activeTab === 'network' && <NetworkTab entries={networkEntries} bodies={networkBodies} deviceNames={deviceNames} />}
         {activeTab === 'errors' && <ErrorsTab event={event} events={events} testError={testError} sources={sources} metadata={metadata} />}
@@ -830,12 +839,14 @@ function SourceTab({ event, sources, previewHighlight }: { event: ActionTraceEve
 
 // ─── Hierarchy Tab ───
 
-function HierarchyTabWrapper({ event, hierarchies, onNodeSelect, group }: {
+function HierarchyTabWrapper({ event, hierarchies, onNodeSelect, group, screenshotVariant = 'before' }: {
   event: ActionTraceEvent | AssertionTraceEvent | undefined
   hierarchies: Map<string, string>
   onNodeSelect?: (bounds: Bounds | null) => void
   group?: DeviceGroupView
+  screenshotVariant?: 'before' | 'after'
 }) {
+
   // Multi-device: default to the pane the viewer has active (the acting device
   // unless the user clicked another pane); the toggle views a different
   // device's tree at the frame its pane displays.
@@ -850,7 +861,8 @@ function HierarchyTabWrapper({ event, hierarchies, onNodeSelect, group }: {
 
   let xml: string | undefined;
   if (multi && shownDevice && shownDevice !== actingDevice(group!, event)) {
-    xml = hierarchyForDeviceFrame(group!, frameIndexForDevice(group!, shownDevice, event.actionIndex, 'after'));
+    xml = hierarchyForDeviceFrame(group!, frameIndexForDevice(group!, shownDevice, event.actionIndex, screenshotVariant));
+
   } else {
     const pad = String(event.actionIndex).padStart(3, '0');
     const afterKey = `hierarchy/action-${pad}-after.xml`;

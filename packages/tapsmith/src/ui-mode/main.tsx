@@ -1851,7 +1851,9 @@ function App() {
           pickMode={pickTarget !== null}
           previewHighlight={previewHighlight}
           group={group}
+          screenshotVariant={screenshotVariant}
           locatorTab={
+
             <SelectorTab
               hierarchyXml={selectorSource === 'live' ? (liveHierarchyXml ?? undefined) : currentHierarchyXml}
               pickedNode={pickedNode}

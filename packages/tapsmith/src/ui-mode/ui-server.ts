@@ -22,6 +22,8 @@ import { McpEventEmitter } from '../mcp/events.js';
 import { McpSessionRouter } from '../mcp/http-session-router.js';
 import { configureMcpConnection } from '../mcp/connection.js';
 import { matchRequestedFiles, fileFailureEntry } from '../mcp/headless-dispatcher.js';
+import { pickResolvedDeviceName } from '../mcp/tools/device-target.js';
+
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
 import type { DeviceGroupEntry, TapsmithConfig } from '../config.js';
 import { findDaemonBin } from '../daemon-bin.js';
@@ -1147,17 +1149,30 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         configPath: ctx.configPath,
       };
     },
-    resolveDeviceName(name) {
+    resolveDeviceName(name, project) {
       // Live workers first (each lists its group, primary first); before the
       // workers spawn, the primary the CLI set up and the members it opened.
+      // With `project`, only the worker(s) driving that project's group: two
+      // groups routinely both have an `alice`, and `device` wins over
+      // `project` in the target resolver.
+      const inScope = (owner: string | undefined) => project === undefined || owner === project;
+      const matches: Array<{ project: string | undefined; serial: string }> = [];
       for (const worker of uiWorkers) {
         if (worker.retired) continue;
+        const owner = groupProjectName(worker.deviceSerial);
+        if (!inScope(owner)) continue;
         const match = workerDevicesInfo(worker).find((d) => d.name === name);
-        if (match) return match.deviceSerial;
+        if (match) matches.push({ project: owner, serial: match.deviceSerial });
       }
-      if (ctx.deviceSerial && ctx.deviceGroup[0]?.name === name) return ctx.deviceSerial;
-      return ctx.primaryGroupMembers?.find((m) => m.name === name)?.serial;
+      if (matches.length === 0 && ctx.deviceSerial && inScope(groupProjectName(ctx.deviceSerial))) {
+        const owner = groupProjectName(ctx.deviceSerial);
+        if (ctx.deviceGroup[0]?.name === name) matches.push({ project: owner, serial: ctx.deviceSerial });
+        const member = ctx.primaryGroupMembers?.find((m) => m.name === name);
+        if (member) matches.push({ project: owner, serial: member.serial });
+      }
+      return pickResolvedDeviceName(name, matches);
     },
+
     toggleWatch(filePath, options) {
       const { testFilter, project } = options ?? {};
       const isWatched = findEntry(filePath, project, testFilter) >= 0;
@@ -1871,10 +1886,13 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       daemonProcess.unref();
     }
 
-    // Member daemons, spawned together — they are independent.
+    // Member daemons, spawned together — they are independent. Settled, not
+    // raced: a sibling still starting when one fails would otherwise finish
+    // after the cleanup below and leak its daemon and client.
     const members: UIWorkerMemberHandle[] = [];
     try {
-      await Promise.all(memberSerials.map(async (serial, m) => {
+      const settled = await Promise.allSettled(memberSerials.map(async (serial, m) => {
+
         const name = groupNames[m + 1].name;
         const adoptMember = adopt ? adoptMemberFor(serial) : undefined;
         if (adoptMember) {
@@ -1899,11 +1917,24 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
           screenClient: new TapsmithGrpcClient(`localhost:${ports.daemonPort}`),
         };
       }));
+      const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+      if (failure) throw failure.reason;
     } catch (err) {
-      for (const m of members) if (m?.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
-      if (!adopt) { try { daemonProcess?.kill(); } catch { /* already dead */ } }
+      // `initializeWorkers` records the failure and carries on, so anything
+      // left open here lives for the whole session: close the members' gRPC
+      // channels and the primary's, not just the processes.
+      for (const m of members) {
+        if (!m) continue;
+        m.screenClient?.close();
+        if (m.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
+      }
+      if (!adopt) {
+        daemonClient.close();
+        try { daemonProcess?.kill(); } catch { /* already dead */ }
+      }
       throw err;
     }
+
 
     // Fork ui-worker.ts
     const workerLoader = childLoader();
