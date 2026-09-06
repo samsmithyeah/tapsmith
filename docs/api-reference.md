@@ -1519,6 +1519,7 @@ worker before any test runs:
 | ----------------- | ------------------------------------- | ---------------------------------------- |
 | `platform`        | `'android' \| 'ios'`                  | Target platform for this project         |
 | `device`          | `string`                              | Explicit device serial / iOS UDID        |
+| `devices`         | `number \| { name: string; device?: string }[]` | Drive several devices from one test (`devices: 2`, or named members, optionally pinned to a serial; at most 10). Tests receive them as the `devices` fixture. `test.use({ devices })` throws. See [Multi-device tests](./multi-device.md). |
 | `avd`             | `string`                              | Android AVD name to launch               |
 | `simulator`       | `string`                              | iOS simulator name or UDID               |
 | `apk`             | `string`                              | Path to Android APK under test           |
@@ -1558,8 +1559,9 @@ describe("authenticated tests", () => {
 The fixtures object passed to every test function. Destructure the fields you need:
 
 ```typescript
-test("example", async ({ device, request, projectName, platform }) => {
+test("example", async ({ device, devices, request, projectName, platform }) => {
   // device — the primary interface for interacting with the mobile device
+  // devices — every device of the test's group (devices[0] === device)
   // request — HTTP client for API calls (seeding data, fetching tokens, etc.)
   // projectName — current project name (when using multi-project config), or undefined
   // platform — resolved platform: "android" or "ios"
@@ -1568,7 +1570,8 @@ test("example", async ({ device, request, projectName, platform }) => {
 
 | Fixture | Type | Description |
 |---|---|---|
-| `device` | `Device` | Primary interface for interacting with the mobile device |
+| `device` | `Device` | Primary interface for interacting with the mobile device. An alias for `devices[0]`. |
+| `devices` | `Device[]` | Every device the test drives, in the order declared by the project's `use.devices` — one entry unless the project declares a device group. Destructure by position (`{ devices: [alice, bob] }`) to drive two app sessions from one test. See [Multi-device tests](./multi-device.md). |
 | `request` | `APIRequestContext` | HTTP client for API calls. See [API Request Fixture](#api-request-fixture). |
 | `projectName` | `string \| undefined` | Name of the current project (from `projects` config). `undefined` when no projects are configured. |
 | `platform` | `'android' \| 'ios'` | Resolved target platform for the current worker. |

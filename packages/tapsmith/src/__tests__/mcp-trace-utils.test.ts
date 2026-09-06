@@ -5,11 +5,11 @@ import * as os from 'node:os';
 import { zipSync } from 'fflate';
 import { readTraceSummary } from '../mcp/tools/trace-utils.js';
 
-function createTraceZip(events: object[], screenshots?: Record<string, Buffer>): string {
+function createTraceZip(events: object[], screenshots?: Record<string, Buffer>, metadata: object = { version: 1 }): string {
   const files: Record<string, Uint8Array> = {};
   const ndjson = events.map((e) => JSON.stringify(e)).join('\n');
   files['trace.json'] = new TextEncoder().encode(ndjson);
-  files['metadata.json'] = new TextEncoder().encode(JSON.stringify({ version: 1 }));
+  files['metadata.json'] = new TextEncoder().encode(JSON.stringify(metadata));
   if (screenshots) {
     for (const [name, data] of Object.entries(screenshots)) {
       files[`screenshots/${name}`] = new Uint8Array(data);
@@ -103,5 +103,38 @@ describe('readTraceSummary()', () => {
     } finally {
       fs.unlinkSync(zip);
     }
+  });
+
+  // A `use.devices` trace: the same failure summary tapsmith_run_tests and
+  // tapsmith_list_results print must say whose device each step ran on, as
+  // tapsmith_read_trace already does — otherwise a two-user failure has no owner.
+  describe('multi-device traces', () => {
+    const PAIR = { version: 1, devices: [{ name: 'alice', serial: 'A' }, { name: 'bob', serial: 'B' }] };
+
+    it('prefixes steps and device logs with the device that produced them', () => {
+      const zip = createTraceZip([
+        { type: 'action', action: 'tap', selector: 'getByText("Send")', deviceId: 'alice', duration: 10 },
+        { type: 'assertion', assertion: 'toBeVisible', deviceId: 'bob', error: 'not visible', duration: 5 },
+        { type: 'console', source: 'device', level: 'error', message: 'boom', deviceId: 'bob' },
+      ], undefined, PAIR);
+      const summary = readTraceSummary(zip)!;
+      expect(summary.steps).toEqual([
+        '[OK] alice: tap on getByText("Send") (10ms)',
+        '[FAIL] bob: expect toBeVisible (5ms)',
+      ]);
+      expect(summary.deviceLogs).toEqual(['[ERROR] bob: boom']);
+      fs.unlinkSync(zip);
+    });
+
+    it('leaves a single-device trace unprefixed even when events carry a deviceId', () => {
+      const zip = createTraceZip([
+        { type: 'action', action: 'tap', deviceId: 'device-1', duration: 10 },
+        { type: 'console', source: 'device', level: 'warn', message: 'slow', deviceId: 'device-1' },
+      ], undefined, { version: 1, devices: [{ name: 'device-1', serial: 'A' }] });
+      const summary = readTraceSummary(zip)!;
+      expect(summary.steps).toEqual(['[OK] tap (10ms)']);
+      expect(summary.deviceLogs).toEqual(['[WARN] slow']);
+      fs.unlinkSync(zip);
+    });
   });
 });

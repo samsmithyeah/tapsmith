@@ -2,7 +2,7 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import type { ChildProcess, ForkOptions } from "node:child_process";
 import type { Writable } from "node:stream";
-import type { TapsmithConfig } from "./config.js";
+import { deviceGroupSize, type TapsmithConfig } from "./config.js";
 import type { ResolvedProject } from "./project.js";
 
 const RESET = "\x1b[0m";
@@ -66,6 +66,8 @@ export interface LaunchProgressSink {
   start(id: LaunchStepId, detail?: string): void;
   complete(id: LaunchStepId, detail?: string): void;
   fail(id: LaunchStepId, detail?: string): void;
+  /** Whether any step has already been marked failed. */
+  hasFailure(): boolean;
   skip(id: LaunchStepId, detail?: string): void;
   update(
     id: LaunchStepId,
@@ -297,6 +299,21 @@ export function createUiLaunchSteps(input: UiLaunchPlanInput): LaunchStep[] {
           : "no package configured",
       },
     );
+    // A `use.devices` project brings up the rest of its group right after the
+    // primary; the sequential CLI reports that under this step. Multi-worker
+    // UI mode reports every worker's group under its own `worker-devices`
+    // step below — a second step with the same id would leave one row
+    // pending forever.
+    if (deviceGroupSize(input.config) > 1 && !(mode === "ui" && input.workerCount > 1)) {
+
+      const members = deviceGroupSize(input.config) - 1;
+      steps.push({
+        id: "worker-devices",
+        label: "Device group",
+        state: "pending",
+        detail: `provision ${plural(members, "more device")} for the group`,
+      });
+    }
     // Multi-device UI mode adds its own `ui-workers` step below.
     if (mode === "ui" && input.workerCount <= 1) {
       steps.push({
@@ -544,6 +561,10 @@ export class UiLaunchProgress implements LaunchProgressSink {
 
   fail(id: LaunchStepId, detail?: string): void {
     this.update(id, { state: "failed", detail });
+  }
+
+  hasFailure(): boolean {
+    return this.steps.some((step) => step.state === "failed");
   }
 
   skip(id: LaunchStepId, detail?: string): void {

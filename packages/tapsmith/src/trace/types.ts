@@ -248,8 +248,14 @@ export interface TraceMetadata {
   startTime: number
   /** Test end timestamp (ms since epoch). */
   endTime: number
-  /** Device info. */
+  /** Device info for the primary device (kept for readers of older traces). */
   device: TraceDeviceInfo
+  /**
+   * Every device the test drove, primary first, each carrying its group
+   * `name` — the value events use as `deviceId`. Absent in traces recorded
+   * before multi-device support; readers should fall back to `[device]`.
+   */
+  devices?: TraceDeviceInfo[]
   /** Trace configuration used. */
   traceConfig: TraceConfigSnapshot
   /** Total number of actions recorded. */
@@ -270,6 +276,12 @@ export interface TraceMetadata {
 
 export interface TraceDeviceInfo {
   serial: string
+  /**
+   * Group name (`alice`, `device-1`) matching `TraceEvent.deviceId`. Set on
+   * every entry of `TraceMetadata.devices`; undefined on the legacy `device`.
+   */
+  name?: string
+  platform?: 'android' | 'ios'
   model?: string
   osVersion?: string
   screenResolution?: { width: number; height: number }
@@ -480,6 +492,8 @@ export function networkPassthroughHosts(
 export interface NetworkEntry {
   /** Request index. */
   index: number
+  /** Group name of the device whose proxy captured this request (multi-device tests). */
+  deviceId?: string
   /** Action index this request is associated with. */
   actionIndex: number
   /** Timestamp of request start. */

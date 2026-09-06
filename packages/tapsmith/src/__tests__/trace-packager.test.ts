@@ -240,11 +240,11 @@ describe('packageTrace screenshot cleanup', () => {
       const collector = new TraceCollector(makeConfig({ screenshots: true }), tmp);
 
       // Owned capture: written into this collector's temp dir.
-      await collector.captureBeforeAction(
+      const { actionIndex } = await collector.captureBeforeAction(
         async () => Buffer.from('own-png'),
         async () => undefined,
       );
-      collector.addActionEvent(makeActionEvent({ hasScreenshotBefore: true }));
+      collector.addActionEvent(makeActionEvent({ hasScreenshotBefore: true }), actionIndex);
       const ownedPath = collector.screenshots[0].diskPath;
 
       // External capture: a beforeAll screenshot replayed into this collector,
@@ -314,13 +314,15 @@ describe('appendEventsToTrace', () => {
       path.join(tmp, 'hook'),
     );
     hookCollector.startGroup('afterAll Hooks');
-    await hookCollector.captureBeforeAction(
+    // A capture reserves the action's index; the emit hands it back so the
+    // event lands where the screenshot was written.
+    const { actionIndex } = await hookCollector.captureBeforeAction(
       async () => Buffer.from('after-all-png'),
       async () => '<hierarchy/>',
     );
     hookCollector.addActionEvent(makeActionEvent({
       action: 'openDeepLink', hasScreenshotBefore: true, hasHierarchyBefore: true,
-    }));
+    }), actionIndex);
     hookCollector.endGroup();
 
     appendEventsToTrace(zipPath, hookCollector, Date.now(), readTraceActionCount(zipPath) + 1);

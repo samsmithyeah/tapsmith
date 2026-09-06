@@ -84,7 +84,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
   registerTestSelectorTool(server, dispatcher);
   registerDeviceActionTools(server, dispatcher);
   registerAppControlTools(server, dispatcher);
-  registerListDevicesTool(server);
+  registerListDevicesTool(server, dispatcher);
   registerRunTestsTool(server, dispatcher);
   registerReadTraceTool(server);
 

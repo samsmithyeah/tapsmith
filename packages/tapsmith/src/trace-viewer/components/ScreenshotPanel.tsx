@@ -5,6 +5,14 @@ import type { ContainerSummary } from '../types.js';
 import { findNearestScreenshot } from '../../ui-mode/hooks/use-trace-data.js';
 import { inferDeviceFormFactor } from '../../ui-mode/ui-protocol.js';
 import { selectDeviceFrame, screenWindowStyle, screenMaskStyle } from '../../ui-mode/assets/bezels/frames.js';
+import {
+  actingDevice,
+  frameIndexForDevice,
+  nextFrameIndexForDevice,
+  screenshotForFrame,
+  deviceHue,
+  type DeviceGroupView,
+} from './device-frames.js';
 
 // ─── Injected Styles ───
 
@@ -21,6 +29,15 @@ const SCREENSHOT_STYLES = `
   .bounds-rect-hierarchy { position: absolute; border: 2px solid var(--color-success); background: rgba(78,201,176,0.15); border-radius: 2px; }
   .bounds-rect-selector { position: absolute; border: 2px solid #c084fc; background: rgba(192,132,252,0.18); border-radius: 2px; }
   .bounds-point { position: absolute; width: 16px; height: 16px; margin-left: -8px; margin-top: -8px; border-radius: 50%; background: rgba(255,80,80,0.5); border: 2px solid #ff5050; box-shadow: 0 0 8px rgba(255,80,80,0.4); }
+  .screenshot-panes { display: flex; align-items: stretch; justify-content: center; gap: 12px; width: 100%; height: 100%; min-height: 0; }
+  .screenshot-pane { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; border: 1px solid transparent; border-radius: 10px; padding: 4px; cursor: pointer; }
+  .screenshot-pane.acting { border-color: oklch(0.7 0.14 var(--device-h, var(--accent-h, 57))); }
+  .screenshot-pane.active:not(.acting) { border-color: var(--color-text-muted, #888); border-style: dashed; }
+  .screenshot-pane-label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--color-text-muted, #888); padding: 0 4px 4px; }
+  .screenshot-pane-label .action-device-tag { margin-left: 0; }
+  .screenshot-pane-label .screenshot-pane-role { font-style: italic; }
+  .screenshot-pane-body { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+  .screenshot-pane-body .screenshot-image-wrapper { height: 100%; }
 `;
 
 let stylesInjected = false;
@@ -60,6 +77,18 @@ interface Props {
   onDisplayedVariantChange?: (variant: 'before' | 'after') => void
   /** Device pixel ratio — bounds are in logical points, screenshots in pixels. */
   devicePixelRatio?: number
+  /**
+   * Action index whose before-screenshot shows the state *after* this event.
+   * Defaults to the next index; a multi-device trace passes the next capture
+   * on the same device instead.
+   */
+  afterActionIndex?: number
+  /**
+   * A multi-device trace: one pane per device, side by side. The acting
+   * device's pane shows the stages as usual; the others show their state at
+   * the same moment. Absent for single-device traces.
+   */
+  group?: DeviceGroupView
   testName?: string
   testStatus?: string
   onDownloadTrace?: () => void
@@ -127,7 +156,7 @@ function handleStageKeyDown(
   (strip?.querySelectorAll('[role="tab"]')[next] as HTMLElement | undefined)?.focus();
 }
 
-export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, hierarchyBorrowedFromStep, pickUnavailable, onDisplayedVariantChange, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
+export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, hierarchyBorrowedFromStep, pickUnavailable, onDisplayedVariantChange, devicePixelRatio, afterActionIndex, group, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
   injectStyles();
 
   const [tab, setTab] = useState<ScreenshotTab>('action');
@@ -137,16 +166,26 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
   // the early returns).
   const shotUrls = useMemo(() => {
     if (!event) return null;
+    if (group && group.devices.length > 1) {
+      // Multi-device: the acting device's own frame, and its next capture —
+      // the other panes resolve their frames per device below.
+      const acting = actingDevice(group, event);
+      return {
+        beforeUrl: screenshotForFrame(screenshots, event.actionIndex),
+        afterUrl: screenshotForFrame(screenshots, nextFrameIndexForDevice(group, acting, event.actionIndex)),
+      };
+    }
     const pad = String(event.actionIndex).padStart(3, '0');
     const beforeUrl = screenshots.get(`screenshots/action-${pad}-before.png`)
       ?? findNearestScreenshot(screenshots, event.actionIndex);
     // "After" = the next action's before-screenshot (screen state after this action).
-    // This avoids capturing 2 screenshots per action through the agent.
-    const nextPad = String(event.actionIndex + 1).padStart(3, '0');
+    // This avoids capturing 2 screenshots per action through the agent. In a
+    // multi-device trace the host names the next capture on the same device.
+    const nextPad = String(afterActionIndex ?? event.actionIndex + 1).padStart(3, '0');
     const afterUrl = screenshots.get(`screenshots/action-${nextPad}-before.png`)
       ?? screenshots.get(`screenshots/action-${pad}-after.png`); // fallback for legacy traces
     return { beforeUrl, afterUrl };
-  }, [event, screenshots]);
+  }, [event, screenshots, afterActionIndex, group]);
 
   // Mirrors the currentUrl resolution below: which moment does the displayed
   // screenshot show? Reported to the host so the selector playground binds to
@@ -398,6 +437,141 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
   const hasBefore = !!beforeUrl;
   const hasAfter = !!afterUrl;
 
+  const header = (
+    <div class="viewer-head">
+      <div class="viewer-head-meta">
+        {testStatus && (
+          <span class={`te-status-icon ${testStatus === 'passed' ? 'passed' : testStatus === 'failed' ? 'failed' : ''}`}>
+            {testStatus === 'passed' ? '✓' : testStatus === 'failed' ? '✗' : '○'}
+          </span>
+        )}
+        {testName && <span class="viewer-head-title" data-testid="viewer-title">{testName}</span>}
+      </div>
+      <div class="viewer-head-actions">
+        {hierarchyBorrowedFromStep !== undefined && (
+          // Not gated on pickMode: the Locator tab evaluates selectors
+          // against the same borrowed tree, so the disclosure applies
+          // whenever this action is selected.
+          <span
+            class="viewer-pick-note"
+            data-testid="pick-note"
+            title="This step captured no view hierarchy — element data comes from the same step as the displayed screenshot."
+          >
+            {event && hierarchyBorrowedFromStep === event.actionIndex - 1
+              ? 'Hierarchy from the previous step'
+              : 'Hierarchy from an earlier step'}
+          </span>
+        )}
+        {onPickModeToggle && (
+          <button
+            class={`viewer-pick-btn ${pickMode ? 'active' : ''}`}
+            onClick={onPickModeToggle}
+            // Disabled only when inactive: an active Pick button must stay
+            // clickable as the exit, or selecting a no-hierarchy action
+            // mid-pick would strand the user in pick mode.
+            disabled={!!pickUnavailable && !pickMode}
+            title={pickMode ? 'Exit pick mode'
+              : pickUnavailable ? 'No view hierarchy captured yet — pick from a device action instead'
+              : 'Pick element'}
+          >
+            <Focus size={12} /> {pickMode ? 'Picking…' : 'Pick'}
+          </button>
+        )}
+        {onDownloadTrace && (
+          <button class="viewer-download-btn" onClick={onDownloadTrace} title="Download trace ZIP">
+            <Download size={12} /> Trace
+          </button>
+        )}
+        {onDownloadVideo && (
+          <button class="viewer-download-btn" onClick={onDownloadVideo} title="Download video">
+            <Download size={12} /> Video
+          </button>
+        )}
+        {scale !== 1 && (
+          <div class="screenshot-zoom-label">{Math.round(scale * 100)}%</div>
+        )}
+      </div>
+    </div>
+  );
+
+  const stageTabs = (hasBefore && hasAfter) && (
+    <div class="screenshot-tab-float" role="tablist" aria-label="Screenshot stage">
+      {STAGE_TABS.map(({ value, label }, i) => (
+        <div
+          key={value}
+          id={`screenshot-stage-${value}`}
+          class={`screenshot-tab${tab === value ? ' active' : ''}`}
+          role="tab"
+          aria-selected={tab === value}
+          aria-controls="screenshot-tabpanel"
+          tabIndex={0}
+          onClick={() => setTab(value)}
+          onKeyDown={(e) => handleStageKeyDown(e, i, setTab)}
+        >
+          {label}
+        </div>
+      ))}
+    </div>
+  );
+
+  // ─── Multi-device: one pane per device, side by side ───
+
+  if (group && group.devices.length > 1) {
+    const acting = actingDevice(group, event);
+    const active = group.activeDevice ?? acting;
+    const bounds = event.bounds;
+    const point = event.type === 'action' ? event.point : undefined;
+    return (
+      <div class="screenshot-panel">
+        {header}
+        <div ref={containerRef} class="screenshot-container viewer-body has-grid" style={{ position: 'relative' }}>
+          {stageTabs}
+          <div
+            class="screenshot-panes"
+            data-testid="screenshot-panes"
+            id={hasBefore && hasAfter ? 'screenshot-tabpanel' : undefined}
+            role={hasBefore && hasAfter ? 'tabpanel' : undefined}
+            aria-labelledby={hasBefore && hasAfter ? `screenshot-stage-${tab}` : undefined}
+          >
+            {group.devices.map((d) => {
+              const name = d.name ?? '';
+              const isActing = name === acting;
+              const isActive = name === active;
+              // Every pane depicts the moment the acting pane displays: for a
+              // "before" moment the others show their latest capture at or
+              // before the step, for "after" their next capture past it.
+              const frameIndex = frameIndexForDevice(group, name, event.actionIndex, displayedVariant);
+              const url = screenshotForFrame(screenshots, frameIndex);
+              return (
+                <ScreenshotDevicePane
+                  key={name}
+                  name={name}
+                  hue={deviceHue(group, name)}
+                  acting={isActing}
+                  active={isActive}
+                  url={url}
+                  stage={tab}
+                  platform={d.platform ?? platform}
+                  devicePixelRatio={d.devicePixelRatio}
+                  bounds={isActing && tab === 'action' ? bounds : undefined}
+                  point={isActing && tab === 'action' ? point : undefined}
+                  highlightBounds={isActive ? highlightBounds : undefined}
+                  hoverBounds={isActive ? hoverBounds : undefined}
+                  selectorHighlights={isActive ? selectorHighlights : undefined}
+                  pickMode={!!pickMode}
+                  onActivate={() => group.onActiveDeviceChange?.(name)}
+                  onPickPoint={isActive && pickMode ? onScreenshotClick : undefined}
+                  onPickHover={isActive && pickMode ? onScreenshotHover : undefined}
+                  scale={scale}
+                />
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // The "Action" tab shows the screenshot that best represents the moment
   // the action happened. For taps/swipes that's the BEFORE screenshot (you
   // want to see where the touch landed). For assertions it's the AFTER
@@ -503,80 +677,9 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
 
   return (
     <div class="screenshot-panel">
-      <div class="viewer-head">
-        <div class="viewer-head-meta">
-          {testStatus && (
-            <span class={`te-status-icon ${testStatus === 'passed' ? 'passed' : testStatus === 'failed' ? 'failed' : ''}`}>
-              {testStatus === 'passed' ? '✓' : testStatus === 'failed' ? '✗' : '○'}
-            </span>
-          )}
-          {testName && <span class="viewer-head-title" data-testid="viewer-title">{testName}</span>}
-        </div>
-        <div class="viewer-head-actions">
-          {hierarchyBorrowedFromStep !== undefined && (
-            // Not gated on pickMode: the Locator tab evaluates selectors
-            // against the same borrowed tree, so the disclosure applies
-            // whenever this action is selected.
-            <span
-              class="viewer-pick-note"
-              data-testid="pick-note"
-              title="This step captured no view hierarchy — element data comes from the same step as the displayed screenshot."
-            >
-              {event && hierarchyBorrowedFromStep === event.actionIndex - 1
-                ? 'Hierarchy from the previous step'
-                : 'Hierarchy from an earlier step'}
-            </span>
-          )}
-          {onPickModeToggle && (
-            <button
-              class={`viewer-pick-btn ${pickMode ? 'active' : ''}`}
-              onClick={onPickModeToggle}
-              // Disabled only when inactive: an active Pick button must stay
-              // clickable as the exit, or selecting a no-hierarchy action
-              // mid-pick would strand the user in pick mode.
-              disabled={!!pickUnavailable && !pickMode}
-              title={pickMode ? 'Exit pick mode'
-                : pickUnavailable ? 'No view hierarchy captured yet — pick from a device action instead'
-                : 'Pick element'}
-            >
-              <Focus size={12} /> {pickMode ? 'Picking…' : 'Pick'}
-            </button>
-          )}
-          {onDownloadTrace && (
-            <button class="viewer-download-btn" onClick={onDownloadTrace} title="Download trace ZIP">
-              <Download size={12} /> Trace
-            </button>
-          )}
-          {onDownloadVideo && (
-            <button class="viewer-download-btn" onClick={onDownloadVideo} title="Download video">
-              <Download size={12} /> Video
-            </button>
-          )}
-          {scale !== 1 && (
-            <div class="screenshot-zoom-label">{Math.round(scale * 100)}%</div>
-          )}
-        </div>
-      </div>
+      {header}
       <div ref={containerRef} class="screenshot-container viewer-body has-grid" style={{ position: 'relative' }}>
-        {(hasBefore && hasAfter) && (
-          <div class="screenshot-tab-float" role="tablist" aria-label="Screenshot stage">
-            {STAGE_TABS.map(({ value, label }, i) => (
-              <div
-                key={value}
-                id={`screenshot-stage-${value}`}
-                class={`screenshot-tab${tab === value ? ' active' : ''}`}
-                role="tab"
-                aria-selected={tab === value}
-                aria-controls="screenshot-tabpanel"
-                tabIndex={0}
-                onClick={() => setTab(value)}
-                onKeyDown={(e) => handleStageKeyDown(e, i, setTab)}
-              >
-                {label}
-              </div>
-            ))}
-          </div>
-        )}
+        {stageTabs}
         {currentUrl ? (
           <div
             ref={wrapperRef}
@@ -638,6 +741,240 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
           </div>
         ) : (
           <div class="screenshot-empty" data-testid="screenshot-empty">No screenshot available for this action</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Device pane (multi-device traces) ───
+
+interface ScreenshotDevicePaneProps {
+  name: string
+  /** The device's tag hue (see `deviceHue`), tinting its badge and acting border. */
+  hue: number
+  acting: boolean
+  active: boolean
+  url: string | undefined
+  stage: ScreenshotTab
+  platform?: 'android' | 'ios'
+  devicePixelRatio?: number
+  bounds?: { left: number; top: number; right: number; bottom: number }
+  point?: { x: number; y: number }
+  highlightBounds?: { left: number; top: number; right: number; bottom: number } | null
+  hoverBounds?: { left: number; top: number; right: number; bottom: number } | null
+  selectorHighlights?: { left: number; top: number; right: number; bottom: number }[]
+  pickMode: boolean
+  /** Make this pane the active device (Locator / Hierarchy tabs follow it). */
+  onActivate: () => void
+  /** Pick on this pane — set only for the active pane while picking. */
+  onPickPoint?: (point: { x: number; y: number }) => void
+  onPickHover?: (point: { x: number; y: number } | null) => void
+  scale: number
+}
+
+/**
+ * One device of a multi-device trace: its frame in its own bezel, with the
+ * overlays scaled by its own pixel ratio. Self-contained measurement so any
+ * number of panes can sit side by side. A click on an inactive pane makes it
+ * active (a pick then lands on the next click); the active pane hit-tests.
+ */
+function ScreenshotDevicePane({
+  name, hue, acting, active, url, stage, platform, devicePixelRatio, bounds, point,
+  highlightBounds, hoverBounds, selectorHighlights, pickMode, onActivate, onPickPoint, onPickHover, scale,
+}: ScreenshotDevicePaneProps) {
+  const [naturalSize, setNaturalSize] = useState<NaturalSize | null>(null);
+  const [renderedSize, setRenderedSize] = useState<RenderedSize | null>(null);
+  const [viewportSize, setViewportSize] = useState<{ width: number; height: number } | null>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+
+  const updateRenderedSize = useCallback(() => {
+    const img = imgRef.current;
+    if (!img) return;
+    const wrapper = wrapperRef.current;
+    const imgRect = img.getBoundingClientRect();
+    const wrapperRect = wrapper?.getBoundingClientRect();
+    const s = scaleRef.current || 1;
+    setRenderedSize({
+      width: img.clientWidth,
+      height: img.clientHeight,
+      left: wrapperRect ? (imgRect.left - wrapperRect.left) / s : 0,
+      top: wrapperRect ? (imgRect.top - wrapperRect.top) / s : 0,
+    });
+  }, []);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    const update = () => {
+      setViewportSize({ width: wrapper.clientWidth, height: wrapper.clientHeight });
+      updateRenderedSize();
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(wrapper);
+    return () => ro.disconnect();
+  }, [url, stage, updateRenderedSize]);
+
+  useEffect(() => {
+    const img = imgRef.current;
+    if (!img) return;
+    updateRenderedSize();
+    const ro = new ResizeObserver(updateRenderedSize);
+    ro.observe(img);
+    return () => ro.disconnect();
+  }, [url, stage, updateRenderedSize]);
+
+  useEffect(() => { updateRenderedSize(); }, [scale, updateRenderedSize]);
+
+  const handleImageLoad = useCallback(() => {
+    const img = imgRef.current;
+    if (img) {
+      setNaturalSize({ width: img.naturalWidth, height: img.naturalHeight });
+      updateRenderedSize();
+    }
+    const wrapper = wrapperRef.current;
+    if (wrapper) setViewportSize({ width: wrapper.clientWidth, height: wrapper.clientHeight });
+  }, [updateRenderedSize]);
+
+  const toNaturalCoords = useCallback((e: MouseEvent): { x: number; y: number } | null => {
+    if (!imgRef.current || !naturalSize) return null;
+    const rect = imgRef.current.getBoundingClientRect();
+    return {
+      x: Math.round((e.clientX - rect.left) * (naturalSize.width / rect.width)),
+      y: Math.round((e.clientY - rect.top) * (naturalSize.height / rect.height)),
+    };
+  }, [naturalSize]);
+
+  const handleClick = useCallback((e: MouseEvent) => {
+    if (!active) {
+      // First click on another device's pane only moves the focus there —
+      // picking against a tree the user has not yet seen highlighted would
+      // resolve a locator on a screen they did not mean.
+      onActivate();
+      return;
+    }
+    if (!onPickPoint) return;
+    const p = toNaturalCoords(e);
+    if (p) onPickPoint(p);
+  }, [active, onActivate, onPickPoint, toNaturalCoords]);
+
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!onPickHover) return;
+    onPickHover(toNaturalCoords(e));
+  }, [onPickHover, toNaturalCoords]);
+
+  const handleMouseLeave = useCallback(() => { onPickHover?.(null); }, [onPickHover]);
+
+  const contentAspect = naturalSize ? naturalSize.width / naturalSize.height : undefined;
+  const imageFrame = platform ? selectDeviceFrame({ platform, contentAspect }) : undefined;
+  const formFactor = inferDeviceFormFactor({ aspectRatio: contentAspect });
+  const imageFrameStyle = (() => {
+    if (!imageFrame) return undefined;
+    const style: Record<string, string> = { '--dm-fa': String(imageFrame.frameAspect) };
+    if (viewportSize && viewportSize.width > 0 && viewportSize.height > 0) {
+      const width = Math.min(viewportSize.width, viewportSize.height * imageFrame.frameAspect);
+      style.width = `${width.toFixed(2)}px`;
+    }
+    return style;
+  })();
+  const cssFrameStyle = (() => {
+    if (!platform || !naturalSize || !viewportSize) return undefined;
+    const aspect = naturalSize.width / naturalSize.height;
+    if (!Number.isFinite(aspect) || aspect <= 0 || viewportSize.height <= 0) return undefined;
+    const metrics = platform === 'ios'
+      ? { inlineInsetRatio: 0.06, blockInsetRatio: 0.06 }
+      : { inlineInsetRatio: 0.04, blockInsetRatio: 0.045 };
+    const screenWidthRatio = 1 - metrics.inlineInsetRatio;
+    const frameHeightRatio = screenWidthRatio / aspect + metrics.blockInsetRatio;
+    const frameWidth = Math.min(viewportSize.width, viewportSize.height / frameHeightRatio);
+    const screenHeight = frameWidth * screenWidthRatio / aspect;
+    return { width: `${frameWidth.toFixed(2)}px`, '--screen-max-height': `${screenHeight.toFixed(2)}px` };
+  })();
+
+  const img = url ? (
+    <img
+      ref={imgRef}
+      src={url}
+      alt={`Screenshot ${stage} — ${name}`}
+      onLoad={handleImageLoad}
+      onClick={handleClick}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+      style={pickMode && active ? { cursor: 'crosshair' } : undefined}
+    />
+  ) : null;
+
+  let framed: preact.JSX.Element | null = img;
+  if (img && imageFrame) {
+    framed = (
+      <div class="dm-frame dm-frame-img" style={imageFrameStyle}>
+        <div class="dm-frame-screen" style={screenMaskStyle(imageFrame)}>
+          <div class="dm-frame-screen-rect" style={screenWindowStyle(imageFrame)}>{img}</div>
+        </div>
+        <img class="dm-frame-png" src={imageFrame.src} alt="" aria-hidden="true" draggable={false} />
+      </div>
+    );
+  } else if (img && platform) {
+    framed = (
+      <div class="screenshot-device-frame" style={cssFrameStyle}>
+        <div class={`dm-frame dm-skin-${platform} dm-skin-${formFactor}`}>{img}</div>
+      </div>
+    );
+  }
+
+  const overlayGeometry = naturalSize && renderedSize
+    ? {
+      naturalSize,
+      renderedWidth: renderedSize.width,
+      renderedHeight: renderedSize.height,
+      renderedLeft: renderedSize.left,
+      renderedTop: renderedSize.top,
+      devicePixelRatio,
+    }
+    : null;
+
+  return (
+    <div
+      class={`screenshot-pane${acting ? ' acting' : ''}${active ? ' active' : ''}`}
+      style={{ '--device-h': String(hue) }}
+      data-testid="screenshot-pane"
+      data-device={name}
+      data-acting={acting}
+      data-active={active}
+      onClick={active ? undefined : onActivate}
+    >
+      <div class="screenshot-pane-label">
+        <span class="action-device-tag">{name}</span>
+        {acting && <span class="screenshot-pane-role" data-testid="screenshot-pane-role">acting</span>}
+        {!acting && active && <span class="screenshot-pane-role" data-testid="screenshot-pane-role">selected</span>}
+      </div>
+      <div class="screenshot-pane-body">
+        {framed ? (
+          <div
+            ref={wrapperRef}
+            class="screenshot-image-wrapper"
+            style={scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'center center' } : undefined}
+          >
+            {framed}
+            {(bounds || point) && overlayGeometry && (
+              <BoundsOverlay bounds={bounds} point={point} {...overlayGeometry} />
+            )}
+            {highlightBounds && overlayGeometry && (
+              <HierarchyHighlightOverlay bounds={highlightBounds} {...overlayGeometry} />
+            )}
+            {hoverBounds && overlayGeometry && (
+              <HierarchyHighlightOverlay bounds={hoverBounds} {...overlayGeometry} />
+            )}
+            {selectorHighlights && selectorHighlights.length > 0 && overlayGeometry && (
+              <SelectorHighlightOverlay boundsList={selectorHighlights} {...overlayGeometry} />
+            )}
+          </div>
+        ) : (
+          <div class="screenshot-empty" data-testid="screenshot-empty">No screenshot for {name}</div>
         )}
       </div>
     </div>

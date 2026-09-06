@@ -316,7 +316,7 @@ function wrapAssertionWithTrace(
 
     // Capture before-screenshot and best-effort element bounds so the trace
     // viewer / UI mode can highlight the element immediately.
-    const { captures: beforeCaptures } = await trace.collector.captureBeforeAction(
+    const { actionIndex, captures: beforeCaptures } = await trace.collector.captureBeforeAction(
       trace.takeScreenshot,
       trace.captureHierarchy,
     );
@@ -337,6 +337,7 @@ function wrapAssertionWithTrace(
       selector: selectorStr,
       sourceLocation,
       stack,
+      deviceId: trace.deviceId,
       bounds: beforeBounds,
       soft: false,
       negated,
@@ -344,7 +345,7 @@ function wrapAssertionWithTrace(
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
-    });
+    }, actionIndex);
 
     let passed = true;
     let error: string | undefined;
@@ -371,11 +372,12 @@ function wrapAssertionWithTrace(
         error: timeoutError,
         sourceLocation,
         stack,
+        deviceId: trace.deviceId,
         hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
         hasScreenshotAfter: false,
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
         hasHierarchyAfter: false,
-      } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
+      } as Parameters<typeof trace.collector.addAssertionEvent>[0], actionIndex);
     }, stack);
 
     try {
@@ -430,11 +432,12 @@ function wrapAssertionWithTrace(
       bounds,
       sourceLocation,
       stack,
+      deviceId: trace.deviceId,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
-    } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
+    } as Parameters<typeof trace.collector.addAssertionEvent>[0], actionIndex);
 
     if (caughtErr !== undefined) {
       throw caughtErr;
@@ -1637,7 +1640,7 @@ function createWebViewAssertions(
     const selectorStr = `css=${locator._selector}`;
     const start = Date.now();
 
-    const { captures: beforeCaptures } = await traceCtx.collector.captureBeforeAction(
+    const { actionIndex, captures: beforeCaptures } = await traceCtx.collector.captureBeforeAction(
       traceCtx.takeScreenshot,
       traceCtx.captureHierarchy,
     );
@@ -1649,13 +1652,14 @@ function createWebViewAssertions(
       selector: selectorStr,
       sourceLocation,
       stack,
+      deviceId: traceCtx.deviceId,
       soft: false,
       negated,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
-    });
+    }, actionIndex);
 
     let passed = true;
     let error: string | undefined;
@@ -1675,11 +1679,12 @@ function createWebViewAssertions(
         error: timeoutError,
         sourceLocation,
         stack,
+        deviceId: traceCtx.deviceId,
         hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
         hasScreenshotAfter: false,
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
         hasHierarchyAfter: false,
-      } as Parameters<typeof traceCtx.collector.addAssertionEvent>[0]);
+      } as Parameters<typeof traceCtx.collector.addAssertionEvent>[0], actionIndex);
     }, stack);
 
     try {
@@ -1716,11 +1721,12 @@ function createWebViewAssertions(
       bounds,
       sourceLocation,
       stack,
+      deviceId: traceCtx.deviceId,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
-    } as Parameters<typeof traceCtx.collector.addAssertionEvent>[0]);
+    } as Parameters<typeof traceCtx.collector.addAssertionEvent>[0], actionIndex);
 
     if (caughtErr !== undefined) throw caughtErr;
   };

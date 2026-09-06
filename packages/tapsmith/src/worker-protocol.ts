@@ -14,11 +14,45 @@ import { normalizeGrep, type AppResetMode, type AppResetScope, type TapsmithConf
 export interface InitMessage {
   type: 'init'
   workerId: number
+  /** The group's primary device (`devices[0]`). */
   deviceSerial: string
+  /**
+   * The primary's group entry name (`alice`; `device-1` without `use.devices`).
+   * The embedder resolves the group from the *project's* config — `use.devices`
+   * is project-level, so the root config the worker is handed never declares
+   * one — and the child takes the names as given rather than re-deriving them.
+   */
+  deviceName: string
   daemonPort: number
   config: SerializedConfig
   /** True when the emulator was freshly launched for this run (needs warmup). */
   freshEmulator?: boolean
+  /**
+   * The rest of the device group (`devices[1..]`), each on its own daemon.
+   * Present only for group projects (`use.devices`); a single-device worker
+   * omits it.
+   */
+  groupMembers?: WorkerGroupMember[]
+}
+
+/**
+ * One secondary device of a worker's group, with the daemon that drives it.
+ * Shared by every child protocol (headless workers, UI workers, watch/MCP run
+ * children) so a group is described the same way everywhere.
+ */
+export interface WorkerGroupMember {
+  /** Group entry name from `use.devices` (e.g. `bob`). */
+  name: string
+  deviceSerial: string
+  daemonPort: number
+  /** Freshly provisioned for this run (needs reinstall + warmup). */
+  freshEmulator?: boolean
+  /**
+   * The daemon already holds this device with the agent running and the app
+   * launched (the CLI's sequential setup opened it): attach instead of
+   * provisioning. UI workers adopting the CLI's primary adopt its group too.
+   */
+  adopt?: boolean
 }
 
 export interface RunFileMessage {
@@ -53,6 +87,13 @@ export interface RunFileUseOptions {
   appResetColdEvery?: number
   baseURL?: string
   extraHTTPHeaders?: Record<string, string>
+  /**
+   * The project's device group (`use.devices`), verbatim. The runner checks
+   * it against the devices it was actually handed, so an embedder that
+   * provisioned the wrong number fails loudly instead of running tests whose
+   * `devices` fixture is missing the members they destructure.
+   */
+  devices?: TapsmithConfig['devices']
 }
 
 export interface ShutdownMessage {
@@ -265,6 +306,8 @@ export interface SerializedConfig {
   appResetColdEvery?: number
   baseURL?: string
   extraHTTPHeaders?: Record<string, string>
+  /** Device group declaration (`use.devices`), verbatim — plain data already. */
+  devices?: TapsmithConfig['devices']
   /** RegExp filters for test fullNames. Source/flags are serialized for IPC. */
   grep?: SerializedRegExp[]
   grepInvert?: SerializedRegExp[]
@@ -300,6 +343,7 @@ export function serializeConfig(config: TapsmithConfig): SerializedConfig {
     appResetColdEvery: config.appResetColdEvery,
     baseURL: config.baseURL,
     extraHTTPHeaders: config.extraHTTPHeaders,
+    devices: config.devices,
     grep: serializeRegExpArray(normalizeGrep(config.grep)),
     grepInvert: serializeRegExpArray(normalizeGrep(config.grepInvert)),
   };
@@ -340,6 +384,7 @@ export function configFromSerialized(s: SerializedConfig, daemonAddress: string)
     appResetColdEvery: s.appResetColdEvery,
     baseURL: s.baseURL,
     extraHTTPHeaders: s.extraHTTPHeaders,
+    devices: s.devices,
     grep: deserializeRegExpArray(s.grep),
     grepInvert: deserializeRegExpArray(s.grepInvert),
   };

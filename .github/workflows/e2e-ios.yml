@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # Manual runs exist for the `Multi-device` job, which is disabled on push
+  # and pull_request (see the job's comment).
+  workflow_dispatch:
 
 concurrency:
   group: e2e-ios-${{ github.head_ref || github.run_id }}
@@ -580,6 +583,257 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results-ios-${{ matrix.shard }}
+          retention-days: 7
+          path: |
+            e2e/tapsmith-results/
+            !e2e/tapsmith-results/**/*.tar.gz
+
+  # ─── Two-device run (PILOT-310) ───────────────────────────────────────
+
+  # A `use.devices` project drives two simulators per test. Its own job, not
+  # a shard: the matrix boots one simulator per runner and a two-user test
+  # halves the parallelism of whatever hosts it. The workflow boots the first
+  # simulator exactly as a shard does; Tapsmith clones and boots the second
+  # itself (`simulator` + provisioning), as it does on a developer machine.
+  # DISABLED on push and pull_request: the standard 3-core macOS runner cannot
+  # host two booted simulators at usable speed — with both up, the app install
+  # takes minutes and XCUITest's own ~60 s launch of the app under test times
+  # out before the agent can start (the same suite passes on Android's
+  # 4-core KVM runner and on a developer Mac). Running it anyway spent an hour
+  # of macOS runner time to report a failure nobody can act on, so it is now
+  # manual-only (`workflow_dispatch`).
+  #
+  # To re-enable: give it a larger runner (`macos-latest-xlarge`), drop the
+  # `if:` below and the test step's `continue-on-error`.
+  e2e-multi-device:
+    name: Multi-device
+    needs: [ build-sdk, build-daemon, build-agent, build-test-app ]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            packages/tapsmith/package-lock.json
+            e2e/package-lock.json
+
+      # Kick the boot off early and don't wait: the simulator reaches Booted
+      # (~1-3 min on these runners) while the fetch/npm steps below run, and
+      # has settled by the time "Wait for simulator boot" gates on it. The
+      # boot does starve those steps meanwhile (a booting simulator eats the
+      # runner) — but booting last instead just moves the same wait inside
+      # `tapsmith test`'s setup phase and hands the SDK a still-settling
+      # simulator, where `simctl list` takes 25-45 s per call. Measured
+      # net-zero either way on shard time (PILOT-303), so keep the layout the
+      # SDK is happiest with.
+      - name: Select Xcode and start simulator boot
+        id: xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          # Same normalisation as build-agent's "Resolve Xcode version".
+          echo "version=$(xcodebuild -version | tr '\n' ' ' | tr -c 'A-Za-z0-9. ' '-' | xargs | tr ' ' '-')" >> "$GITHUB_OUTPUT"
+          SIM=$(xcrun simctl list devices available | grep -oE "iPhone [0-9]+ " | head -1 | xargs)
+          echo "Using simulator: $SIM"
+          echo "TAPSMITH_IOS_SIMULATOR=$SIM" >> $GITHUB_ENV
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          for devs in d['devices'].values():
+            for dev in devs:
+              if dev['name']=='$SIM' and dev['isAvailable']:
+                print(dev['udid']); sys.exit()
+          ")
+          if [ -n "$UDID" ]; then
+            echo "Booting $SIM ($UDID)"
+            echo "TAPSMITH_IOS_UDID=$UDID" >> $GITHUB_ENV
+            # The group's second member is a clone of the primary, which has to
+            # be taken while the source is still shut down; it boots later (see
+            # "Boot the second simulator").
+            CLONE=$(xcrun simctl clone "$UDID" "$SIM")
+            echo "Cloned $SIM -> $CLONE for the group's second device"
+            echo "TAPSMITH_IOS_UDID2=$CLONE" >> $GITHUB_ENV
+            xcrun simctl boot "$UDID" 2>/dev/null || true
+          fi
+
+      # ─── Fetch build outputs: cache first, artifact on a miss ───
+      # Keys mirror the build jobs' cache steps exactly (see the note above
+      # build-daemon). The build jobs populate these caches in this same run,
+      # so a miss here only happens if a save failed or was evicted.
+
+      - name: Restore daemon binaries from cache
+        id: daemon-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            packages/tapsmith-core/target/release/tapsmith-core
+            packages/tapsmith-core/target/release/tapsmith-ios-hid
+          key: ios-daemon-bin-${{ hashFiles('packages/tapsmith-core/**', 'proto/tapsmith.proto') }}
+
+      - name: Download daemon binary
+        if: steps.daemon-cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: daemon-binary-macos
+          path: packages/tapsmith-core/target/release
+
+      - name: Restore iOS agent from cache
+        id: agent-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ios-agent/.build-sim
+          key: ios-agent-build-${{ steps.xcode.outputs.version }}-${{ hashFiles('ios-agent/**') }}
+
+      - name: Download iOS agent
+        if: steps.agent-cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-agent-build
+          path: ios-agent/.build-sim
+
+      - name: Restore test app from cache
+        id: test-app-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: e2e/fixtures/TapsmithTestApp.app
+          key: test-app-ios-${{ hashFiles('test-app/app/**', 'test-app/assets/**',
+            'test-app/package-lock.json', 'test-app/app.json',
+            'test-app/metro.config.js',
+            'packages/tapsmith-react-native/src/**',
+            'packages/tapsmith-react-native/package.json',
+            'packages/tapsmith-react-native/tsconfig*.json') }}
+
+      - name: Download test app
+        if: steps.test-app-cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: test-app-ios
+          path: .
+
+      # e2e/node_modules/tapsmith is a `file:../packages/tapsmith` symlink, so
+      # the build has to land at that real path.
+      - name: Restore SDK build from cache
+        id: sdk-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: packages/tapsmith/dist
+          key: sdk-dist-${{ hashFiles('packages/tapsmith/**', 'proto/tapsmith.proto',
+            'ios-agent/TapsmithAgent/**', 'ios-agent/TapsmithAgent.xcodeproj/**',
+            'ios-agent/create-xcode-project.sh', 'ios-agent/Package.swift') }}
+
+      - name: Download SDK build
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-dist
+          path: packages/tapsmith/dist
+
+      - name: Make daemon executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REL=packages/tapsmith-core/target/release
+          # download-artifact has been observed reporting success after a
+          # partial extraction (tapsmith-core present, tapsmith-ios-hid
+          # missing, no digest-verification lines in its log). Re-download
+          # once before treating a missing binary as fatal.
+          if [ ! -f "$REL/tapsmith-core" ] || [ ! -f "$REL/tapsmith-ios-hid" ]; then
+            echo "daemon artifact incomplete; re-downloading"
+            rm -f "$REL/tapsmith-core" "$REL/tapsmith-ios-hid"
+            gh run download ${{ github.run_id }} -n daemon-binary-macos -D "$REL"
+          fi
+          chmod +x "$REL/tapsmith-core"
+          xattr -d com.apple.quarantine "$REL/tapsmith-core" 2>/dev/null || true
+          # Hard requirement, not best-effort: without the helper every
+          # HID-routed gesture silently downgrades to the flaky agent path.
+          chmod +x "$REL/tapsmith-ios-hid"
+          xattr -d com.apple.quarantine "$REL/tapsmith-ios-hid" 2>/dev/null || true
+
+      - name: Resolve xctestrun path
+        run: |
+          XCTESTRUN=$(find "$PWD/ios-agent/.build-sim" -name "*.xctestrun" -type f -print -quit)
+          if [ -z "$XCTESTRUN" ]; then
+            echo "::error::No xctestrun found under ios-agent/.build-sim"
+            exit 1
+          fi
+          echo "TAPSMITH_IOS_XCTESTRUN=$XCTESTRUN" >> $GITHUB_ENV
+          echo "Resolved xctestrun: $XCTESTRUN"
+
+      # The clone the CI config pins as `bob` (TAPSMITH_IOS_UDID2) boots now so
+      # it is warm before the tests start — cloning a cold one after the
+      # primary was up took 5 min to boot and then outlasted the agent start
+      # timeout on these 3-core runners. It boots after the cache restores on
+      # purpose: two simulators booting during them starved `hashFiles()` past
+      # its 120 s limit.
+      - name: Boot the second simulator
+        run: xcrun simctl boot "$TAPSMITH_IOS_UDID2" 2>/dev/null || true
+
+      - name: Extract test app
+        if: steps.test-app-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p e2e/fixtures
+          tar xzf test-app-ios.tar.gz -C e2e/fixtures
+
+      - name: Install SDK dependencies
+        working-directory: packages/tapsmith
+        run: npm ci
+
+      # Artifacts don't preserve file modes; `npx tapsmith` execs dist/cli.js
+      # directly through the npm bin symlink.
+      - name: Make SDK CLI executable
+        run: chmod +x packages/tapsmith/dist/cli.js
+
+      - name: Install E2E dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: Wait for both simulators to boot
+        run: |
+          if [ -z "$TAPSMITH_IOS_UDID" ]; then
+            echo "No simulator UDID resolved; skipping wait."
+            exit 0
+          fi
+          # `bootstatus -b` returns once the boot has actually finished
+          # (SpringBoard, installd, launch services), not when the device
+          # merely reports `Booted`: two simulators booting side by side left
+          # the primary "Booted" but starved for minutes, and the app install
+          # that followed timed out. Ten minutes covers both on these runners;
+          # perl's alarm is the portable timeout (macOS has no coreutils).
+          for UDID in "$TAPSMITH_IOS_UDID" "$TAPSMITH_IOS_UDID2"; do
+            if perl -e 'alarm shift; exec @ARGV' 600 xcrun simctl bootstatus "$UDID" -b; then
+              echo "Simulator $UDID finished booting"
+            else
+              echo "::error::Simulator $UDID did not finish booting within 600s"
+              exit 1
+            fi
+          done
+
+      - name: Run two-device E2E tests
+        id: two-device
+        # Advisory on this runner size — see the job comment above. Kept so a
+        # manual run still uploads its results instead of stopping at the
+        # expected failure.
+        continue-on-error: true
+        working-directory: e2e
+        env:
+          TAPSMITH_DAEMON_LOG: /tmp/tapsmith-daemon-ios-multi.log
+        # Primary pinned with --device, member pinned through the CI config.
+        run: npx tapsmith test -c tapsmith.config.ios-multi-ci.mjs --trace on --device "$TAPSMITH_IOS_UDID"
+
+      - name: Report advisory outcome
+        if: steps.two-device.outcome != 'success'
+        run: echo "::warning::Two-device iOS suite did not pass on this runner (advisory — see the e2e-multi-device job comment)."
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-ios-multi-device
           retention-days: 7
           path: |
             e2e/tapsmith-results/

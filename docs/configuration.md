@@ -38,6 +38,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `daemonAddress` | `string` | `"localhost:50051"` | Address of the Tapsmith daemon (host:port). If another live Tapsmith session already answers on that port, this session starts its own daemon on a free port instead of taking it over. |
 | `daemonBin` | `string` | `undefined` | Path to the `tapsmith-core` binary. If unset, Tapsmith auto-resolves it from several common locations (including npm packages and monorepo build outputs) before falling back to `PATH`. |
 | `device` | `string` | `undefined` | Explicit single-device override. Useful for debugging or forcing one specific physical device/emulator/simulator. |
+| `devices` | `number \| { name: string; device?: string }[]` | `undefined` | Drive several devices from one test — `devices: 2`, or named members optionally pinned to a serial (at most 10). Project-level only. Tests receive them as the `devices` fixture. See [Multi-device tests](./multi-device.md). |
 | `deviceStrategy` | `"prefer-connected" \| "avd-only"` | contextual | Optional override for device selection (Android). Defaults to `"avd-only"` when `avd` is set, otherwise `"prefer-connected"`. |
 | `rootDir` | `string` | the directory the config is loaded from | Root for test discovery, and the base for relative paths elsewhere in the config (`app`, `apk`, agent artifacts). A relative `rootDir` resolves against the directory the config is loaded from — the working directory for `tapsmith test`, including `tapsmith test -c ../other/tapsmith.config.mjs`, and the config file's own directory for an MCP server that found a config elsewhere. Unset, it *is* that directory. |
 | `outputDir` | `string` | `"tapsmith-results"` | Directory for screenshots and other artifacts. |
@@ -516,6 +517,32 @@ as the top-level config (`platform`, `avd`, `simulator`, `app`, `apk`,
 
 > **Note:** A single project must not mix Android (`avd`/`apk`) and iOS
 > (`simulator`/`app`) fields. Tapsmith validates this at startup.
+
+### Multi-Device Tests (Device Groups)
+
+A project can declare that every one of its tests drives several devices at
+once — the mobile analogue of Playwright's multi-context tests:
+
+```typescript
+export default defineConfig({
+  package: "com.example.chat",
+  projects: [
+    {
+      name: "chat",
+      testMatch: ["**/multi-user/**"],
+      use: {
+        platform: "android",
+        avd: "Pixel_9_API_35",
+        devices: [{ name: "alice" }, { name: "bob" }],
+      },
+    },
+  ],
+});
+```
+
+Tests receive the group as the `devices` fixture (`device` is `devices[0]`).
+Each member gets its own daemon, agent, app install and app reset; a member
+can be pinned with `device: "<serial>"`. See [Multi-device tests](./multi-device.md).
 
 ### Sharded Runs
 

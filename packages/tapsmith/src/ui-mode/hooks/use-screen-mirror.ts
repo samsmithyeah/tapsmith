@@ -2,11 +2,11 @@
  * Screen mirror hooks for UI mode.
  *
  * `useScreenMirror` — single canvas, renders frames for one worker (ignores workerId).
- * `useMultiScreenMirror` — routes frames by workerId to registered canvases.
+ * `useMultiScreenMirror` — routes frames by worker + device index to registered canvases.
  */
 
 import { useRef, useCallback, useEffect } from 'preact/hooks';
-import { decodeBinaryFrame } from '../ui-protocol.js';
+import { decodeBinaryFrame, mirrorKey } from '../ui-protocol.js';
 
 // ─── Single-canvas hook (used for per-worker view) ───
 
@@ -99,25 +99,27 @@ interface PerWorkerState {
 }
 
 export function useMultiScreenMirror() {
-  const workersRef = useRef<Map<number, PerWorkerState>>(new Map());
+  // Keyed per device: a `use.devices` worker has one tile per group member.
+  const workersRef = useRef<Map<string, PerWorkerState>>(new Map());
 
-  const registerCanvas = useCallback((workerId: number, canvas: HTMLCanvasElement) => {
-    workersRef.current.set(workerId, { canvas, lastSeq: 0, pendingFrame: null, frameGen: 0 });
+  const registerCanvas = useCallback((workerId: number, canvas: HTMLCanvasElement, deviceIndex = 0) => {
+    workersRef.current.set(mirrorKey(workerId, deviceIndex), { canvas, lastSeq: 0, pendingFrame: null, frameGen: 0 });
   }, []);
 
-  const unregisterCanvas = useCallback((workerId: number) => {
-    const entry = workersRef.current.get(workerId);
+  const unregisterCanvas = useCallback((workerId: number, deviceIndex = 0) => {
+    const key = mirrorKey(workerId, deviceIndex);
+    const entry = workersRef.current.get(key);
     if (entry?.pendingFrame != null) {
       cancelAnimationFrame(entry.pendingFrame);
     }
-    workersRef.current.delete(workerId);
+    workersRef.current.delete(key);
   }, []);
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {
     const f = decodeBinaryFrame(data);
-    const { seq, workerId, pngOffset } = f;
+    const { seq, workerId, deviceIndex, pngOffset } = f;
 
-    const entry = workersRef.current.get(workerId);
+    const entry = workersRef.current.get(mirrorKey(workerId, deviceIndex));
     if (!entry) return;
 
     // Skip out-of-order frames for this worker

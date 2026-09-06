@@ -8,6 +8,8 @@ export const uiModeStyles = `
   --accent: oklch(0.74 0.135 var(--accent-h));
   --accent-dim: oklch(0.64 0.115 var(--accent-h));
   --accent-bg: oklch(0.74 0.135 var(--accent-h) / 0.14);
+  /* Device tags: lightness/chroma per theme, hue per device (--device-h, see deviceHue). */
+  --device-tag-bg-l: 0.42; --device-tag-bg-c: 0.09; --device-tag-fg-l: 0.93; --device-tag-fg-c: 0.05;
   --pass: oklch(0.78 0.15 155);
   --fail: oklch(0.68 0.2 25);
   --skip: oklch(0.7 0.02 250);
@@ -111,6 +113,7 @@ export const uiModeStyles = `
   --color-text-secondary: oklch(0.3 0.008 250);
   --color-accent-hover: oklch(0.7 0.14 var(--accent-h));
   --color-accent-dim: oklch(0.88 0.06 var(--accent-h));
+  --device-tag-bg-l: 0.9; --device-tag-bg-c: 0.07; --device-tag-fg-l: 0.36; --device-tag-fg-c: 0.11;
   --color-string: oklch(0.45 0.12 25);
   --color-keyword: oklch(0.45 0.15 260);
   --color-function: oklch(0.42 0.08 80);
@@ -1529,6 +1532,46 @@ html, body, #app {
 .action-name { font-size: 12.5px; font-weight: 500; color: var(--fg); white-space: nowrap; display: flex; align-items: center; gap: 6px; }
 .action-detail { font-size: 11px; color: var(--fg-muted, var(--fg-dim, #888)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .action-origin-tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; padding: 1px 5px; border-radius: 999px; border: 1px solid var(--border, #444); color: var(--fg-muted, var(--fg-dim, #888)); }
+.action-device-tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.02em; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: oklch(var(--device-tag-bg-l) var(--device-tag-bg-c) var(--device-h, var(--accent-h))); color: oklch(var(--device-tag-fg-l) var(--device-tag-fg-c) var(--device-h, var(--accent-h))); vertical-align: middle; }
+
+/* ─── Multi-device traces (PILOT-310) ─── */
+/* One lane per device, stacked in the single filmstrip row over one shared
+   time axis. Only .film-lanes scrolls: the lane rows reuse .timeline-inner's
+   markup but must not inherit its scrolling or its min-width: 100% -- with
+   the label column beside it that made the strip 56px wider than its box, so
+   a scrollbar showed even when every frame fit. The doubled selectors win
+   over the single-lane rules, which come later in the sheet. Every column is
+   the same width in every lane and on the axis, so a device's gaps line up
+   with the other device's frames and the rows read as one timeline. The
+   acting device's lane carries a faint band in its own hue (--device-h is set
+   on the lane, so its label pill inherits it) and the other lanes dim.
+   Height budget: summary line 18px + axis 14px + 10px kept for the horizontal
+   scrollbar when the strip does overflow = 42px, then 4px of padding per
+   lane. laneStripMinHeight() in device-frames.ts mirrors these numbers. */
+.timeline:has(.film-lanes) { height: 100%; overflow: hidden; }
+.film-lanes { display: flex; flex: 1; flex-direction: column; justify-content: flex-end; min-width: 0; min-height: 0; overflow-x: auto; overflow-y: hidden; --lane-thumb-h: calc((var(--filmstrip-h, 130px) - 42px) / var(--lane-count, 2) - 4px); --lane-col: max(calc(var(--lane-thumb-h) * 0.5 + 4px), 36px); }
+.film-lane { display: flex; align-items: center; min-width: max-content; min-height: 0; }
+.film-lane.acting { background: oklch(0.7 0.14 var(--device-h, var(--accent-h)) / 0.09); }
+.film-lane-label { flex-shrink: 0; display: flex; align-items: center; justify-content: flex-end; width: 64px; padding: 0 6px; }
+.film-lane-label .action-device-tag { margin-left: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; transition: opacity 0.12s; }
+.film-lanes.has-acting .film-lane:not(.acting) .action-device-tag { opacity: 0.5; }
+.film-lanes.has-acting .film-lane:not(.acting) .film-frame { opacity: 0.7; }
+.film-lanes .film-lane-inner { flex: 1; align-items: center; min-width: 0; min-height: 0; overflow: visible; padding: 2px 8px; }
+.film-lane .film-frame, .film-lane .film-gap { width: var(--lane-col); flex-shrink: 0; }
+.film-lane .film-frame { gap: 0; }
+.film-lane .timeline-thumb, .film-lane .film-thumb { height: var(--lane-thumb-h); max-width: 100%; object-fit: contain; }
+.film-lane .timeline-placeholder, .film-lane .film-thumb.timeline-placeholder { height: calc(var(--lane-thumb-h) - 3px); }
+.film-gap { min-height: 1px; }
+.film-axis { display: flex; align-items: flex-start; min-width: max-content; height: 14px; flex-shrink: 0; }
+.film-axis-spacer { flex-shrink: 0; width: 64px; }
+.film-axis-inner { display: flex; gap: 2px; padding: 0 8px; }
+.film-axis-label { width: var(--lane-col); flex-shrink: 0; text-align: center; overflow: hidden; white-space: nowrap; }
+.film-axis-label.active { color: var(--fg); font-weight: 600; }
+.hier-device-toggle { display: flex; gap: 4px; padding: 6px 8px 0; }
+.hier-with-toggle { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.con-pill.con-pill-device { text-transform: none; }
+.con-pill-device.active { border-color: oklch(0.65 0.13 var(--device-h, var(--accent-h))); background: oklch(0.65 0.13 var(--device-h, var(--accent-h)) / 0.14); color: var(--fg); }
+.net-device { color: var(--fg-dim); font-size: 10.5px; }
 .action-item.failed .action-name { color: var(--fail); }
 .action-selector-text {
   font-family: var(--font-mono);
@@ -1757,6 +1800,8 @@ html, body, #app {
 .log-level.debug { color: var(--fg-dim); }
 .log-level.log { color: var(--fg); }
 .log-source { font-size: 10px; color: var(--fg-muted); min-width: 46px; }
+/* A device pill on a console row hugs its first line rather than stretching with a wrapped message. */
+.log-device { align-self: flex-start; flex-shrink: 0; margin: 2px 0 0; line-height: 1.4; }
 .log-message { word-break: break-all; }
 
 .con-container { display: flex; flex-direction: column; height: 100%; min-height: 0; }

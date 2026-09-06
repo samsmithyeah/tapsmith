@@ -72,6 +72,8 @@ export interface TestTreeEntry {
   children?: TestTreeEntry[]
   /** Declared isolation options (appReset / appResetScope / appState) when any are set. */
   use?: { appReset?: string; appResetScope?: string; appState?: string }
+  /** Project nodes only: member names of a `use.devices` project, in group order. */
+  devices?: string[]
 }
 
 export interface ProjectInfo {
@@ -80,6 +82,8 @@ export interface ProjectInfo {
   package?: string
   testFiles: string[]
   dependencies: string[]
+  /** Member names of a `use.devices` project, in group order; absent for a single device. */
+  devices?: string[]
 }
 
 /** A platform's device, or why it has none. */
@@ -87,6 +91,10 @@ export interface DeviceTarget {
   platform?: string
   device?: string
   error?: string
+  /** Group entry name (`alice`) when this device belongs to a `use.devices` project. */
+  name?: string
+  /** The `use.devices` project this device is a member of. */
+  group?: string
 }
 
 export interface SessionInfo {
@@ -143,5 +151,20 @@ export interface TestDispatcher {
    */
   resolveRequestedFiles?(files: string[]): string[]
   getSessionInfo(): SessionInfo
+  /**
+   * The serial behind a `use.devices` group name (`alice`), so device tools
+   * can take the name a test author uses instead of a serial; `undefined`
+   * when no device goes by that name. Required — an optional method let the
+   * UI-mode dispatcher omit it, and group names silently stopped resolving
+   * over UI-mode MCP while the unit tests (mocking it) stayed green.
+   *
+   * Names are unique within a group, not across a session: two group
+   * projects (an Android and an iOS one, say) routinely both call their
+   * members `alice` and `bob`. With `project` the name is resolved within
+   * that project's group only; without it, a name that resolves to more than
+   * one device throws rather than picking whichever group came first.
+   */
+  resolveDeviceName(name: string, project?: string): string | undefined
+
   toggleWatch(filePath: string, options?: { testFilter?: string; project?: string }): { enabled: boolean }
 }

@@ -42,6 +42,7 @@ export default defineConfig({
             { label: 'UI Mode', slug: 'guides/ui-mode' },
             { label: 'Warm App Reset', slug: 'guides/warm-reset' },
             { label: 'Parallel Execution', slug: 'guides/parallel-and-sharding' },
+            { label: 'Multi-Device Tests', slug: 'guides/multi-device' },
             { label: 'Debugging', slug: 'guides/debugging' },
             { label: 'MCP Server', slug: 'guides/mcp-server' },
             { label: 'AI Coding Agents', slug: 'guides/agents' },

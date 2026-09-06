@@ -22,8 +22,10 @@ import { McpEventEmitter } from '../mcp/events.js';
 import { McpSessionRouter } from '../mcp/http-session-router.js';
 import { configureMcpConnection } from '../mcp/connection.js';
 import { matchRequestedFiles, fileFailureEntry } from '../mcp/headless-dispatcher.js';
+import { pickResolvedDeviceName } from '../mcp/tools/device-target.js';
+
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
-import type { TapsmithConfig } from '../config.js';
+import type { DeviceGroupEntry, TapsmithConfig } from '../config.js';
 import { findDaemonBin } from '../daemon-bin.js';
 import { resolveChildLoader } from '../child-scripts.js';
 import { TapsmithGrpcClient } from '../grpc-client.js';
@@ -58,7 +60,9 @@ import type {
   UIWorkerMessage,
   TestTreeUseOptions,
 } from './ui-protocol.js';
-import { encodeScreenFrame, type TestNodeStatus } from './ui-protocol.js';
+import { encodeScreenFrame, mirrorKey, type TestNodeStatus, type WorkerDeviceInfo } from './ui-protocol.js';
+import { deviceGroupSize, resolveDeviceGroup, deviceGroupNames } from '../config.js';
+import { startDaemon, waitForDaemon } from '../device-session.js';
 import { RunQueue } from '../watch-queue.js';
 import { DeviceReadiness, toWireReadiness, type Candidate, type ReadinessCommand, type ReadinessEvent, type StaleReason } from './device-readiness.js';
 import { mergeResetCapabilities, nextCandidate as pickCandidate, policyForFile, type CandidateProject } from './readiness-candidate.js';
@@ -158,6 +162,26 @@ export interface UIServerContext {
   /** Device serials for multi-worker mode. */
   deviceSerials?: string[]
   /**
+   * The device group of every worker, primary first — one entry per worker.
+   * Takes precedence over `deviceSerials`, which describes single-device
+   * workers only. A `use.devices` project's workers list all their members.
+   */
+  workerGroups?: string[][]
+  /**
+   * The device group every worker drives, primary first — `use.devices`
+   * resolved from the session's *project* config. `use.devices` is
+   * project-level, so `config` (the root) never declares it; a server that
+   * derived the group from `config` ran a two-device project on one device.
+   * Multi-bucket sessions override this per worker through `configByDevice`.
+   */
+  deviceGroup: DeviceGroupEntry[]
+  /**
+   * Group members the CLI's sequential setup already opened beside the
+   * primary (daemon running, agent up, app launched). The worker adopting
+   * the primary adopts these too instead of provisioning them again.
+   */
+  primaryGroupMembers?: Array<{ name: string; serial: string; daemonAddress: string }>
+  /**
    * Per-bucket maps for multi-device-target projects. When set, each
    * device serial is paired with its bucket's serialized config and
    * worker dispatch routes files to workers in the matching bucket.
@@ -193,10 +217,28 @@ interface AdoptTarget {
   daemonPort: number
 }
 
+/** A secondary device of a UI worker's group, with the daemon that drives it. */
+interface UIWorkerMemberHandle {
+  name: string
+  deviceSerial: string
+  /** Friendly display name, resolved like the worker's own. */
+  displayName?: string
+  daemonPort: number
+  agentPort: number
+  daemonProcess?: ChildProcess
+  /** False when the CLI owns this daemon (adopted alongside the primary). */
+  ownsDaemon: boolean
+  /** gRPC client to this member's daemon, for screen polling and mirror gestures. */
+  screenClient?: TapsmithGrpcClient
+}
+
 interface UIWorkerHandle {
   id: number
   process: ChildProcess
+  /** The group's primary device. */
   deviceSerial: string
+  /** The rest of the worker's device group (`use.devices`); empty otherwise. */
+  members: UIWorkerMemberHandle[]
   /** Effective platform used to launch this worker's daemon. */
   platform?: 'android' | 'ios'
   /** Friendly display name, e.g. "iPhone 16 #1" for iOS or the serial for Android. */
@@ -663,9 +705,12 @@ export async function startUIServer(
   // device. A single device is one worker that *adopts* the daemon/agent the
   // CLI already provisioned (no second daemon, no second cold launch, and a
   // process that outlives the run so the device can be prepared between runs).
-  const workerSerials: string[] = ctx.deviceSerials && ctx.deviceSerials.length > 0
-    ? ctx.deviceSerials
-    : (ctx.deviceSerial ? [ctx.deviceSerial] : []);
+  const workerGroups: string[][] = ctx.workerGroups && ctx.workerGroups.length > 0
+    ? ctx.workerGroups
+    : ctx.deviceSerials && ctx.deviceSerials.length > 0
+      ? ctx.deviceSerials.map((s) => [s])
+      : (ctx.deviceSerial ? [[ctx.deviceSerial]] : []);
+  const workerSerials: string[] = workerGroups.map((g) => g[0]);
   const workersEnabled = workerSerials.length > 0;
   /** Progress label last reported by each worker (replayed to late clients). */
   const lastProgressByWorker = new Map<number, string>();
@@ -703,8 +748,10 @@ export async function startUIServer(
   const INTERACTIVE_POLL_MS = 90;
   /** Screen view mode: 'all' polls all workers, number polls a specific worker. */
   let screenViewMode: 'all' | number = 'all';
-  /** Last known frame dimensions per worker ID, used to convert normalized coords. */
-  const lastFrameDims = new Map<number, { width: number; height: number }>();
+  /** Last known frame dimensions per mirrored device (`mirrorKey`), used to convert normalized coords. */
+  const lastFrameDims = new Map<string, { width: number; height: number }>();
+  /** Which device of the selected worker's group the single-view mirror shows. */
+  let selectedDeviceIndex = 0;
   /** Set to true while a parallel run is in progress, to signal stop. */
   let parallelRunAborted = false;
   /** True from the moment the user requests a stop until the next run starts.
@@ -957,6 +1004,13 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       entry.children = node.children.map(toTreeEntry);
     }
     if (node.use) entry.use = node.use;
+    // A `use.devices` project names its members so an MCP consumer learns
+    // both that the tests need a group and what to pass as `device`.
+    if (node.type === 'project') {
+      const project = realProjects().find((p) => p.name === node.name);
+      const devices = project ? deviceGroupNames(project.effectiveConfig) : undefined;
+      if (devices) entry.devices = devices;
+    }
     return entry;
   }
 
@@ -1057,15 +1111,32 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         package: p.effectiveConfig.package,
         testFiles: p.testFiles,
         dependencies: p.dependencies,
+        devices: deviceGroupNames(p.effectiveConfig),
       }));
-      // The same per-platform view the headless dispatcher reports. Workers
-      // spawn on the first run, so before then this is the primary device —
-      // which is genuinely all the session is driving at that point.
+      // The same per-platform view the headless dispatcher reports, with a
+      // `use.devices` group listed member by member under its project.
+      // Workers spawn on the first run, so before then this is the primary
+      // device and the members the CLI opened beside it — which is genuinely
+      // all the session is driving at that point.
       const live = uiWorkers.filter((w) => !w.retired);
+      const primaryPlatform = singleWorkerPlatform ?? ctx.config.platform;
       const deviceTargets: DeviceTarget[] = live.length > 0
-        ? live.map((w) => ({ platform: resolveWorkerPlatform(ctx, w), device: w.deviceSerial }))
+        ? live.flatMap((w) => {
+            const platform = resolveWorkerPlatform(ctx, w);
+            const devices = workerDevicesInfo(w);
+            if (devices.length === 1) return [{ platform, device: w.deviceSerial }];
+            const group = groupProjectName(w.deviceSerial);
+            return devices.map((d) => ({ platform, device: d.deviceSerial, name: d.name, group }));
+          })
         : ctx.deviceSerial
-          ? [{ platform: singleWorkerPlatform ?? ctx.config.platform, device: ctx.deviceSerial }]
+          ? ctx.deviceGroup.length > 1
+            ? [
+                { platform: primaryPlatform, device: ctx.deviceSerial, name: ctx.deviceGroup[0].name, group: groupProjectName(ctx.deviceSerial) },
+                ...(ctx.primaryGroupMembers ?? []).map((m) => ({
+                  platform: primaryPlatform, device: m.serial, name: m.name, group: groupProjectName(ctx.deviceSerial!),
+                })),
+              ]
+            : [{ platform: primaryPlatform, device: ctx.deviceSerial }]
           : [];
       return {
         platform: singleWorkerPlatform ?? ctx.config.platform,
@@ -1078,6 +1149,30 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         configPath: ctx.configPath,
       };
     },
+    resolveDeviceName(name, project) {
+      // Live workers first (each lists its group, primary first); before the
+      // workers spawn, the primary the CLI set up and the members it opened.
+      // With `project`, only the worker(s) driving that project's group: two
+      // groups routinely both have an `alice`, and `device` wins over
+      // `project` in the target resolver.
+      const inScope = (owner: string | undefined) => project === undefined || owner === project;
+      const matches: Array<{ project: string | undefined; serial: string }> = [];
+      for (const worker of uiWorkers) {
+        if (worker.retired) continue;
+        const owner = groupProjectName(worker.deviceSerial);
+        if (!inScope(owner)) continue;
+        const match = workerDevicesInfo(worker).find((d) => d.name === name);
+        if (match) matches.push({ project: owner, serial: match.deviceSerial });
+      }
+      if (matches.length === 0 && ctx.deviceSerial && inScope(groupProjectName(ctx.deviceSerial))) {
+        const owner = groupProjectName(ctx.deviceSerial);
+        if (ctx.deviceGroup[0]?.name === name) matches.push({ project: owner, serial: ctx.deviceSerial });
+        const member = ctx.primaryGroupMembers?.find((m) => m.name === name);
+        if (member) matches.push({ project: owner, serial: member.serial });
+      }
+      return pickResolvedDeviceName(name, matches);
+    },
+
     toggleWatch(filePath, options) {
       const { testFilter, project } = options ?? {};
       const isWatched = findEntry(filePath, project, testFilter) >= 0;
@@ -1228,20 +1323,26 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     const appReset = nodeUse?.appReset ?? projectUse?.appReset;
     const appResetScope = nodeUse?.appResetScope ?? projectUse?.appResetScope;
     const appState = nodeUse?.appState ?? projectUse?.appState;
+    const devices = projectUse?.devices;
     if (appReset !== undefined) merged.appReset = appReset;
     if (appResetScope !== undefined) merged.appResetScope = appResetScope;
     if (appState !== undefined) merged.appState = appState;
+    if (devices !== undefined) merged.devices = devices;
     return Object.keys(merged).length > 0 ? merged : undefined;
   }
 
-  function projectTreeUse(project: { use?: { appReset?: unknown; appResetScope?: unknown; appState?: unknown } }): TestTreeUseOptions | undefined {
+  function projectTreeUse(project: { use?: { appReset?: unknown; appResetScope?: unknown; appState?: unknown; devices?: unknown }; effectiveConfig?: TapsmithConfig }): TestTreeUseOptions | undefined {
     const u = project.use;
     if (!u) return undefined;
-    return mergeTreeUse(undefined, {
+    // A `use.devices` project: its tests drive a group — the tree badges them.
+    const groupSize = project.effectiveConfig ? deviceGroupSize(project.effectiveConfig) : 1;
+    const merged = mergeTreeUse(undefined, {
       ...(u.appReset !== undefined ? { appReset: u.appReset as TestTreeUseOptions['appReset'] } : {}),
       ...(u.appResetScope !== undefined ? { appResetScope: u.appResetScope as TestTreeUseOptions['appResetScope'] } : {}),
       ...(typeof u.appState === 'string' ? { appState: u.appState } : {}),
     });
+    if (groupSize <= 1) return merged;
+    return { ...(merged ?? {}), devices: groupSize };
   }
 
   function rebuildTestTreeFromDiscoveredFiles(): void {
@@ -1472,6 +1573,24 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
   }
 
   /**
+   * The group a worker's devices form, primary first: its bucket's config in
+   * a multi-bucket session, the session's project group otherwise.
+   */
+  function workerDeviceGroup(deviceSerial: string): DeviceGroupEntry[] {
+    const bucketConfig = ctx.configByDevice?.get(deviceSerial);
+    return bucketConfig
+      ? resolveDeviceGroup({ devices: bucketConfig.devices, device: deviceSerial })
+      : ctx.deviceGroup;
+  }
+
+  /** The `use.devices` project a worker's group belongs to — the `group` label in session info. */
+  function groupProjectName(deviceSerial: string): string | undefined {
+    const bucket = ctx.bucketByDevice?.get(deviceSerial);
+    return realProjects().find((p) => deviceGroupSize(p.effectiveConfig) > 1
+      && (bucket === undefined || ctx.bucketByProject?.get(p.name) === bucket))?.name;
+  }
+
+  /**
    * The primary device the CLI provisioned (daemon + agent + launched app).
    * A worker for that serial attaches to it instead of provisioning again.
    * Not used in multi-bucket sessions, where the primary's config may not be
@@ -1483,6 +1602,28 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     const address = ctx.daemonAddress ?? ctx.config.daemonAddress;
     return { client: ctx.client, daemonAddress: address, daemonPort: Number.parseInt(address.split(':').pop() ?? '50051', 10) };
   }
+
+  /**
+   * Daemon + agent ports for group member `m` of worker `i`. Past the
+   * per-worker band (`base+100+i`, at most 100 workers) so members never
+   * collide with another worker's primary.
+   */
+  function memberPorts(workerIndex: number, memberIndex: number): { daemonPort: number; agentPort: number } {
+    const baseDaemonPort = Number.parseInt((ctx.daemonAddress ?? ctx.config.daemonAddress).split(':').pop() ?? '50051', 10);
+    const offset = 200 + workerIndex * 10 + memberIndex;
+    return { daemonPort: baseDaemonPort + offset, agentPort: 18700 + offset };
+  }
+
+  /** A CLI-opened group member the primary's worker can adopt instead of provisioning. */
+  function adoptMemberFor(deviceSerial: string): { name: string; daemonPort: number } | undefined {
+    if (ctx.configByDevice) return undefined;
+    const member = ctx.primaryGroupMembers?.find((m) => m.serial === deviceSerial);
+    if (!member) return undefined;
+    return { name: member.name, daemonPort: Number.parseInt(member.daemonAddress.split(':').pop() ?? '0', 10) };
+  }
+
+  /** Listeners squatting on member daemon ports at startup (killed before spawning). */
+  let stalePidsByPortForMembers = new Map<number, number[]>();
 
   /** Initialize persistent workers. Called once during server startup. */
   async function initializeWorkers(): Promise<void> {
@@ -1515,9 +1656,12 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     const failedWorkerMessages: string[] = [];
 
     // Collect PIDs listening on all daemon ports in a single lsof call
-    // so each worker doesn't need to shell out individually.
+    // so each worker doesn't need to shell out individually. Group members
+    // take ports past the per-worker band (see memberPorts).
     const daemonPorts = Array.from({ length: numWorkers }, (_, i) => baseDaemonPort + 100 + i);
-    const stalePidsByPort = collectListeningPids(daemonPorts);
+    const memberDaemonPorts = workerGroups.flatMap((g, i) => g.slice(1).map((_, m) => memberPorts(i, m).daemonPort));
+    const stalePidsByPort = collectListeningPids([...daemonPorts, ...memberDaemonPorts]);
+    stalePidsByPortForMembers = stalePidsByPort;
 
     for (let i = 0; i < numWorkers; i++) {
       const deviceSerial = workerSerials[i];
@@ -1611,8 +1755,11 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         return serial;
       };
 
-      // Resolve names for all workers.
+      // Resolve names for all workers, and for every member of their groups.
       const resolvedNames = uiWorkers.map((w) => resolveSerialToName(w.deviceSerial));
+      for (const w of uiWorkers) {
+        for (const m of w.members) m.displayName = resolveSerialToName(m.deviceSerial);
+      }
 
       // Count occurrences of each name to decide whether to append #N.
       const nameCounts = new Map<string, number>();
@@ -1664,6 +1811,16 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     /** The adopted primary's startup launch is still unconsumed (initial spawn only). */
     adoptPrepared = false,
   ): Promise<UIWorkerHandle> {
+    // The rest of this worker's device group (`use.devices`), each on a
+    // daemon of its own — adopted from the CLI when it opened them beside
+    // the primary, spawned here otherwise.
+    const memberSerials = workerGroups[id]?.slice(1) ?? [];
+    const groupNames = workerDeviceGroup(deviceSerial);
+    if (memberSerials.length !== groupNames.length - 1) {
+      throw new Error(
+        `worker ${id}: config declares a device group of ${groupNames.length} but ${memberSerials.length + 1} device(s) were provisioned for it`,
+      );
+    }
     // Kill any stale daemon on this port from a previous run or another
     // Tapsmith instance so we always get a fresh daemon with the correct
     // --platform flag. Without this, waitForReady succeeds by connecting
@@ -1729,6 +1886,56 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       daemonProcess.unref();
     }
 
+    // Member daemons, spawned together — they are independent. Settled, not
+    // raced: a sibling still starting when one fails would otherwise finish
+    // after the cleanup below and leak its daemon and client.
+    const members: UIWorkerMemberHandle[] = [];
+    try {
+      const settled = await Promise.allSettled(memberSerials.map(async (serial, m) => {
+
+        const name = groupNames[m + 1].name;
+        const adoptMember = adopt ? adoptMemberFor(serial) : undefined;
+        if (adoptMember) {
+          const alive = await waitForDaemon(`localhost:${adoptMember.daemonPort}`, 5_000);
+          if (!alive) throw new Error(`primary group member ${name}'s daemon on port ${adoptMember.daemonPort} is not reachable`);
+          members[m] = {
+            name, deviceSerial: serial, daemonPort: adoptMember.daemonPort, agentPort: 0, ownsDaemon: false,
+            screenClient: new TapsmithGrpcClient(`localhost:${adoptMember.daemonPort}`),
+          };
+          return;
+        }
+        const ports = memberPorts(id, m);
+        for (const pid of stalePidsByPortForMembers.get(ports.daemonPort) ?? []) {
+          try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+        }
+        const daemon = await startDaemon({
+          daemonBin, port: ports.daemonPort, agentPort: ports.agentPort, platform: workerConfig.platform,
+          describe: `daemon for ${name}`,
+        });
+        members[m] = {
+          name, deviceSerial: serial, ...ports, daemonProcess: daemon.process, ownsDaemon: true,
+          screenClient: new TapsmithGrpcClient(`localhost:${ports.daemonPort}`),
+        };
+      }));
+      const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+      if (failure) throw failure.reason;
+    } catch (err) {
+      // `initializeWorkers` records the failure and carries on, so anything
+      // left open here lives for the whole session: close the members' gRPC
+      // channels and the primary's, not just the processes.
+      for (const m of members) {
+        if (!m) continue;
+        m.screenClient?.close();
+        if (m.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
+      }
+      if (!adopt) {
+        daemonClient.close();
+        try { daemonProcess?.kill(); } catch { /* already dead */ }
+      }
+      throw err;
+    }
+
+
     // Fork ui-worker.ts
     const workerLoader = childLoader();
     const child = fork(resolvedWorkerScript, [], {
@@ -1750,6 +1957,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       id,
       process: child,
       deviceSerial,
+      members,
       platform: workerConfig.platform,
       displayName: deviceSerial,
       daemonPort,
@@ -1809,11 +2017,20 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         type: 'init',
         workerId: id,
         deviceSerial,
+        deviceName: groupNames[0].name,
         daemonPort,
         config: workerConfig,
         screenshotDir: ctx.screenshotDir,
         adoptPrimary: !!adopt,
         adoptPrepared: !!adopt && adoptPrepared,
+        ...(members.length > 0 ? {
+          groupMembers: members.map((m) => ({
+            name: m.name,
+            deviceSerial: m.deviceSerial,
+            daemonPort: m.daemonPort,
+            adopt: !m.ownsDaemon || undefined,
+          })),
+        } : {}),
       };
       child.send(initMsg);
     });
@@ -2508,6 +2725,10 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     if (worker.ownsDaemon !== false) {
       try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
     }
+    for (const m of worker.members) {
+      if (m.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
+      m.screenClient?.close();
+    }
     if (worker.ownsScreenClient !== false) worker.screenClient?.close();
   }
 
@@ -2520,18 +2741,22 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
    * graceful teardown overruns.
    */
   function awaitDaemonExit(worker: UIWorkerHandle, graceMs = 5_000): Promise<void> {
-    const daemon = worker.daemonProcess;
-    if (!daemon || worker.ownsDaemon === false) return Promise.resolve();
-    if (daemon.exitCode !== null || daemon.signalCode !== null) return Promise.resolve();
-    return new Promise((resolve) => {
-      const killTimer = setTimeout(() => {
-        try { daemon.kill('SIGKILL'); } catch { /* already dead */ }
-      }, graceMs);
-      // A daemon that ignores SIGKILL too (unkillable state) must not wedge
-      // the respawn forever — give up and let the bind attempt report it.
-      const giveUp = setTimeout(() => { clearTimeout(killTimer); resolve(); }, graceMs + 2_000);
-      daemon.once('exit', () => { clearTimeout(killTimer); clearTimeout(giveUp); resolve(); });
-    });
+    const owned = [
+      ...(worker.ownsDaemon !== false && worker.daemonProcess ? [worker.daemonProcess] : []),
+      ...worker.members.flatMap((m) => (m.ownsDaemon && m.daemonProcess ? [m.daemonProcess] : [])),
+    ];
+    return Promise.all(owned.map((daemon) => {
+      if (daemon.exitCode !== null || daemon.signalCode !== null) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        const killTimer = setTimeout(() => {
+          try { daemon.kill('SIGKILL'); } catch { /* already dead */ }
+        }, graceMs);
+        // A daemon that ignores SIGKILL too (unkillable state) must not wedge
+        // the respawn forever — give up and let the bind attempt report it.
+        const giveUp = setTimeout(() => { clearTimeout(killTimer); resolve(); }, graceMs + 2_000);
+        daemon.once('exit', () => { clearTimeout(killTimer); clearTimeout(giveUp); resolve(); });
+      });
+    })).then(() => undefined);
   }
 
   /**
@@ -2599,12 +2824,19 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       // alive; otherwise (or if the primary died) it gets its own daemon.
       let adopt = adoptTargetFor(worker.deviceSerial);
       if (adopt && !(await adopt.client.waitForReady(2_000))) adopt = undefined;
-      if (!adopt) {
-        // The replacement rebinds this worker's daemon port: the old daemon
-        // has to be gone first, not merely signalled.
-        releaseWorkerResources(worker);
-        await awaitDaemonExit(worker);
+      // The replacement rebinds this worker's daemon ports (its own, and any
+      // group member daemons it spawned): the old daemons have to be gone
+      // first, not merely signalled. An adopting worker keeps the CLI's.
+      if (!adopt) releaseWorkerResources(worker);
+      else {
+        // The replacement opens fresh member screen clients (adopted members
+        // included), so the old ones go with the old process.
+        for (const m of worker.members) {
+          if (m.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
+          m.screenClient?.close();
+        }
       }
+      await awaitDaemonExit(worker);
       const daemonPort = adopt?.daemonPort ?? baseDaemonPort + 100 + worker.id;
 
       const newWorker = await initializeOneWorker(
@@ -2944,8 +3176,59 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
 
   // ─── Screen Polling ───
 
+  /** `device-info` for the device the single-view mirror currently shows. */
+  function broadcastSelectedDeviceInfo(): void {
+    const worker = uiWorkers.find((w) => w.id === selectedWorkerId);
+    if (!worker) return;
+    const platform = resolveWorkerPlatform(ctx, worker);
+    const member = selectedDeviceIndex > 0 ? worker.members[selectedDeviceIndex - 1] : undefined;
+    const serial = member?.deviceSerial ?? worker.deviceSerial;
+    broadcast({
+      type: 'device-info',
+      serial: (member ? member.displayName : worker.displayName) || serial,
+      model: undefined,
+      isEmulator: isEmulatorOrSimulator(serial, platform),
+      platform,
+      tapsmithVersion: TAPSMITH_VERSION,
+      devicePixelRatio: cachedScreenScale(serial, platform),
+    });
+  }
+
+  /** The devices of a worker's group as `workers-info` describes them, primary first. */
+  function workerDevicesInfo(worker: UIWorkerHandle): WorkerDeviceInfo[] {
+    const platform = resolveWorkerPlatform(ctx, worker);
+    const groupNames = workerDeviceGroup(worker.deviceSerial);
+    const describe = (index: number, serial: string, displayName: string | undefined): WorkerDeviceInfo => ({
+      index,
+      name: groupNames[index]?.name ?? `device-${index + 1}`,
+      deviceSerial: serial,
+      displayName: displayName || serial,
+      platform,
+      devicePixelRatio: cachedScreenScale(serial, platform),
+      isEmulator: isEmulatorOrSimulator(serial, platform),
+    });
+    return [
+      describe(0, worker.deviceSerial, worker.displayName),
+      ...worker.members.map((m, i) => describe(i + 1, m.deviceSerial, m.displayName)),
+    ];
+  }
+
+  /** The gRPC client driving device `deviceIndex` of a worker's group (0 = primary). */
+  function deviceClientOf(worker: UIWorkerHandle, deviceIndex: number): TapsmithGrpcClient | undefined {
+    if (deviceIndex <= 0) return worker.screenClient;
+    return worker.members[deviceIndex - 1]?.screenClient;
+  }
+
+  /** Every device of a worker with the client that drives it, primary first. */
+  function workerDeviceClients(worker: UIWorkerHandle): Array<{ deviceIndex: number; client: TapsmithGrpcClient }> {
+    const out: Array<{ deviceIndex: number; client: TapsmithGrpcClient }> = [];
+    if (worker.screenClient) out.push({ deviceIndex: 0, client: worker.screenClient });
+    worker.members.forEach((m, i) => { if (m.screenClient) out.push({ deviceIndex: i + 1, client: m.screenClient }); });
+    return out;
+  }
+
   /** Poll a single device and broadcast its frame. */
-  async function pollSingleWorker(workerId: number, client: import('../grpc-client.js').TapsmithGrpcClient): Promise<void> {
+  async function pollSingleWorker(workerId: number, client: import('../grpc-client.js').TapsmithGrpcClient, deviceIndex = 0): Promise<void> {
     const response = await client.takeScreenshot();
     if (response.success && response.data) {
       const data = Buffer.isBuffer(response.data)
@@ -2954,8 +3237,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       // Read dimensions from the PNG IHDR chunk (bytes 16-23: width + height as big-endian uint32)
       const width = data.length >= 24 ? data.readUInt32BE(16) : 1080;
       const height = data.length >= 24 ? data.readUInt32BE(20) : 1920;
-      lastFrameDims.set(workerId, { width, height });
-      const frame = encodeScreenFrame(screenSeq++, workerId, width, height, data);
+      lastFrameDims.set(mirrorKey(workerId, deviceIndex), { width, height });
+      const frame = encodeScreenFrame(screenSeq++, workerId, width, height, data, deviceIndex);
       broadcastBinary(frame);
     }
   }
@@ -2972,22 +3255,22 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         return;
       }
       if (screenViewMode === 'all') {
-        // Poll ALL non-retired workers in parallel
-        const activeWorkers = uiWorkers.filter(
-          (w) => !w.retired && w.screenClient,
-        );
+        // Poll every device of every non-retired worker in parallel — a group
+        // worker's members are separate tiles in the grid.
+        const activeWorkers = uiWorkers.filter((w) => !w.retired);
         await Promise.allSettled(
-          activeWorkers.map((w) => pollSingleWorker(w.id, w.screenClient!)),
+          activeWorkers.flatMap((w) => workerDeviceClients(w).map(({ deviceIndex, client }) => pollSingleWorker(w.id, client, deviceIndex))),
         );
       } else {
-        const pollClient = uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient;
+        const worker = uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired);
+        const pollClient = worker ? deviceClientOf(worker, selectedDeviceIndex) : undefined;
 
         if (!pollClient) {
           scheduleScreenPoll();
           return;
         }
 
-        await pollSingleWorker(selectedWorkerId, pollClient);
+        await pollSingleWorker(selectedWorkerId, pollClient, selectedDeviceIndex);
       }
     } catch {
       // Device may be busy — skip frame
@@ -3444,25 +3727,27 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
   // ─── Mirror Gesture Helpers ───
 
   /** Resolve the gRPC client + devicePixelRatio for a mirror gesture target. */
-  function resolveGestureTarget(workerId?: number): {
+  function resolveGestureTarget(workerId?: number, deviceIndex?: number): {
     client: TapsmithGrpcClient | undefined
     dpr: number
     dims: { width: number; height: number } | undefined
   } {
     if (workersEnabled && workersInitialized) {
       const id = workerId ?? selectedWorkerId;
+      const index = deviceIndex ?? (id === selectedWorkerId ? selectedDeviceIndex : 0);
       const worker = uiWorkers.find((w) => w.id === id && !w.retired);
       const platform = worker ? resolveWorkerPlatform(ctx, worker) : undefined;
+      const serial = index > 0 ? worker?.members[index - 1]?.deviceSerial : worker?.deviceSerial;
       return {
-        client: worker?.screenClient,
-        dpr: (worker && cachedScreenScale(worker.deviceSerial, platform)) || 1,
-        dims: lastFrameDims.get(id),
+        client: worker ? deviceClientOf(worker, index) : undefined,
+        dpr: (serial && cachedScreenScale(serial, platform)) || 1,
+        dims: lastFrameDims.get(mirrorKey(id, index)),
       };
     }
     return {
       client: ctx.client,
       dpr: cachedScreenScale(ctx.deviceSerial ?? '', singleWorkerPlatform) || 1,
-      dims: lastFrameDims.get(0),
+      dims: lastFrameDims.get(mirrorKey(0, 0)),
     };
   }
 
@@ -3665,23 +3950,24 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         // polls this every second while the Locator tab is live-bound, which
         // would otherwise pin the screenshot poll at the interactive rate.
         const hierWorkerId = msg.workerId ?? selectedWorkerId;
+        const hierDeviceIndex = msg.deviceIndex ?? (hierWorkerId === selectedWorkerId ? selectedDeviceIndex : 0);
         const hierWorker = uiWorkers.find((w) => w.id === hierWorkerId && !w.retired);
-        const hierClient = hierWorker?.screenClient;
+        const hierClient = hierWorker ? deviceClientOf(hierWorker, hierDeviceIndex) : undefined;
         hierClient?.getUiHierarchy().then(async (response) => {
           let xml = response.hierarchyXml;
           if (!xml) return;
           // Append the WebView DOM so picks inside a WebView suggest
           // webview.* locators. Primary-device only — the server's Device
           // instance can open a WebView connection to that device; other
-          // workers' devices have none.
-          const webviewDom = hierWorker?.adoptedPrimary ? await dumpWebViewDomForPicker(xml) : undefined;
+          // workers' devices (and group members) have none.
+          const webviewDom = hierWorker?.adoptedPrimary && hierDeviceIndex === 0 ? await dumpWebViewDomForPicker(xml) : undefined;
           if (webviewDom) {
             const lastClose = xml.lastIndexOf('</');
             if (lastClose !== -1) {
               xml = xml.slice(0, lastClose) + webviewDom + '\n' + xml.slice(lastClose);
             }
           }
-          broadcast({ type: 'hierarchy-update', xml, workerId: hierWorkerId });
+          broadcast({ type: 'hierarchy-update', xml, workerId: hierWorkerId, deviceIndex: hierDeviceIndex });
         }).catch(() => {});
         break;
       }
@@ -3690,21 +3976,21 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         break;
       case 'mirror-tap': {
         noteMirrorInteraction(msg.workerId, 'tap');
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.tapXY(p.x, p.y).catch(() => {});
         break;
       }
       case 'mirror-long-press': {
         noteMirrorInteraction(msg.workerId, 'long press');
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.longPressXY(p.x, p.y, msg.durationMs).catch(() => {});
         break;
       }
       case 'mirror-swipe': {
         noteMirrorInteraction(msg.workerId, 'swipe');
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         const from = normalizedToLogical(msg.fromX, msg.fromY, t.dims, t.dpr);
         const to = normalizedToLogical(msg.toX, msg.toY, t.dims, t.dpr);
         if (t.client && from && to) {
@@ -3714,80 +4000,55 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       }
       case 'mirror-input-text': {
         noteMirrorInteraction(msg.workerId, 'text input');
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         if (t.client) t.client.inputText(msg.text).catch(() => {});
         break;
       }
       case 'mirror-press-key': {
         noteMirrorInteraction(msg.workerId, 'key press');
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         if (t.client) t.client.pressKey(msg.key).catch(() => {});
         break;
       }
       case 'mirror-touch-start': {
         noteMirrorInteraction(msg.workerId, 'touch');
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.touchDown(p.x, p.y, 0).catch(() => {});
         break;
       }
       case 'mirror-touch-move': {
         lastMirrorInteraction = Date.now();
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.touchMove(p.x, p.y, msg.tMs).catch(() => {});
         break;
       }
       case 'mirror-touch-end': {
         lastMirrorInteraction = Date.now();
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.touchUp(p.x, p.y, msg.tMs).catch(() => {});
         break;
       }
       case 'mirror-touch-cancel': {
         lastMirrorInteraction = Date.now();
-        const t = resolveGestureTarget(msg.workerId);
+        const t = resolveGestureTarget(msg.workerId, msg.deviceIndex);
         if (t.client) t.client.touchCancel().catch(() => {});
         break;
       }
       case 'select-worker':
         selectedWorkerId = msg.workerId;
+        selectedDeviceIndex = msg.deviceIndex ?? 0;
         screenViewMode = msg.workerId;
-        // Send device info for the new selection
-        {
-          const worker = uiWorkers.find((w) => w.id === msg.workerId);
-          if (worker) {
-            const platform = resolveWorkerPlatform(ctx, worker);
-            broadcast({
-              type: 'device-info',
-              serial: worker.displayName || worker.deviceSerial,
-              model: undefined,
-              isEmulator: isEmulatorOrSimulator(worker.deviceSerial, platform),
-              platform,
-              tapsmithVersion: TAPSMITH_VERSION,
-              devicePixelRatio: cachedScreenScale(worker.deviceSerial, platform),
-            });
-          }
-        }
+        broadcastSelectedDeviceInfo();
         break;
       case 'select-worker-view':
         screenViewMode = msg.mode;
         if (typeof msg.mode === 'number') {
           selectedWorkerId = msg.mode;
-          const worker = uiWorkers.find((w) => w.id === msg.mode);
-          if (worker) {
-            const platform = resolveWorkerPlatform(ctx, worker);
-            broadcast({
-              type: 'device-info',
-              serial: worker.displayName || worker.deviceSerial,
-              model: undefined,
-              isEmulator: isEmulatorOrSimulator(worker.deviceSerial, platform),
-              platform,
-              tapsmithVersion: TAPSMITH_VERSION,
-              devicePixelRatio: cachedScreenScale(worker.deviceSerial, platform),
-            });
-          }
+          selectedDeviceIndex = msg.deviceIndex ?? 0;
+          broadcastSelectedDeviceInfo();
         }
         break;
       case 'respawn-worker': {
@@ -4029,6 +4290,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
             displayName: w.displayName,
             platform,
             devicePixelRatio: cachedScreenScale(w.deviceSerial, platform),
+            devices: workerDevicesInfo(w),
           };
         }),
       } satisfies ServerMessage));
@@ -4176,16 +4438,25 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     if (url.pathname === '/api/daemon-ports' && req.method === 'GET') {
       const daemons = uiWorkers
         .filter(w => !w.retired)
-        .map(w => ({
-          address: `127.0.0.1:${w.daemonPort}`,
-          deviceSerial: w.deviceSerial,
-          // Resolved, like every other consumer of a worker's platform: the raw
-          // field comes from the bucket config and is unset when that config
-          // declares no platform. An MCP session tags its connection from this,
-          // and an untagged one matches no project — so `tap({project: 'ios'})`
-          // would report no ios device with the worker sitting right there.
-          platform: resolveWorkerPlatform(ctx, w),
-        }));
+        .flatMap(w => [
+          {
+            address: `127.0.0.1:${w.daemonPort}`,
+            deviceSerial: w.deviceSerial,
+            // Resolved, like every other consumer of a worker's platform: the raw
+            // field comes from the bucket config and is unset when that config
+            // declares no platform. An MCP session tags its connection from this,
+            // and an untagged one matches no project — so `tap({project: 'ios'})`
+            // would report no ios device with the worker sitting right there.
+            platform: resolveWorkerPlatform(ctx, w),
+          },
+          // Group members are this session's too — a headless MCP server must
+          // not claim their daemons.
+          ...w.members.map((m) => ({
+            address: `127.0.0.1:${m.daemonPort}`,
+            deviceSerial: m.deviceSerial,
+            platform: resolveWorkerPlatform(ctx, w),
+          })),
+        ]);
       // Every daemon this session drives, workers *and* the primary one. A
       // headless MCP server has to be able to tell that the daemon at the
       // default address belongs to a UI run: it reaches that address through

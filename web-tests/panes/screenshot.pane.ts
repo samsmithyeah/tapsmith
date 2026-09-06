@@ -36,6 +36,29 @@ export class ScreenshotPane {
     return this.page.getByTestId("viewer-title")
   }
 
+  // ─── Multi-device panes ───
+  //
+  // A trace recorded on a device group shows one pane per device instead of the
+  // single image; `image` would then match several and trip strict mode.
+
+  get panes() {
+    return this.page.getByTestId("screenshot-pane")
+  }
+
+  /** One device's pane; `data-acting` / `data-active` report its role. */
+  pane(device: string) {
+    return this.panes.and(this.page.locator(`[data-device="${device}"]`))
+  }
+
+  paneImage(device: string) {
+    return this.pane(device).getByRole("img", { name: /^Screenshot / })
+  }
+
+  /** The "acting" / "selected" role text under a pane's device name. */
+  paneRole(device: string) {
+    return this.pane(device).getByTestId("screenshot-pane-role")
+  }
+
   // ─── Flows ───
 
   async selectStage(name: ScreenshotStage) {

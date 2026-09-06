@@ -8,6 +8,7 @@ import { resolveSourceView } from './source-view-utils.js';
 import { HierarchyTree } from './HierarchyTree.js';
 import type { Bounds } from './HierarchyTree.js';
 import { NetworkTab } from './NetworkTab.js';
+import { actingDevice, deviceNamesFor, deviceTagStyle, frameIndexForDevice, hierarchyForDeviceFrame, type DeviceGroupView } from './device-frames.js';
 import { parseSelectorParts } from './ActionsPanel.js';
 
 interface Props {
@@ -26,12 +27,53 @@ interface Props {
    * a test that hasn't run yet). Ignored once a real event drives the view.
    */
   previewHighlight?: SourceLocation
+  /** A multi-device trace's group — drives the per-device console/network filters and the hierarchy toggle. */
+  group?: DeviceGroupView
+  /**
+   * The stage the screenshot panel is showing (`before` unless the After tab
+   * is active). The hierarchy toggle picks a non-acting device's frame the
+   * same way its pane does, so tree and screenshot describe the same moment.
+   */
+  screenshotVariant?: 'before' | 'after'
 }
+
 
 type DetailTab = 'call' | 'log' | 'console' | 'source' | 'hierarchy' | 'locator' | 'errors' | 'network'
 
-export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode, previewHighlight }: Props) {
+/**
+ * The device an event ran on. Single-device traces have one; a `use.devices`
+ * trace names it on the event and describes each in `metadata.devices`.
+ */
+function deviceForEvent(
+  metadata: TraceMetadata,
+  event: { deviceId?: string },
+): TraceMetadata['device'] | undefined {
+  const group = metadata.devices && metadata.devices.length > 1 ? metadata.devices : undefined;
+  if (!group) return metadata.device;
+  return group.find((d) => d.name === event.deviceId) ?? metadata.device;
+}
+
+/**
+ * The Call tab's "Device" line. The group name (`alice`) leads only when the
+ * test declared a group: a single-device run still records one (`device-1`)
+ * so its events have a `deviceId`, but that name is the runner's, not the
+ * author's, and showing it read as a device the user never configured.
+ */
+function deviceLine(metadata: TraceMetadata, event: { deviceId?: string }): string | undefined {
+  const d = deviceForEvent(metadata, event);
+  if (!d?.serial) return undefined;
+  const grouped = metadata.devices !== undefined && metadata.devices.length > 1;
+  return [grouped ? d.name : undefined, d.model, d.serial].filter(Boolean).join(' · ');
+}
+
+export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode, previewHighlight, group, screenshotVariant }: Props) {
+
   const testError = metadata.error;
+  // Device names of a multi-device trace, for the per-device filters.
+  const deviceNames = useMemo(
+    () => (metadata.devices && metadata.devices.length > 1 ? deviceNamesFor(metadata, networkEntries) : []),
+    [metadata, networkEntries],
+  );
   const [tab, setTab] = usePersistedString('tapsmith-detail-tab', 'call') as [DetailTab, (v: DetailTab) => void];
 
   const hasActionError = event && (
@@ -175,12 +217,13 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
       >
         {activeTab === 'call' && <CallTab event={event} metadata={metadata} />}
         {activeTab === 'log' && <LogTab event={event} />}
-        {activeTab === 'console' && <ConsoleTab event={event} events={consoleEvents} metadata={metadata} />}
+        {activeTab === 'console' && <ConsoleTab event={event} events={consoleEvents} metadata={metadata} deviceNames={deviceNames} />}
         {activeTab === 'source' && <SourceTab event={event} sources={sources} previewHighlight={previewHighlight} />}
-        {activeTab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} />}
+        {activeTab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} group={group} screenshotVariant={screenshotVariant} />}
+
         {activeTab === 'locator' && locatorTab}
-        {activeTab === 'network' && <NetworkTab entries={networkEntries} bodies={networkBodies} />}
-        {activeTab === 'errors' && <ErrorsTab event={event} events={events} testError={testError} sources={sources} />}
+        {activeTab === 'network' && <NetworkTab entries={networkEntries} bodies={networkBodies} deviceNames={deviceNames} />}
+        {activeTab === 'errors' && <ErrorsTab event={event} events={events} testError={testError} sources={sources} metadata={metadata} />}
       </div>
     </div>
   );
@@ -237,10 +280,13 @@ function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTrace
         <span class={`call-value ${event.success ? 'success' : 'error'}`}>
           {event.success ? 'passed' : 'failed'}
         </span>
-        {metadata.device.serial && <>
-          <span class="call-label">Device</span>
-          <span class="call-value">{metadata.device.model ? `${metadata.device.model} · ` : ''}{metadata.device.serial}</span>
-        </>}
+        {(() => {
+          const line = deviceLine(metadata, event);
+          return line ? <>
+            <span class="call-label">Device</span>
+            <span class="call-value">{line}</span>
+          </> : null;
+        })()}
         {event.sourceLocation && <>
           <span class="call-label">Source</span>
           <span class="call-value mono">{event.sourceLocation.file}:{event.sourceLocation.line}</span>
@@ -285,10 +331,13 @@ function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTrace
         <span class="call-label">Gap before</span>
         <span class="call-value mono">{event.gapBefore}ms</span>
       </>}
-      {metadata.device.serial && <>
-        <span class="call-label">Device</span>
-        <span class="call-value">{metadata.device.model ? `${metadata.device.model} · ` : ''}{metadata.device.serial}</span>
-      </>}
+      {(() => {
+        const line = deviceLine(metadata, event);
+        return line ? <>
+          <span class="call-label">Device</span>
+          <span class="call-value">{line}</span>
+        </> : null;
+      })()}
       {event.sourceLocation && <>
         <span class="call-label">Source</span>
         <span class="call-value mono">{event.sourceLocation.file}:{event.sourceLocation.line}</span>
@@ -325,7 +374,8 @@ function LogTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | und
 
 // ─── Console Tab ───
 
-type SourceFilter = 'all' | 'test' | 'device' | 'daemon'
+/** `all`, a source, or — in a multi-device trace — a device name. */
+type SourceFilter = string
 type ConsoleTimeMode = 'relative' | 'absolute'
 type ConsoleSortColumn = 'time' | 'level' | 'source' | 'message'
 type ConsoleSortDirection = 'asc' | 'desc'
@@ -355,7 +405,7 @@ function formatConsoleWallClock(ts: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
-function ConsoleTab({ event, events: consoleEvents, metadata }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; events: ConsoleTraceEvent[]; metadata: TraceMetadata }) {
+function ConsoleTab({ event, events: consoleEvents, metadata, deviceNames = [] }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; events: ConsoleTraceEvent[]; metadata: TraceMetadata; deviceNames?: string[] }) {
   const [search, setSearch] = useState('');
   // Offsets are relative to the test start. UI mode never has one: the SPA is
   // not told when a test began (`ui-mode/main.tsx` builds its live metadata with
@@ -387,21 +437,31 @@ function ConsoleTab({ event, events: consoleEvents, metadata }: { event: ActionT
     for (const e of consoleEvents) s.add(e.source as SourceFilter);
     return s;
   }, [consoleEvents]);
-  const showSourceFilter = presentSources.size > 1;
+  // A multi-device trace tags device and daemon lines with the device that
+  // produced them; one pill per device narrows the list to that device.
+  const presentDevices = useMemo(() => {
+    const present = new Set<string>();
+    for (const e of consoleEvents) if (e.deviceId) present.add(e.deviceId);
+    return deviceNames.filter((n) => present.has(n));
+  }, [consoleEvents, deviceNames]);
+  const showSourceFilter = presentSources.size > 1 || presentDevices.length > 1;
 
   // If the active source filter is no longer present (e.g. switching to an
   // event with no daemon logs), reset to 'all' so the tab isn't confusingly empty.
   useEffect(() => {
-    if (sourceFilter !== 'all' && !presentSources.has(sourceFilter)) {
+    if (sourceFilter !== 'all' && !presentSources.has(sourceFilter) && !presentDevices.includes(sourceFilter)) {
       setSourceFilter('all');
     }
-  }, [presentSources, sourceFilter]);
+  }, [presentSources, presentDevices, sourceFilter]);
 
   const filtered = useMemo(() => {
     const lf = search.toLowerCase();
     const result = consoleEvents.filter(e => {
       if (!levelFilter.has(e.level as ConsoleLevel)) return false;
-      if (sourceFilter !== 'all' && e.source !== sourceFilter) return false;
+      if (sourceFilter !== 'all') {
+        const byDevice = presentDevices.includes(sourceFilter);
+        if (byDevice ? e.deviceId !== sourceFilter : e.source !== sourceFilter) return false;
+      }
       if (scopeToAction && event && Math.abs(e.actionIndex - event.actionIndex) > 1) return false;
       if (lf && !e.message.toLowerCase().includes(lf)) return false;
       return true;
@@ -420,7 +480,7 @@ function ConsoleTab({ event, events: consoleEvents, metadata }: { event: ActionT
       return sortDirection === 'asc' ? cmp : -cmp;
     });
     return result;
-  }, [consoleEvents, search, levelFilter, sourceFilter, scopeToAction, event, sortColumn, sortDirection]);
+  }, [consoleEvents, search, levelFilter, sourceFilter, presentDevices, scopeToAction, event, sortColumn, sortDirection]);
 
   const handleSort = (col: ConsoleSortColumn) => {
     if (sortColumn === col) {
@@ -465,16 +525,27 @@ function ConsoleTab({ event, events: consoleEvents, metadata }: { event: ActionT
         {showSourceFilter && (
           <>
             <div class="con-pill-sep" />
-            <div class="con-pills">
+            <div class="con-pills" role="group" aria-label="Filter by source">
               {(['all', 'test', 'device', 'daemon'] as SourceFilter[])
                 .filter(s => s === 'all' || presentSources.has(s))
                 .map(s => (
                   <button
                     key={s}
                     class={`con-pill${sourceFilter === s ? ' active' : ''}`}
+                    aria-pressed={sourceFilter === s}
                     onClick={() => setSourceFilter(s)}
                   >{s}</button>
                 ))}
+              {presentDevices.length > 1 && presentDevices.map((name) => (
+                <button
+                  key={`device-${name}`}
+                  class={`con-pill con-pill-device${sourceFilter === name ? ' active' : ''}`}
+                  style={deviceTagStyle({ devices: metadata.devices ?? [] }, name)}
+                  aria-pressed={sourceFilter === name}
+                  data-testid="console-device-pill"
+                  onClick={() => setSourceFilter(name)}
+                >{name}</button>
+              ))}
             </div>
           </>
         )}
@@ -525,6 +596,9 @@ function ConsoleTab({ event, events: consoleEvents, metadata }: { event: ActionT
               >{timeMode === 'relative' ? formatConsoleOffset(ev.timestamp - timeBase) : formatConsoleWallClock(ev.timestamp)}</span>
               <span class={`log-level ${ev.level}`}>{ev.level}</span>
               <span class="log-source">{ev.source}</span>
+              {deviceNames.length > 1 && ev.deviceId && (
+                <span class="action-device-tag log-device" data-testid="log-device" style={deviceTagStyle({ devices: metadata.devices ?? [] }, ev.deviceId)}>{ev.deviceId}</span>
+              )}
               <span class="log-message">{ev.message}</span>
             </div>
           ))
@@ -765,21 +839,67 @@ function SourceTab({ event, sources, previewHighlight }: { event: ActionTraceEve
 
 // ─── Hierarchy Tab ───
 
-function HierarchyTabWrapper({ event, hierarchies, onNodeSelect }: {
+function HierarchyTabWrapper({ event, hierarchies, onNodeSelect, group, screenshotVariant = 'before' }: {
   event: ActionTraceEvent | AssertionTraceEvent | undefined
   hierarchies: Map<string, string>
   onNodeSelect?: (bounds: Bounds | null) => void
+  group?: DeviceGroupView
+  screenshotVariant?: 'before' | 'after'
 }) {
+
+  // Multi-device: default to the pane the viewer has active (the acting device
+  // unless the user clicked another pane); the toggle views a different
+  // device's tree at the frame its pane displays.
+  const multi = !!group && group.devices.length > 1;
+  const defaultDevice = multi ? (group!.activeDevice ?? actingDevice(group!, event)) : undefined;
+  const [chosen, setChosen] = useState<string | undefined>(undefined);
+  const eventKey = event ? `${event.type}-${event.actionIndex}-${defaultDevice ?? ''}` : 'none';
+  useEffect(() => { setChosen(undefined); }, [eventKey]);
+  const shownDevice = multi && chosen && group!.devices.some((d) => d.name === chosen) ? chosen : defaultDevice;
+
   if (!event || hierarchies.size === 0) return <div class="no-content" data-testid="no-content">No view hierarchy available</div>;
 
-  const pad = String(event.actionIndex).padStart(3, '0');
-  const afterKey = `hierarchy/action-${pad}-after.xml`;
-  const beforeKey = `hierarchy/action-${pad}-before.xml`;
-  const xml = hierarchies.get(afterKey) ?? hierarchies.get(beforeKey);
+  let xml: string | undefined;
+  if (multi && shownDevice && shownDevice !== actingDevice(group!, event)) {
+    xml = hierarchyForDeviceFrame(group!, frameIndexForDevice(group!, shownDevice, event.actionIndex, screenshotVariant));
 
-  if (!xml) return <div class="no-content" data-testid="no-content">No hierarchy snapshot for this action</div>;
+  } else {
+    const pad = String(event.actionIndex).padStart(3, '0');
+    const afterKey = `hierarchy/action-${pad}-after.xml`;
+    const beforeKey = `hierarchy/action-${pad}-before.xml`;
+    xml = hierarchies.get(afterKey) ?? hierarchies.get(beforeKey);
+  }
 
-  return <HierarchyTree xml={xml} onNodeSelect={onNodeSelect} />;
+  const toggle = multi ? (
+    <div class="hier-device-toggle" role="group" aria-label="Hierarchy device">
+      {group!.devices.map((d) => (
+        <button
+          key={d.name}
+          class={`con-pill con-pill-device${shownDevice === d.name ? ' active' : ''}`}
+          style={deviceTagStyle(group!, d.name ?? '')}
+          aria-pressed={shownDevice === d.name}
+          data-testid="hierarchy-device-pill"
+          onClick={() => setChosen(d.name)}
+        >{d.name}</button>
+      ))}
+    </div>
+  ) : null;
+
+  if (!xml) {
+    return (
+      <div>
+        {toggle}
+        <div class="no-content" data-testid="no-content">No hierarchy snapshot for this action</div>
+      </div>
+    );
+  }
+
+  return (
+    <div class={multi ? 'hier-with-toggle' : undefined}>
+      {toggle}
+      <HierarchyTree xml={xml} onNodeSelect={onNodeSelect} />
+    </div>
+  );
 }
 
 // ─── Errors Tab ───
@@ -800,12 +920,15 @@ function buildCodeFrame(sources: Map<string, string>, loc: { file: string; line:
   return formatCodeSnippetPlain(snippet);
 }
 
-function ErrorsTab({ event, events, testError, sources }: {
+function ErrorsTab({ event, events, testError, sources, metadata }: {
   event: ActionTraceEvent | AssertionTraceEvent | undefined
   events: AnyTraceEvent[]
   testError?: string
   sources: Map<string, string>
+  metadata: TraceMetadata
 }) {
+  // On a multi-device trace each entry names whose screen it failed on.
+  const group = metadata.devices && metadata.devices.length > 1 ? { devices: metadata.devices } : undefined;
   const failedEvents = events.filter((e): e is ActionTraceEvent | AssertionTraceEvent =>
     (e.type === 'action' && !(e as ActionTraceEvent).success) ||
     (e.type === 'assertion' && !(e as AssertionTraceEvent).passed),
@@ -827,6 +950,7 @@ function ErrorsTab({ event, events, testError, sources }: {
           ev={ev}
           isSelected={!!event && event.actionIndex === ev.actionIndex && event.type === ev.type}
           sources={sources}
+          group={group}
         />
       ))}
       {showTestError && (
@@ -839,7 +963,12 @@ function ErrorsTab({ event, events, testError, sources }: {
   );
 }
 
-function ErrorEntry({ ev, isSelected, sources }: { ev: ActionTraceEvent | AssertionTraceEvent; isSelected: boolean; sources: Map<string, string> }) {
+function ErrorEntry({ ev, isSelected, sources, group }: {
+  ev: ActionTraceEvent | AssertionTraceEvent
+  isSelected: boolean
+  sources: Map<string, string>
+  group?: Pick<DeviceGroupView, 'devices'>
+}) {
   const title = errorTitle(ev);
   const log = ev.type === 'action' ? ev.log : undefined;
   const stack = ev.type === 'action' ? ev.errorStack : undefined;
@@ -854,7 +983,12 @@ function ErrorEntry({ ev, isSelected, sources }: { ev: ActionTraceEvent | Assert
 
   return (
     <div class={`error-entry${isSelected ? ' error-entry-selected' : ''}`} data-testid="error-entry">
-      <div class="error-title"><AlertTriangle size={14} class="error-title-icon" />{title}</div>
+      <div class="error-title">
+        <AlertTriangle size={14} class="error-title-icon" />{title}
+        {group && ev.deviceId && (
+          <span class="action-device-tag" data-testid="error-device" style={deviceTagStyle(group, ev.deviceId)} title={`Failed on ${ev.deviceId}`}>{ev.deviceId}</span>
+        )}
+      </div>
 
       {hasGrid && (
         <div class="error-grid">

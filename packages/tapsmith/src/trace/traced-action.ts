@@ -19,6 +19,8 @@ const MIN_TRACE_FALLBACK_TIMEOUT_MS = 250;
 
 export interface TraceContext {
   collector: TraceCollector
+  /** Group name of the acting device — tags every event this action emits. */
+  deviceId?: string
   takeScreenshot: () => Promise<Buffer | undefined>
   captureHierarchy: () => Promise<string | undefined>
   findElement?: (selector: Selector, timeoutMs: number) => Promise<{ found: boolean; element?: ElementInfo }>
@@ -47,6 +49,12 @@ export interface TracedActionExtra {
    * on every test.
    */
   skipBeforeCapture?: boolean
+  /**
+   * Action index the caller already reserved (an element handle emits its
+   * "started" row before the auto-wait, ahead of the capture here). The
+   * capture and the completed event reuse it so the row completes in place.
+   */
+  reservedActionIndex?: number
 }
 
 function resolveDetail(extra: TracedActionExtra | undefined): string | undefined {
@@ -86,6 +94,10 @@ export async function tracedAction(
   // round-trip for screenshot + hierarchy + element bounds instead of 3
   // separate gRPC calls that each trigger their own app.snapshot() IPC.
   let beforeCaptures: { screenshotBefore?: unknown; hierarchyBefore?: unknown } = {};
+  // The index this action's events carry. Reserved by the before-capture (or
+  // handed in by the caller) so a concurrent action on another device cannot
+  // take the same one; unset when nothing captured — the emit then claims one.
+  let actionIndex: number | undefined = extra?.reservedActionIndex;
   // Treat a skipped capture like a completed batch so the fallback path
   // below does not run either.
   let batchSuccess = !!extra?.skipBeforeCapture;
@@ -110,11 +122,14 @@ export async function tracedAction(
           ? batchResult.screenshotData : undefined;
         const hierarchyXml = batchResult.hierarchyXml || undefined;
 
-        const { captures } = await ctx.collector.captureBeforeAction(
+        const captured = await ctx.collector.captureBeforeAction(
           () => Promise.resolve(screenshotData as Buffer | undefined),
           () => Promise.resolve(hierarchyXml),
+          undefined,
+          actionIndex,
         );
-        beforeCaptures = captures;
+        beforeCaptures = captured.captures;
+        actionIndex = captured.actionIndex;
 
         if (batchResult.elementFound && batchResult.element?.bounds) {
           bounds = batchResult.element.bounds;
@@ -167,11 +182,12 @@ export async function tracedAction(
           })()
         : Promise.resolve();
 
-      const [, { captures }] = await Promise.all([
+      const [, captured] = await Promise.all([
         boundsPromise,
-        ctx.collector.captureBeforeAction(ctx.takeScreenshot, ctx.captureHierarchy, remainingCaptureMs),
+        ctx.collector.captureBeforeAction(ctx.takeScreenshot, ctx.captureHierarchy, remainingCaptureMs, actionIndex),
       ]);
-      beforeCaptures = captures;
+      beforeCaptures = captured.captures;
+      actionIndex = captured.actionIndex;
     }
   }
 
@@ -180,10 +196,10 @@ export async function tracedAction(
   // emit at the same actionIndex with lifecycle='completed'.
   ctx.collector._emitActionStarted({
     category, action, selector: selectorStr, inputValue: extra?.inputValue,
-    bounds, point, sourceLocation, stack, log: [...log],
+    bounds, point, sourceLocation, stack, log: [...log], deviceId: ctx.deviceId,
     hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
     hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
-  });
+  }, actionIndex);
 
   const start = Date.now();
   let success = true;
@@ -205,8 +221,8 @@ export async function tracedAction(
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
-      sourceLocation, stack,
-    });
+      sourceLocation, stack, deviceId: ctx.deviceId,
+    }, actionIndex);
   }, stack);
 
   try {
@@ -255,8 +271,8 @@ export async function tracedAction(
     hasScreenshotAfter: false,
     hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
     hasHierarchyAfter: false,
-    sourceLocation, stack,
-  });
+    sourceLocation, stack, deviceId: ctx.deviceId,
+  }, actionIndex);
 
   if (caughtErr !== undefined) {
     throw caughtErr instanceof Error ? caughtErr : new Error(String(caughtErr));

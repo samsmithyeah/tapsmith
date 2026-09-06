@@ -30,6 +30,15 @@ import {
 } from "./components/SelectorPlayground.js";
 import { parseHierarchyXml } from "./components/hierarchy-utils.js";
 import { resolveActionHierarchy } from "../ui-mode/hooks/use-trace-data.js";
+import {
+  actingDevice,
+  frameIndexForDevice,
+  hierarchyForDeviceFrame,
+  nextFrameIndexForDevice,
+  type DeviceGroupView,
+  isMultiDevice,
+  laneStripMinHeight,
+} from "./components/device-frames.js";
 import type { HierarchyNode, Bounds } from "./components/hierarchy-utils.js";
 import { traceViewerStyles } from "./styles/trace-viewer.css.js";
 
@@ -467,6 +476,11 @@ function App() {
   const handleFilmstripResize = useCallback((delta: number) => {
     setFilmstripHeight((h) => Math.max(60, Math.min(300, h + delta)));
   }, []);
+  // A multi-device trace needs room for every lane; the drag height still persists.
+  const shownFilmstripHeight = Math.max(
+    filmstripHeight,
+    isMultiDevice(trace.metadata) ? laneStripMinHeight(trace.metadata.devices!.length) : 0,
+  );
 
   const handleRightResize = useCallback((delta: number) => {
     setRightWidth((w) =>
@@ -474,9 +488,46 @@ function App() {
     );
   }, []);
 
-  const platform = inferPlatform(trace.metadata);
-
   const selectedEvent = actionEvents[selectedIndex];
+
+  // Multi-device traces (`use.devices`): every event names the device that
+  // produced it, and each device has its own pixel ratio, platform and
+  // terminal screenshot. Single-device traces fall back to `metadata.device`.
+  const groupDevices = trace.metadata.devices && trace.metadata.devices.length > 1
+    ? trace.metadata.devices
+    : undefined;
+  // The pane the user last clicked (picking, Locator tab). Reset whenever the
+  // selection moves so each step opens on the device that acted.
+  const [activeDeviceOverride, setActiveDeviceOverride] = useState<string | undefined>(undefined);
+  useEffect(() => { setActiveDeviceOverride(undefined); }, [selectedIndex]);
+  const group = useMemo<DeviceGroupView | undefined>(() => {
+    if (!groupDevices) return undefined;
+    const base = { devices: groupDevices };
+    const acting = actingDevice(base, selectedEvent);
+    const override = activeDeviceOverride && groupDevices.some((d) => d.name === activeDeviceOverride)
+      ? activeDeviceOverride
+      : undefined;
+    return {
+      devices: groupDevices,
+      actionEvents,
+      actionCount: trace.metadata.actionCount,
+      hierarchies: trace.hierarchies,
+      activeDevice: override ?? acting,
+      onActiveDeviceChange: setActiveDeviceOverride,
+    };
+  }, [groupDevices, actionEvents, trace.metadata.actionCount, trace.hierarchies, selectedEvent, activeDeviceOverride]);
+  const selectedDevice = useMemo(() => {
+    if (!group) return trace.metadata.device;
+    return group.devices.find((d) => d.name === group.activeDevice) ?? trace.metadata.device;
+  }, [group, trace.metadata.device]);
+  const platform = selectedDevice?.platform ?? inferPlatform(trace.metadata);
+  // "After" = the next capture on the *same* device; the next action overall
+  // may belong to the other user. Falls back to that device's terminal
+  // screenshot, which the runner records per device in group order.
+  const afterActionIndex = useMemo(() => {
+    if (!group || !selectedEvent) return undefined;
+    return nextFrameIndexForDevice(group, actingDevice(group, selectedEvent), selectedEvent.actionIndex);
+  }, [group, selectedEvent]);
 
   // Which screenshot moment the ScreenshotPanel is displaying — the selector
   // playground must bind to the hierarchy captured at that same moment, or
@@ -486,12 +537,16 @@ function App() {
   // Hierarchy for the current action (used by selector playground) — resolved
   // to depict the same moment as the displayed screenshot, borrowing for
   // actions that capture none (network family). PILOT-302.
-  const currentHierarchy = useMemo(
-    () => trace && selectedEvent
-      ? resolveActionHierarchy(trace.hierarchies, trace.screenshots, selectedEvent.actionIndex, screenshotVariant)
-      : undefined,
-    [trace, selectedEvent, screenshotVariant],
-  );
+  const currentHierarchy = useMemo(() => {
+    if (!trace || !selectedEvent) return undefined;
+    // A non-acting pane is bound to its own device's frame, not the step's.
+    if (group && group.activeDevice && group.activeDevice !== actingDevice(group, selectedEvent)) {
+      const frame = frameIndexForDevice(group, group.activeDevice, selectedEvent.actionIndex, screenshotVariant);
+      const xml = hierarchyForDeviceFrame(group, frame);
+      return xml ? { xml } : undefined;
+    }
+    return resolveActionHierarchy(trace.hierarchies, trace.screenshots, selectedEvent.actionIndex, screenshotVariant);
+  }, [trace, selectedEvent, screenshotVariant, group]);
 
   // Keyed on the xml string, not the wrapper object, so an unchanged tree is
   // never re-parsed just because the wrapper was recomputed.
@@ -508,7 +563,7 @@ function App() {
     [currentRoots, selectorText],
   );
 
-  const dpr = trace.metadata.device?.devicePixelRatio ?? 1;
+  const dpr = selectedDevice?.devicePixelRatio ?? 1;
 
   const handleScreenshotClick = useCallback(
     (point: { x: number; y: number }) => {
@@ -557,9 +612,9 @@ function App() {
       <div
         style={
           {
-            height: `${filmstripHeight}px`,
+            height: `${shownFilmstripHeight}px`,
             flexShrink: 0,
-            "--filmstrip-h": `${filmstripHeight}px`,
+            "--filmstrip-h": `${shownFilmstripHeight}px`,
           } as JSX.CSSProperties
         }
       >
@@ -602,7 +657,9 @@ function App() {
           hierarchyBorrowedFromStep={currentHierarchy?.borrowedFromStep}
           pickUnavailable={!!selectedEvent && currentRoots.length === 0}
           onDisplayedVariantChange={setScreenshotVariant}
-          devicePixelRatio={trace.metadata.device?.devicePixelRatio}
+          devicePixelRatio={selectedDevice?.devicePixelRatio}
+          afterActionIndex={afterActionIndex}
+          group={group}
           nodeType="test"
           hasTrace={true}
           testName={trace.metadata.testName}
@@ -624,7 +681,10 @@ function App() {
             networkBodies={trace.networkBodies}
             onHierarchyNodeSelect={setHierarchyHighlight}
             pickMode={pickMode}
+            group={group}
+            screenshotVariant={screenshotVariant}
             locatorTab={
+
               <SelectorTab
                 hierarchyXml={currentHierarchyXml}
                 pickedNode={pickedNode}

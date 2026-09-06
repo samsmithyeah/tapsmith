@@ -1,23 +1,18 @@
 /**
  * Watch mode child process.
  *
- * Spawned by the watch coordinator for each test re-run. Connects to an
- * already-running daemon, resets the app, runs a single test file, and
+ * Spawned by the watch coordinator for each test re-run. Connects to the
+ * already-running daemon(s), resets the app, runs a single test file, and
  * streams results back to the parent via IPC. Exits after completion so
  * the next run gets a fresh ESM module cache.
  *
  * @see PILOT-120
  */
 
-import * as path from 'node:path';
-import { TapsmithGrpcClient } from './grpc-client.js';
-import { Device } from './device.js';
-import { runTestFile, collectResults } from './runner.js';
-import type { TapsmithConfig } from './config.js';
-import { ensureSessionReady, probeResetCapabilities, type SessionPreflightContext } from './session-preflight.js';
+import { runTestFile, collectResults, type RunDevice } from './runner.js';
+import { ensureSessionReady } from './session-preflight.js';
 import type { ResetCapabilities } from './app-reset.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
-import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
 import {
   serializeTestResult,
   serializeSuiteResult,
@@ -26,6 +21,7 @@ import {
   type SerializedConfig,
   type RunFileUseOptions,
 } from './worker-protocol.js';
+import { closeDeviceSession, consumePrepared, openDeviceGroup } from './device-session.js';
 
 // ─── IPC protocol ───
 
@@ -44,10 +40,23 @@ export interface WatchRunAbortMessage {
 
 export type WatchRunIncomingMessage = WatchRunMessage | WatchRunAbortMessage;
 
-export interface WatchRunMessage {
-  type: 'run'
+/** A secondary device of the run's group, with the daemon that drives it. */
+export interface WatchRunGroupMember {
+  /** Group entry name from `use.devices` (e.g. `bob`). */
+  name: string
   daemonAddress: string
   deviceSerial: string
+  /** The parent's sticky reset-capability knowledge for this device. */
+  resetCapabilities?: ResetCapabilities
+}
+
+export interface WatchRunMessage {
+  type: 'run'
+  /** The primary device's daemon and serial (`devices[0]`). */
+  daemonAddress: string
+  deviceSerial: string
+  /** The primary's group entry name — see `InitMessage.deviceName`. */
+  deviceName: string
   filePath: string
   config: SerializedConfig
   screenshotDir?: string
@@ -64,13 +73,19 @@ export interface WatchRunMessage {
    */
   label?: string
   /**
-   * The parent's sticky reset-capability knowledge for this device (in-app
-   * hooks detected, …). This child is forked fresh per run, so without it
-   * every run would start undetected and `appReset: 'auto'` would resolve to
-   * clear · file even when the app supports warm resets. The child reports
-   * what it learned back on `file-done`.
+   * The parent's sticky reset-capability knowledge for the primary device
+   * (in-app hooks detected, …). This child is forked fresh per run, so
+   * without it every run would start undetected and `appReset: 'auto'` would
+   * resolve to clear · file even when the app supports warm resets. The child
+   * reports what it learned back on `file-done`.
    */
   resetCapabilities?: ResetCapabilities
+  /**
+   * The rest of the device group (`devices[1..]`) for a `use.devices`
+   * project; each already has a daemon holding it (the parent owns those
+   * daemons across runs). Omitted for single-device runs.
+   */
+  groupMembers?: WatchRunGroupMember[]
 }
 
 export interface WatchRunTestEndMessage {
@@ -83,9 +98,11 @@ export interface WatchRunFileDoneMessage {
   filePath: string
   results: import('./worker-protocol.js').SerializedTestResult[]
   suite: import('./worker-protocol.js').SerializedSuiteResult
-  /** What this run learned about the device's reset capabilities — the parent
-   * folds it into its sticky per-device store (detection only ever upgrades). */
+  /** What this run learned about the primary device's reset capabilities — the
+   * parent folds it into its sticky per-device store (detection only ever upgrades). */
   resetCapabilities?: ResetCapabilities
+  /** The same, for every device of the group, keyed by serial. */
+  groupResetCapabilities?: Record<string, ResetCapabilities>
 }
 
 export interface WatchRunErrorMessage {
@@ -97,8 +114,6 @@ export type WatchRunChildMessage =
   | WatchRunTestEndMessage
   | WatchRunFileDoneMessage
   | WatchRunErrorMessage
-
-// ─── Config reconstruction ───
 
 // ─── Helpers ───
 
@@ -113,23 +128,6 @@ function send(msg: WatchRunChildMessage): void {
     // Swallow the error — the child is about to exit anyway.
     ipcOpen = false;
   }
-}
-
-function buildSessionContext(
-  config: TapsmithConfig,
-  device: Device,
-  client: TapsmithGrpcClient,
-  deviceSerial: string,
-  label = 'Watch',
-): SessionPreflightContext {
-  return {
-    label: `${label} (${deviceSerial})`,
-    config,
-    device,
-    client,
-    deviceSerial,
-    networkTracingEnabled: isNetworkTracingEnabled(config.trace),
-  };
 }
 
 // ─── Main handler ───
@@ -155,51 +153,34 @@ function sendEmptyFileDone(filePath: string): void {
 async function handleRun(msg: WatchRunMessage): Promise<void> {
   const config = configFromSerialized(msg.config, msg.daemonAddress);
   config.device = msg.deviceSerial;
-
-  const client = new TapsmithGrpcClient(msg.daemonAddress);
-  const ready = await client.waitForReady(5_000);
-  if (!ready) {
-    throw new Error(`Failed to connect to daemon at ${msg.daemonAddress}`);
-  }
-
-  const device = new Device(client, config);
-  await device.setDevice(
-    msg.deviceSerial,
-    isNetworkTracingEnabled(config.trace),
-    networkHostsForPac(config.trace),
-    networkPassthroughHosts(config.trace),
-  );
-
-  // Ensure the device is awake — the screen may have auto-locked while
-  // watch mode was idle waiting for file changes.
-  await device.wake();
-  await device.unlock();
-
   const label = msg.label ?? 'Watch';
-  const ctx = buildSessionContext(config, device, client, msg.deviceSerial, label);
-  // Seed with the parent's sticky knowledge, then probe if hooks were never
-  // seen. Detection only ever upgrades and the parent stores the result, so a
-  // hooked app pays one hierarchy read per watch/MCP session, and a hookless
-  // one pays the probe's poll budget once (a session that already concluded
-  // "no hooks" re-reads exactly once). Without this every fresh child
-  // resolved `auto` to clear · file and warm resets silently never engaged.
-  ctx.capabilities = { ...(msg.resetCapabilities ?? {}) };
-  if (!ctx.capabilities.hooksDetected) {
-    await probeResetCapabilities(ctx);
-  }
-  // Without a package the runner performs no reset (and so no readiness
-  // check of its own): verify the agent is alive here, recovering it if it
-  // died while watch idled — the other run paths do the same in their
-  // startup launch.
-  if (!config.package) {
-    await ensureSessionReady(ctx, `${label} preflight for ${path.basename(msg.filePath)}`);
-  }
+  const members = msg.groupMembers ?? [];
+
+  // Every daemon already holds its device with the agent running (the CLI's
+  // startup, or a previous run): attach rather than provision. Without a
+  // package the runner performs no reset (and so no readiness check of its
+  // own), so verify the agent is alive here, recovering it if it died while
+  // watch idled — the other run paths do the same in their startup launch.
+  const sessions = await openDeviceGroup(
+    [
+      { name: msg.deviceName, serial: msg.deviceSerial, daemonAddress: msg.daemonAddress, adopt: true, seedCapabilities: msg.resetCapabilities },
+      ...members.map((m) => ({
+        name: m.name,
+        serial: m.deviceSerial,
+        daemonAddress: m.daemonAddress,
+        adopt: true,
+        seedCapabilities: m.resetCapabilities,
+      })),
+    ],
+    config,
+    { label, adoptVerify: !config.package, connectTimeoutMs: 5_000 },
+  );
 
   // Created BEFORE preflight so a stop that lands during wake/unlock/app-reset
   // is honoured rather than being a no-op that runs the whole file anyway.
   const abortController = new AbortController();
   currentAbortController = abortController;
-  client._setAbortSignal(abortController.signal);
+  for (const s of sessions) s.client._setAbortSignal(abortController.signal);
 
   // Live progress lines for slow device actions (preflight reset, app-state
   // save/restore, …) — the child's stdout reaches the terminal directly (PILOT-232).
@@ -226,19 +207,26 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
       },
     };
 
+    const devices: RunDevice[] = sessions.map((s) => ({
+      name: s.name,
+      device: s.device,
+      serial: s.serial,
+      sessionContext: s.context,
+      prepared: consumePrepared(s),
+    }));
+
     const suiteResult = await runTestFile(msg.filePath, {
       config,
-      device,
+      devices,
       screenshotDir,
       reporter: reporterProxy,
       // Per-test readiness check, as in every other run path. Watch has no
       // file-retry loop, so a recovery here simply relaunches the app and
       // lets the test proceed rather than surfacing a raw transport error.
       beforeEachTest: async (fullName) => {
-        await ensureSessionReady(ctx, `before test ${fullName}`);
+        await Promise.all(sessions.map((s) => ensureSessionReady(s.context, `before test ${fullName}`)));
       },
-      sessionContext: ctx,
-      resetCapabilities: ctx.capabilities,
+      resetCapabilities: sessions[0].capabilities,
       projectUseOptions: msg.projectUseOptions,
       projectName: msg.projectName,
       testFilter: msg.testFilter,
@@ -254,15 +242,16 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
       filePath: msg.filePath,
       results: results.map((r) => serializeTestResult(r, 0)),
       suite: serializeSuiteResult(suiteResult, 0),
-      resetCapabilities: ctx.capabilities,
+      resetCapabilities: sessions[0].capabilities,
+      groupResetCapabilities: Object.fromEntries(sessions.map((s) => [s.serial, s.capabilities])),
     });
   } finally {
     disposeActionProgressPrinter();
-    client._setAbortSignal(undefined);
+    for (const s of sessions) s.client._setAbortSignal(undefined);
     if (currentAbortController === abortController) currentAbortController = undefined;
   }
 
-  client.close();
+  for (const s of sessions) closeDeviceSession(s);
 }
 
 // ─── IPC message handler ───

@@ -65,6 +65,7 @@ function makeDispatcher(overrides: Partial<TestDispatcher> = {}): TestDispatcher
     getProjects: () => [],
     getTestTree: () => [],
     getSessionInfo: () => ({ timeout: 0, retries: 0, projects: [] }),
+    resolveDeviceName: () => undefined,
     toggleWatch: () => ({ enabled: false }),
     ...overrides,
   };
@@ -609,6 +610,23 @@ describe('tapsmith_session_info device targets', () => {
     }));
     expect(text).toContain('Device (ios): SIM-1');
     expect(text).toContain('Device (android): unavailable — No android device is available.');
+  });
+
+  it('names group members without inventing a "(device)" platform', async () => {
+    const text = await callSessionInfo(makeDispatcher({
+      getSessionInfo: () => ({
+        timeout: 0,
+        retries: 0,
+        projects: [],
+        deviceTargets: [
+          { device: 'emulator-5554', name: 'alice', group: 'pair' },
+          { device: 'emulator-5556', name: 'bob', group: 'pair' },
+        ],
+      }),
+    }));
+    expect(text).toContain('Device alice [pair]: emulator-5554');
+    expect(text).toContain('Device bob [pair]: emulator-5556');
+    expect(text).not.toContain('(device)');
   });
 
   it('keeps the single-device line for a single-platform session', async () => {

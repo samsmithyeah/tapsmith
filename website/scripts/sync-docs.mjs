@@ -83,6 +83,12 @@ const FILES = [
     desc: 'Run tests across multiple devices with work-stealing distribution and CI sharding.',
   },
   {
+    src: 'multi-device.md',
+    dest: 'guides/multi-device.md',
+    title: 'Multi-Device Tests',
+    desc: 'Drive two app sessions from one test with device groups (use.devices).',
+  },
+  {
     src: 'debugging.md',
     dest: 'guides/debugging.md',
     title: 'Debugging',
@@ -237,6 +243,7 @@ const LINK_MAP = {
   'ui-mode.md': '/guides/ui-mode/',
   'warm-reset.md': '/guides/warm-reset/',
   'parallel-and-sharding.md': '/guides/parallel-and-sharding/',
+  'multi-device.md': '/guides/multi-device/',
   'debugging.md': '/guides/debugging/',
   'mcp-server.md': '/guides/mcp-server/',
   'agents.md': '/guides/agents/',

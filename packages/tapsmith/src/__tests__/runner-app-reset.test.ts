@@ -97,8 +97,7 @@ function makeOpts(d: ReturnType<typeof makeDevice>, config: TapsmithConfig, extr
   return {
     config,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner double
-    device: d.device as any,
-    sessionContext,
+    devices: [{ name: 'device-1', device: d.device as any, sessionContext }],
     resetCapabilities: {},
     // runTestFile creates this per file; these tests drive runSuiteContext directly.
     _applied: {},
@@ -153,7 +152,7 @@ describe('runner app reset (declared isolation)', () => {
     const ctx = popContext();
 
     const opts = makeOpts(d, makeConfig());
-    delete opts.sessionContext;
+    delete opts.devices[0].sessionContext;
     const result = await runSuiteContext(ctx, '', [], [], opts);
 
     expect(result.tests[0].status).toBe('passed');
@@ -440,19 +439,19 @@ describe('runner app reset (declared isolation)', () => {
     const prepared: PreparedState = {
       policy: { mode: 'clear', scope: 'file' }, preparedAt: Date.now(), durationMs: 1200, source: 'startup launch',
     };
-    const holder = { current: prepared };
+    const holder = new Map([['device-1', prepared]]);
 
     const result = await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), { _prepared: holder }));
 
     expect(result.tests[0].status).toBe('passed');
     expect(resetCalls(d)).toEqual([]);
     expect(d.client.ping).toHaveBeenCalled();       // readiness still verified
-    expect(holder.current).toBeUndefined();          // consumed exactly once
+    expect(holder.get('device-1')).toBeUndefined();  // consumed exactly once
   });
 
   it('a nested describe that resets first consumes the prepared device (root scope did not reset)', async () => {
     const d = makeDevice();
-    const prepared = { current: { policy: { mode: 'warm' as const, scope: 'test' as const }, preparedAt: Date.now(), durationMs: 1000, source: 'background preparation' } };
+    const prepared = new Map([['device-1', { policy: { mode: 'warm' as const, scope: 'test' as const }, preparedAt: Date.now(), durationMs: 1000, source: 'background preparation' }]]);
     pushContext();
     // Root: hooks detected → auto per-test → no root reset. The describe has
     // a beforeAll → per-file → resets on entry; that reset is the file's first
@@ -470,7 +469,7 @@ describe('runner app reset (declared isolation)', () => {
 
     expect(collectResults(result).map((t) => t.status)).toEqual(['passed']);
     expect(resetCalls(d)).toEqual([]);
-    expect(prepared.current).toBeUndefined();
+    expect(prepared.get('device-1')).toBeUndefined();
   });
 
   it('appResetScope: test inside a describe does not reset twice at file entry', async () => {
@@ -490,7 +489,7 @@ describe('runner app reset (declared isolation)', () => {
       const result = await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig({
         rootDir: tempRoot,
         trace: { mode: 'on', network: false, screenshots: false, snapshots: false, sources: false },
-      }), { _prepared: {} }));
+      }), { _prepared: new Map() }));
 
       expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed']);
       // File entry, then one per test — minus the first per-test reset, which
@@ -523,7 +522,7 @@ describe('runner app reset (declared isolation)', () => {
     });
     const ctx = popContext();
 
-    await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), { _prepared: {} }));
+    await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), { _prepared: new Map() }));
 
     // The hook may have touched the app: entry reset, then a real per-test reset.
     expect(resetCalls(d)).toEqual(['resetApp:clear', 'resetApp:clear']);
@@ -539,7 +538,7 @@ describe('runner app reset (declared isolation)', () => {
     });
     const ctx = popContext();
 
-    await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), { _prepared: {} }));
+    await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), { _prepared: new Map() }));
 
     // Entry reset for the file, the root test dirties the app, then a real
     // per-test reset for the describe's first test.
@@ -552,7 +551,7 @@ describe('runner app reset (declared isolation)', () => {
     tapsmithTest.use({ appState: '/abs/auth.tar.gz' });
     tapsmithTest('one', async () => {});
     const ctx = popContext();
-    const holder = { current: { policy: { mode: 'clear' as const, scope: 'file' as const }, preparedAt: 0, durationMs: 0, source: 'x' } };
+    const holder = new Map([['device-1', { policy: { mode: 'clear' as const, scope: 'file' as const }, preparedAt: 0, durationMs: 0, source: 'x' }]]);
 
     await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig(), { _prepared: holder }));
 
@@ -699,7 +698,7 @@ describe('runner app reset (declared isolation)', () => {
       pushContext();
       tapsmithTest('one', async () => {});
       const ctx = popContext();
-      const holder = { current: { policy: { mode: 'clear' as const, scope: 'file' as const }, preparedAt: Date.now(), durationMs: 9_800, source: 'startup launch' } };
+      const holder = new Map([['device-1', { policy: { mode: 'clear' as const, scope: 'file' as const }, preparedAt: Date.now(), durationMs: 9_800, source: 'startup launch' }]]);
 
       const result = await runSuiteContext(ctx, '', [], [], makeOpts(d, makeConfig({
         rootDir: tempRoot,

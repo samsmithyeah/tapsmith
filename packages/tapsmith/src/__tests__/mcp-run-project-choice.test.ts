@@ -43,6 +43,7 @@ function makeDispatcher(projects: ProjectInfo[]): {
     getTestTree: () => [],
     resolveRequestedFiles: (files) => files.filter((f) => known.includes(f)),
     getSessionInfo: () => ({ timeout: 0, retries: 0, projects }),
+    resolveDeviceName: () => undefined,
     toggleWatch: () => ({ enabled: false }),
   };
   return { dispatcher, runs };

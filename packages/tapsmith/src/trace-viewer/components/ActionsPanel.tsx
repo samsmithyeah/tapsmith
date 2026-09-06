@@ -3,6 +3,7 @@ import type { ComponentChildren } from 'preact';
 import { Check, X, Type, Clock, Play, ExternalLink, MoveHorizontal, ArrowUpDown, CircleDot, ChevronDown, Hand, Pointer, Eye, Keyboard, RotateCcw, Target, Globe, Send, AlertTriangle } from 'lucide-preact';
 import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, GroupTraceEvent, TraceMetadata } from '../../trace/types.js';
 import type { InFlightAction } from '../types.js';
+import { deviceTagStyle } from './device-frames.js';
 
 interface Props {
   events: AnyTraceEvent[]
@@ -173,6 +174,9 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
     selectedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [selectedIndex]);
 
+  // A `use.devices` trace: rows carry the device that acted on them.
+  const groupDevices = metadata.devices && metadata.devices.length > 1 ? metadata.devices : undefined;
+
   // Build flat list with groups
   const items: Array<
     | { kind: 'action'; event: ActionTraceEvent | AssertionTraceEvent; actionIndex: number }
@@ -313,6 +317,9 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
                         {event.type === 'action' && event.origin === 'skipped' && (
                           <span class="action-origin-tag" data-testid="action-origin">skipped</span>
                         )}
+                        {groupDevices && event.deviceId && (
+                          <span class="action-device-tag" data-testid="action-device" style={deviceTagStyle({ devices: groupDevices }, event.deviceId)} title={`Performed on ${event.deviceId}`}>{event.deviceId}</span>
+                        )}
                       </span>
                       {event.type === 'action' && !event.selector && event.detail
                         ? <span class="action-detail" data-testid="action-detail">{event.detail}</span>
@@ -383,18 +390,27 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
             <span class="metadata-value" style={{ color: metadata.testStatus === 'passed' ? 'var(--color-success)' : metadata.testStatus === 'failed' ? 'var(--color-error)' : undefined }}>{metadata.testStatus}</span>
             <span class="metadata-label">Duration</span>
             <span class="metadata-value">{metadata.testDuration}ms</span>
-            <span class="metadata-label">Device</span>
-            <span class="metadata-value">{metadata.device.serial}</span>
-            {metadata.device.model && <>
-              <span class="metadata-label">Model</span>
-              <span class="metadata-value">{metadata.device.model}</span>
-            </>}
-            {metadata.device.osVersion && <>
-              <span class="metadata-label">OS Version</span>
-              <span class="metadata-value">{metadata.device.osVersion}</span>
-            </>}
-            <span class="metadata-label">Physical</span>
-            <span class="metadata-value">{metadata.device.isEmulator ? 'No' : 'Yes'}</span>
+            {groupDevices
+              ? groupDevices.map((d) => <>
+                  <span class="metadata-label">Device {d.name}</span>
+                  <span class="metadata-value" data-testid="metadata-device">
+                    {[d.model, d.serial, d.osVersion, d.isEmulator ? 'emulator' : 'physical'].filter(Boolean).join(' · ')}
+                  </span>
+                </>)
+              : <>
+                <span class="metadata-label">Device</span>
+                <span class="metadata-value">{metadata.device.serial}</span>
+                {metadata.device.model && <>
+                  <span class="metadata-label">Model</span>
+                  <span class="metadata-value">{metadata.device.model}</span>
+                </>}
+                {metadata.device.osVersion && <>
+                  <span class="metadata-label">OS Version</span>
+                  <span class="metadata-value">{metadata.device.osVersion}</span>
+                </>}
+                <span class="metadata-label">Physical</span>
+                <span class="metadata-value">{metadata.device.isEmulator ? 'No' : 'Yes'}</span>
+              </>}
             <span class="metadata-label">Actions</span>
             <span class="metadata-value">{metadata.actionCount}</span>
             <span class="metadata-label">Screenshots</span>

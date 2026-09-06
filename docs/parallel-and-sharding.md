@@ -25,6 +25,8 @@ export default defineConfig({
 
 Each worker gets its own device, daemon instance, and agent. Tapsmith distributes test files across workers using a work-stealing queue -- workers pull the next available file when they finish their current one, which provides natural load balancing without requiring upfront knowledge of test durations.
 
+`workers` counts concurrent test files, not devices: a project whose tests drive two devices each (`use.devices`, see [Multi-device tests](./multi-device.md)) needs two devices per worker.
+
 ### Android Parallel Setup
 
 The recommended approach for Android is to let Tapsmith launch emulator instances automatically. Set `launchEmulators: true` and specify the `avd` to use:

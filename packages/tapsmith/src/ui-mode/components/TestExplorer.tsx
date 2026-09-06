@@ -410,6 +410,11 @@ function isolationBadge(node: TestTreeNode): { label: string; title: string } | 
     label ??= 'per file';
     parts.push('Reset once per file');
   }
+  // A `use.devices` project: every test drives a group of devices.
+  if (use.devices && use.devices > 1) {
+    label = label ? `${label} · ${use.devices} devices` : `${use.devices} devices`;
+    parts.push(`Each test drives ${use.devices} devices (use.devices)`);
+  }
   if (!label) return undefined;
   return { label, title: parts.join('\n') };
 }

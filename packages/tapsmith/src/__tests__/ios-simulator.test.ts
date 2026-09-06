@@ -30,6 +30,7 @@ import {
   listBootedSimulators,
   listCompatibleBootedSimulators,
   bootSimulator,
+  waitForSimulatorBootComplete,
   installApp,
   isAppInstalled,
   findSimulator,
@@ -188,6 +189,24 @@ describe('bootSimulator', () => {
       throw Object.assign(new Error('Device not found'), { stderr: Buffer.from('') });
     });
     expect(() => bootSimulator('AAAA')).toThrow('Device not found');
+  });
+});
+
+// ─── waitForSimulatorBootComplete ───
+
+describe('waitForSimulatorBootComplete', () => {
+  it('blocks on simctl bootstatus -b and reports completion', () => {
+    mockedExecFileSync.mockReturnValue('' as unknown as Buffer);
+    expect(waitForSimulatorBootComplete('AAAA', 5_000)).toBe(true);
+    expect(mockedExecFileSync).toHaveBeenCalledWith(
+      'xcrun', ['simctl', 'bootstatus', 'AAAA', '-b'],
+      expect.objectContaining({ timeout: 5_000 }),
+    );
+  });
+
+  it('reports false instead of throwing when the wait times out', () => {
+    mockedExecFileSync.mockImplementation(() => { throw Object.assign(new Error('ETIMEDOUT'), { code: 'ETIMEDOUT' }); });
+    expect(waitForSimulatorBootComplete('AAAA', 5_000)).toBe(false);
   });
 });
 

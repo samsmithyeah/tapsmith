@@ -48,9 +48,19 @@ function readTraceArchive(tracePath: string, includeScreenshots: boolean, device
   if (files['metadata.json']) {
     const meta = JSON.parse(decode(files['metadata.json']));
     lines.push(`## Trace Metadata`);
-    if (meta.device) lines.push(`Device: ${meta.device.model ?? 'unknown'} (${meta.device.platform ?? 'unknown'})`);
+    // Multi-device traces list every device by its group name — the same
+    // name each step below carries — so the steps read as a conversation.
+    const devices: Array<{ name?: string; serial?: string; model?: string; platform?: string }> =
+      Array.isArray(meta.devices) && meta.devices.length > 1 ? meta.devices : meta.device ? [meta.device] : [];
+    for (const d of devices) {
+      const who = devices.length > 1 && d.name ? ` ${d.name}` : '';
+      lines.push(`Device${who}: ${d.model ?? d.serial ?? 'unknown'} (${d.platform ?? 'unknown'})`);
+    }
     if (meta.testFile) lines.push(`Test: ${meta.testFile}`);
-    if (meta.duration) lines.push(`Duration: ${meta.duration}ms`);
+    // `testDuration` is the archive's field; `duration` was what this read
+    // before (never present, so the line never printed).
+    const duration = meta.testDuration ?? meta.duration;
+    if (duration) lines.push(`Duration: ${duration}ms`);
     lines.push('');
   }
 
@@ -68,13 +78,15 @@ function readTraceArchive(tracePath: string, includeScreenshots: boolean, device
       const event = events[i];
       const status = event.error ? 'FAIL' : 'OK';
       const duration = event.duration ? ` (${event.duration}ms)` : '';
+      // Which device acted, for a two-user test's interleaved steps.
+      const who = event.deviceId ? `${event.deviceId}: ` : '';
 
       if (event.type === 'action') {
-        lines.push(`${i + 1}. [${status}] ${event.action ?? 'action'}${duration}`);
+        lines.push(`${i + 1}. [${status}] ${who}${event.action ?? 'action'}${duration}`);
         if (event.selector) lines.push(`   Selector: ${event.selector}`);
         if (event.error) lines.push(`   Error: ${event.error}`);
       } else if (event.type === 'assertion') {
-        lines.push(`${i + 1}. [${status}] expect ${event.assertion ?? 'assertion'}${duration}`);
+        lines.push(`${i + 1}. [${status}] ${who}expect ${event.assertion ?? 'assertion'}${duration}`);
         if (event.expected !== undefined) lines.push(`   Expected: ${event.expected}`);
         if (event.actual !== undefined) lines.push(`   Actual: ${event.actual}`);
         if (event.error) lines.push(`   Error: ${event.error}`);
@@ -90,11 +102,20 @@ function readTraceArchive(tracePath: string, includeScreenshots: boolean, device
         e.type === 'console' && e.source === 'device'
         && (!isErrorOnly || e.level === 'error' || e.level === 'warn'),
       );
-      if (logEvents.length > 0) {
+      // One section per device in a multi-device trace; the untagged bucket
+      // is the single device of an ordinary run.
+      const byDevice = new Map<string | undefined, Record<string, unknown>[]>();
+      for (const ev of logEvents) {
+        const key = ev.deviceId as string | undefined;
+        const bucket = byDevice.get(key) ?? [];
+        bucket.push(ev);
+        byDevice.set(key, bucket);
+      }
+      for (const [deviceId, bucket] of byDevice) {
         const cap = isErrorOnly ? 50 : 200;
-        const shown = logEvents.slice(-cap);
+        const shown = bucket.slice(-cap);
         lines.push('');
-        lines.push(`## Device Logs (${logEvents.length} entries${logEvents.length > cap ? `, showing last ${cap}` : ''})`);
+        lines.push(`## Device Logs${deviceId ? ` — ${deviceId}` : ''} (${bucket.length} entries${bucket.length > cap ? `, showing last ${cap}` : ''})`);
         lines.push('');
         for (const ev of shown) {
           lines.push(`[${(ev.level as string)?.toUpperCase()}] ${ev.message ?? ''}`);

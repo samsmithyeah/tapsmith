@@ -25,6 +25,36 @@ export class FilmstripPane {
     return this.frames.locator(".timeline-placeholder")
   }
 
+  // ─── Multi-device lanes ───
+
+  /** The scroll container holding every lane on a device-group trace. */
+  get laneStrip() {
+    return this.page.getByTestId("film-lanes")
+  }
+
+  /** One row per device on a device-group trace; absent for a single device. */
+  get lanes() {
+    return this.page.getByTestId("film-lane")
+  }
+
+  get laneLabels() {
+    return this.page.getByTestId("film-lane-label")
+  }
+
+  /** The frames a device's lane holds. */
+  laneFrames(device: string) {
+    return this.lane(device).getByTestId("film-frame")
+  }
+
+  lane(device: string) {
+    return this.lanes.and(this.page.locator(`[data-device="${device}"]`))
+  }
+
+  /** The one row of offset labels under the lanes, one per action in every lane. */
+  get axisLabels() {
+    return this.page.getByTestId("film-axis").getByTestId("film-label")
+  }
+
   // ─── Flows ───
 
   async selectFrame(index: number) {

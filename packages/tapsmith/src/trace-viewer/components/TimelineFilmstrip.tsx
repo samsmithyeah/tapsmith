@@ -3,6 +3,7 @@ import { LoaderCircle, Play } from 'lucide-preact';
 import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata } from '../../trace/types.js';
 import type { ContainerSummary } from '../types.js';
 import { findNearestScreenshot } from '../../ui-mode/hooks/use-trace-data.js';
+import { actingDevice, deviceTagStyle, isMultiDevice } from './device-frames.js';
 
 // ─── Injected Styles ───
 
@@ -150,6 +151,83 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
   const fileName = metadata.testFile ? metadata.testFile.split('/').pop() : undefined;
   const breadcrumb = [metadata.project, fileName].filter(Boolean).join(' \u203a ');
 
+  const renderFrame = (event: ActionTraceEvent | AssertionTraceEvent, i: number, withLabel = true): preact.JSX.Element => {
+    const pad = String(event.actionIndex).padStart(3, '0');
+    const afterKey = `screenshots/action-${pad}-after.png`;
+    const beforeKey = `screenshots/action-${pad}-before.png`;
+    const url = screenshots.get(afterKey) ?? screenshots.get(beforeKey)
+      ?? findNearestScreenshot(screenshots, event.actionIndex);
+    const isSelected = i === selectedIndex;
+    const isFailed = event.type === 'action' ? !event.success : !event.passed;
+    const relativeTime = formatRelativeTime(event.timestamp - firstTimestamp);
+
+    return (
+      <div key={i} class={`timeline-item film-frame${isFailed ? ' failed' : ''}${isSelected ? ' active' : ''}`} data-testid="film-frame">
+        {url ? (
+          <img
+            ref={isSelected ? selectedRef as preact.RefObject<HTMLImageElement> : undefined}
+            class={`timeline-thumb film-thumb${isSelected ? ' selected' : ''}${isFailed ? ' failed' : ''}`}
+            src={url}
+            onClick={() => onSelect(i)}
+          />
+        ) : (
+          <div
+            ref={isSelected ? selectedRef as preact.RefObject<HTMLDivElement> : undefined}
+            class={`timeline-placeholder film-thumb${isSelected ? ' selected' : ''}`}
+            onClick={() => onSelect(i)}
+          >
+            {i + 1}
+          </div>
+        )}
+        {withLabel && <div class="timeline-time-label film-label" data-testid="film-label">{relativeTime}</div>}
+      </div>
+    );
+  };
+
+  // One lane per device: the same chronological strip, split by the device
+  // that acted, so a two-user conversation reads as two rows. Every lane lays
+  // its frames on the same columns and one shared axis below carries the
+  // offsets, so the rows read as a single timeline. The acting device's lane
+  // is lit and the others dimmed, matching the screenshot pane's "acting" badge.
+  const renderLanes = (): preact.JSX.Element => {
+    const group = { devices: metadata.devices! };
+    const selected = events[selectedIndex];
+    const acting = selected ? actingDevice(group, selected) : undefined;
+    return (
+      <div class={`film-lanes${acting ? ' has-acting' : ''}`} data-testid="film-lanes" style={{ '--lane-count': String(group.devices.length) }}>
+        {group.devices.map((d) => {
+          const name = d.name ?? '';
+          const isActing = name === acting;
+          const tooltip = [d.model, d.serial].filter(Boolean).join(' \u00b7 ');
+          return (
+            <div class={`film-lane${isActing ? ' acting' : ''}`} data-testid="film-lane" data-device={name} data-acting={isActing} style={deviceTagStyle(group, name)} key={name}>
+              <div class="film-lane-label">
+                <span class="action-device-tag" data-testid="film-lane-label" title={tooltip || undefined}>{name}</span>
+              </div>
+              <div class="timeline-inner film-lane-inner">
+                {events.map((event, i) => (
+                  actingDevice(group, event) === name
+                    ? renderFrame(event, i, false)
+                    : <div key={i} class="timeline-item film-gap" aria-hidden="true" />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+        <div class="film-axis" data-testid="film-axis">
+          <div class="film-axis-spacer" />
+          <div class="film-axis-inner">
+            {events.map((event, i) => (
+              <div key={i} class={`film-label film-axis-label${i === selectedIndex ? ' active' : ''}`} data-testid="film-label">
+                {formatRelativeTime(event.timestamp - firstTimestamp)}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div class="timeline">
       <div class="timeline-meta" data-testid="timeline-meta">
@@ -159,42 +237,15 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
         {hasTestName && metadata.testStatus !== 'running' && metadata.testStatus !== 'idle' && (
           <span>{' \u00b7 '}{metadata.testDuration}ms</span>
         )}
-        {hasDeviceSerial && <>{' \u00b7 '}{metadata.device.model || metadata.device.serial}</>}
+        {metadata.devices && metadata.devices.length > 1
+          ? <>{' \u00b7 '}{metadata.devices.map((d) => d.name ?? d.serial).join(' + ')}</>
+          : hasDeviceSerial && <>{' \u00b7 '}{metadata.device.model || metadata.device.serial}</>}
       </div>
-      <div class="timeline-inner">
-        {events.map((event, i) => {
-          const pad = String(event.actionIndex).padStart(3, '0');
-          const afterKey = `screenshots/action-${pad}-after.png`;
-          const beforeKey = `screenshots/action-${pad}-before.png`;
-          const url = screenshots.get(afterKey) ?? screenshots.get(beforeKey)
-            ?? findNearestScreenshot(screenshots, event.actionIndex);
-          const isSelected = i === selectedIndex;
-          const isFailed = event.type === 'action' ? !event.success : !event.passed;
-          const relativeTime = formatRelativeTime(event.timestamp - firstTimestamp);
-
-          return (
-            <div key={i} class={`timeline-item film-frame${isFailed ? ' failed' : ''}${isSelected ? ' active' : ''}`} data-testid="film-frame">
-              {url ? (
-                <img
-                  ref={isSelected ? selectedRef as preact.RefObject<HTMLImageElement> : undefined}
-                  class={`timeline-thumb film-thumb${isSelected ? ' selected' : ''}${isFailed ? ' failed' : ''}`}
-                  src={url}
-                  onClick={() => onSelect(i)}
-                />
-              ) : (
-                <div
-                  ref={isSelected ? selectedRef as preact.RefObject<HTMLDivElement> : undefined}
-                  class={`timeline-placeholder film-thumb${isSelected ? ' selected' : ''}`}
-                  onClick={() => onSelect(i)}
-                >
-                  {i + 1}
-                </div>
-              )}
-              <div class="timeline-time-label film-label" data-testid="film-label">{relativeTime}</div>
-            </div>
-          );
-        })}
-      </div>
+      {isMultiDevice(metadata) ? renderLanes() : (
+        <div class="timeline-inner">
+          {events.map((event, i) => renderFrame(event, i))}
+        </div>
+      )}
     </div>
   );
 }

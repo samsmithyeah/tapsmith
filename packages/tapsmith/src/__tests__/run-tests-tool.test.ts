@@ -19,6 +19,7 @@ function makeDispatcher(overrides: Partial<TestDispatcher> = {}): TestDispatcher
       platform: 'android', package: 'com.example', device: 'emulator-5554',
       timeout: 5000, retries: 0, projects: [],
     }),
+    resolveDeviceName: () => undefined,
     toggleWatch: () => ({ enabled: true }),
     ...overrides,
   };

@@ -3,7 +3,8 @@ import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo, DeviceActivityMessage, UIPreferences } from './ui-protocol.js';
 import { inferDevicePlatform, DEFAULT_UI_PREFERENCES, type DevicePlatform } from './ui-protocol.js';
-import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata, SourceLocation } from '../trace/types.js';
+import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata, TraceDeviceInfo, SourceLocation } from '../trace/types.js';
+import { actingDevice, frameIndexForDevice, hierarchyForDeviceFrame, isMultiDevice, laneStripMinHeight, type DeviceGroupView } from '../trace-viewer/components/device-frames.js';
 import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { useWebSocket } from './hooks/use-websocket.js';
 import {
@@ -31,7 +32,7 @@ import { resolveShortcut } from './keyboard-shortcuts.js';
 import { Layout } from './components/Layout.js';
 import { TestExplorer } from './components/TestExplorer.js';
 import { RunControls, type Theme } from './components/RunControls.js';
-import { DevicePane } from './components/DevicePane.js';
+import { DevicePane, deviceViewsOf } from './components/DevicePane.js';
 import { DeviceActivityPanel } from './components/DeviceActivityPanel.js';
 // Trace viewer components — reused for live trace display
 import { ActionsPanel } from '../trace-viewer/components/ActionsPanel.js';
@@ -209,9 +210,13 @@ function App() {
   }, [deviceViewMode, selectedWorkerId, connected]);
   // Worker shown in the single-mirror view — the target for live element picks.
   const mirrorWorkerId = typeof deviceViewMode === 'number' ? deviceViewMode : selectedWorkerId;
-  // Ref for the stable handleMessage callback (same pattern as deviceViewModeRef).
+  // Which device of that worker's group (a `use.devices` worker has several).
+  const [mirrorDeviceIndex, setMirrorDeviceIndex] = useState(0);
+  // Refs for the stable handleMessage callback (same pattern as deviceViewModeRef).
   const mirrorWorkerIdRef = useRef(mirrorWorkerId);
   mirrorWorkerIdRef.current = mirrorWorkerId;
+  const mirrorDeviceIndexRef = useRef(mirrorDeviceIndex);
+  mirrorDeviceIndexRef.current = mirrorDeviceIndex;
 
   // MCP state
   const [mcpUrl, setMcpUrl] = useState<string | undefined>();
@@ -449,6 +454,21 @@ function App() {
   }, [viewedTestWorker, viewedTestProject, testDeviceSerial, devicePlatform]);
 
   const viewedIsolation = currentTrace?.isolation;
+  // A `use.devices` worker: the trace's device group, as a packaged archive
+  // would list it, so the live view gets the same side-by-side panes and
+  // device filters as the standalone viewer.
+  const viewedGroupDevices = useMemo<TraceDeviceInfo[] | undefined>(() => {
+    const devices = viewedTestWorker?.devices;
+    if (!devices || devices.length < 2) return undefined;
+    return devices.map((d) => ({
+      name: d.name,
+      serial: d.deviceSerial,
+      model: d.displayName,
+      platform: d.platform,
+      devicePixelRatio: d.devicePixelRatio,
+      isEmulator: d.isEmulator ?? false,
+    }));
+  }, [viewedTestWorker]);
   const metadata = useMemo<TraceMetadata>(() => ({
     version: 1,
     tapsmithVersion,
@@ -474,7 +494,8 @@ function App() {
     appReset: viewedIsolation?.appReset,
     appResetScope: viewedIsolation?.appResetScope,
     appState: viewedIsolation?.appState,
-  }), [viewedTestName, viewedTestFile, viewedTestNode, viewedTestProject, isRunning, actionEvents.length, screenshots.size, testDeviceSerial, deviceIsEmulator, tapsmithVersion, viewedIsolation]);
+    devices: viewedGroupDevices,
+  }), [viewedTestName, viewedTestFile, viewedTestNode, viewedTestProject, isRunning, actionEvents.length, screenshots.size, testDeviceSerial, deviceIsEmulator, tapsmithVersion, viewedIsolation, viewedGroupDevices]);
 
   // Prefer a real completed event at this index; fall back to a synthesized
   // one from the in-flight slot so ScreenshotPanel can render the before-
@@ -536,15 +557,39 @@ function App() {
   // picks on a before-screenshot would hit-test the after-hierarchy.
   const [screenshotVariant, setScreenshotVariant] = useState<'before' | 'after'>('before');
 
+  // Multi-device: the pane the user last clicked (picking, Locator tab).
+  // Reset whenever the selection moves so each step opens on its acting device.
+  const [activeDeviceOverride, setActiveDeviceOverride] = useState<string | undefined>(undefined);
+  useEffect(() => { setActiveDeviceOverride(undefined); }, [selectedIndex, viewedTraceKey]);
+  const group = useMemo<DeviceGroupView | undefined>(() => {
+    if (!viewedGroupDevices) return undefined;
+    const acting = actingDevice({ devices: viewedGroupDevices }, selectedEvent);
+    const override = activeDeviceOverride && viewedGroupDevices.some((d) => d.name === activeDeviceOverride)
+      ? activeDeviceOverride
+      : undefined;
+    return {
+      devices: viewedGroupDevices,
+      actionEvents,
+      actionCount: actionEvents.length,
+      hierarchies,
+      activeDevice: override ?? acting,
+      onActiveDeviceChange: setActiveDeviceOverride,
+    };
+  }, [viewedGroupDevices, actionEvents, hierarchies, selectedEvent, activeDeviceOverride]);
+
   // Hierarchy for the current action (used by selector playground) — resolved
   // to depict the same moment as the displayed screenshot, borrowing for
   // actions that capture none (network family). PILOT-302.
-  const currentHierarchy = useMemo(
-    () => selectedEvent
-      ? resolveActionHierarchy(hierarchies, screenshots, selectedEvent.actionIndex, screenshotVariant)
-      : undefined,
-    [selectedEvent, hierarchies, screenshots, screenshotVariant],
-  );
+  const currentHierarchy = useMemo(() => {
+    if (!selectedEvent) return undefined;
+    // A non-acting pane is bound to its own device's frame, not the step's.
+    if (group && group.activeDevice && group.activeDevice !== actingDevice(group, selectedEvent)) {
+      const frame = frameIndexForDevice(group, group.activeDevice, selectedEvent.actionIndex, screenshotVariant);
+      const xml = hierarchyForDeviceFrame(group, frame);
+      return xml ? { xml } : undefined;
+    }
+    return resolveActionHierarchy(hierarchies, screenshots, selectedEvent.actionIndex, screenshotVariant);
+  }, [selectedEvent, hierarchies, screenshots, screenshotVariant, group]);
 
   // Keyed on the xml string, not the wrapper object: the trace maps are
   // rebuilt on every streamed message, and re-parsing a large tree per
@@ -1104,8 +1149,9 @@ function App() {
         break;
       case 'hierarchy-update':
         // Live-mirror pick snapshot. The broadcast is fan-out (all clients),
-        // so drop updates for a worker we're no longer mirroring.
-        if (msg.workerId == null || msg.workerId === mirrorWorkerIdRef.current) {
+        // so drop updates for a device we're no longer mirroring.
+        if ((msg.workerId == null || msg.workerId === mirrorWorkerIdRef.current)
+          && (msg.deviceIndex ?? 0) === mirrorDeviceIndexRef.current) {
           setLiveHierarchyXml(msg.xml);
         }
         break;
@@ -1138,8 +1184,10 @@ function App() {
   // Only use multi-mirror when in 'all' mode AND multiple workers exist.
   const deviceViewModeRef = useRef(deviceViewMode);
   deviceViewModeRef.current = deviceViewMode;
-  const workersLenRef = useRef(workers.length);
-  workersLenRef.current = workers.length;
+  // Every mirrorable device (a group worker contributes one per member).
+  const deviceViewCount = deviceViewsOf(workers).length;
+  const workersLenRef = useRef(deviceViewCount);
+  workersLenRef.current = deviceViewCount;
   const handleScreenFrame = useCallback((data: ArrayBuffer) => {
     // First frame for the current device → hide the loading placeholder.
     if (!firstFrameRef.current) {
@@ -1183,9 +1231,12 @@ function App() {
 
   // ─── Live mirror element pick ───
 
-  // DPR of the mirrored worker — NOT viewedTestDpr (that's the worker of the
-  // viewed trace, which can be a different device in multi-worker mode).
-  const mirrorDpr = workers.find((w) => w.workerId === mirrorWorkerId)?.devicePixelRatio
+  // DPR of the mirrored device — NOT viewedTestDpr (that's the worker of the
+  // viewed trace, which can be a different device in multi-worker mode). A
+  // group worker's members each carry their own.
+  const mirrorWorker = workers.find((w) => w.workerId === mirrorWorkerId);
+  const mirrorDpr = mirrorWorker?.devices?.find((d) => d.index === mirrorDeviceIndex)?.devicePixelRatio
+    ?? mirrorWorker?.devicePixelRatio
     ?? deviceDpr ?? 1;
 
   // A pick inside a WebView whose DOM overlay hasn't arrived yet (the server
@@ -1284,9 +1335,9 @@ function App() {
   const handleSelectorSourceChange = useCallback((source: 'trace' | 'live') => {
     setSelectorSource(source);
     if (source === 'live' && !liveHierarchyXml) {
-      send({ type: 'request-hierarchy', workerId: mirrorWorkerId });
+      send({ type: 'request-hierarchy', workerId: mirrorWorkerId, deviceIndex: mirrorDeviceIndex });
     }
-  }, [liveHierarchyXml, mirrorWorkerId, send]);
+  }, [liveHierarchyXml, mirrorWorkerId, mirrorDeviceIndex, send]);
 
   // Refresh the live hierarchy every second while it's in use: during a pick
   // session (hover hit-testing must track a changing screen) and while the
@@ -1299,23 +1350,24 @@ function App() {
     || (selectorSource === 'live' && selectorText.trim() !== '');
   useEffect(() => {
     if (!liveHierarchyInUse || !connected) return;
-    send({ type: 'request-hierarchy', workerId: mirrorWorkerId });
+    send({ type: 'request-hierarchy', workerId: mirrorWorkerId, deviceIndex: mirrorDeviceIndex });
     const id = setInterval(() => {
-      send({ type: 'request-hierarchy', workerId: mirrorWorkerId });
+      send({ type: 'request-hierarchy', workerId: mirrorWorkerId, deviceIndex: mirrorDeviceIndex });
     }, 1000);
     return () => clearInterval(id);
-  }, [liveHierarchyInUse, connected, mirrorWorkerId, send]);
+  }, [liveHierarchyInUse, connected, mirrorWorkerId, mirrorDeviceIndex, send]);
 
   // Switching the mirrored device invalidates the previous device's hierarchy
   // (bounds from one device must never highlight on another's mirror).
-  const prevMirrorWorkerRef = useRef(mirrorWorkerId);
+  const prevMirrorRef = useRef(`${mirrorWorkerId}:${mirrorDeviceIndex}`);
   useEffect(() => {
-    if (prevMirrorWorkerRef.current === mirrorWorkerId) return;
-    prevMirrorWorkerRef.current = mirrorWorkerId;
+    const key = `${mirrorWorkerId}:${mirrorDeviceIndex}`;
+    if (prevMirrorRef.current === key) return;
+    prevMirrorRef.current = key;
     clearPendingMirrorPick();
     setLiveHierarchyXml(null);
     setMirrorHoverBounds(null);
-  }, [mirrorWorkerId, clearPendingMirrorPick]);
+  }, [mirrorWorkerId, mirrorDeviceIndex, clearPendingMirrorPick]);
 
   // A disconnect or a dead mirrored worker ends the pick session — there is
   // no device to fetch a fresh hierarchy from.
@@ -1435,9 +1487,10 @@ function App() {
     if (wid != null && wid !== lastSentWorkerRef.current) {
       lastSentWorkerRef.current = wid;
       setSelectedWorkerId(wid);
+      setMirrorDeviceIndex(0);
       const mode = deviceViewModeRefForAutoSwitch.current;
       if (mode !== 'all') setDeviceViewMode(wid);
-      send({ type: 'select-worker-view', mode: mode === 'all' ? 'all' : wid });
+      send({ type: 'select-worker-view', mode: mode === 'all' ? 'all' : wid, ...(mode === 'all' ? {} : { deviceIndex: 0 }) });
     }
   }, [viewedTraceKey, workers.length, send]);
 
@@ -1466,10 +1519,11 @@ function App() {
     send({ type: 'request-source', path: filePath });
   }, [previewable, viewedTestNode, previewSources, send]);
 
-  const handleSelectDeviceView = useCallback((mode: 'all' | number) => {
+  const handleSelectDeviceView = useCallback((mode: 'all' | number, deviceIndex = 0) => {
     setDeviceViewMode(mode);
     if (typeof mode === 'number') {
       setSelectedWorkerId(mode);
+      setMirrorDeviceIndex(deviceIndex);
       lastSentWorkerRef.current = mode;
     } else {
       // The "All" grid has no pick surface — end any live pick session.
@@ -1477,7 +1531,7 @@ function App() {
       setPickTarget((t) => t === 'mirror' ? null : t);
       setMirrorHoverBounds(null);
     }
-    send({ type: 'select-worker-view', mode });
+    send({ type: 'select-worker-view', mode, ...(typeof mode === 'number' ? { deviceIndex } : {}) });
   }, [send, clearPendingMirrorPick]);
 
   const handleActionPin = useCallback((index: number) => {
@@ -1682,6 +1736,7 @@ function App() {
           onSetPending={handleSetPending}
         />
       }
+      filmstripMinHeight={hasTrace && isMultiDevice(metadata) ? laneStripMinHeight(metadata.devices!.length) : undefined}
       filmstrip={
         <TimelineFilmstrip
           events={actionEvents}
@@ -1731,6 +1786,7 @@ function App() {
               pickUnavailable={!!selectedEvent && currentRoots.length === 0}
               onDisplayedVariantChange={setScreenshotVariant}
               devicePixelRatio={viewedTestDpr}
+              group={group}
               testName={metadata.testName}
               testStatus={metadata.testStatus}
               onDownloadTrace={currentTrace?.tracePath ? handleDownloadTrace : undefined}
@@ -1750,6 +1806,7 @@ function App() {
           workers={workers}
           selectedWorkerId={selectedWorkerId}
           deviceViewMode={deviceViewMode}
+          mirrorDeviceIndex={mirrorDeviceIndex}
           onSelectDeviceView={handleSelectDeviceView}
           registerCanvas={registerCanvas}
           unregisterCanvas={unregisterCanvas}
@@ -1762,7 +1819,7 @@ function App() {
           send={send}
           pickMode={pickTarget === 'mirror'}
           onTogglePick={handleMirrorPickToggle}
-          pickAvailable={connected && !mirrorLoading && !(deviceViewMode === 'all' && workers.length > 1)}
+          pickAvailable={connected && !mirrorLoading && !(deviceViewMode === 'all' && deviceViewCount > 1)}
           pickDpr={mirrorDpr}
           pickHoverBounds={mirrorHoverBounds}
           pickMatchBounds={selectorSource === 'live' ? selectorHighlights : EMPTY_BOUNDS}
@@ -1793,7 +1850,10 @@ function App() {
           onHierarchyNodeSelect={setHierarchyHighlight}
           pickMode={pickTarget !== null}
           previewHighlight={previewHighlight}
+          group={group}
+          screenshotVariant={screenshotVariant}
           locatorTab={
+
             <SelectorTab
               hierarchyXml={selectorSource === 'live' ? (liveHierarchyXml ?? undefined) : currentHierarchyXml}
               pickedNode={pickedNode}

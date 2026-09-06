@@ -46,6 +46,7 @@ export default function RootLayout() {
           <Stack.Screen name="animating" options={{ title: "Animating" }} />
           <Stack.Screen name="scroll" options={{ title: "Scroll" }} />
           <Stack.Screen name="api-calls" options={{ title: "API Calls" }} />
+          <Stack.Screen name="chat" options={{ title: "Chat" }} />
           <Stack.Screen name="webview" options={{ title: "WebView" }} />
         </Stack>
         <TapsmithHooks />

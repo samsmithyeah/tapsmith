@@ -405,6 +405,197 @@ jobs:
             e2e/tapsmith-results/
             !e2e/tapsmith-results/**/*.tar.gz
 
+  # ─── Two-device run (PILOT-310) ───────────────────────────────────────
+
+  # A `use.devices` project drives two emulators per test. It gets its own
+  # job rather than a shard: the matrix boots one emulator per runner, and a
+  # two-user test halves the parallelism of whatever hosts it. The workflow
+  # boots the first emulator exactly as a shard does; Tapsmith launches the
+  # second instance of the AVD itself (`avd` + `launchEmulators`) — the same
+  # path a developer machine takes.
+  e2e-multi-device:
+    name: Multi-device
+    needs: [ build-sdk, build-daemon, build-agent, build-test-app ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Set up Android SDK environment
+        run: |
+          echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "ANDROID_AVD_HOME=$HOME/.config/.android/avd" >> $GITHUB_ENV
+          # ANDROID_HOME is a runner-machine variable, invisible to the
+          # `env` expression context — without this export the system-image
+          # cache step below resolves its path to "/system-images" and never
+          # saves anything (every shard re-downloaded the image, ~55 s).
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            packages/tapsmith/package-lock.json
+            e2e/package-lock.json
+
+      - name: Download daemon binary
+        uses: actions/download-artifact@v4
+        with:
+          name: daemon-binary
+          path: packages/tapsmith-core/target/release
+
+      - name: Download agent APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-apks
+          path: agent/app/build/outputs/apk
+
+      - name: Download test app APK
+        uses: actions/download-artifact@v4
+        with:
+          name: test-app-apk
+          path: e2e/fixtures
+
+      # e2e/node_modules/tapsmith is a `file:../packages/tapsmith` symlink, so
+      # the build has to land at that real path.
+      - name: Download SDK build
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-dist
+          path: packages/tapsmith/dist
+
+      - name: Make daemon executable
+        run: chmod +x packages/tapsmith-core/target/release/tapsmith-core
+
+      - name: Cache Android system image
+        id: system-image-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANDROID_HOME }}/system-images
+          key: system-image-${{ env.ANDROID_SYSTEM_IMAGE }}-v1
+
+      - name: Install Android system image
+        if: steps.system-image-cache.outputs.cache-hit != 'true'
+        run: echo "y" | sdkmanager --install "${{ env.ANDROID_SYSTEM_IMAGE }}"
+
+      # Not preinstalled on the runner image — every run before the cache fix
+      # above was getting it as an implicit dependency of the system-image
+      # install, so the very first cache HIT skipped that install and broke
+      # `avdmanager create avd` with '"emulator" package must be installed!'.
+      # Unconditional and idempotent: ~15 s when already present.
+      - name: Install Android emulator package
+        run: echo "y" | sdkmanager --install emulator
+
+      # Two AVDs from the same image, one per group member. A second
+      # `-read-only` instance of a single AVD never registered with adb on
+      # these runners; two independent writable instances boot the way the
+      # shard jobs' single emulator does.
+      - name: Create two AVDs
+        run: |
+          for NAME in "${{ env.AVD_NAME }}" "${{ env.AVD_NAME }}-2"; do
+            echo "no" | avdmanager create avd \
+              -n "$NAME" \
+              -k "${{ env.ANDROID_SYSTEM_IMAGE }}" \
+              --device "pixel_6" \
+              --force
+          done
+
+      # Both members of the group boot here, side by side, rather than letting
+      # Tapsmith launch the second: a cold emulator started after the first one
+      # is already up (and the app installed) has blown through the 120 s boot
+      # wait on these 4-core runners. Two cold boots in parallel finish while
+      # the SDK and E2E dependencies install.
+      - name: Boot two emulators
+        run: |
+          nohup emulator -avd "${{ env.AVD_NAME }}" -port 5554 \
+            -no-window -no-audio -no-snapshot-save \
+            -gpu swiftshader_indirect \
+            -no-boot-anim \
+            -memory 3072 \
+            &>/tmp/emulator-5554.log &
+          nohup emulator -avd "${{ env.AVD_NAME }}-2" -port 5556 \
+            -no-window -no-audio -no-snapshot-save \
+            -gpu swiftshader_indirect \
+            -no-boot-anim \
+            -memory 3072 \
+            &>/tmp/emulator-5556.log &
+          echo "Waiting for both emulators to boot..."
+          # Polling `getprop` (not `adb wait-for-device`, which blocks forever
+          # for a serial that never registers) keeps a dead emulator a bounded
+          # failure with its log attached.
+          for SERIAL in emulator-5554 emulator-5556; do
+            # Per emulator: a slow first boot must not eat into the second's budget.
+            TIMEOUT=300
+            BOOT=""
+
+            while [ $TIMEOUT -gt 0 ]; do
+              BOOT=$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+              if [ "$BOOT" = "1" ]; then break; fi
+              sleep 2
+              TIMEOUT=$((TIMEOUT - 2))
+            done
+            if [ "$BOOT" != "1" ]; then
+              echo "::error::$SERIAL failed to boot within 300s"
+              adb devices
+              tail -40 "/tmp/$SERIAL.log"
+              exit 1
+            fi
+            # Disable animations for test stability
+            adb -s "$SERIAL" shell settings put global window_animation_scale 0
+            adb -s "$SERIAL" shell settings put global transition_animation_scale 0
+            adb -s "$SERIAL" shell settings put global animator_duration_scale 0
+            echo "$SERIAL booted and ready ($(adb -s "$SERIAL" shell getprop ro.build.display.id))"
+          done
+
+      - name: Install SDK dependencies
+        working-directory: packages/tapsmith
+        run: npm ci
+
+      # Artifacts don't preserve file modes; `npx tapsmith` execs dist/cli.js
+      # directly through the npm bin symlink.
+      - name: Make SDK CLI executable
+        run: chmod +x packages/tapsmith/dist/cli.js
+
+      - name: Install E2E dependencies
+        working-directory: e2e
+        run: npm ci
+
+      # The primary is pinned with --device and the member through the CI
+      # config (`TAPSMITH_ANDROID_MEMBER` → `bob.device`), so the group is
+      # exactly the two emulators booted above.
+      - name: Run two-device E2E tests
+        working-directory: e2e
+        env:
+          TAPSMITH_ANDROID_MEMBER: emulator-5556
+        run: |
+          npx tapsmith test -c tapsmith.config.android-multi-ci.mjs \
+            --trace on \
+            --device emulator-5554
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-multi-device
+          retention-days: 7
+          path: |
+            e2e/tapsmith-results/
+            !e2e/tapsmith-results/**/*.tar.gz
+
   # ─── Merge shard reports ───────────────────────────────────────────────
 
   e2e-report:

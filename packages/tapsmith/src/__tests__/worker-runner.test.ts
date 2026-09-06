@@ -200,6 +200,7 @@ describe('worker-runner IPC reporting', () => {
         type: 'init',
         workerId: 0,
         deviceSerial: 'device-1',
+        deviceName: 'device-1',
         daemonPort: 19_000,
         config: makeSerializedConfig({ package: 'com.example.app' }),
       } satisfies MainToWorkerMessage);

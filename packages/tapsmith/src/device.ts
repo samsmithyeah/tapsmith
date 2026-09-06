@@ -151,6 +151,13 @@ export class Device {
   /** Programmatic tracing API. */
   readonly tracing: Tracing;
 
+  /**
+   * @internal — Group name of this device in a multi-device test (`alice`,
+   * `device-2`). Stamped as `deviceId` on every trace event it produces so a
+   * shared trace can tell the devices apart. Unset for single-device runs.
+   */
+  _traceDeviceId?: string;
+
   /** @internal — Cached device info from the daemon (model, osVersion, etc.). */
   _cachedDeviceInfo: { model?: string; osVersion?: string; isEmulator?: boolean } | null = null;
 
@@ -373,6 +380,7 @@ export class Device {
     const collector = this._traceCollector;
     const ctx = collector ? {
       collector,
+      deviceId: this._traceDeviceId,
       takeScreenshot: () => this._takeScreenshotBuffer(),
       captureHierarchy: () => this._captureHierarchy(),
       findElement: (sel: Selector, timeout: number) => this._client.findElement(sel, timeout),
@@ -442,6 +450,7 @@ export class Device {
   private _handle(selector: Selector): ElementHandle {
     const traceCapture = this._traceCollector ? {
       collector: this._traceCollector,
+      deviceId: this._traceDeviceId,
       takeScreenshot: () => this._takeScreenshotBuffer(),
       captureHierarchy: () => this._captureHierarchy(),
       ...(this._platform === 'ios' ? {
@@ -955,7 +964,7 @@ export class Device {
       const message = entry.tag
         ? `[${entry.tag}] ${entry.message}`
         : entry.message;
-      collector.addLogcatEntry(level, message);
+      collector.addLogcatEntry(level, message, this._traceDeviceId, entry.timestampMs);
     });
 
     stream.on('error', (err: Error) => {
@@ -1004,7 +1013,7 @@ export class Device {
       const message = entry.target
         ? `[${entry.target}] ${entry.message}`
         : entry.message;
-      collector.addDaemonLogEntry(level, message);
+      collector.addDaemonLogEntry(level, message, this._traceDeviceId, entry.timestampMs);
     });
 
     stream.on('error', (err: Error) => {
@@ -1206,7 +1215,9 @@ export class Device {
     const sourceLocation = stack[0];
     const targetPackageName = packageName ?? this.defaultPackageName;
     const selector = targetPackageName ? `package=${targetPackageName}` : undefined;
-    const { captures: beforeCaptures } = await collector.captureBeforeAction(
+    // The capture reserves this action's index; every emit below must hand it
+    // back, or the event lands one index past its own before-screenshot.
+    const { actionIndex, captures: beforeCaptures } = await collector.captureBeforeAction(
       () => this._takeScreenshotBuffer(),
       () => this._captureHierarchy(),
     );
@@ -1224,7 +1235,7 @@ export class Device {
       log: connectLog,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
-    });
+    }, actionIndex);
 
     const start = Date.now();
     let failedByTimeout = false;
@@ -1246,7 +1257,7 @@ export class Device {
         hasHierarchyAfter: false,
         sourceLocation,
         stack,
-      });
+      }, actionIndex);
     }, stack);
 
     let handle: WebViewHandle | undefined;
@@ -1270,7 +1281,7 @@ export class Device {
           hasHierarchyAfter: false,
           sourceLocation,
           stack,
-        });
+        }, actionIndex);
       }
       throw err;
     }
@@ -1293,7 +1304,7 @@ export class Device {
       hasHierarchyAfter: false,
       sourceLocation,
       stack,
-    });
+    }, actionIndex);
 
     return handle;
   }
@@ -1677,6 +1688,7 @@ export class Device {
     if (this._traceCollector) {
       handle._traceCtx = {
         collector: this._traceCollector,
+        deviceId: this._traceDeviceId,
         takeScreenshot: () => this._takeScreenshotBuffer(),
         captureHierarchy: () => this._captureHierarchy(),
       };
@@ -1739,6 +1751,15 @@ export class Device {
   }
 
   async close(): Promise<void> {
+    await this._close({ closeClient: true });
+  }
+
+  /**
+   * @internal — `close()` for a Device whose gRPC client belongs to someone
+   * else (a session adopting the CLI's shared client): tears down everything
+   * this Device started but leaves the client open for its owner.
+   */
+  async _close(opts: { closeClient: boolean }): Promise<void> {
     // Stop device log stream (synchronous)
     this._stopDeviceLogStream();
     this._stopDaemonLogStream();
@@ -1767,7 +1788,7 @@ export class Device {
       this._activeWebView = null;
     }
 
-    this._client.close();
+    if (opts.closeClient) this._client.close();
   }
 }
 

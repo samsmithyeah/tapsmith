@@ -61,10 +61,28 @@ export function resolveDeviceSkin(
   return platform ? `${platform}-${formFactor}` : undefined;
 }
 
+/**
+ * One device of a worker's group. Every worker has at least its primary
+ * (index 0); a `use.devices` project's workers have one entry per member.
+ */
+export interface WorkerDeviceInfo {
+  /** Position in the group — the `deviceIndex` frames and commands carry. */
+  index: number
+  /** Group entry name (`alice`, `device-1`) — the trace's `deviceId`. */
+  name: string
+  deviceSerial: string
+  displayName: string
+  platform?: 'android' | 'ios'
+  devicePixelRatio?: number
+  isEmulator?: boolean
+}
+
 /** Per-worker status used by UI components. */
 export interface WorkerInfo {
   workerId: number
   deviceSerial: string
+  /** The worker's device group, primary first. Absent = single device (legacy servers). */
+  devices?: WorkerDeviceInfo[]
   /** Friendly display name, e.g. "iPhone 16 #1" for iOS or the serial for Android. */
   displayName: string
   status: 'idle' | 'running' | 'done' | 'initializing' | 'error'
@@ -114,6 +132,8 @@ export interface TestTreeUseOptions {
   appReset?: 'auto' | 'clear' | 'restart' | 'warm' | 'none'
   appResetScope?: 'auto' | 'file' | 'test'
   appState?: string
+  /** Devices each test of the project drives (`use.devices`); absent = one. */
+  devices?: number
 }
 
 /**
@@ -249,6 +269,8 @@ export interface HierarchyUpdateMessage {
   /** Worker the hierarchy was captured from (0 in single-worker mode) so
    * clients can discard updates for a device they're no longer mirroring. */
   workerId?: number
+  /** Which device of the worker's group (0 = primary). */
+  deviceIndex?: number
 }
 
 export interface WatchEventMessage {
@@ -326,6 +348,8 @@ export interface WorkersInfoMessage {
     displayName: string
     platform?: 'android' | 'ios'
     devicePixelRatio?: number
+    /** The worker's device group, primary first (one entry for single-device workers). */
+    devices?: WorkerDeviceInfo[]
   }>
 }
 
@@ -500,6 +524,8 @@ export interface RequestHierarchyCommand {
   type: 'request-hierarchy'
   /** Target worker (multi-worker mode). Defaults to the selected worker. */
   workerId?: number
+  /** Which device of the worker's group (0 = primary). */
+  deviceIndex?: number
 }
 
 export interface RequestSourceCommand {
@@ -516,6 +542,8 @@ export interface MirrorTapCommand {
   y: number
   /** Target worker (multi-worker mode). Defaults to the selected worker. */
   workerId?: number
+  /** Which device of the worker's group (0 = primary). */
+  deviceIndex?: number
   /** True when the user overrode the lock to interact during a run. */
   force?: boolean
 }
@@ -526,6 +554,8 @@ export interface MirrorLongPressCommand {
   y: number
   durationMs: number
   workerId?: number
+  /** Which device of the worker's group (0 = primary). */
+  deviceIndex?: number
   force?: boolean
 }
 
@@ -537,6 +567,8 @@ export interface MirrorSwipeCommand {
   toY: number
   durationMs: number
   workerId?: number
+  /** Which device of the worker's group (0 = primary). */
+  deviceIndex?: number
   force?: boolean
 }
 
@@ -544,6 +576,8 @@ export interface MirrorInputTextCommand {
   type: 'mirror-input-text'
   text: string
   workerId?: number
+  /** Which device of the worker's group (0 = primary). */
+  deviceIndex?: number
   force?: boolean
 }
 
@@ -551,6 +585,8 @@ export interface MirrorPressKeyCommand {
   type: 'mirror-press-key'
   key: string
   workerId?: number
+  /** Which device of the worker's group (0 = primary). */
+  deviceIndex?: number
   force?: boolean
 }
 
@@ -561,6 +597,8 @@ export interface MirrorTouchStartCommand {
   /** Y normalized to 0–1. */
   y: number
   workerId?: number
+  /** Which device of the worker's group (0 = primary). */
+  deviceIndex?: number
   force?: boolean
 }
 
@@ -571,6 +609,8 @@ export interface MirrorTouchMoveCommand {
   /** Milliseconds since touch-start. */
   tMs: number
   workerId?: number
+  /** Which device of the worker's group (0 = primary). */
+  deviceIndex?: number
   force?: boolean
 }
 
@@ -580,12 +620,16 @@ export interface MirrorTouchEndCommand {
   y: number
   tMs: number
   workerId?: number
+  /** Which device of the worker's group (0 = primary). */
+  deviceIndex?: number
   force?: boolean
 }
 
 export interface MirrorTouchCancelCommand {
   type: 'mirror-touch-cancel'
   workerId?: number
+  /** Which device of the worker's group (0 = primary). */
+  deviceIndex?: number
   force?: boolean
 }
 
@@ -599,12 +643,16 @@ export interface SelectWorkerCommand {
   type: 'select-worker'
   /** Worker ID whose device to mirror. */
   workerId: number
+  /** Which device of the worker's group to mirror (0 = primary). */
+  deviceIndex?: number
 }
 
 export interface SelectWorkerViewCommand {
   type: 'select-worker-view'
   /** 'all' to poll all workers simultaneously, or a specific worker ID. */
   mode: 'all' | number
+  /** With a worker ID: which device of its group to mirror (0 = primary). */
+  deviceIndex?: number
 }
 
 export interface RespawnWorkerCommand {
@@ -691,9 +739,10 @@ export const FRAME_KIND_SCREENSHOT = 0;
  *   bytes 5-6:  uint16 BE worker ID (0 for single-worker mode)
  *   bytes 7-8:  uint16 BE width
  *   bytes 9-10: uint16 BE height
- *   bytes 11+:  raw PNG data
+ *   byte  11:   uint8  device index within the worker's group (0 = primary)
+ *   bytes 12+:  raw PNG data
  */
-export const SCREEN_FRAME_HEADER_SIZE = 11;
+export const SCREEN_FRAME_HEADER_SIZE = 12;
 
 export function encodeScreenFrame(
   seq: number,
@@ -701,6 +750,7 @@ export function encodeScreenFrame(
   width: number,
   height: number,
   png: Buffer,
+  deviceIndex = 0,
 ): Buffer {
   const header = Buffer.alloc(SCREEN_FRAME_HEADER_SIZE);
   header.writeUInt8(FRAME_KIND_SCREENSHOT, 0);
@@ -708,11 +758,12 @@ export function encodeScreenFrame(
   header.writeUInt16BE(workerId, 5);
   header.writeUInt16BE(width, 7);
   header.writeUInt16BE(height, 9);
+  header.writeUInt8(deviceIndex, 11);
   return Buffer.concat([header, png]);
 }
 
 export type DecodedBinaryFrame =
-  | { kind: 'screenshot'; seq: number; workerId: number; width: number; height: number; pngOffset: number }
+  | { kind: 'screenshot'; seq: number; workerId: number; deviceIndex: number; width: number; height: number; pngOffset: number }
 
 export function decodeBinaryFrame(data: ArrayBuffer): DecodedBinaryFrame {
   const view = new DataView(data);
@@ -722,8 +773,14 @@ export function decodeBinaryFrame(data: ArrayBuffer): DecodedBinaryFrame {
     workerId: view.getUint16(5),
     width: view.getUint16(7),
     height: view.getUint16(9),
+    deviceIndex: view.getUint8(11),
     pngOffset: SCREEN_FRAME_HEADER_SIZE,
   };
+}
+
+/** Key for per-device mirror state: a worker's device, `w<worker>:d<device>`. */
+export function mirrorKey(workerId: number, deviceIndex = 0): string {
+  return `w${workerId}:d${deviceIndex}`;
 }
 
 // ─── IPC protocol (child processes ↔ UI server) ───
@@ -758,6 +815,8 @@ export interface UIWorkerInitMessage {
   type: 'init'
   workerId: number
   deviceSerial: string
+  /** The primary's group entry name — see `InitMessage.deviceName`. */
+  deviceName: string
   daemonPort: number
   config: import('../worker-protocol.js').SerializedConfig
   screenshotDir?: string
@@ -777,6 +836,12 @@ export interface UIWorkerInitMessage {
    * app has run tests since, and must not claim a reset that never ran.
    */
   adoptPrepared?: boolean
+  /**
+   * The rest of the device group (`devices[1..]`) for a `use.devices`
+   * project, each on a daemon the server spawned for it. Omitted for
+   * single-device workers.
+   */
+  groupMembers?: import('../worker-protocol.js').WorkerGroupMember[]
 }
 
 /** Server → UI worker: run a test file. */

@@ -137,11 +137,14 @@ interface ActionOptions {
   sourceLocation?: SourceLocation
   /** Full call stack, innermost frame first. `sourceLocation` is `stack[0]`. */
   stack?: SourceLocation[]
+  /** Group name of the device that acted (multi-device traces). */
+  deviceId?: string
 }
 
 export function actionEvent(o: ActionOptions): ActionTraceEvent {
   return {
     type: "action",
+    deviceId: o.deviceId,
     category: o.category ?? "tap",
     action: o.action,
     selector: o.selector,
@@ -171,9 +174,15 @@ export function assertionEvent(o: {
   negated?: boolean
   sourceLocation?: SourceLocation
   stack?: SourceLocation[]
+  /** Group name of the device that was asserted on (multi-device traces). */
+  deviceId?: string
+  /** Assertions capture a before-hierarchy (and screenshot) like actions do. */
+  screenshots?: { before?: boolean; after?: boolean }
+  hierarchies?: { before?: boolean; after?: boolean }
 }): AssertionTraceEvent {
   return {
     type: "assertion",
+    deviceId: o.deviceId,
     assertion: o.assertion,
     selector: o.selector,
     actionIndex: o.actionIndex,
@@ -188,10 +197,10 @@ export function assertionEvent(o: {
     actual: o.actual,
     sourceLocation: o.sourceLocation ?? o.stack?.[0],
     stack: o.stack,
-    hasScreenshotBefore: false,
-    hasScreenshotAfter: false,
-    hasHierarchyBefore: false,
-    hasHierarchyAfter: false,
+    hasScreenshotBefore: !!o.screenshots?.before,
+    hasScreenshotAfter: !!o.screenshots?.after,
+    hasHierarchyBefore: !!o.hierarchies?.before,
+    hasHierarchyAfter: !!o.hierarchies?.after,
   }
 }
 
@@ -202,9 +211,12 @@ export function consoleEvent(o: {
   source?: ConsoleTraceEvent["source"]
   /** Offset from the trace's start time in ms. Defaults to 100ms per action index. */
   offsetMs?: number
+  /** Group name of the device that logged the line (multi-device traces). */
+  deviceId?: string
 }): ConsoleTraceEvent {
   return {
     type: "console",
+    deviceId: o.deviceId,
     level: o.level,
     message: o.message,
     source: o.source ?? "device",
@@ -225,11 +237,14 @@ export function networkEntry(o: {
   requestBodyPath?: string
   routeAction?: NetworkEntry["routeAction"]
   responseSize?: number
+  /** Group name of the device whose proxy captured the request (multi-device traces). */
+  deviceId?: string
 }): NetworkEntry {
   const start = BASE_TIME + o.index * 50
   const duration = o.duration ?? 35
   return {
     index: o.index,
+    deviceId: o.deviceId,
     actionIndex: o.actionIndex ?? 0,
     startTime: start,
     endTime: start + duration,

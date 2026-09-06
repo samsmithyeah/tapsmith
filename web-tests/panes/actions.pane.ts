@@ -50,6 +50,16 @@ export class ActionsPane {
     return this.page.getByTestId("metadata-isolation")
   }
 
+  /** Per-row device badges — present only in a multi-device trace. */
+  get deviceTags() {
+    return this.page.getByTestId("action-device")
+  }
+
+  /** One Metadata-tab row per device of a multi-device trace. */
+  get metadataDevices() {
+    return this.page.getByTestId("metadata-device")
+  }
+
   /**
    * Stands in for the list while the device is busy outside a traced action —
    * either the generic wait or, when the server reports one, the actual

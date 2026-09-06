@@ -27,6 +27,8 @@ interface DeviceMirrorProps {
   interactive: boolean
   force: boolean
   workerId: number
+  /** Which device of the worker's group is mirrored (0 = primary). */
+  deviceIndex?: number
   send: (msg: ClientMessage) => void
   /** Element pick mode — clicks pick an element instead of tapping the device. */
   pickMode?: boolean
@@ -40,8 +42,8 @@ interface DeviceMirrorProps {
 
 const NO_BOUNDS: Bounds[] = [];
 
-export function DeviceMirror({ canvasRef, connected, loading, platform, formFactor, interactive, force, workerId, send, pickMode, pickDpr, pickHoverBounds, pickMatchBounds, onPickPoint, onPickHover }: DeviceMirrorProps) {
-  const interaction = useDeviceInteraction({ send, enabled: interactive && !pickMode, force, workerId });
+export function DeviceMirror({ canvasRef, connected, loading, platform, formFactor, interactive, force, workerId, deviceIndex = 0, send, pickMode, pickDpr, pickHoverBounds, pickMatchBounds, onPickPoint, onPickHover }: DeviceMirrorProps) {
+  const interaction = useDeviceInteraction({ send, enabled: interactive && !pickMode, force, workerId, deviceIndex });
 
   // Hover hit-tests are coalesced to one per animation frame (mousemove can
   // fire faster than the display refreshes). The callback is read through a

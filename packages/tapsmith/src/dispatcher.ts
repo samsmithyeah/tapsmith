@@ -14,6 +14,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { normalizeGrep, resolveDeviceStrategy, type TapsmithConfig } from './config.js';
 import { findDaemonBin } from './daemon-bin.js';
+import { assignGroupMemberDevices, deviceGroupSize, resolveDeviceGroup } from './config.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import type { TestResult, SuiteResult } from './runner.js';
 import type { TapsmithReporter, FullResult } from './reporter.js';
@@ -68,13 +69,25 @@ interface TaggedFile {
   projectGrepInvert?: import('./worker-protocol.js').SerializedRegExp[]
 }
 
-interface WorkerHandle {
-  id: number
-  process: ChildProcess
+/** A secondary device of a worker's group, with the daemon this dispatcher spawned for it. */
+interface WorkerGroupMemberHandle {
+  name: string
   deviceSerial: string
   daemonPort: number
   agentPort: number
   daemonProcess?: ChildProcess
+}
+
+interface WorkerHandle {
+  id: number
+  process: ChildProcess
+  /** The group's primary device. */
+  deviceSerial: string
+  daemonPort: number
+  agentPort: number
+  daemonProcess?: ChildProcess
+  /** The rest of the device group (`use.devices`); empty for single-device projects. */
+  members: WorkerGroupMemberHandle[]
   busy: boolean
   currentFile?: TaggedFile
   retired?: boolean
@@ -681,7 +694,21 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         wave.reduce((sum, p) => sum + p.testFiles.length, 0),
       ))
     : testFiles.length;
-  const maxUsefulWorkers = Math.min(opts.workers, maxFilesInWave);
+  // A worker is a device group: a `use.devices` project needs `groupSize`
+  // devices (and daemons) per worker, so device counts below are workers ×
+  // group size. Pinned members (`{ device }`) name their devices outright,
+  // which fixes the bucket to a single worker.
+  //
+  // `use.devices` is project-level, so the root config never declares a
+  // group. Every project of this run shares one device signature (the group
+  // is part of it — a second signature would have gone through
+  // runMultiBucket, whose `config` already is the bucket's), so the first
+  // project's effective config is the group's authority.
+  const groupConfig = opts.projects?.[0]?.effectiveConfig ?? config;
+  const groupSize = deviceGroupSize(groupConfig);
+  const deviceGroup = resolveDeviceGroup({ devices: groupConfig.devices, device: config.device ?? groupConfig.device });
+  const pinnedMemberSerials = deviceGroup.slice(1).flatMap((e) => (e.device ? [e.device] : []));
+  const maxUsefulWorkers = pinnedMemberSerials.length > 0 ? 1 : Math.min(opts.workers, maxFilesInWave);
   const progressWorkerTotal = opts.launchProgressWorkerTotal ?? maxUsefulWorkers;
   const progressReadyCounter = opts.launchProgressReadyCounter ?? { count: 0 };
   const phaseCounters = opts.launchProgressPhaseCounters ?? createLaunchPhaseCounters();
@@ -1041,7 +1068,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       }
       deviceSerials = iosHealthy.healthyUdids;
 
-      const neededWorkers = Math.min(opts.workers, testFiles.length);
+      const neededWorkers = maxUsefulWorkers * groupSize;
       if (deviceSerials.length < neededWorkers && config.simulator) {
         const detail = `provisioning iOS simulators: have ${deviceSerials.length}, need ${neededWorkers}`;
         if (launchProgress) launchProgress.update('worker-devices', { state: 'running', detail });
@@ -1117,12 +1144,12 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
 
       if (
         config.launchEmulators &&
-        installedOnline.selectedSerials.length < Math.min(opts.workers, testFiles.length)
+        installedOnline.selectedSerials.length < maxUsefulWorkers * groupSize
       ) {
         const provision = await provisionEmulators({
           existingSerials: installedOnline.selectedSerials,
           occupiedSerials: androidDevices.map((d) => d.serial),
-          workers: Math.min(opts.workers, testFiles.length),
+          workers: maxUsefulWorkers * groupSize,
           avd: config.avd,
           onProgress: (message, level) => {
             if (!launchProgress) return;
@@ -1152,6 +1179,36 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
           : 'No online devices found. Connect a device, start an emulator, ' +
             'or set `avd` in your config to auto-launch emulators.',
+      );
+    }
+
+    if (pinnedMemberSerials.length > 0) {
+      // A pinned group: its one worker holds the primary (from `config.device`
+      // or the first unpinned device found), then the members in order — each
+      // keeping its pin, the unpinned ones taking the next free device.
+      const primary = deviceGroup[0].device ?? deviceSerials.find((s) => !pinnedMemberSerials.includes(s));
+      if (!primary) {
+        launchProgress?.fail('worker-devices', 'no device left for the group primary');
+        throw new LaunchSetupError(
+          `use.devices pins ${pinnedMemberSerials.join(', ')} but no other device is available for "${deviceGroup[0].name}". `
+          + 'Pin it too with `device`, or boot another device.',
+        );
+      }
+      const members = assignGroupMemberDevices(deviceGroup, primary, deviceSerials);
+      // Short of devices: keep what there is so the check below reports the
+      // shortfall with the real list.
+      deviceSerials = members
+        ? [primary, ...members]
+        : [primary, ...pinnedMemberSerials, ...deviceSerials.filter((s) => s !== primary && !pinnedMemberSerials.includes(s))];
+    }
+    if (deviceSerials.length < groupSize) {
+      launchProgress?.fail('worker-devices', `device group needs ${groupSize} device(s); ${deviceSerials.length} available`);
+      throw new LaunchSetupError(
+        `use.devices asks for ${groupSize} device(s) per test but only ${deviceSerials.length} could be provisioned `
+        + `(${deviceSerials.join(', ')}). `
+        + (isIos
+          ? 'Boot more simulators matching `simulator`, or pin members with `device`.'
+          : 'Connect more devices, set `avd` so emulators can be launched, or pin members with `device`.'),
       );
     }
 
@@ -1212,35 +1269,60 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     // ports are occupied, so we cannot rely on a fixed-size upfront sweep.
     // Worker 0 is special: it reuses firstDaemon (already spawned), and its
     // port may have walked past stale daemon ports before the spawn.
-    const availableWorkerSlots: Array<{ workerId: number; daemonPort: number; agentPort: number }> = [
-      { workerId: 0, daemonPort: firstDaemonPort, agentPort: firstAgentPort },
+    // Every worker needs one daemon + agent port pair per device of its group.
+    // Pairs are walked in order and chunked into slots of `groupSize`; the
+    // first pair is the already-spawned discovery daemon (worker 0's primary).
+    const wantedWorkers = Math.min(maxUsefulWorkers, Math.floor(deviceSerials.length / groupSize));
+    const wantedPairs = wantedWorkers * groupSize;
+    const portPairs: Array<{ daemonPort: number; agentPort: number }> = [
+      { daemonPort: firstDaemonPort, agentPort: firstAgentPort },
     ];
     const reservedDaemonPorts = new Set([firstDaemonPort]);
-    for (let wid = 0; availableWorkerSlots.length < maxUsefulWorkers && availableWorkerSlots.length < deviceSerials.length && wid < maxUsefulWorkers + 10; wid++) {
-      const port = baseDaemonPort + 1 + _portOffset + wid;
-      const agentPort = baseAgentPort + 1 + _portOffset + wid;
+    for (let k = 0; portPairs.length < wantedPairs && k < wantedPairs + 10; k++) {
+      const port = baseDaemonPort + 1 + _portOffset + k;
+      const agentPort = baseAgentPort + 1 + _portOffset + k;
       if (reservedDaemonPorts.has(port)) continue;
       freeStaleAgentPort(agentPort, reportFreedAgentPort);
       if (await isPortAvailable(port)) {
-        availableWorkerSlots.push({ workerId: availableWorkerSlots.length, daemonPort: port, agentPort });
+        portPairs.push({ daemonPort: port, agentPort });
         reservedDaemonPorts.add(port);
       } else {
         note(`Skipping port ${port} (in use), trying next...`);
       }
     }
+    const availableWorkerSlots: Array<{
+      workerId: number
+      daemonPort: number
+      agentPort: number
+      members: Array<{ daemonPort: number; agentPort: number }>
+    }> = [];
+    for (let w = 0; (w + 1) * groupSize <= portPairs.length; w++) {
+      const pairs = portPairs.slice(w * groupSize, (w + 1) * groupSize);
+      availableWorkerSlots.push({ workerId: w, ...pairs[0], members: pairs.slice(1) });
+    }
 
-    // Initialize all workers in parallel — each has its own daemon, device,
-    // and agent so there are no shared resources during init.
+    // Initialize all workers in parallel — each has its own daemon(s),
+    // device(s), and agent(s) so there are no shared resources during init.
     const initPromises: Promise<WorkerHandle>[] = [];
     const failedWorkerMessages: string[] = [];
+    const slotSerials = (workerId: number): string[] => deviceSerials.slice(workerId * groupSize, (workerId + 1) * groupSize);
+    const isFreshSerial = (serial: string): boolean => launchedSerials.has(serial) || freshIosUdids.has(serial);
 
     for (const slot of availableWorkerSlots) {
-      const candidateSerial = deviceSerials[slot.workerId];
-      const isFresh = launchedSerials.has(candidateSerial) || freshIosUdids.has(candidateSerial);
+      const serials = slotSerials(slot.workerId);
+      const candidateSerial = serials[0];
+      const isFresh = isFreshSerial(candidateSerial);
       initPromises.push(
         initializeWorker({
           workerId: slot.workerId,
           deviceSerial: candidateSerial,
+          deviceName: deviceGroup[0].name,
+          members: slot.members.map((ports, i) => ({
+            name: deviceGroup[i + 1].name,
+            deviceSerial: serials[i + 1],
+            fresh: isFreshSerial(serials[i + 1]),
+            ...ports,
+          })),
           daemonBin,
           serializedConfig,
           baseDaemonPort,
@@ -1286,7 +1368,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         if (worker.id === 0) firstDaemonAssigned = true;
         workers.push(worker);
       } else {
-        const serial = deviceSerials[i];
+        const serial = slotSerials(i).join('+');
         const reasonText = messageFromUnknown(result.reason);
         const reasonSummary = reasonText.split('\n')[0];
         const workerLabel = `Worker ${displayWorkerId(i)} (${serial})`;
@@ -1746,12 +1828,14 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       // Each daemon set up `adb forward tcp:<agentPort> tcp:18700` on its device.
       // Stale forwards break subsequent runs on the same device.
       for (const worker of workers) {
-        try {
-          execFileSync('adb', ['-s', worker.deviceSerial, 'forward', '--remove', `tcp:${worker.agentPort}`], {
-            timeout: 5_000,
-            stdio: 'ignore',
-          });
-        } catch { /* forward may already be gone */ }
+        for (const { deviceSerial, agentPort } of [worker, ...worker.members]) {
+          try {
+            execFileSync('adb', ['-s', deviceSerial, 'forward', '--remove', `tcp:${agentPort}`], {
+              timeout: 5_000,
+              stdio: 'ignore',
+            });
+          } catch { /* forward may already be gone */ }
+        }
       }
 
       // 4. Leave emulators running for reuse by the next run.
@@ -1782,21 +1866,27 @@ function cleanupWorkerResources(worker: WorkerHandle): void {
     }
   } catch { /* already dead */ }
 
-  try {
-    worker.daemonProcess?.kill();
-  } catch { /* already dead */ }
+  for (const { deviceSerial, agentPort, daemonProcess } of [worker, ...worker.members]) {
+    try {
+      daemonProcess?.kill();
+    } catch { /* already dead */ }
 
-  try {
-    execFileSync('adb', ['-s', worker.deviceSerial, 'forward', '--remove', `tcp:${worker.agentPort}`], {
-      timeout: 5_000,
-      stdio: 'ignore',
-    });
-  } catch { /* forward may already be gone */ }
+    try {
+      execFileSync('adb', ['-s', deviceSerial, 'forward', '--remove', `tcp:${agentPort}`], {
+        timeout: 5_000,
+        stdio: 'ignore',
+      });
+    } catch { /* forward may already be gone */ }
+  }
 }
 
 interface InitializeWorkerOptions {
   workerId: number
   deviceSerial: string
+  /** The primary's group entry name (`InitMessage.deviceName`). */
+  deviceName: string
+  /** The rest of the worker's device group, each needing its own daemon. */
+  members: Array<{ name: string; deviceSerial: string; daemonPort: number; agentPort: number; fresh: boolean }>
   daemonBin: string
   serializedConfig: SerializedConfig
   baseDaemonPort: number
@@ -1835,28 +1925,64 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
   const daemonPort = opts.daemonPortOverride ?? (baseDaemonPort + 1 + workerId);
   const agentPort = opts.agentPortOverride ?? (baseAgentPort + 1 + workerId);
 
+  const spawnWorkerDaemon = async (port: number, agent: number, describe: string): Promise<ChildProcess> => {
+    opts.onProgress?.(`starting worker daemon on localhost:${port}`);
+    const proc = spawnDaemonProcess(daemonBin, port, agent, opts.displayWorkerId ?? workerId, opts.serializedConfig.platform);
+    proc.unref();
+    proc.on('error', (err) => {
+      process.stderr.write(`Daemon for ${describe} failed to start: ${err.message}\n`);
+    });
+
+    const client = new TapsmithGrpcClient(`localhost:${port}`);
+    const ready = await client.waitForReady(10_000);
+    client.close();
+    if (!ready) {
+      try { proc.kill(); } catch { /* already dead */ }
+      const portInUse = !(await isPortAvailable(port));
+      const hint = portInUse ? ` (port ${port} is already in use)` : '';
+      throw new Error(`worker daemon on port ${port} did not become ready${hint}`);
+    }
+    return proc;
+  };
+
   let daemonProcess: ChildProcess | undefined;
   if (workerId === 0) {
     daemonProcess = firstDaemon;
     opts.onDaemonReady?.();
   } else {
-    opts.onProgress?.(`starting worker daemon on localhost:${daemonPort}`);
-    daemonProcess = spawnDaemonProcess(daemonBin, daemonPort, agentPort, opts.displayWorkerId ?? workerId, opts.serializedConfig.platform);
-    daemonProcess.unref();
-    daemonProcess.on('error', (err) => {
-      process.stderr.write(`Daemon for worker ${workerId} failed to start: ${err.message}\n`);
-    });
-
-    const client = new TapsmithGrpcClient(`localhost:${daemonPort}`);
-    const ready = await client.waitForReady(10_000);
-    client.close();
-    if (!ready) {
-      try { daemonProcess.kill(); } catch { /* already dead */ }
-      const portInUse = !(await isPortAvailable(daemonPort));
-      const hint = portInUse ? ` (port ${daemonPort} is already in use)` : '';
-      throw new Error(`worker daemon on port ${daemonPort} did not become ready${hint}`);
-    }
+    daemonProcess = await spawnWorkerDaemon(daemonPort, agentPort, `worker ${workerId}`);
     opts.onDaemonReady?.();
+  }
+
+  // One more daemon per group member, spawned together — they are independent.
+  const members: WorkerGroupMemberHandle[] = [];
+  try {
+    // Settle every spawn before judging: `Promise.all` would reject on the
+    // first failure while its siblings were still starting, and the ones that
+    // then came up would never be captured — or killed.
+    const settled = await Promise.allSettled(opts.members.map((m) =>
+      spawnWorkerDaemon(m.daemonPort, m.agentPort, `worker ${workerId} member ${m.name}`)));
+    const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failure) {
+      for (const r of settled) {
+        if (r.status === 'fulfilled') { try { r.value.kill(); } catch { /* already dead */ } }
+      }
+      throw failure.reason;
+    }
+    const memberDaemons = settled.map((r) => (r as PromiseFulfilledResult<ChildProcess>).value);
+    opts.members.forEach((m, i) => members.push({
+
+      name: m.name,
+      deviceSerial: m.deviceSerial,
+      daemonPort: m.daemonPort,
+      agentPort: m.agentPort,
+      daemonProcess: memberDaemons[i],
+    }));
+  } catch (err) {
+    if (workerId !== 0) {
+      try { daemonProcess?.kill(); } catch { /* already dead */ }
+    }
+    throw err;
   }
 
   const child = fork(resolvedScript, [], {
@@ -1878,6 +2004,7 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     daemonPort,
     agentPort,
     daemonProcess,
+    members,
     busy: false,
   };
 
@@ -1951,9 +2078,18 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
         type: 'init',
         workerId: worker.id,
         deviceSerial: worker.deviceSerial,
+        deviceName: opts.deviceName,
         daemonPort: worker.daemonPort,
         config: serializedConfig,
         freshEmulator: opts.freshEmulator === true ? true : undefined,
+        ...(members.length > 0 ? {
+          groupMembers: members.map((m, i) => ({
+            name: m.name,
+            deviceSerial: m.deviceSerial,
+            daemonPort: m.daemonPort,
+            freshEmulator: opts.members[i].fresh || undefined,
+          })),
+        } : {}),
       }, (err) => {
         worker.onIpcError?.(err);
       });
@@ -1973,13 +2109,18 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     if (workerId !== 0) {
       try { daemonProcess?.kill(); } catch { /* already dead */ }
     }
+    for (const m of members) {
+      try { m.daemonProcess?.kill(); } catch { /* already dead */ }
+    }
 
-    try {
-      execFileSync('adb', ['-s', deviceSerial, 'forward', '--remove', `tcp:${agentPort}`], {
-        timeout: 5_000,
-        stdio: 'ignore',
-      });
-    } catch { /* forward may not exist */ }
+    for (const target of [{ deviceSerial, agentPort }, ...members]) {
+      try {
+        execFileSync('adb', ['-s', target.deviceSerial, 'forward', '--remove', `tcp:${target.agentPort}`], {
+          timeout: 5_000,
+          stdio: 'ignore',
+        });
+      } catch { /* forward may not exist */ }
+    }
 
     throw err;
   }
