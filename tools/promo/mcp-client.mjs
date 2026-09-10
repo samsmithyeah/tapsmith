@@ -31,6 +31,9 @@ for await (const line of rl) {
         { timeout: 300000, resetTimeoutOnProgress: true },
       );
       console.log('done:run', JSON.stringify(r.content?.[0]?.text ?? '').slice(0, 400));
+    } else if (cmd === 'snap') {
+      const r = await client.callTool({ name: 'tapsmith_snapshot', arguments: {} });
+      console.log('done:snap', JSON.stringify(r.content?.[0]?.text ?? '').slice(0, 600));
     } else if (cmd === 'shot') {
       await client.callTool({ name: 'tapsmith_screenshot', arguments: {} });
       console.log('done:shot');

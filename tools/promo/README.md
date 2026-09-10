@@ -1,9 +1,10 @@
 # Promo video pipeline
 
-Generates `tapsmith-promo.mp4` — an ~102s promotional video (1080p30, voiceover,
-music, real screen recordings of UI mode and the trace viewer, plus synthetic
-scenes: a YAML-flow -> TypeScript morph with an autocomplete moment, and an
-MCP-server scene showing an agent writing and running a test).
+Generates `tapsmith-promo.mp4` — a ~121s promotional video (1080p30, voiceover,
+music, real screen recordings of UI mode, the selector playground, a two-device
+run and the trace viewer, plus synthetic scenes: a YAML-flow -> TypeScript
+morph with an autocomplete moment, and an MCP-server scene showing an agent
+inspecting the screen, writing and running a test).
 
 The video is defined as a deterministic timeline in **`comp.html`**
 (`window.seekComp(t)` renders the exact frame for any time `t`), rendered
@@ -17,12 +18,14 @@ frame-by-frame in headless Chrome, then assembled with ffmpeg.
   build (the Claude/Rosetta x64 trap breaks the UI-mode recording step; see
   the note in `record-ui` below)
 - **Python 3** with a venv for audio: `python3 -m venv venv && ./venv/bin/pip install edge-tts numpy`
+  (a venv created under Rosetta has x86_64 numpy — run those scripts with
+  `arch -x86_64 ./venv/bin/python …` from an arm64 shell, or recreate the venv)
 - `npm install` in this directory (installs `puppeteer-core`)
 
 ## Quick rebuild (no devices needed)
 
-The checked-in `clip-ui.mp4` / `clip-trace.mp4` are the finished screen
-recordings, so tweaking text, timing, scenes, or audio never touches a device:
+The checked-in `clip-*.mp4` files are the finished screen recordings, so
+tweaking text, timing, scenes, or audio never touches a device:
 
 ```bash
 # 1. Voiceover (only if vo/lines.txt changed)
@@ -30,7 +33,7 @@ while IFS='|' read -r n text; do
   ./venv/bin/edge-tts --voice en-US-AndrewMultilingualNeural --rate=-4% \
     --text "$text" --write-media "vo/seg$n.mp3"
 done < vo/lines.txt
-# (seg6, the feature list, is synthesized at --rate=+8% to fit its scene)
+# (seg8, the feature list, is synthesized at --rate=+8% to fit its scene)
 
 # 2. Music bed (deterministic synth; regenerates music.wav)
 ./venv/bin/python synth-music.py
@@ -50,10 +53,14 @@ the `adelay` values in `assemble.sh`, and the gain automation in
 
 ## Re-recording the screen captures
 
-Only needed if the product UI changed. Both recorders inject a synthetic
-cursor + click ripples and capture via CDP screencast into `*-frames/` with
+Only needed if the product UI changed. Every recorder injects a synthetic
+cursor + click ripples and captures via CDP screencast into `*-frames/` with
 timestamps; `build-clips.py` then retimes them into 30fps clips (capping idle
-gaps and jump-cutting the live test run).
+gaps and jump-cutting the live test run). It builds whichever `*-frames/`
+directories exist, so move stale ones out of the way (e.g. into `.stash/`)
+before rebuilding a single clip. The UI-mode cut solves each segment's speed
+from a target duration, so a faster or slower live run lands on the same
+~23.6s clip.
 
 **Trace viewer** (no device needed):
 
@@ -76,7 +83,7 @@ trace, scrub it the same way before recording (`trace.json`, `metadata.json`,
 mkdir -p shim && printf '#!/bin/sh\nexit 0\n' > shim/open && chmod +x shim/open
 ln -sf "$HOME/.nvm/versions/node/v22.21.0/bin/node" shim/node
 cd ../../e2e && PATH="$(pwd)/../tools/promo/shim:$PATH" \
-  node node_modules/.bin/tapsmith test --ui --ui-port 4830 -c tapsmith.config.ios.mjs &
+  node node_modules/.bin/tapsmith test --ui --ui-port 4830 --workers 1 -c tapsmith.config.ios.mjs &
 cd ../tools/promo && node record-ui.mjs      # runs the network-mocking test live
 python3 build-clips.py                       # rebuild clip-ui.mp4 / clip-trace.mp4
 ```
@@ -106,6 +113,21 @@ so future re-cuts of the UI scene don't require a simulator: point
 `build-clips.py` at it (or keep the raw `ui-frames/` around) instead of
 re-recording.
 
+**Multi-device** (the S3.8 scene; boots/claims TWO simulators — Tapsmith clones
+a second `iPhone 17` if only one is booted):
+
+```bash
+cd ../../e2e && PATH="$(pwd)/../tools/promo/shim:$PATH" \
+  node node_modules/.bin/tapsmith test --ui --ui-port 4830 -c tapsmith.config.ios-multi.mjs &
+cd ../tools/promo && node record-multi.mjs   # runs the two-user chat test live
+python3 build-clips.py                       # -> clip-multi.mp4 (+ session archive)
+```
+
+The chat test hosts its own HTTP server, so the two mirrors show real messages
+crossing between the devices; afterwards the recorder selects the assertion
+that bob saw alice's message (two screenshot panes, acting device outlined)
+and opens the Network tab (one filter pill per device).
+
 **MCP panel** (the S3.5 scene's right-hand footage; claims the simulator):
 
 ```bash
@@ -131,9 +153,12 @@ recalibrating the hover fractions if the app layout changes.
 
 `record-mcp.mjs` drives the choreography and spawns `mcp-client.mjs`, a real
 MCP client (SDK from packages/tapsmith) that presents itself as `claude-code`
-and executes `tapsmith_list_tests` / `tapsmith_run_tests` /
-`tapsmith_screenshot` on cue — every feed entry in the footage is a real tool
-call. A passing run's feed shows no absolute paths (verified); a FAILED run
+and executes `tapsmith_list_tests` / `tapsmith_snapshot` /
+`tapsmith_run_tests` on cue — every feed entry in the footage is a real tool
+call. The snapshot beat is deliberate: validated selector suggestions and
+trace reading are what set Tapsmith's MCP apart from the device-driving MCPs
+Maestro and Appium ship, so the agent is shown reading the live screen before
+it writes the test. A passing run's feed shows no absolute paths (verified); a FAILED run
 does (trace path in the result), so if the on-camera run fails, restart the
 server and re-take rather than shipping those frames.
 
@@ -162,7 +187,7 @@ If the opening frames changed, also refresh the poster:
 | `comp.html` | The video: scenes, animations, typed code, clips, patches, vector logo |
 | `render-comp.mjs` | Frame renderer (`probe` \| `full <dsf> [from] [to]`) |
 | `assemble.sh` | frames + VO + music -> `tapsmith-promo.mp4` (loudnorm -14 LUFS) |
-| `record.mjs` / `record-ui.mjs` / `record-mcp.mjs` / `record-pick.mjs` | Screen-recording choreography (CDP screencast) |
+| `record.mjs` / `record-ui.mjs` / `record-mcp.mjs` / `record-pick.mjs` / `record-multi.mjs` | Screen-recording choreography (CDP screencast) |
 | `mcp-client.mjs` | Scripted MCP client ("claude-code") driving real tool calls for the MCP take |
 | `api-error.test.ts.fixture` | The test the agent "writes" on camera — copy into e2e/tests before re-recording |
 | `server.mjs` | Local trace-viewer server (no browser auto-open) |
@@ -177,4 +202,6 @@ If the opening frames changed, also refresh the poster:
 | `clip-ui-session.mp4` | Full UI-mode session archive (source for future re-cuts) |
 | `clip-mcp.mp4` / `clip-mcp-session.mp4` / `clip-mcp-full.mp4` | MCP-panel footage (crop cut, full-frame archive, full-window intro) |
 | `clip-pick.mp4` / `clip-pick-session.mp4` | Selector-playground footage (scene cut + archive) |
+| `clip-multi.mp4` / `clip-multi-session.mp4` | Two-device chat-test footage (scene cut + archive) |
+| `probe-shot.mjs` | One-off screenshot of the running UI server (layout check before recording) |
 | `demo-trace.zip` | Scrubbed failing trace driving the trace-viewer recording |

@@ -1,0 +1,10 @@
+import puppeteer from 'puppeteer-core';
+const browser = await puppeteer.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: 'new', args: ['--no-first-run','--hide-scrollbars','--user-data-dir=/tmp/promo-chrome-profile'] });
+const page = await browser.newPage();
+await page.setViewport({ width: 1600, height: 1000, deviceScaleFactor: 1 });
+await page.goto('http://127.0.0.1:4830/', { waitUntil: 'networkidle2' });
+await page.evaluate(() => { localStorage.setItem('tapsmith-mcp-panel', 'false'); });
+await page.reload({ waitUntil: 'networkidle2' });
+await new Promise(r => setTimeout(r, 3000));
+await page.screenshot({ path: process.argv[2] });
+await browser.close();

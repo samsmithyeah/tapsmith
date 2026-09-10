@@ -1,11 +1,13 @@
-// Record UI mode's MCP panel: a scripted "claude-code" client connects, lists
-// tests, and runs api-error.test.ts live; the panel feed, test run, and device
-// mirror are all real. Frames land in mcp-frames/ with timestamped meta.
+// Record the multi-device scene: UI mode running the two-user chat test from
+// e2e/tests/multi-device/ on two simulators at once (PILOT-310). The mirror's
+// "All" view tiles both members live; afterwards an action is selected so the
+// trace shows one screenshot pane per device. Frames land in multi-frames/.
+//
+// Server: tapsmith test --ui --ui-port 4830 -c tapsmith.config.ios-multi.mjs
 import puppeteer from 'puppeteer-core';
-import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 
-const OUT = 'mcp-frames';
+const OUT = 'multi-frames';
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT);
 
@@ -19,11 +21,7 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 await page.setViewport({ width: 1600, height: 1000, deviceScaleFactor: 2 });
 await page.goto('http://127.0.0.1:4830/', { waitUntil: 'networkidle2' });
-// generous MCP feed area, panel itself opened on camera
-await page.evaluate(() => {
-  localStorage.setItem('tapsmith-mcp-height', '330');
-  localStorage.setItem('tapsmith-mcp-panel', 'false');
-});
+await page.evaluate(() => { localStorage.setItem('tapsmith-mcp-panel', 'false'); });
 await page.reload({ waitUntil: 'networkidle2' });
 await new Promise(r => setTimeout(r, 3000));
 
@@ -59,7 +57,6 @@ cdp.on('Page.screencastFrame', async (f) => {
   meta.push({ idx, t: f.metadata.timestamp });
   try { await cdp.send('Page.screencastFrameAck', { sessionId: f.sessionId }); } catch { /* ended */ }
 });
-await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 88, everyNthFrame: 1 });
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const mouse = page.mouse;
@@ -78,7 +75,6 @@ async function glide(x, y, ms = 550) {
   cur = { x, y };
 }
 async function click() { await mouse.down(); await sleep(90); await mouse.up(); }
-
 async function rectOf(sel, text) {
   return page.evaluate((sel, text) => {
     for (const el of document.querySelectorAll(sel)) {
@@ -91,89 +87,72 @@ async function rectOf(sel, text) {
   }, sel, text);
 }
 
-// scripted MCP client (spawned now, connects on 'connect' command)
-const child = spawn('node', ['mcp-client.mjs'], { stdio: ['pipe', 'pipe', 'inherit'] });
-const childLines = [];
-child.stdout.on('data', (d) => {
-  for (const l of d.toString().split('\n')) if (l.trim()) { childLines.push(l.trim()); console.log('[client]', l.trim()); }
-});
-const waitChild = (prefix, timeoutMs = 300000) => new Promise((resolve, reject) => {
-  const t0 = Date.now();
-  const iv = setInterval(() => {
-    const hit = childLines.find(l => l.startsWith(prefix));
-    if (hit) { clearInterval(iv); resolve(hit); }
-    else if (Date.now() - t0 > timeoutMs) { clearInterval(iv); reject(new Error(`timeout waiting for ${prefix}`)); }
-  }, 100);
-});
+const TEST = 'alice messages bob';
 
-mark('start');
-await sleep(1500);
-
-// 1. Filter to the agent-authored test file
+// Off camera: filter the tree to the chat suite and reveal the test row.
 const search = await rectOf('.te-search');
-await glide(search.x, search.y, 600); await click();
-mark('typing');
-for (const ch of 'api error') { await page.keyboard.type(ch); await sleep(60); }
-await sleep(1100);
-const fileRow = await rectOf('.te-name', 'api-error.test.ts');
-if (fileRow) { await glide(fileRow.x, fileRow.y, 600); await click(); await sleep(800); }
-const suiteRow = await rectOf('.te-name', 'API error handling');
-if (suiteRow && !(await rectOf('.te-name', 'posts API 500'))) {
-  await glide(suiteRow.x, suiteRow.y, 450); await click(); await sleep(800);
-}
+await glide(search.x, search.y, 500); await click();
+for (const ch of 'chatting') { await page.keyboard.type(ch); await sleep(50); }
+await sleep(1200);
+const fileRow = await rectOf('.te-name', 'two-devices.test.ts');
+if (fileRow && !(await rectOf('.te-name', 'Two users chatting'))) { await glide(fileRow.x, fileRow.y, 500); await click(); await sleep(800); }
+const suiteRow = await rectOf('.te-name', 'Two users chatting');
+if (suiteRow && !(await rectOf('.te-name', TEST))) { await glide(suiteRow.x, suiteRow.y, 450); await click(); await sleep(800); }
+const row = await rectOf('.te-name', TEST);
+if (!row) { console.error('test row not found'); await page.screenshot({ path: 'multi-debug.png' }); process.exit(1); }
+// Make sure the mirror shows every member (the "All" tab).
+const allTab = await rectOf('.worker-tab', 'All');
+if (allTab) { await glide(allTab.x, allTab.y, 400); await click(); await sleep(600); }
 
-// 2. Open the MCP panel from the top-bar chip (shows Listening + setup hint)
-const chip = await rectOf('.rc-mcp-indicator');
-if (!chip) { console.error('MCP chip not found'); await page.screenshot({ path: 'mcp-debug.png' }); process.exit(1); }
-await glide(chip.x, chip.y, 700); await click();
-mark('mcpOpened');
-await sleep(2600);
+await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 88, everyNthFrame: 1 });
+await sleep(700);
+mark('start');
 
-// 3. Agent connects — pill flips from Listening to claude-code
-child.stdin.write('connect\n');
-await waitChild('connected');
-mark('connected');
-await sleep(1600);
+// 1. Hover the test, click its run button
+await glide(row.x, row.y, 700);
+await sleep(500);
+const runBtn = await page.evaluate((TEST) => {
+  for (const el of document.querySelectorAll('.te-node')) {
+    if ((el.textContent || '').includes(TEST)) {
+      const b = el.querySelector('.te-run-btn');
+      if (b) { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }
+    }
+  }
+  return null;
+}, TEST);
+if (!runBtn) { console.error('run btn not found'); await page.screenshot({ path: 'multi-debug.png' }); process.exit(1); }
+await glide(runBtn.x, runBtn.y, 400); await click();
+mark('runClicked');
 
-// 4. list_tests
-child.stdin.write('list\n');
-await waitChild('done:list');
-mark('listCalled');
-await sleep(1800);
-
-// 4b. snapshot — the agent reads the live screen (validated selectors) before writing
-child.stdin.write('snap\n');
-await waitChild('done:snap');
-mark('snapCalled');
-await sleep(1800);
-
-// 5. run_tests — the run streams in the main panel, mirror animates below
-child.stdin.write('run\n');
-mark('runStarted');
+// 2. Park the cursor between the two mirrors while both devices act
+await glide(1180, 560, 900);
 try {
-  await page.waitForFunction(() => {
+  await page.waitForFunction((TEST) => {
     const el = document.querySelector('.te-node.passed, .te-node .passed');
-    if (el && (el.textContent || '').includes('posts API 500')) return true;
+    if (el && (el.textContent || '').includes(TEST)) return true;
     return /1 passed|1 failed/.test(document.body.textContent || '');
-  }, { timeout: 280000, polling: 500 });
-} catch { console.error('run did not pass in time'); }
+  }, { timeout: 180000, polling: 500 }, TEST);
+} catch { console.error('run did not finish in time'); }
 mark('passed');
-await waitChild('done:run');
-mark('runDone');
 await sleep(1800);
 
-// 6. Expand the run_tests feed entry to show the result summary
-const entry = await rectOf('.mcp-entry', 'run_tests');
-if (entry) { await glide(entry.x, entry.y, 650); await click(); await sleep(2400); }
-mark('expanded');
+// 3. Select the assertion that bob saw alice's message: the trace shows one
+//    screenshot pane per device, the acting one outlined.
+const act = await rectOf('.action-item', 'Hi Bob');
+if (act) { await glide(act.x, act.y, 800); await click(); await sleep(2200); }
+mark('actionSelected');
 
-await sleep(1400);
+// 4. Network tab: both devices' traffic, filter pill per device
+const netTab = await rectOf('.detail-tab', 'Network');
+if (netTab) { await glide(netTab.x, netTab.y, 600); await click(); await sleep(2000); }
+mark('networkTab');
+await glide(900, 700, 700);
+await sleep(1200);
 mark('end');
 
 await cdp.send('Page.stopScreencast');
 await sleep(300);
 fs.writeFileSync(`${OUT}/meta.json`, JSON.stringify({ frames: meta, marks }));
 console.log('frames:', n, 'marks:', JSON.stringify(marks));
-child.stdin.write('quit\n');
 await browser.close();
 process.exit(0);

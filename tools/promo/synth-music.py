@@ -4,7 +4,7 @@ import numpy as np
 import wave
 
 SR = 44100
-DUR = 102.5
+DUR = 120.6
 N = int(SR * DUR)
 t = np.arange(N) / SR
 mix = np.zeros(N)
@@ -40,7 +40,7 @@ def pluck(midi, start, amp):
     env = np.exp(-seg * 9) * np.minimum(1, seg / 0.004)
     mix[n0:n1] += amp * w * env
 
-# Progression: Am7 - Fmaj7 - Cmaj7 - G6 (rooted low), 4s per chord, loops for 85s
+# Progression: Am7 - Fmaj7 - Cmaj7 - G6 (rooted low), 4s per chord, loops for the whole bed
 chords = [
     [45, 57, 60, 64, 67],   # A1(root A2 sub), A3 C4 E4 G4
     [41, 53, 57, 60, 65],   # F
@@ -59,10 +59,10 @@ while start < DUR:
     i += 1
     start += CH
 
-# Arp plucks during the demo scenes (24s..73s): eighth notes over chord tones
+# Arp plucks during the demo scenes (24s..98s): eighth notes over chord tones
 rng = np.random.default_rng(7)
 tt = 24.6
-while tt < 84.1:
+while tt < 97.8:
     ci = int(tt // CH) % 4
     tones = chords[ci][1:] + [chords[ci][2] + 12]
     m = tones[rng.integers(0, len(tones))]
@@ -83,7 +83,7 @@ def swell(center, width, amp):
     env = np.sin(np.pi * np.clip(x, 0, 1)) ** 2
     mix[n0:n1] += amp * noise * env
 
-for b in [4.4, 24.6, 43.8, 55.0, 71.3, 84.1, 95.9]:
+for b in [4.4, 24.6, 43.8, 55.0, 68.0, 85.0, 97.8, 114.0]:
     swell(b, 1.4, 0.10)
 
 # Gain automation: intro forward, ducked under VO, swell at outro, fade out
@@ -95,10 +95,10 @@ def seg_gain(t0, t1, g0, g1):
 
 seg_gain(0, 0.5, 0.55, 0.9)
 seg_gain(0.5, 0.9, 0.9, 0.42)      # duck for VO1 (starts 0.6)
-seg_gain(1.4, 98.0, 0.42, 0.42)
-seg_gain(98.0, 99.0, 0.42, 0.6)    # gentle lift under the closing line
-seg_gain(99.0, 101.3, 0.6, 0.55)
-seg_gain(101.3, 102.5, 0.55, 0.0)  # fade out
+seg_gain(1.4, 116.1, 0.42, 0.42)
+seg_gain(116.1, 117.1, 0.42, 0.6)  # gentle lift under the closing line
+seg_gain(117.1, 119.4, 0.6, 0.55)
+seg_gain(119.4, 120.6, 0.55, 0.0)  # fade out
 mix *= auto
 
 # gentle master soft-clip + normalize

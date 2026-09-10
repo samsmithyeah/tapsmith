@@ -8,7 +8,7 @@ import * as path from 'node:path';
 
 const MODE = process.argv[2] || 'probe';
 const DSF = Number(process.argv[3] || (MODE === 'probe' ? 1 : 2));
-const FPS = 30, DUR = 102.5;
+const FPS = 30, DUR = 120.6;
 const ROOT = path.dirname(new URL(import.meta.url).pathname);
 
 // static server with naive range support (Chrome video seeking)
@@ -43,7 +43,7 @@ await page.evaluate(() => window.compReady);
 console.log('comp loaded');
 
 if (MODE === 'probe') {
-  for (const t of [2.5, 8.5, 17.5, 22.5, 30, 45, 55, 66.5, 76, 79]) {
+  for (const t of [2.5, 8.5, 17.5, 22.5, 30, 45, 58, 63, 79.5, 90, 105, 116]) {
     await page.evaluate((t) => window.seekComp(t), t);
     await new Promise(r => setTimeout(r, 120));
     await page.screenshot({ path: `probe-${String(t).replace('.', '_')}.jpg`, quality: 90, type: 'jpeg' });
