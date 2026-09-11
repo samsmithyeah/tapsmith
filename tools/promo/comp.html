@@ -13,6 +13,11 @@
   .glow { position: absolute; width: 1400px; height: 1400px; left: 260px; top: -160px;
           background: radial-gradient(circle, rgba(253,133,103,0.10) 0%, rgba(253,133,103,0.035) 40%, transparent 70%);
           pointer-events: none; }
+  /* the turn at "Tapsmith is the next step": a brief warm bloom + the mark */
+  #flash { position: absolute; inset: 0; opacity: 0; pointer-events: none;
+           background: radial-gradient(ellipse at 50% 50%, rgba(253,133,103,0.55) 0%, rgba(253,133,103,0.18) 35%, transparent 70%); }
+  #beat-logo { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); opacity: 0; pointer-events: none; }
+  #beat-logo svg { height: 260px; display: block; filter: drop-shadow(0 0 40px rgba(253,133,103,0.6)); }
   .grid-bg { position: absolute; inset: 0;
     background-image: linear-gradient(rgba(232,228,223,0.028) 1px, transparent 1px),
                       linear-gradient(90deg, rgba(232,228,223,0.028) 1px, transparent 1px);
@@ -38,7 +43,7 @@
   /* S2 problem + code */
   .prob { position: absolute; left: 0; right: 0; text-align: center;
           font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 54px; color: #d8d2ca; }
-  .prob .x { color: #fd8567; margin-right: 22px; }
+  .prob .x { color: #e5484d; margin-right: 22px; }   /* cold red: the problem section is pre-Tapsmith */
   #code-window { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
                  width: 1400px; background: #211c17; border: 1px solid #383026; border-radius: 18px;
                  box-shadow: 0 40px 120px rgba(0,0,0,0.55); overflow: hidden; }
@@ -63,6 +68,10 @@
   .win-badge { position: absolute; right: 22px; top: 50%; transform: translateY(-50%);
                display: flex; align-items: center; gap: 9px; font-size: 17px; color: #8a8175;
                border: 1px solid #4a4030; border-radius: 999px; padding: 6px 16px; opacity: 0; }
+  .win-badge.yaml { font-size: 20px; color: #c9c2b8; border-color: rgba(229,72,77,0.55);
+                    background: rgba(229,72,77,0.08); }
+  .win-badge.yaml::before { content: ''; width: 10px; height: 10px; border-radius: 3px; background: #e5484d; }
+  .scene-label .pin.cold { background: #e5484d; }
   .win-badge.tapsmith { color: #fd8567; border-color: rgba(253,133,103,0.5);
                         background: rgba(253,133,103,0.09); font-weight: 600; }
   .win-badge svg { height: 20px; }
@@ -145,7 +154,8 @@
 <body>
 <div id="stage">
   <div class="grid-bg"></div>
-  <div class="glow"></div>
+  <div class="glow" id="glow"></div>
+  <div id="flash"></div>
 
   <div class="scene" id="s1">
     <div class="lockup" id="lk1">
@@ -172,7 +182,7 @@
         <div class="dot" style="background:#febc2e"></div>
         <div class="dot" style="background:#28c840"></div>
         <div class="fname" id="fname">checkout.flow.yaml</div>
-        <span class="win-badge" id="wb-yaml">generic YAML flow</span>
+        <span class="win-badge yaml" id="wb-yaml">generic YAML flow</span>
         <span class="win-badge tapsmith" id="wb-ts">Tapsmith</span>
       </div>
       <div id="code2">
@@ -187,6 +197,8 @@
       <div class="chip">iOS Simulators &amp; Devices</div>
       <div class="chip">Android Emulators &amp; Devices</div>
     </div>
+    <div class="scene-label" id="l2b"><div class="pin cold"></div>The status quo — a YAML flow</div>
+    <div id="beat-logo"></div>
   </div>
 
   <div class="scene" id="s3">
@@ -282,7 +294,7 @@
       <div class="feat"><span class="tick">✓</span>Accessibility-first selectors</div>
       <div class="feat"><span class="tick">✓</span>Parallel workers</div>
       <div class="feat"><span class="tick">✓</span>Multi-device tests</div>
-      <div class="feat"><span class="tick">✓</span>Fast, isolated app resets</div>
+      <div class="feat"><span class="tick">✓</span>Save &amp; restore app state</div>
       <div class="feat"><span class="tick">✓</span>MCP server for AI agents</div>
       <div class="feat"><span class="tick">✓</span>Built for CI</div>
     </div>
@@ -304,6 +316,7 @@ const $ = (id) => document.getElementById(id);
 window.addEventListener('DOMContentLoaded', () => {
   $('lk6').innerHTML = $('lk1').innerHTML;
   $('wb-ts').insertAdjacentHTML('afterbegin', $('lk1').querySelector('svg').outerHTML);
+  $('beat-logo').innerHTML = $('lk1').querySelector('svg').outerHTML;
 });
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const ease = (x) => x < 0.5 ? 2*x*x : 1 - Math.pow(-2*x + 2, 2) / 2;
@@ -363,14 +376,14 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 function renderTyped(t) {
-  // returns html for the live-typed row 6 and dropdown/caret state
-  const TY = 17.6, PRE_END = 20.0, TB0 = 20.3, TB1 = 21.1, ACCEPT = 21.65;
+  // returns html for the live-typed row 6 and dropdown/caret state (all relative to the beat)
+  const TY = BEAT + 2.0, PRE_END = BEAT + 4.4, TB0 = BEAT + 4.7, TB1 = BEAT + 5.5, ACCEPT = BEAT + 6.05;
   if (t < TY) return { html: '', caret: false, ac: 0 };
   if (t >= ACCEPT) {
     let html = '';
     for (const [cls, txt] of TYPE_TOKENS) html += cls === 'pl' ? esc(txt) : `<span class="${cls}">${esc(txt)}</span>`;
     html += '<span class="fn">toBeVisible</span>()';
-    return { html, caret: t < 22.4 && (t * 2) % 1 < 0.55, ac: 0 };
+    return { html, caret: t < ACCEPT + 0.75 && (t * 2) % 1 < 0.55, ac: 0 };
   }
   let n = Math.floor(NPREFIX * clamp((t - TY) / (PRE_END - TY), 0, 1));
   let html = '', curCls = null, buf = '';
@@ -386,19 +399,24 @@ function renderTyped(t) {
 // Scene boundaries. VO segments start a beat into each scene (see the adelay
 // values in assemble.sh) and the music bed's swells/automation in
 // synth-music.py follow the same numbers — change all three together.
+// The turn: VO 2a "Tapsmith is the next step." is spoken over a near-silent
+// bed (13.0-14.75); the chord hit, warm bloom and YAML->TypeScript morph all
+// land on BEAT as the phrase ends. Music (synth-music.py BEAT) and the 2a/2b
+// adelays in assemble.sh follow this number.
+const BEAT = 14.8;
 const T = {
   s1:  [0, 4.4],
   s2a: [4.4, 10.2],
-  s2b: [10.2, 24.6],
-  s3:  [24.6, 43.8],
-  s37: [43.8, 55.0],
-  s38: [55.0, 68.0],
-  s35: [68.0, 85.0],
-  s4:  [85.0, 97.8],
-  s5:  [97.8, 114.0],
-  s6:  [114.0, 120.6],
+  s2b: [10.2, 24.8],
+  s3:  [24.8, 44.0],
+  s37: [44.0, 55.2],
+  s38: [55.2, 68.2],
+  s35: [68.2, 85.2],
+  s4:  [85.2, 98.0],
+  s5:  [98.0, 114.2],
+  s6:  [114.2, 120.8],
 };
-const DUR = 120.6;
+const DUR = 120.8;
 const UI_CLIP_OFFSET = 0.4;    // start clip slightly in
 const UI_RATE = 1.18;          // ui clip playback rate (footage 23.2s into 19.2s scene)
 const MULTI_RATE = 1.0;        // multi-device clip playback rate (clip cut to the 13.0s scene)
@@ -442,6 +460,17 @@ window.seekComp = async function(t) {
   // default: all scenes hidden
   for (const id of ['s1','s2a','s2b','s3','s37','s38','s35','s4','s5','s6']) $(id).style.opacity = 0;
 
+  // ── Warmth arc: the logo intro is warm, the problem section goes cold (glow
+  //    almost off, red crosses, greyed YAML), and the brand glow blooms back on
+  //    the beat and stays for the rest of the video. ──
+  const warmth = t < BEAT
+    ? 1 - 0.9 * P(t, 4.4, 5.2)
+    : 1;
+  $('glow').style.opacity = warmth;
+  const bloom = P(t, BEAT, BEAT + 0.12) * (1 - P(t, BEAT + 0.12, BEAT + 0.8));
+  $('flash').style.opacity = 0.9 * bloom;
+  $('glow').style.transform = `scale(${1 + 0.18 * bloom})`;
+
   // ── S1 ──
   if (t < T.s1[1] + 0.5) {
     const s = $('s1');
@@ -469,20 +498,28 @@ window.seekComp = async function(t) {
   // ── S2b code: YAML -> TypeScript morph, then autocomplete ──
   if (t >= T.s2b[0] - 0.3 && t < T.s2b[1] + 0.4) {
     const s = $('s2b');
-    s.style.opacity = P(t, 10.2, 10.7) * (1 - P(t, 24.1, 24.6));
+    const E2 = T.s2b[1];
+    s.style.opacity = P(t, 10.2, 10.7) * (1 - P(t, E2 - 0.5, E2));
     const w = $('code-window');
     const k = easeOut(P(t, 10.2, 11.0));
-    w.style.transform = `translate(-50%, -50%) scale(${0.96 + 0.04 * k})`;
-    const MST = 15.6;                       // morph start
-    // yaml rows: paste in at 10.9, morph out at MST (staggered)
+    const MST = BEAT;                       // morph start = the beat
+    // the hit: the window jolts up a touch and settles
+    const jolt = P(t, MST, MST + 0.1) * (1 - P(t, MST + 0.1, MST + 0.7));
+    w.style.transform = `translate(-50%, -50%) scale(${0.96 + 0.04 * k + 0.02 * jolt})`;
+    // cold until the beat: the YAML is greyed and dim; colour returns with Tapsmith
+    const cold = 1 - P(t, MST, MST + 0.45);
+    w.style.filter = `grayscale(${0.75 * cold}) brightness(${1 - 0.1 * cold})`;
+    // status-quo caption under the YAML (under VO1's "flows that hit a wall")
+    $('l2b').style.opacity = P(t, 11.2, 11.7) * (1 - P(t, MST - 0.35, MST));
+    // yaml rows: paste in at 10.9, fall away on the beat (staggered)
     YAML_ROWS.forEach((_, i) => {
       const el = $(`yr${i}`);
       const inK = P(t, 10.9 + i * 0.05, 11.15 + i * 0.05);
-      const outK = easeOut(P(t, MST + i * 0.12, MST + 0.4 + i * 0.12));
+      const outK = easeOut(P(t, MST + i * 0.06, MST + 0.35 + i * 0.06));
       el.style.opacity = inK * (1 - outK);
-      el.style.transform = `translateY(${-12 * outK}px)`;
+      el.style.transform = `translateY(${-22 * outK}px)`;
     });
-    // ts rows: morph in (staggered), row 6 is typed live
+    // ts rows: land staggered right after the hit, row 6 is typed live
     const typed = renderTyped(t);
     TS_ROWS.forEach((_, i) => {
       const el = $(`tr${i}`);
@@ -491,28 +528,35 @@ window.seekComp = async function(t) {
         el.style.opacity = 1;
         return;
       }
-      const inK = easeOut(P(t, MST + 0.2 + i * 0.12, MST + 0.6 + i * 0.12));
+      const inK = easeOut(P(t, MST + 0.15 + i * 0.1, MST + 0.55 + i * 0.1));
       el.style.opacity = inK;
-      el.style.transform = `translateY(${12 * (1 - inK)}px)`;
+      el.style.transform = `translateY(${14 * (1 - inK)}px)`;
     });
     $('acbox').style.opacity = typed.ac;
-    $('fname').textContent = t < MST + 0.75 ? 'checkout.flow.yaml' : 'checkout.test.ts';
-    $('wb-yaml').style.opacity = P(t, 11.1, 11.5) * (1 - P(t, MST, MST + 0.5));
-    $('wb-ts').style.opacity = P(t, MST + 0.6, MST + 1.2);
+    $('fname').textContent = t < MST + 0.5 ? 'checkout.flow.yaml' : 'checkout.test.ts';
+    $('wb-yaml').style.opacity = P(t, 11.1, 11.5) * (1 - P(t, MST - 0.2, MST + 0.15));
+    $('wb-ts').style.opacity = P(t, MST + 0.35, MST + 0.9);
+    // the mark flashes at the hit and recedes into the window badge
+    const lg = $('beat-logo');
+    const lk = P(t, MST, MST + 0.1) * (1 - P(t, MST + 0.15, MST + 0.55));
+    lg.style.opacity = 0.8 * lk;
+    lg.style.transform = `translate(-50%, -50%) scale(${0.7 + 0.9 * P(t, MST, MST + 0.55)})`;
+    // platform chips arrive with "One API for iOS and Android"
     const chips = $('chips');
-    const ck = easeOut(P(t, 22.7, 23.4));
+    const ck = easeOut(P(t, 23.4, 24.1));
     chips.style.opacity = ck;
     chips.style.transform = `translateX(-50%) translateY(${(1 - ck) * 26}px)`;
   }
   // ── S3 UI mode ──
   if (t >= T.s3[0] - 0.3 && t < T.s3[1] + 0.4) {
     const s = $('s3');
-    s.style.opacity = P(t, 24.6, 25.05) * (1 - P(t, 43.35, 43.8));
-    const rel = clamp(t - T.s3[0], 0, 19.2);
+    const S = T.s3[0], E = T.s3[1];
+    s.style.opacity = P(t, S, S + 0.45) * (1 - P(t, E - 0.45, E));
+    const rel = clamp(t - S, 0, 19.2);
     const b = $('b3');
-    b.style.transform = `translate(-50%, -50%) scale(${1.0 + 0.018 * P(t, T.s3[0], T.s3[1])})`;
+    b.style.transform = `translate(-50%, -50%) scale(${1.0 + 0.018 * P(t, S, E)})`;
     const l = $('l3');
-    l.style.opacity = P(t, 25.2, 25.8) * (1 - P(t, 42.4, 43.2));
+    l.style.opacity = P(t, S + 0.6, S + 1.2) * (1 - P(t, E - 1.4, E - 0.6));
     // Cover the real filesystem path in the Call tab's SOURCE row with a
     // neutral one. Windows + row geometry come from patch-table.js (generated
     // per-frame by detect-paths.py from the clip itself).

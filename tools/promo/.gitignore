@@ -57,3 +57,6 @@ clip-multi-session.txt
 multi-debug.png
 
 __pycache__/
+mix.wav
+preview.mp4
+.stash/

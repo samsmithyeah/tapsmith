@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Ambient promo bed: warm pad progression + soft arp, with scene-aware gain automation."""
+"""Ambient promo bed: warm pad progression + soft arp, with scene-aware gain automation.
+
+Shape: a thin, unresolved two-chord bed under the problem section, a near-silent
+rest under "Tapsmith is the next step.", then a resolving chord hit with a low
+thump on BEAT — the arp and full progression run from there. Keep BEAT and the
+scene boundaries in sync with comp.html (BEAT, T) and assemble.sh (adelay).
+"""
 import numpy as np
 import wave
 
 SR = 44100
-DUR = 120.6
+DUR = 120.8
+BEAT = 14.8
+SCENES = [4.4, 24.8, 44.0, 55.2, 68.2, 85.2, 98.0, 114.2]   # scene boundaries after the beat scene
 N = int(SR * DUR)
 t = np.arange(N) / SR
 mix = np.zeros(N)
@@ -12,10 +20,10 @@ mix = np.zeros(N)
 def note_hz(midi):
     return 440.0 * 2 ** ((midi - 69) / 12)
 
-def pad_note(midi, start, dur, amp):
-    """Warm additive pad voice with slow attack/release."""
+def pad_note(midi, start, dur, amp, atk=None):
+    """Warm additive pad voice with slow attack/release (atk overrides the attack)."""
     n0, n1 = int(start * SR), min(int((start + dur) * SR), N)
-    if n1 <= n0: return
+    if n1 <= n0 or n0 < 0: return
     seg = np.arange(n1 - n0) / SR
     f = note_hz(midi)
     # slight detune pair + harmonics, gentle vibrato
@@ -24,8 +32,9 @@ def pad_note(midi, start, dur, amp):
          np.sin(2 * np.pi * f * 1.0015 * seg) +
          0.45 * np.sin(2 * np.pi * 2 * f * seg) +
          0.12 * np.sin(2 * np.pi * 3 * f * seg))
-    atk = min(1.2, dur * 0.4); rel = min(1.6, dur * 0.45)
-    env = np.minimum(1, seg / atk) * np.minimum(1, (dur - seg) / rel)
+    a = atk if atk is not None else min(1.2, dur * 0.4)
+    rel = min(1.6, dur * 0.45)
+    env = np.minimum(1, seg / a) * np.minimum(1, (dur - seg) / rel)
     env = np.clip(env, 0, 1) ** 1.5
     mix[n0:n1] += amp * w * env
 
@@ -40,7 +49,19 @@ def pluck(midi, start, amp):
     env = np.exp(-seg * 9) * np.minimum(1, seg / 0.004)
     mix[n0:n1] += amp * w * env
 
-# Progression: Am7 - Fmaj7 - Cmaj7 - G6 (rooted low), 4s per chord, loops for the whole bed
+def thump(start, amp):
+    """Low sine impact with a soft transient — the hit under the beat."""
+    dur = 0.9
+    n0, n1 = int(start * SR), min(int((start + dur) * SR), N)
+    seg = np.arange(n1 - n0) / SR
+    f = 52.0 * (1 + 0.6 * np.exp(-seg * 18))          # slight downward pitch sweep
+    ph = 2 * np.pi * np.cumsum(f) / SR
+    body = np.sin(ph) * np.exp(-seg * 4.2)
+    click = np.random.default_rng(3).standard_normal(n1 - n0) * np.exp(-seg * 90) * 0.35
+    mix[n0:n1] += amp * (body + click) * np.minimum(1, seg / 0.003)
+
+# Progression: Am7 - Fmaj7 - Cmaj7 - G6 (rooted low), 4s per chord, grid aligned
+# so a chord starts exactly on BEAT.
 chords = [
     [45, 57, 60, 64, 67],   # A1(root A2 sub), A3 C4 E4 G4
     [41, 53, 57, 60, 65],   # F
@@ -48,25 +69,43 @@ chords = [
     [43, 55, 59, 62, 67],   # G
 ]
 CH = 4.0
+start = BEAT - CH * int(BEAT // CH + 1)
 i = 0
-start = 0.0
 while start < DUR:
-    ch = chords[i % 4]
-    # sub root
-    pad_note(ch[0], start, CH + 1.5, 0.16)
-    for m in ch[1:]:
-        pad_note(m, start, CH + 1.5, 0.075)
+    if start < BEAT - 1e-6:
+        # cold bed: only Am / F alternating, root + one voice, unresolved
+        ch = chords[i % 2]
+        pad_note(ch[0], start, CH + 1.5, 0.13)
+        pad_note(ch[2], start, CH + 1.5, 0.05)
+    else:
+        # from the beat: full voicing, progression resumes at the resolving Cmaj7
+        k = int(round((start - BEAT) / CH))   # bars since the beat
+        ch = chords[(2 + k) % 4]
+        if abs(start - BEAT) < 1e-6:
+            # the hit: fast attack, every voice plus an octave-up shimmer
+            pad_note(ch[0], start, CH + 1.5, 0.19, atk=0.02)
+            for m in ch[1:]:
+                pad_note(m, start, CH + 1.5, 0.085, atk=0.03)
+            pad_note(ch[3] + 12, start, 2.5, 0.05, atk=0.02)
+            thump(start, 0.55)
+        else:
+            pad_note(ch[0], start, CH + 1.5, 0.16)
+            for m in ch[1:]:
+                pad_note(m, start, CH + 1.5, 0.075)
     i += 1
     start += CH
 
-# Arp plucks during the demo scenes (24s..98s): eighth notes over chord tones
+# Arp plucks from the beat through the demo scenes: eighth notes over chord tones
 rng = np.random.default_rng(7)
-tt = 24.6
-while tt < 97.8:
-    ci = int(tt // CH) % 4
+tt = BEAT + 0.5
+while tt < SCENES[-2]:
+    k = int((tt - BEAT) // CH)
+    ci = (2 + k) % 4
     tones = chords[ci][1:] + [chords[ci][2] + 12]
     m = tones[rng.integers(0, len(tones))]
-    pluck(m + 12, tt, 0.045 + 0.015 * rng.random())
+    # a touch louder right after the hit, settling over the first bars
+    boost = 1.0 + 0.6 * max(0.0, 1 - (tt - BEAT) / 6.0)
+    pluck(m + 12, tt, (0.045 + 0.015 * rng.random()) * boost)
     tt += 0.5
 
 # Riser/whoosh at scene boundaries: filtered noise swell
@@ -83,10 +122,12 @@ def swell(center, width, amp):
     env = np.sin(np.pi * np.clip(x, 0, 1)) ** 2
     mix[n0:n1] += amp * noise * env
 
-for b in [4.4, 24.6, 43.8, 55.0, 68.0, 85.0, 97.8, 114.0]:
+for b in SCENES:
     swell(b, 1.4, 0.10)
+swell(BEAT, 1.0, 0.16)   # riser into the hit (ends just past it)
 
-# Gain automation: intro forward, ducked under VO, swell at outro, fade out
+# Gain automation: intro forward, ducked under VO, the rest before the beat,
+# the hit forward, swell at outro, fade out
 auto = np.ones(N)
 def seg_gain(t0, t1, g0, g1):
     n0, n1 = int(t0 * SR), min(int(t1 * SR), N)
@@ -94,11 +135,17 @@ def seg_gain(t0, t1, g0, g1):
     auto[n0:n1] = np.linspace(g0, g1, n1 - n0)
 
 seg_gain(0, 0.5, 0.55, 0.9)
-seg_gain(0.5, 0.9, 0.9, 0.42)      # duck for VO1 (starts 0.6)
-seg_gain(1.4, 116.1, 0.42, 0.42)
-seg_gain(116.1, 117.1, 0.42, 0.6)  # gentle lift under the closing line
-seg_gain(117.1, 119.4, 0.6, 0.55)
-seg_gain(119.4, 120.6, 0.55, 0.0)  # fade out
+seg_gain(0.5, 0.9, 0.9, 0.42)                 # duck for VO1 (starts 0.6)
+seg_gain(1.4, BEAT - 2.3, 0.42, 0.42)
+seg_gain(BEAT - 2.3, BEAT - 1.9, 0.42, 0.05)  # the rest: VO1 has just ended, 2a speaks into near-silence
+seg_gain(BEAT - 1.9, BEAT - 0.6, 0.05, 0.05)
+seg_gain(BEAT - 0.6, BEAT, 0.05, 0.75)        # riser opens up into the hit
+seg_gain(BEAT, BEAT + 0.6, 0.75, 0.62)
+seg_gain(BEAT + 0.6, BEAT + 2.2, 0.62, 0.42)  # settle under VO 2b
+seg_gain(BEAT + 2.2, DUR - 4.5, 0.42, 0.42)
+seg_gain(DUR - 4.5, DUR - 3.5, 0.42, 0.6)     # gentle lift under the closing line
+seg_gain(DUR - 3.5, DUR - 1.2, 0.6, 0.55)
+seg_gain(DUR - 1.2, DUR, 0.55, 0.0)           # fade out
 mix *= auto
 
 # gentle master soft-clip + normalize
@@ -110,4 +157,4 @@ stereo = np.repeat(pcm[:, None], 2, axis=1)
 with wave.open('music.wav', 'wb') as w:
     w.setnchannels(2); w.setsampwidth(2); w.setframerate(SR)
     w.writeframes(stereo.tobytes())
-print('music.wav written', DUR, 's')
+print('music.wav written', DUR, 's; beat at', BEAT)

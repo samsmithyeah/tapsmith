@@ -10,6 +10,13 @@ The video is defined as a deterministic timeline in **`comp.html`**
 (`window.seekComp(t)` renders the exact frame for any time `t`), rendered
 frame-by-frame in headless Chrome, then assembled with ffmpeg.
 
+The dramatic turn is **`BEAT`** (14.8s): the problem section runs cold (glow
+off, red crosses, greyed YAML under a "status quo" caption, a thin two-chord
+bed), the music rests while "Tapsmith is the next step." is spoken, and the
+chord hit, thump, warm bloom, logo flash and YAML->TypeScript morph all land
+as the phrase ends. `BEAT` lives in `comp.html` and `synth-music.py`; the 2a/2b
+`adelay`s in `assemble.sh` are placed around it.
+
 ## Prerequisites
 
 - **ffmpeg** (`brew install ffmpeg`)
@@ -33,7 +40,8 @@ while IFS='|' read -r n text; do
   ./venv/bin/edge-tts --voice en-US-AndrewMultilingualNeural --rate=-4% \
     --text "$text" --write-media "vo/seg$n.mp3"
 done < vo/lines.txt
-# (seg8, the feature list, is synthesized at --rate=+8% to fit its scene)
+# (seg2a "Tapsmith is the next step." is synthesized at --rate=-10% so it can
+# breathe in the rest; seg8, the feature list, at --rate=+8% to fit its scene)
 
 # 2. Music bed (deterministic synth; regenerates music.wav)
 ./venv/bin/python synth-music.py
@@ -45,6 +53,10 @@ node render-comp.mjs probe               # quick QC stills at key timestamps
 
 # 4. Assemble final mp4
 ./assemble.sh
+
+# Quick check of one section without a full render: render just its frames,
+# then mux them with the corresponding slice of the audio mix
+node render-comp.mjs full 2 240 850 && ./assemble.sh preview 8 28   # -> preview.mp4
 ```
 
 If you change VO timing or scene boundaries, keep `comp.html`'s `T` timeline,

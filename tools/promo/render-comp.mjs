@@ -8,7 +8,7 @@ import * as path from 'node:path';
 
 const MODE = process.argv[2] || 'probe';
 const DSF = Number(process.argv[3] || (MODE === 'probe' ? 1 : 2));
-const FPS = 30, DUR = 120.6;
+const FPS = 30, DUR = 120.8;
 const ROOT = path.dirname(new URL(import.meta.url).pathname);
 
 // static server with naive range support (Chrome video seeking)
