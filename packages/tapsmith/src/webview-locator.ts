@@ -137,7 +137,20 @@ export class WebViewLocator {
     return this._handle._getAttributeLocator(this, name);
   }
 
+  /** Whether the target is visible right now (single read, no auto-wait). */
   async isVisible(): Promise<boolean> {
     return this._handle._isVisibleLocator(this);
+  }
+
+  /**
+   * The opposite of {@link isVisible}: `true` when nothing matches or the
+   * target is not visible. One DOM read, no auto-wait; strict like `isVisible`
+   * (an ambiguous locator throws rather than reporting the first match).
+   * Mirrors `ElementHandle.isHidden()` so native and WebView locators share
+   * one reader vocabulary. (Goes through the handle rather than
+   * `this.isVisible()` so the trace row is named `isHidden`.)
+   */
+  async isHidden(): Promise<boolean> {
+    return !(await this._handle._isVisibleLocator(this, 'isHidden'));
   }
 }

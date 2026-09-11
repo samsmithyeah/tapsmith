@@ -121,7 +121,7 @@ This is the safety net for the substring default of `getByText` — without it, 
 | Operation | Strict? |
 |---|---|
 | Actions (`tap`, `type`, `scroll`, `dragTo`, `setChecked`, …) | Yes |
-| Single-element queries (`find`, `getText`, `isVisible`, `boundingBox`, `scrollIntoView`, …) | Yes |
+| Single-element queries (`find`, `getText`, `isVisible`, `isHidden`, `boundingBox`, `scrollIntoView`, …) | Yes |
 | `waitFor({ state: "visible" \| "attached" })` | Yes |
 | Positive assertions (`toBeVisible`, `toHaveText`, `toBeChecked`, …) | Yes |
 | `waitFor({ state: "hidden" \| "detached" })` | No — absence is evaluated over all matches |
@@ -867,6 +867,26 @@ for (const item of items) {
 }
 ```
 
+The returned handles carry the snapshot they were resolved from, so reading and acting on the batch
+does not re-query the device for every element: `find()`, `getText()`, `isEnabled()`, `isChecked()`,
+`isEditable()`, `inputValue()`, `boundingBox()`, `isVisible()`, `isHidden()` and actions all address
+the element captured by `all()`, so a check and the action it guards describe the same element
+(and after an action that moves the list, `items[i].boundingBox()` still reports the captured
+coordinates). Scoped children (`items[i].getByRole("button")`) resolve their parent live by index, like
+`.nth(i)`: once the list has changed they address whatever row is now at index `i`, so call `all()` again
+after the list changes before acting on a row's children. Two things refresh the snapshot from a fresh
+read by the same index: an action whose captured element went stale mid-action, and a wait the
+capture cannot satisfy (a disabled control, a `setChecked()` state change being confirmed, an index the
+capture no longer has); the handle keeps answering from the refreshed capture. `expect(items[i])` assertions and
+`waitFor()` also re-query the device by index, so they reflect what is on screen now. Because a handle
+from `all()` already names one element, `first()`, `last()`, `nth()`, `filter()`, `and()` and `or()`
+throw on it, and so does passing it as the other operand or as `has`/`hasNot` — narrow the locator
+before calling `all()` instead (`list.filter({ hasText: "Sold out" }).all()`). Note that filters always
+apply before a positional index, so `list.nth(1).filter(…)` means "the second matching row", not "row 1
+if it matches". If the list changes after `all()` (an item is removed, say), call `all()` again, or use
+`.nth(i)` for a handle that always resolves live. Making `all()` return live locators, as Playwright
+does, is tracked as PILOT-346.
+
 ### Waiting
 
 #### `elementHandle.waitFor(options?): Promise<void>`
@@ -1101,15 +1121,75 @@ const label = await device.locator({ id: "status_label" }).getText();
 
 #### `elementHandle.isVisible(): Promise<boolean>`
 
-Check whether this element is visible on screen.
+Check whether this element is visible on screen **right now**.
+
+Like Playwright's `locator.isVisible()`, this does **not** wait for the element to appear: it reads the
+current state and returns `false` when no element matches, so it is safe to branch on presence. To
+wait for an element to become visible, use `expect(locator).toBeVisible()` or `waitFor()`.
 
 ```typescript
 const visible = await device.getByText("Error", { exact: true }).isVisible();
+
+// Presence branch — answers at once, no timeout is spent on a missing element
+if (!(await device.getByRole("button", { name: "Enable notifications" }).isVisible())) {
+  return; // no button to tap on this screen — nothing to do here
+}
 ```
+
+Strict mode still applies: a selector that matches more than one element throws a
+`StrictModeViolationError`. On a settled screen a present element costs one hierarchy read on the
+device (it never polls for the element). An absent answer costs two: the accessibility tree can briefly
+lag a just-rendered screen, so the first empty read is confirmed by waiting for the UI to settle (at
+most 1.5 s) and reading once more, as `scrollIntoView()` does before its first swipe. If that re-read
+only yields stale snapshots (a spinner keeps the tree churning), it is retried for a couple of seconds
+and then the first empty read stands as the answer — an absent element never costs the whole timeout. Infrastructure
+problems are never reported as a visibility answer: a momentary agent fault or agent timeout is retried
+for a short window after it first appears (about two seconds, capped by the handle's timeout) and then thrown.
+The window bounds when the next re-read may be scheduled, not the wall clock: a read that is itself slow
+to fail (an agent command timeout takes ~5 s to come back) can add one more such read before the fault
+is thrown. A stale mid-re-render snapshot
+just means the screen is busy, so — like `find()` and `waitFor()` — it is re-read until the handle's
+timeout; if the hierarchy never settles (a screen that never stops animating) the call keeps re-reading
+for the handle's timeout and then throws a descriptive error, pointing at `expect(locator).toBeVisible()` /
+`.not.toBeVisible()` and `waitFor()`, rather than guessing an answer. A handle obtained from `all()`
+answers from the snapshot it was created from, like every other reader on that handle (see `all()`).
+
+> **Behaviour change.** Before this release `isVisible()` waited for the element like `find()` and threw
+> when it never appeared, so `expect(await x.isVisible()).toBe(true)` straight after a navigation used
+> to pass by waiting. It now reads the screen as it is at that instant and may return `false` while the
+> new screen is still appearing. To wait for visibility, use `await expect(x).toBeVisible()`; use
+> `isVisible()`/`isHidden()` only to branch on the current state.
+
+Only `isVisible()` and `isHidden()` are non-waiting. `isEnabled()`, `isChecked()` and `isEditable()`
+follow Playwright too: they wait for the element to be present and throw if it never appears, so a
+negative answer always describes a real element.
+
+#### `elementHandle.isHidden(): Promise<boolean>`
+
+The opposite of `isVisible()`: `true` when the element is not visible **or** does not exist. Does not
+wait for the element to appear or disappear. To wait for an element to go away, use
+`expect(locator).not.toBeVisible()` or `waitFor({ state: "hidden" })`.
+
+Like Playwright's `isHidden()`, this is a strict single-element query: a selector that matches more
+than one element throws a `StrictModeViolationError`, whereas `not.toBeVisible()` and
+`waitFor({ state: "hidden" })` evaluate absence over all matches. If the selector may match several
+elements (say, two "Loading…" spinners), use those, or narrow with `.first()`/`.filter()`.
+
+```typescript
+// Presence branch: dismiss a banner only if one is showing
+if (!(await device.getByRole("button", { name: "Dismiss" }).isHidden())) {
+  await device.getByRole("button", { name: "Dismiss" }).tap();
+}
+```
+
+Do not use `isHidden()` to wait for a spinner or animation to finish: an animating screen is exactly
+what produces stale snapshots, so the probe would have to keep re-reading and, if the animation never
+stops, throws. `await expect(device.getByText("Loading…")).not.toBeVisible()` is the tool for that.
 
 #### `elementHandle.isEnabled(): Promise<boolean>`
 
-Check whether this element is enabled (interactive).
+Check whether this element is enabled (interactive). Waits for the element to be present (up to the
+handle's timeout) and throws if it never appears.
 
 ```typescript
 const enabled = await device.getByRole("button", { name: "Submit" }).isEnabled();
@@ -1117,7 +1197,8 @@ const enabled = await device.getByRole("button", { name: "Submit" }).isEnabled()
 
 #### `elementHandle.isChecked(): Promise<boolean>`
 
-Check whether this checkbox, switch, or radio button is in the checked state.
+Check whether this checkbox, switch, or radio button is in the checked state. Waits for the element to
+be present (up to the handle's timeout) and throws if it never appears.
 
 ```typescript
 const checked = await device.getByRole("switch", { name: "Notifications" }).isChecked();
@@ -1125,7 +1206,8 @@ const checked = await device.getByRole("switch", { name: "Notifications" }).isCh
 
 #### `elementHandle.isEditable(): Promise<boolean>`
 
-Check whether this element is an editable input field (text field role and enabled).
+Check whether this element is an editable input field (text field role and enabled). Waits for the
+element to be present (up to the handle's timeout) and throws if it never appears.
 
 ```typescript
 const editable = await device.getByRole("textfield", { name: "Email" }).isEditable();
@@ -1133,7 +1215,9 @@ const editable = await device.getByRole("textfield", { name: "Email" }).isEditab
 
 #### `elementHandle.inputValue(): Promise<string>`
 
-Get the current value of an input field. On Android, this returns the element's text property.
+Get the current value of an input field. On Android, this returns the element's text property. Waits
+for the element to be present (up to the handle's timeout, on every handle shape including
+`.first()`/`.nth()`/`.filter()`) and throws if it never appears.
 
 ```typescript
 const value = await device.getByRole("textfield", { name: "Email" }).inputValue();
@@ -1141,7 +1225,9 @@ const value = await device.getByRole("textfield", { name: "Email" }).inputValue(
 
 #### `elementHandle.boundingBox(): Promise<BoundingBox | null>`
 
-Get the element's position and dimensions. Returns `null` if the element has no bounds.
+Get the element's position and dimensions. Returns `null` if the element has no bounds. Waits for the
+element to be present (up to the handle's timeout, on every handle shape including
+`.first()`/`.nth()`/`.filter()`) and throws if it never appears.
 
 ```typescript
 const box = await device.getByText("Header", { exact: true }).boundingBox();
@@ -2629,6 +2715,10 @@ Get an attribute value from an element.
 
 Check if an element is visible: it must be rendered (have layout boxes — an ancestor with `display: none` counts as hidden) and not have `display: none`, `visibility: hidden`, or `opacity: 0`.
 
+#### `webview.isHidden(selector: string): Promise<boolean>`
+
+The opposite of `isVisible(selector)`: `true` when nothing matches the selector or the match is not visible. One DOM read, no auto-wait. Both string forms appear as their own row in a trace, like the locator forms.
+
 #### `webview.evaluate<T>(expression: string): Promise<T>`
 
 Execute arbitrary JavaScript in the WebView and return the result.
@@ -2686,7 +2776,7 @@ Close the WebView connection. Usually called via `device.native()` instead.
 
 Lazy reference to an element within a WebView, created by `webview.locator()` or the `webview.getBy*` methods. Supports actions and assertions.
 
-**Actions & queries (strict):** `click()`, `fill(value)`, `textContent()`, `innerHTML()`, `inputValue()`, `getAttribute(name)`, `isVisible()`
+**Actions & queries (strict):** `click()`, `fill(value)`, `textContent()`, `innerHTML()`, `inputValue()`, `getAttribute(name)`, `isVisible()`, `isHidden()` (both a single DOM read with no auto-wait — the same non-waiting contract as on `ElementHandle`, minus the native probe's stale-snapshot re-reads, which a DOM query does not need)
 
 **Narrowing & multi-element (strict-mode exempt):**
 

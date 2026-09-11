@@ -157,6 +157,16 @@ Check whether an element is visible. Returns `false` if the element is not rende
 const visible = await webview.isVisible(".error-banner")
 ```
 
+### `webview.isHidden(selector)`
+
+The opposite of `isVisible(selector)`: `true` when nothing matches the selector or the match is not visible. One DOM read, no auto-wait — use it to branch on the current state, and `expect(locator).not.toBeVisible()` to wait for something to disappear.
+
+```typescript
+if (await webview.isHidden(".cookie-banner")) {
+  // nothing to dismiss
+}
+```
+
 ### `webview.evaluate<T>(expression)`
 
 Execute arbitrary JavaScript in the WebView and return the result.
@@ -224,6 +234,7 @@ const html = await errorMessage.innerHTML()
 const value = await emailInput.inputValue()
 const href = await webview.locator("a.link").getAttribute("href")
 const visible = await errorMessage.isVisible()
+const hidden = await errorMessage.isHidden() // true when absent or not visible
 ```
 
 Locators are lazy -- no queries are made until you call an action or pass the locator to `expect()`.

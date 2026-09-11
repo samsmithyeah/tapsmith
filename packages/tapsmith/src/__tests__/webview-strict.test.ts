@@ -226,6 +226,56 @@ describe('WebView strict mode (PILOT-227)', () => {
     });
   });
 
+  describe('isHidden(selector) — string-selector form', () => {
+    it('is the negation of isVisible(selector)', async () => {
+      const hiddenOrAbsent = makeHandle([], false).handle;
+      expect(await hiddenOrAbsent.isHidden('.banner')).toBe(true);
+      expect(await hiddenOrAbsent.isVisible('.banner')).toBe(false);
+      const visible = makeHandle([], true).handle;
+      expect(await visible.isHidden('.banner')).toBe(false);
+    });
+
+    it('both string forms are traced under their own names, like the locator forms (review follow-up)', async () => {
+      const { handle } = makeHandle([], true);
+      const traced = vi.spyOn(handle as unknown as { _traced: (action: string) => unknown }, '_traced');
+      await handle.isVisible('.banner');
+      await handle.isHidden('.banner');
+      expect(traced.mock.calls.map((c) => c[0])).toEqual(['isVisible', 'isHidden']);
+    });
+  });
+
+  describe('isHidden()', () => {
+    it('is the negation of isVisible for a single match', async () => {
+      const { handle } = makeHandle([{ text: 'A', visible: false }]);
+      expect(await handle.getByText('A').isHidden()).toBe(true);
+      expect(await handle.getByText('A').isVisible()).toBe(false);
+    });
+
+    it('returns true when nothing matches', async () => {
+      const { handle } = makeHandle([]);
+      expect(await handle.getByText('A').isHidden()).toBe(true);
+    });
+
+    it('is strict: an ambiguous locator throws rather than reporting the first match', async () => {
+      const { handle } = makeHandle([{ text: 'A' }, { text: 'A' }]);
+      await expect(handle.getByText('A').isHidden()).rejects.toThrow('strict mode violation');
+    });
+
+    it('honours positional narrowing', async () => {
+      const { handle } = makeHandle([{ text: 'A', visible: false }, { text: 'A', visible: true }]);
+      expect(await handle.getByText('A').first().isHidden()).toBe(true);
+      expect(await handle.getByText('A').last().isHidden()).toBe(false);
+    });
+
+    it('both probes are traced under their own names, like every other locator method (review follow-up)', async () => {
+      const { handle } = makeHandle([{ text: 'A', visible: true }]);
+      const traced = vi.spyOn(handle as unknown as { _traced: (action: string) => unknown }, '_traced');
+      await handle.getByText('A').isVisible();
+      await handle.getByText('A').isHidden();
+      expect(traced.mock.calls.map((c) => c[0])).toEqual(['isVisible', 'isHidden']);
+    });
+  });
+
   describe('assertions', () => {
     it('toBeVisible() throws a strict violation on an ambiguous locator', async () => {
       const { handle } = makeHandle([{ text: 'A' }, { text: 'A' }]);

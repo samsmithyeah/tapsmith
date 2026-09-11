@@ -753,15 +753,19 @@ export class WebViewHandle {
 
   /** @internal — Single-tick visibility query. Strict: an ambiguous locator
    * (no positional modifier, >1 match) throws instead of silently reporting
-   * the first match's visibility. */
-  async _isVisibleLocator(loc: WebViewLocator): Promise<boolean> {
-    const probe = await this._probeLocator(loc, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
-    if (loc._nthIndex !== undefined) {
-      const idx = normalizeNthIndex(loc._nthIndex, probe.count);
-      return idx >= 0 && idx < probe.count && probe.targetVisible;
-    }
-    if (probe.count > 1) throw buildWebViewStrictError(loc, probe);
-    return probe.count === 1 && probe.targetVisible;
+   * the first match's visibility. Traced under the calling probe's name
+   * (`isVisible`/`isHidden`) like every other locator method, so the probe
+   * shows up as its own row in a trace rather than leaving a gap. */
+  async _isVisibleLocator(loc: WebViewLocator, action: 'isVisible' | 'isHidden' = 'isVisible'): Promise<boolean> {
+    return this._traced(action, loc._selector, async () => {
+      const probe = await this._probeLocator(loc, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
+      if (loc._nthIndex !== undefined) {
+        const idx = normalizeNthIndex(loc._nthIndex, probe.count);
+        return idx >= 0 && idx < probe.count && probe.targetVisible;
+      }
+      if (probe.count > 1) throw buildWebViewStrictError(loc, probe);
+      return probe.count === 1 && probe.targetVisible;
+    }, loc._finderJs);
   }
 
   /**
@@ -945,6 +949,21 @@ export class WebViewHandle {
   }
 
   async isVisible(selector: string): Promise<boolean> {
+    return this._traced('isVisible', selector, () => this._isVisibleSelector(selector));
+  }
+
+  /**
+   * The opposite of {@link isVisible}: `true` when no element matches the
+   * selector or the match is not visible. One DOM read, no auto-wait. Mirrors
+   * `ElementHandle.isHidden()` / `WebViewLocator.isHidden()`. Traced under its
+   * own name, like the locator form, so the check is a row in the trace.
+   */
+  async isHidden(selector: string): Promise<boolean> {
+    return this._traced('isHidden', selector, async () => !(await this._isVisibleSelector(selector)));
+  }
+
+  /** Single DOM read behind the string-selector visibility probes. */
+  private async _isVisibleSelector(selector: string): Promise<boolean> {
     const result = await this._evaluate(`(() => {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return false;

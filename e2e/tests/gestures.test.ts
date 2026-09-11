@@ -82,6 +82,9 @@ describe("Gestures screen", () => {
   })
 
   test("tap area isVisible returns true", async ({ gesturesScreen }) => {
+    // isVisible() does not wait (PILOT-287) and beforeEach only waits for the
+    // heading — settle the element first, then check the probe agrees.
+    await expect(gesturesScreen.tapArea).toBeVisible()
     const visible = await gesturesScreen.tapArea.isVisible()
     expect(visible).toBe(true)
   })
@@ -89,5 +92,27 @@ describe("Gestures screen", () => {
   test("tap area isEnabled returns true", async ({ gesturesScreen }) => {
     const enabled = await gesturesScreen.tapArea.isEnabled()
     expect(enabled).toBe(true)
+  })
+
+  // PILOT-287: the visibility probes must not wait for the element. An absent
+  // element answers at once instead of spending the action timeout and
+  // throwing. The value assertions catch a regression to the pre-fix throw;
+  // the wall-clock bound catches a regression to a silent poll-to-deadline
+  // (which would still return the right values, one timeout per call later).
+  // Such a regression always costs at least the configured default timeout
+  // (10s local iOS, 15s Android, 30s iOS CI), so each call is bounded by
+  // that rather than a constant that a slow shard could legitimately reach: an
+  // absent answer is two reads (each bounded by the daemon's ~5s read window)
+  // plus a ≤1.5s idle wait confirming the miss. Bound each call on its own so
+  // two slow reads cannot add up to a false failure.
+  test("isVisible/isHidden answer for an absent element without waiting", async ({ device }) => {
+    const absent = device.getByText("Definitely not on this screen", { exact: true })
+    const pollToDeadlineMs = device._getDefaultTimeout()
+    let start = Date.now()
+    expect(await absent.isVisible()).toBe(false)
+    expect(Date.now() - start).toBeLessThan(pollToDeadlineMs)
+    start = Date.now()
+    expect(await absent.isHidden()).toBe(true)
+    expect(Date.now() - start).toBeLessThan(pollToDeadlineMs)
   })
 })
