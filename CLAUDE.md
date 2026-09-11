@@ -179,9 +179,14 @@ silently (this class of bug has shipped more than once):
 
 When adding a per-session concern, prefer a **required** option on
 `runTestFile` over an optional one — a compile error in every embedder beats
-a silent default (see `RunOptions.resetCapabilities` for the precedent), and
-verify degraded paths loudly (assert the trace's reset rung, not just
-pass/fail).
+a silent default (see `RunOptions.resetCapabilities` and `RunOptions.runMode`
+for the precedent), and verify degraded paths loudly (assert the trace's
+reset rung, not just pass/fail).
+
+Anonymous usage telemetry (`telemetry.ts`, PILOT-330) rides on this: the
+runner reports one event per file tagged with the embedder's `runMode`. Keep
+the payload a closed set of fields (the unit test pins the key list) and never
+add anything identifying — `docs/telemetry.md` is the public contract.
 
 ## Design principles
 

@@ -2324,6 +2324,17 @@ Run a non-interactive system health check. Verifies all prerequisites: Node.js v
 npx tapsmith doctor
 ```
 
+### `tapsmith telemetry [status|enable|disable] [--json]`
+
+Show or switch the anonymous usage telemetry described in [Telemetry](telemetry.md). `status` (the default) says whether this process would report and, if not, which switch decided it: the environment (`TAPSMITH_TELEMETRY`, `DO_NOT_TRACK`), the project config (`telemetry: false`), or the machine-wide switch. `disable` turns it off for every project on this machine by writing to `~/.tapsmith/telemetry.json`; `enable` turns it back on (it cannot override the environment or a config opt-out). `--json` emits the status object for scripting. Pass `-c <file>` to consult a specific config.
+
+```bash
+npx tapsmith telemetry            # status
+npx tapsmith telemetry disable
+npx tapsmith telemetry enable
+npx tapsmith telemetry status --json
+```
+
 ### `tapsmith create-avd [--api <level>] [--name <name>] [--device <profile>] [--abi <abi>] [--force] [--install-tools]`
 
 Create an Android AVD that supports HTTPS network capture. Downloads a **Google APIs** system image with `sdkmanager` and creates the AVD with `avdmanager` — Google Play images (the ones Android Studio preselects) block `adb root`, so Tapsmith cannot decrypt HTTPS traffic on them (see [Android emulator image requirements](./network.md#android-emulator-image-requirements)).

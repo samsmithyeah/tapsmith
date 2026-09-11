@@ -51,6 +51,8 @@ import { onActionProgress } from './action-progress.js';
 import { runInAttemptContext, type AttemptToken } from './attempt-fence.js';
 import { matchesTestFilter } from './test-filter.js';
 import { startLiveNetwork } from './trace/live-network.js';
+import { telemetry, runEventFromResults, type RunMode } from './telemetry.js';
+import { isRecoverableInfrastructureError } from './worker-protocol.js';
 import { filterEntriesByHosts } from './trace/filter-hosts.js';
 
 // ─── Trace Device Info ───
@@ -747,6 +749,16 @@ export interface RunOptions {
    * contexts with no device capability probing (unit tests).
    */
   resetCapabilities: ResetCapabilities;
+  /**
+   * Which run path this file executes under — deliberately REQUIRED, like
+   * `resetCapabilities`. The runner reports one anonymous telemetry event per
+   * file tagged with this mode (PILOT-330); were it optional, an embedder
+   * that forgot it would silently under-report its whole path. Every embedder
+   * (sequential CLI, worker-runner, ui-worker, watch-run — which also serves
+   * the MCP dispatcher and so takes the mode from its parent's message) must
+   * name itself here.
+   */
+  runMode: RunMode;
   /**
    * @internal — per-device prepared state, keyed by device name, shared down
    * the describe tree so each device's preparation is consumed exactly once
@@ -2729,8 +2741,11 @@ export async function runTestFile(
   // out its timeout (PILOT-222).
   for (const d of allDevices(fileOpts)) d._client._setAbortSignal(fileOpts.abortSignal);
 
+  const fileStartedAt = Date.now();
   try {
-    return await runSuiteContext(rootCtx, '', [], [], fileOpts);
+    const suite = await runSuiteContext(rootCtx, '', [], [], fileOpts);
+    reportRunTelemetry(fileOpts, suite, Date.now() - fileStartedAt);
+    return suite;
   } finally {
     for (const d of allDevices(fileOpts)) d._client._setAbortSignal(undefined);
     restoreDeviceNames();
@@ -2775,6 +2790,37 @@ export async function runTestFile(
       }
       }
     }
+  }
+}
+
+/**
+ * One anonymous usage event per completed file: counts and mode only, never
+ * names (PILOT-330). Fire-and-forget and fenced — telemetry can never fail a
+ * run. Files with no devices (the runner's own unit tests) report nothing.
+ */
+function reportRunTelemetry(opts: RunOptions, suite: SuiteResult, durationMs: number): void {
+  if (opts.devices.length === 0) return;
+  try {
+    const results = collectResults(suite);
+    // Don't count an attempt that will be RETRIED because of a recoverable
+    // infrastructure failure (agent disconnect, gRPC unavailable): reporting
+    // the discarded attempt would emit a second event and inflate `failed` on
+    // exactly the infra-flaky files (PILOT-330 review). Only the retry-capable
+    // paths set `abortFileOnError` (the CLI, parallel workers, and UI workers,
+    // which loop on `isRecoverableInfrastructureError`); watch and MCP run a
+    // file exactly once with in-place recovery, so their single infra-degraded
+    // run is the real outcome and must still be counted (PILOT-330 review 2).
+    if (opts.abortFileOnError
+      && results.some((r) => r.status === 'failed' && isRecoverableInfrastructureError(r.error))) {
+      return;
+    }
+    telemetry.recordRun(opts.config, runEventFromResults(
+      results,
+      { mode: opts.runMode, platform: resolvePlatformFixture(opts.config), devices: opts.devices.length },
+      durationMs,
+    ));
+  } catch {
+    // Telemetry never surfaces.
   }
 }
 

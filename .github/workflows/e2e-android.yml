@@ -11,6 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # Tapsmith's own CI is not a user; keep its runs out of the usage counts.
+  TAPSMITH_TELEMETRY: "0"
   ANDROID_API_LEVEL: "36"
   ANDROID_SYSTEM_IMAGE: "system-images;android-36;google_apis;x86_64"
   AVD_NAME: "Tapsmith_Phone_API_36"

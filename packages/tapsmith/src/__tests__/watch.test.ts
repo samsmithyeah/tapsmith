@@ -209,6 +209,7 @@ describe('watch-run IPC protocol', () => {
       deviceSerial: 'emulator-5554',
       deviceName: 'device-1',
       filePath: '/test/login.test.ts',
+      runMode: 'watch',
       config: {
         timeout: 30_000,
         retries: 0,

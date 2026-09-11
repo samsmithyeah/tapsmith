@@ -205,6 +205,16 @@ export interface TapsmithConfig {
   };
 
   /**
+   * Anonymous usage telemetry (default true). Tapsmith reports one event per
+   * test-file run — run mode, platform, pass/fail counts, SDK/Node/OS
+   * versions — under a random per-machine id. It never sends test names,
+   * selectors, app identifiers, or file paths. Set `false` to opt out; the
+   * `TAPSMITH_TELEMETRY=0` environment variable does the same without a
+   * config change. See `docs/telemetry.md`.
+   */
+  telemetry?: boolean;
+
+  /**
    * Delay in milliseconds between keystrokes when typing text.
    * Helps prevent dropped characters on slow CI simulators/emulators.
    * Defaults to 0 (no delay).
@@ -641,6 +651,10 @@ export function assignGroupMemberDevices(
 
 /** Fail fast on malformed `ui` config values instead of silently ignoring them. */
 function validateUiOptions(raw: Partial<TapsmithConfig>): void {
+  if (raw.telemetry !== undefined && typeof raw.telemetry !== 'boolean') {
+    // A string `'false'` would read as opted-in; refuse rather than guess.
+    throw new Error(`config: telemetry must be a boolean (got ${JSON.stringify(raw.telemetry)})`);
+  }
   if (raw.ui === undefined) return;
   if (raw.ui.prepareBetweenRuns !== undefined && typeof raw.ui.prepareBetweenRuns !== 'boolean') {
     throw new Error(`config: ui.prepareBetweenRuns must be a boolean (got ${JSON.stringify(raw.ui.prepareBetweenRuns)})`);
@@ -800,7 +814,7 @@ function resolveRootDir(raw: Partial<TapsmithConfig>, root: string): string {
   return rawHasExplicitRootDir(raw) && raw.rootDir ? path.resolve(root, raw.rootDir) : root;
 }
 
-const CONFIG_CANDIDATES = ['tapsmith.config.ts', 'tapsmith.config.js', 'tapsmith.config.mjs'];
+export const CONFIG_CANDIDATES = ['tapsmith.config.ts', 'tapsmith.config.js', 'tapsmith.config.mjs'];
 
 /**
  * The config file `loadConfig(dir, configFile)` would read, or undefined when
@@ -859,21 +873,28 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
   for (const name of CONFIG_CANDIDATES) {
     const configPath = path.resolve(root, name);
     if (fs.existsSync(configPath)) {
+      let mod: Record<string, unknown>;
       try {
         // For .ts files we rely on tsx / ts-node being available at runtime.
-        const mod = await import(configPath);
-        const original: Partial<TapsmithConfig> = mod.default ?? mod;
-        const raw = omitUndefined(original);
-        const merged = applyConfigDefaults(
-          { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, root) },
-          raw,
-        );
-        withExplicitRootDir(merged, rawHasExplicitRootDir(original));
-        withConfigPath(merged, configPath);
-        return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
+        // Only the import is tolerated-and-skipped: a config that cannot be
+        // read falls through to the next candidate. Validation errors from
+        // applyConfigDefaults below must PROPAGATE — silently discarding a
+        // whole config because one key is malformed would, for `telemetry`,
+        // turn an opt-out into a run that reports (PILOT-330 review).
+        mod = await import(configPath);
       } catch (err) {
         console.warn(`Warning: failed to load ${configPath}: ${err}`);
+        continue;
       }
+      const original: Partial<TapsmithConfig> = (mod.default as Partial<TapsmithConfig>) ?? mod;
+      const raw = omitUndefined(original);
+      const merged = applyConfigDefaults(
+        { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, root) },
+        raw,
+      );
+      withExplicitRootDir(merged, rawHasExplicitRootDir(original));
+      withConfigPath(merged, configPath);
+      return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
     }
   }
 

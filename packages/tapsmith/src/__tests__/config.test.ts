@@ -146,6 +146,15 @@ describe('defineConfig()', () => {
     expect(() => defineConfig({ ui: { prepareDelayMs: 1.5 } })).toThrow(/ui\.prepareDelayMs must be a non-negative integer/);
   });
 
+  it('accepts the telemetry opt-out and rejects a non-boolean', () => {
+    expect(defineConfig({ telemetry: false }).telemetry).toBe(false);
+    // Unset means opted in; the runtime treats anything but `false` as on.
+    expect(defineConfig().telemetry).toBeUndefined();
+    // A string 'false' would silently read as opted IN — refuse it instead.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- exercising the runtime guard against untyped config files
+    expect(() => defineConfig({ telemetry: 'false' as any })).toThrow(/telemetry must be a boolean/);
+  });
+
   it('returns defaults when called with no arguments', () => {
     const config = defineConfig();
     expect(config.timeout).toBe(30_000);
@@ -364,6 +373,16 @@ describe('isExplicitWorkers() / loadConfig()', () => {
       expect(config.timeout).toBe(30_000);
       expect(config.workers).toBe(1);
       expect(isExplicitWorkers(config)).toBe(false);
+    });
+  });
+
+  it('loadConfig propagates a validation error from a discovered config instead of swallowing it (PILOT-330 review)', async () => {
+    // Regression: a malformed value used to throw inside the discovery loop's
+    // catch, which warned and fell back to DEFAULT_CONFIG — turning
+    // `telemetry: 'false'` (invalid) into a run that reports (opted IN).
+    const contents = 'export default { telemetry: "false" };\n';
+    await withTempConfig(contents, 'tapsmith.config.mjs', async (dir) => {
+      await expect(loadConfig(dir)).rejects.toThrow(/telemetry must be a boolean/);
     });
   });
 

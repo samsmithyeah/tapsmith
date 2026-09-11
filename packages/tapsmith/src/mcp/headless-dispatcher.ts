@@ -17,6 +17,7 @@ import {
 } from '../worker-protocol.js';
 import type { WatchRunMessage, WatchRunChildMessage } from '../watch-run.js';
 import { RunQueue } from '../watch-queue.js';
+import { telemetry } from '../telemetry.js';
 import { ensurePlatformTarget, platformTargetIsLive, type PlatformTarget } from './connection.js';
 import { deviceGroupNames, deviceGroupSize, resolveDeviceGroup, type TapsmithConfig } from '../config.js';
 import { deviceGroupSignature, deviceSignature } from '../project.js';
@@ -626,6 +627,13 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     this._discoveryErrors.clear();
     const config = await this._loadConfigWithFallback();
     this._config = config;
+    // The MCP server's stderr is the user's terminal (stdout is the protocol
+    // stream); this is the last user-facing point before a child runs a file.
+    telemetry.printNoticeIfFirstRun(config ?? undefined);
+    // Persist the anonymous id in this parent before it forks per-file run
+    // children, so they share one id rather than each minting its own on a
+    // fresh machine (PILOT-330 review).
+    telemetry.ensureIdentity(config ?? undefined);
 
     if (config) {
       try {
@@ -1060,6 +1068,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         // These runs are `tapsmith_run_tests`, not watch mode, whatever child
         // script they happen to share.
         label: 'Run',
+        runMode: 'mcp',
         resetCapabilities: this._resetCapabilities.get(target.deviceSerial),
         ...(target.members && target.members.length > 0 ? {
           groupMembers: target.members.map((m) => ({

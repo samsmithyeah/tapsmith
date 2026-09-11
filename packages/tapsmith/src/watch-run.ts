@@ -10,6 +10,7 @@
  */
 
 import { runTestFile, collectResults, type RunDevice } from './runner.js';
+import { telemetry, type RunMode } from './telemetry.js';
 import { ensureSessionReady } from './session-preflight.js';
 import type { ResetCapabilities } from './app-reset.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
@@ -72,6 +73,12 @@ export interface WatchRunMessage {
    * plain `tapsmith_run_tests` — naming a mode the caller was not using.
    */
   label?: string
+  /**
+   * Which run path this is, for the run's anonymous telemetry event. Required
+   * for the same reason `label` exists: this one child serves both headless
+   * watch mode and the MCP dispatcher, and only the parent knows which.
+   */
+  runMode: Extract<RunMode, 'watch' | 'mcp'>
   /**
    * The parent's sticky reset-capability knowledge for the primary device
    * (in-app hooks detected, …). This child is forked fresh per run, so
@@ -229,6 +236,7 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
         await Promise.all(sessions.map((s) => ensureSessionReady(s.context, `before test ${fullName}`)));
       },
       resetCapabilities: sessions[0].capabilities,
+      runMode: msg.runMode,
       projectUseOptions: msg.projectUseOptions,
       projectName: msg.projectName,
       testFilter: msg.testFilter,
@@ -271,6 +279,9 @@ process.on('message', async (msg: WatchRunIncomingMessage) => {
     }
     if (msg.type === 'run') {
       await handleRun(msg);
+      // This child exits right after its one file: bounded wait for that
+      // file's telemetry event (PILOT-330).
+      await telemetry.flush();
       process.exit(0);
     }
   } catch (err) {

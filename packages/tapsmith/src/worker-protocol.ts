@@ -311,6 +311,8 @@ export interface SerializedConfig {
   /** RegExp filters for test fullNames. Source/flags are serialized for IPC. */
   grep?: SerializedRegExp[]
   grepInvert?: SerializedRegExp[]
+  /** Opt-out flag — children report their own runs, so they must see it. */
+  telemetry?: boolean
 }
 
 /** Convert a TapsmithConfig into the IPC-safe subset needed by worker child processes. */
@@ -346,6 +348,7 @@ export function serializeConfig(config: TapsmithConfig): SerializedConfig {
     devices: config.devices,
     grep: serializeRegExpArray(normalizeGrep(config.grep)),
     grepInvert: serializeRegExpArray(normalizeGrep(config.grepInvert)),
+    telemetry: config.telemetry,
   };
 }
 
@@ -387,6 +390,7 @@ export function configFromSerialized(s: SerializedConfig, daemonAddress: string)
     devices: s.devices,
     grep: deserializeRegExpArray(s.grep),
     grepInvert: deserializeRegExpArray(s.grepInvert),
+    telemetry: s.telemetry,
   };
 }
 

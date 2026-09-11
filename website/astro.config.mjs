@@ -81,6 +81,7 @@ export default defineConfig({
           items: [
             { label: 'Configuration', slug: 'reference/configuration' },
             { label: 'Environment Variables', slug: 'reference/environment-variables' },
+            { label: 'Telemetry', slug: 'reference/telemetry' },
           ],
         },
         { label: 'Changelog', slug: 'changelog' },

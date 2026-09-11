@@ -242,6 +242,7 @@ describe('worker-protocol serialization', () => {
         extraHTTPHeaders: { Authorization: 'Bearer x' },
         grep: [/smoke/i],
         grepInvert: /slow/,
+        telemetry: false,
       };
 
       const back = configFromSerialized(serializeConfig(config), 'localhost:2');
@@ -259,6 +260,8 @@ describe('worker-protocol serialization', () => {
       // Regression: the headless dispatcher used to hand-roll this object and
       // dropped `video`, so workers never recorded video.
       expect(back.video).toBe('on-first-retry');
+      // Children report their own runs, so the opt-out must survive the hop.
+      expect(back.telemetry).toBe(false);
     });
   });
 });

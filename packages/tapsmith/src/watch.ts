@@ -934,6 +934,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         screenshotDir: ctx.screenshotDir,
         projectUseOptions,
         projectName,
+        runMode: 'watch',
         resetCapabilities: ctx.resetCapabilities,
         ...(ctx.groupMembers && ctx.groupMembers.length > 0 ? {
           groupMembers: ctx.groupMembers.map((m) => ({

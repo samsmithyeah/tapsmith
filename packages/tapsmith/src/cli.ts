@@ -16,6 +16,7 @@ import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults, markFileRetryFlakes, type RunDevice, type TestResult, type SuiteResult } from './runner.js';
+import { telemetry, readSdkVersion, ensureSessionEnv } from './telemetry.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady } from './session-preflight.js';
 import {
@@ -125,6 +126,8 @@ function shouldPrintBannerForCommand(args: CliArgs): boolean {
 
   // Keep protocol and machine-readable surfaces byte-clean.
   if (args.command === 'mcp-server') return false;
+  // A settings switch, not a run: no banner, like `--version`.
+  if (args.command === 'telemetry') return false;
   if (args.command === 'list-devices' && commandArgsInclude(args.command, '--json')) return false;
   if (args.command === 'doctor' && commandArgsInclude(args.command, '--json')) return false;
   if (args.command === 'verify' && commandArgsInclude(args.command, '--json')) return false;
@@ -180,13 +183,7 @@ function warnSequentialSkippedDevices(
 // ─── Version ───
 
 function getVersion(): string {
-  try {
-    const pkgPath = path.resolve(import.meta.dirname, '../package.json');
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-    return pkg.version ?? '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
+  return readSdkVersion();
 }
 
 // ─── TSX re-exec ───
@@ -1333,6 +1330,7 @@ function parseArgs(argv: string[]): CliArgs {
         || arg === 'mcp-server'
         || arg === 'doctor'
         || arg === 'init'
+        || arg === 'telemetry'
       ) {
         break;
       }
@@ -1795,6 +1793,7 @@ ${bold('Usage:')}
   tapsmith verify [--json]           Run one test end-to-end to prove the setup works
   tapsmith doctor [--json] [-c file] Check system health (--json includes fixes + device inventory)
   tapsmith mcp-server [--config file] Run MCP server for LLM/agent integration (stdio transport)
+  tapsmith telemetry [status|enable|disable]  Show or switch anonymous usage telemetry for this machine
   tapsmith --version                 Print version
   tapsmith --help                    Show this help
 
@@ -1829,6 +1828,11 @@ async function main(): Promise<void> {
     console.log(getVersion());
     return;
   }
+
+  // Stamp one telemetry session id into the environment before any child is
+  // forked (the tsx re-exec, workers, watch/MCP run children all inherit it),
+  // so every per-file event of this invocation shares one session (PILOT-330).
+  ensureSessionEnv();
 
   // Subcommands that print their own command-specific help on --help.
   // Other commands (e.g. `tapsmith test --help`) fall back to the top-level
@@ -1990,6 +1994,12 @@ async function main(): Promise<void> {
     const { runDoctor } = await import('./doctor.js');
     const forwardedArgv = forwardedArgs('doctor');
     await runDoctor(forwardedArgv);
+    return;
+  }
+
+  if (args.command === 'telemetry') {
+    const { runTelemetryCommand } = await import('./telemetry-cli.js');
+    process.exitCode = await runTelemetryCommand(forwardedArgs('telemetry'));
     return;
   }
 
@@ -2306,6 +2316,13 @@ async function main(): Promise<void> {
   const initialEffectiveConfig = initialProject.effectiveConfig;
   const shouldShowLaunchProgress = args.ui || !args.watch;
   printTapsmithBanner();
+  // After the tsx re-exec, so it prints exactly once, and before any worker
+  // is forked, so no child ever races it (PILOT-330).
+  telemetry.printNoticeIfFirstRun(config);
+  // Persist the anonymous id here too, before forking workers, so a fresh
+  // machine's first parallel run shares one id instead of each worker minting
+  // its own (PILOT-330 review).
+  telemetry.ensureIdentity(config);
   if (shardMessage) console.log(dim(shardMessage));
   const launchProgress = shouldShowLaunchProgress
     ? new UiLaunchProgress(createUiLaunchSteps({
@@ -2783,7 +2800,11 @@ async function main(): Promise<void> {
     // finally block swallows them. Skipped when an error is escaping:
     // main().catch prints it and exits with code 1 itself.
     if (!sequentialErrorEscaping) {
-      setTimeout(() => process.exit(sequentialExitCode), 0);
+      // The last file's telemetry event is still in flight here; give it a
+      // bounded moment rather than systematically dropping it (PILOT-330).
+      setTimeout(() => {
+        void telemetry.flush().finally(() => process.exit(sequentialExitCode));
+      }, 0);
     }
   }
 }
@@ -2856,6 +2877,7 @@ async function runTestFileWithRecovery(
         },
         abortFileOnError: isRecoverableInfrastructureError,
         resetCapabilities: sessions[0].capabilities,
+        runMode: 'test',
         // In-process retries need the same ESM cache busting as worker
         // retries; otherwise import() returns the cached module and the
         // retry registers no tests.

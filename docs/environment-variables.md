@@ -20,6 +20,17 @@ Most users will never need to set any of these. They are primarily useful for de
 | `TAPSMITH_DEBUG` | Enable debug logging in the TypeScript SDK (assertion polling, element resolution, etc.). Set to `1` or `true`. |
 | `RUST_LOG` | Control Rust daemon log verbosity. Examples: `RUST_LOG=info`, `RUST_LOG=tapsmith_core=debug`. Useful for diagnosing MITM proxy issues, agent startup failures, and device communication problems. |
 
+## Telemetry
+
+See [Telemetry](telemetry.md) for exactly what is (and is not) collected.
+
+| Variable | Description |
+|---|---|
+| `TAPSMITH_TELEMETRY` | Set to `0` (or `false`, `no`, `off`) to disable anonymous usage telemetry for this process and every worker it forks. Equivalent to `telemetry: false` in the config, without editing a shared config. Cannot re-enable telemetry a config has switched off. |
+| `DO_NOT_TRACK` | The cross-tool convention ([consoledonottrack.com](https://consoledonottrack.com)). Any value other than `0`, `false`, `no`, or `off` disables telemetry, as `TAPSMITH_TELEMETRY=0` does. |
+| `TAPSMITH_TELEMETRY_ENDPOINT` | Send telemetry events to this URL instead of PostHog's EU capture endpoint — for organisations that want their own copy, must route through a proxy, or run a self-hosted PostHog. The payload is a standard PostHog capture envelope. Must be HTTPS (or plain HTTP only to a loopback host such as `localhost`); a cleartext remote endpoint is refused and telemetry is disabled for that process rather than sent in the clear, and redirects are never followed. |
+| `TAPSMITH_TELEMETRY_DEBUG` | Dry run: set to `1` to print every event that would be sent to stderr, prefixed `[telemetry]`, and send nothing. The way to see exactly what leaves your machine. |
+
 ## iOS Network Capture
 
 | Variable | Description |
@@ -48,6 +59,7 @@ These are set by Tapsmith internally and generally should not be modified by use
 | Variable | Description |
 |---|---|
 | `TAPSMITH_WORKER_ID` | Set by the CLI in parallel and watch mode. Identifies the current worker process. |
+| `TAPSMITH_TELEMETRY_SESSION` | Set once by the CLI or MCP server at startup and inherited by every forked worker, so all of one invocation's telemetry events share a `session_id`. Not intended to be set by hand. |
 | `TAPSMITH_DAEMON_ADDRESS` | Comma-separated daemon addresses. Used internally by MCP server mode. |
 | `TAPSMITH_UI_DEV_URL` | Development server URL for UI mode's frontend. Internal use only. |
 

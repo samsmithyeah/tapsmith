@@ -14,6 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # Tapsmith's own CI is not a user; keep its runs out of the usage counts.
+  TAPSMITH_TELEMETRY: "0"
   SHARD_TOTAL: 5
   # Cached login state for the `authenticated` project. Shards restore it
   # before the test step; ci-projects.mjs drops the `authentication` setup

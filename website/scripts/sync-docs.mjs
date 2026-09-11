@@ -142,6 +142,12 @@ const FILES = [
     title: 'Environment Variables',
     desc: 'Environment variables for the Tapsmith daemon and CI.',
   },
+  {
+    src: 'telemetry.md',
+    dest: 'reference/telemetry.md',
+    title: 'Telemetry',
+    desc: 'Exactly what anonymous usage data Tapsmith collects, what it never does, and how to opt out.',
+  },
 ]
 
 // ─── API reference split definitions ───
@@ -254,6 +260,7 @@ const LINK_MAP = {
   'writing-tests.md': '/writing-tests/',
   'configuration.md': '/reference/configuration/',
   'environment-variables.md': '/reference/environment-variables/',
+  'telemetry.md': '/reference/telemetry/',
 }
 
 // Build regex-based rewrites from the map

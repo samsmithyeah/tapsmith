@@ -172,6 +172,7 @@ npx tapsmith test --ui
 - [Configuration](docs/configuration.md) -- all config options with examples
 - [CLI Reference](docs/api-reference.md#cli) -- all commands and flags
 - [Environment Variables](docs/environment-variables.md) -- daemon, debugging, and CI variables
+- [Telemetry](docs/telemetry.md) -- what the anonymous usage data is, what it never includes, and how to opt out
 - [MCP Server](docs/mcp-server.md) -- AI agent integration via MCP
 
 ### Platform-specific
