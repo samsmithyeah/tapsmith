@@ -10,7 +10,7 @@ fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT);
 
 const browser = await puppeteer.launch({
-  executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: 'new',
   timeout: 120000,
   args: ['--no-first-run', '--hide-scrollbars', '--force-device-scale-factor=2',
@@ -141,6 +141,12 @@ await waitChild('done:list');
 mark('listCalled');
 await sleep(1800);
 
+// 4b. snapshot — the agent reads the live screen (validated selectors) before writing
+child.stdin.write('snap\n');
+await waitChild('done:snap');
+mark('snapCalled');
+await sleep(1800);
+
 // 5. run_tests — the run streams in the main panel, mirror animates below
 child.stdin.write('run\n');
 mark('runStarted');
@@ -161,10 +167,7 @@ const entry = await rectOf('.mcp-entry', 'run_tests');
 if (entry) { await glide(entry.x, entry.y, 650); await click(); await sleep(2400); }
 mark('expanded');
 
-// 7. One more tool call for a richer feed
-child.stdin.write('shot\n');
-try { await waitChild('done:shot', 30000); mark('shotDone'); } catch { console.error('screenshot call failed'); }
-await sleep(2200);
+await sleep(1400);
 mark('end');
 
 await cdp.send('Page.stopScreencast');

@@ -2,14 +2,19 @@
 // server presenting itself as Claude Code, then executes tool calls on
 // command from the recorder (lines on stdin), reporting completion on stdout.
 import { createRequire } from 'node:module';
+import * as path from 'node:path';
 import * as readline from 'node:readline';
+import { fileURLToPath } from 'node:url';
 
-const require = createRequire('/Users/samsmithredbadger/projects/tapsmith/packages/tapsmith/package.json');
+// Repo root, derived from this file's location (tools/promo/), so the script
+// works from any checkout. The SDK's MCP client comes from packages/tapsmith.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const require = createRequire(path.join(ROOT, 'packages/tapsmith/package.json'));
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
 
 const MCP_URL = process.env.MCP_URL || 'http://localhost:9274/mcp';
-const TEST_FILE = '/Users/samsmithredbadger/projects/tapsmith/e2e/tests/api-error.test.ts';
+const TEST_FILE = path.join(ROOT, 'e2e/tests/api-error.test.ts');
 
 const client = new Client({ name: 'claude-code', version: '2.1.14' }, { capabilities: {} });
 console.log('ready');
@@ -31,6 +36,9 @@ for await (const line of rl) {
         { timeout: 300000, resetTimeoutOnProgress: true },
       );
       console.log('done:run', JSON.stringify(r.content?.[0]?.text ?? '').slice(0, 400));
+    } else if (cmd === 'snap') {
+      const r = await client.callTool({ name: 'tapsmith_snapshot', arguments: {} });
+      console.log('done:snap', JSON.stringify(r.content?.[0]?.text ?? '').slice(0, 600));
     } else if (cmd === 'shot') {
       await client.callTool({ name: 'tapsmith_screenshot', arguments: {} });
       console.log('done:shot');

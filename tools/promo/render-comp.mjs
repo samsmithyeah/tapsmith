@@ -8,7 +8,7 @@ import * as path from 'node:path';
 
 const MODE = process.argv[2] || 'probe';
 const DSF = Number(process.argv[3] || (MODE === 'probe' ? 1 : 2));
-const FPS = 30, DUR = 102.5;
+const FPS = 30, DUR = 131.9;
 const ROOT = path.dirname(new URL(import.meta.url).pathname);
 
 // static server with naive range support (Chrome video seeking)
@@ -32,9 +32,10 @@ const server = http.createServer((req, res) => {
 await new Promise(r => server.listen(4860, '127.0.0.1', r));
 
 const browser = await puppeteer.launch({
-  executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: 'new',
-  args: ['--no-first-run', '--hide-scrollbars', '--autoplay-policy=no-user-gesture-required'],
+  args: ['--no-first-run', '--hide-scrollbars', '--autoplay-policy=no-user-gesture-required',
+         ...(process.env.CI ? ['--no-sandbox', '--disable-dev-shm-usage'] : [])],
 });
 const page = await browser.newPage();
 await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: DSF });
@@ -43,7 +44,7 @@ await page.evaluate(() => window.compReady);
 console.log('comp loaded');
 
 if (MODE === 'probe') {
-  for (const t of [2.5, 8.5, 17.5, 22.5, 30, 45, 55, 66.5, 76, 79]) {
+  for (const t of [2.5, 9.5, 14.0, 20, 29.5, 37, 55, 65, 86, 94.5, 97.5, 100, 116, 127]) {
     await page.evaluate((t) => window.seekComp(t), t);
     await new Promise(r => setTimeout(r, 120));
     await page.screenshot({ path: `probe-${String(t).replace('.', '_')}.jpg`, quality: 90, type: 'jpeg' });

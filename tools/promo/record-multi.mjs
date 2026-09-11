@@ -1,8 +1,19 @@
-// Record UI mode: filter tests, run one live on the simulator, explore results.
+// Record the multi-device scene: UI mode running the two-user chat test from
+// e2e/tests/multi-device/ on two simulators at once (PILOT-310). The mirror's
+// "All" view tiles both members live; afterwards an action is selected so the
+// trace shows one screenshot pane per device. Frames land in multi-frames/.
+//
+// Server: tapsmith test --ui --ui-port 4830 -c tapsmith.config.ios-multi.mjs
 import puppeteer from 'puppeteer-core';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const OUT = 'ui-frames';
+// The checkout's absolute path, as it appears in the UI (Source tab header);
+// scrubbed to a neutral one in the footage.
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+const OUT = 'multi-frames';
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT);
 
@@ -16,6 +27,8 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 await page.setViewport({ width: 1600, height: 1000, deviceScaleFactor: 2 });
 await page.goto('http://127.0.0.1:4830/', { waitUntil: 'networkidle2' });
+await page.evaluate(() => { localStorage.setItem('tapsmith-mcp-panel', 'false'); });
+await page.reload({ waitUntil: 'networkidle2' });
 await new Promise(r => setTimeout(r, 3000));
 
 await page.evaluate(() => {
@@ -41,6 +54,20 @@ await page.evaluate(() => {
   document.head.appendChild(st);
 });
 
+// The Source tab heads its panel with the file's absolute path. Rewrite it to
+// the neutral path used everywhere else in the video, live, as the panel
+// re-renders (same scrub as demo-trace.zip; nothing else in the UI changes).
+await page.evaluate((REAL) => {
+  const NEUTRAL = '/Users/dev/acme-mobile';
+  const scrub = () => {
+    for (const el of document.querySelectorAll('.source-filename')) {
+      if (el.textContent && el.textContent.includes(REAL)) el.textContent = el.textContent.split(REAL).join(NEUTRAL);
+    }
+  };
+  new MutationObserver(scrub).observe(document.body, { childList: true, subtree: true, characterData: true });
+  scrub();
+}, REPO_ROOT);
+
 const cdp = await page.createCDPSession();
 let n = 0;
 const meta = [];
@@ -50,7 +77,6 @@ cdp.on('Page.screencastFrame', async (f) => {
   meta.push({ idx, t: f.metadata.timestamp });
   try { await cdp.send('Page.screencastFrameAck', { sessionId: f.sessionId }); } catch { /* ended */ }
 });
-await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 88, everyNthFrame: 1 });
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const mouse = page.mouse;
@@ -69,8 +95,6 @@ async function glide(x, y, ms = 550) {
   cur = { x, y };
 }
 async function click() { await mouse.down(); await sleep(90); await mouse.up(); }
-
-// Find an element's center by class + optional text
 async function rectOf(sel, text) {
   return page.evaluate((sel, text) => {
     for (const el of document.querySelectorAll(sel)) {
@@ -83,67 +107,69 @@ async function rectOf(sel, text) {
   }, sel, text);
 }
 
-mark('start');
-await sleep(1500);
+const TEST = 'alice messages bob';
 
-// 1. Filter tests
+// Off camera: filter the tree to the chat suite and reveal the test row.
 const search = await rectOf('.te-search');
-await glide(search.x, search.y, 600); await click();
-mark('typing');
-for (const ch of 'network mocking') { await page.keyboard.type(ch); await sleep(55); }
+await glide(search.x, search.y, 500); await click();
+for (const ch of 'chatting') { await page.keyboard.type(ch); await sleep(50); }
 await sleep(1200);
+const fileRow = await rectOf('.te-name', 'two-devices.test.ts');
+if (fileRow && !(await rectOf('.te-name', 'Two users chatting'))) { await glide(fileRow.x, fileRow.y, 500); await click(); await sleep(800); }
+const suiteRow = await rectOf('.te-name', 'Two users chatting');
+if (suiteRow && !(await rectOf('.te-name', TEST))) { await glide(suiteRow.x, suiteRow.y, 450); await click(); await sleep(800); }
+const row = await rectOf('.te-name', TEST);
+if (!row) { console.error('test row not found'); await page.screenshot({ path: 'multi-debug.png' }); process.exit(1); }
+// Make sure the mirror shows every member (the "All" tab).
+const allTab = await rectOf('.worker-tab', 'All');
+if (allTab) { await glide(allTab.x, allTab.y, 400); await click(); await sleep(600); }
+// Show the test's source in the detail panel while the run streams (the tab
+// choice persists, so it stays on Source as actions arrive).
+const srcTab = await rectOf('.detail-tab', 'Source');
+if (srcTab) { await glide(srcTab.x, srcTab.y, 500); await click(); await sleep(700); }
 
-// 2. Expand file node, then suite, to reveal the test
-const fileRow = await rectOf('.te-name', 'network-mocking.test.ts');
-if (fileRow) { await glide(fileRow.x, fileRow.y, 650); await click(); await sleep(900); }
-let suiteRow = await rectOf('.te-name', 'Network mocking');
-if (suiteRow && !(await rectOf('.te-name', 'mock a JSON response'))) {
-  await glide(suiteRow.x, suiteRow.y, 450); await click(); await sleep(900);
-}
-// Find the target test row, hover, click its run button
-const row = await rectOf('.te-name', 'mock a JSON response');
-if (!row) { console.error('test row not found'); process.exit(1); }
+await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 88, everyNthFrame: 1 });
+await sleep(700);
+mark('start');
+
+// 1. Hover the test, click its run button
 await glide(row.x, row.y, 700);
-await sleep(600);
-const runBtn = await page.evaluate(() => {
+await sleep(500);
+const runBtn = await page.evaluate((TEST) => {
   for (const el of document.querySelectorAll('.te-node')) {
-    if ((el.textContent || '').includes('mock a JSON response')) {
+    if ((el.textContent || '').includes(TEST)) {
       const b = el.querySelector('.te-run-btn');
       if (b) { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }
     }
   }
   return null;
-});
-if (!runBtn) { console.error('run btn not found'); await page.screenshot({ path: 'ui-debug.png' }); process.exit(1); }
+}, TEST);
+if (!runBtn) { console.error('run btn not found'); await page.screenshot({ path: 'multi-debug.png' }); process.exit(1); }
 await glide(runBtn.x, runBtn.y, 400); await click();
 mark('runClicked');
 
-// 3. Wait for the test to finish (green). Park cursor near the mirror while it runs.
-await glide(1150, 420, 900);
+// 2. Park the cursor between the two mirrors while both devices act
+await glide(1180, 560, 900);
 try {
-  await page.waitForFunction(() => {
+  await page.waitForFunction((TEST) => {
     const el = document.querySelector('.te-node.passed, .te-node .passed');
-    if (el && (el.textContent || '').includes('mock a JSON response')) return true;
-    return /1 passed/.test(document.body.textContent || '');
-  }, { timeout: 120000, polling: 500 });
-} catch { console.error('run did not pass in time'); }
+    if (el && (el.textContent || '').includes(TEST)) return true;
+    return /1 passed|1 failed/.test(document.body.textContent || '');
+  }, { timeout: 180000, polling: 500 }, TEST);
+} catch { console.error('run did not finish in time'); }
 mark('passed');
 await sleep(1800);
 
-// 4. Click the toBeVisible action in the actions list
-const act = await rectOf('.action-item', 'toBeVisible');
-if (act) { await glide(act.x, act.y, 700); await click(); await sleep(1500); }
+// 3. Select the assertion that bob saw alice's message: the trace shows one
+//    screenshot pane per device, the acting one outlined.
+const act = await rectOf('.action-item', 'Hi Bob');
+if (act) { await glide(act.x, act.y, 800); await click(); await sleep(2200); }
 mark('actionSelected');
 
-// 5. Network tab → row → RESPONSE
+// 4. Network tab: both devices' traffic, filter pill per device
 const netTab = await rectOf('.detail-tab', 'Network');
-if (netTab) { await glide(netTab.x, netTab.y, 600); await click(); await sleep(1400); }
+if (netTab) { await glide(netTab.x, netTab.y, 600); await click(); await sleep(2000); }
 mark('networkTab');
-const netRow = await rectOf('.net-row', 'posts');
-if (netRow) { await glide(netRow.x, netRow.y, 550); await click(); await sleep(1300); }
-const respTab = await rectOf('.detail-tab, .net-detail-tab, [class*=tab]', 'RESPONSE');
-if (respTab) { await glide(respTab.x, respTab.y, 450); await click(); await sleep(2000); }
-mark('response');
 await glide(900, 700, 700);
 await sleep(1200);
 mark('end');
@@ -153,3 +179,4 @@ await sleep(300);
 fs.writeFileSync(`${OUT}/meta.json`, JSON.stringify({ frames: meta, marks }));
 console.log('frames:', n, 'marks:', JSON.stringify(marks));
 await browser.close();
+process.exit(0);

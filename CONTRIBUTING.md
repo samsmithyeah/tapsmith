@@ -41,6 +41,13 @@ That appends a line built from your git `user.name` and `user.email`:
 Signed-off-by: Jane Developer <jane@example.com>
 ```
 
+If you commit from VS Code's Source Control view, the repository's workspace settings
+(`.vscode/settings.json`) turn on **Git: Always Sign Off**, which adds the same trailer
+automatically. Other editors have equivalents; a `prepare-commit-msg` hook works everywhere.
+If you forget, `git commit --amend -s --no-edit` fixes the last commit, and the DCO check also
+accepts a [remediation commit](https://github.com/apps/dco) so shared history need not be
+rewritten.
+
 The DCO is a short statement that you wrote the patch, or otherwise have the right to submit
 it under Apache 2.0. Read the full text in [DCO](DCO) -- it's four short clauses.
 

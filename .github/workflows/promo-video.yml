@@ -1,0 +1,115 @@
+name: Promo Video
+
+# Renders tools/promo/comp.html frame-by-frame in headless Chrome, assembles
+# the mp4 with the committed voiceover + a regenerated music bed, runs the
+# SOURCE-row leak sweep, and uploads the result as a workflow artifact. With
+# `publish: true` it also replaces the mp4 on the rolling `promo-video` release
+# (what the website fetches at build time) and redeploys the site.
+#
+# Screen recordings (clip-*.mp4) are committed; they need simulators and are
+# re-recorded locally (see tools/promo/README.md). Voiceover mp3s are committed
+# too (edge-tts output is not reproducible enough to regenerate blindly).
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload promo.mp4 to the promo-video release and redeploy the website
+        type: boolean
+        default: false
+  # Any branch: a PR that touches the pipeline gets a rendered artifact to
+  # review. Publishing is only ever the manual dispatch with `publish` ticked.
+  push:
+    paths:
+      - tools/promo/**
+      - .github/workflows/promo-video.yml
+
+concurrency:
+  group: promo-video
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # release asset upload (publish only)
+  actions: write    # dispatch deploy-website.yml (publish only)
+
+jobs:
+  render:
+    name: Render & assemble
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: tools/promo
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tools/promo/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          python3 -m pip install --quiet numpy
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+          ffmpeg -version | head -1
+
+      - name: Install Chrome
+        id: chrome
+        run: |
+          out=$(npx --yes @puppeteer/browsers install chrome@stable --path "$RUNNER_TEMP/chrome")
+          echo "$out"
+          echo "path=$(echo "$out" | tail -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Music bed
+        run: python3 synth-music.py
+
+      - name: Render frames
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.path }}
+        run: node render-comp.mjs full 2
+
+      - name: Leak sweep (no real filesystem paths in the UI-mode scenes)
+        run: python3 sweep-s3.py
+
+      - name: Assemble
+        run: |
+          ./assemble.sh
+          ffmpeg -v error -i tapsmith-promo.mp4 -c:v libx264 -crf 24 -preset slow -pix_fmt yuv420p \
+            -c:a aac -b:a 128k -movflags +faststart promo.mp4
+          ls -la tapsmith-promo.mp4 promo.mp4
+
+      - name: QC stills
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.path }}
+        run: node render-comp.mjs probe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: promo-video
+          path: |
+            tools/promo/tapsmith-promo.mp4
+            tools/promo/promo.mp4
+            tools/promo/probe-*.jpg
+          retention-days: 30
+
+      - name: Publish to the promo-video release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload promo-video promo.mp4 --clobber
+          gh release view promo-video --json assets -q '.assets[] | "\(.name) \(.size) \(.updatedAt)"'
+
+      # workflow_dispatch is one of the events the default GITHUB_TOKEN may trigger
+      # (release.yml relies on the same thing).
+      - name: Redeploy website
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run deploy-website.yml --ref main

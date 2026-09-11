@@ -25,7 +25,7 @@ const server = http.createServer((req, res) => {
 await new Promise(r => server.listen(4863, '127.0.0.1', r));
 
 const browser = await puppeteer.launch({
-  executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: 'new',
   timeout: 120000,
   args: ['--no-first-run', '--hide-scrollbars', '--user-data-dir=/tmp/promo-chrome-profile2'],

@@ -18,7 +18,8 @@ agent/local.properties
 # IDE
 .idea/
 *.iml
-.vscode/
+.vscode/*
+!.vscode/settings.json
 *.swp
 *.swo
 *~
@@ -55,3 +56,6 @@ dogfooding/
 
 # Generated promo video (rebuild via tools/promo)
 tapsmith-promo.mp4
+
+# Experimental promo video (keep locally for future edits)
+tools/promo-experimental/

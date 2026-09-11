@@ -51,3 +51,13 @@ canvas-rect.json
 qc6-*.png
 v6*.png
 qc*.png
+multi-frames/
+clip-multi.txt
+clip-multi-session.txt
+multi-debug.png
+
+__pycache__/
+mix.wav
+preview.mp4
+.stash/
+promo.mp4

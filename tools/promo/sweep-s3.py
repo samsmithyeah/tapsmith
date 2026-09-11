@@ -8,30 +8,35 @@ active patch run from patch-table.js covers it. Anything uncovered is a leak.
 
 Run after a full render:  ./venv/bin/python sweep-s3.py
 """
-import json, re, subprocess
+import json, re, subprocess, sys
 import numpy as np
 
-# scene constants — keep in sync with comp.html
-S3_T0, S3_T1 = 24.6, 43.8
-UI_RATE, UI_OFF = 1.18, 0.4
+# scene constants — keep in sync with comp.html (T, UI_RATE/UI_CLIP_OFFSET, MULTI_RATE)
+SCENES = [
+    # name, t0, t1, clip rate, clip offset, patch table file, JS var
+    ('S3 UI mode', 31.7, 50.9, 1.18, 0.4, 'patch-table.js', 'PATCH_RUNS'),
+    ('S3.8 multi-device', 62.1, 75.1, 1.0, 0.0, 'patch-table-multi.js', 'PATCH_RUNS_MULTI'),
+]
 VS = 1598 / 1920
-F0, F1 = int(S3_T0 * 30) + 1, int(S3_T1 * 30)          # comp frames 739..1314
-CX, CY, CW_, CH_ = 1100, 1560, 1280, 600               # crop in rendered (2x) px
+CX, CY, CW_, CH_ = 900, 1560, 1480, 600                # crop in rendered (2x) px (includes the label/value gap)
 DARK = 120
 
-runs = json.loads(re.search(r'PATCH_RUNS = (\[.*\]);', open('patch-table.js').read()).group(1))
+def sweep(name, S3_T0, S3_T1, UI_RATE, UI_OFF, table, var):
+  runs = json.loads(re.search(var + r' = (\[.*\]);', open(table).read()).group(1))
+  # only the fully opaque frames: the 0.45s fade at each end darkens the whole
+  # panel below the text threshold and reads as one giant "path" band
+  F0, F1 = int((S3_T0 + 0.45) * 30) + 1, int((S3_T1 - 0.45) * 30)
+  n = F1 - F0 + 1
+  subprocess.run(['ffmpeg', '-y', '-v', 'error', '-start_number', str(F0), '-i', 'comp-frames/f%05d.jpg',
+                  '-frames:v', str(n), '-vf', f'crop={CW_}:{CH_}:{CX}:{CY},format=gray',
+                  '-f', 'rawvideo', 'sweep.raw'], check=True)
+  data = np.fromfile('sweep.raw', dtype=np.uint8).reshape(n, CH_, CW_)
 
-n = F1 - F0 + 1
-subprocess.run(['ffmpeg', '-y', '-v', 'error', '-start_number', str(F0), '-i', 'comp-frames/f%05d.jpg',
-                '-frames:v', str(n), '-vf', f'crop={CW_}:{CH_}:{CX}:{CY},format=gray',
-                '-f', 'rawvideo', 'sweep.raw'], check=True)
-data = np.fromfile('sweep.raw', dtype=np.uint8).reshape(n, CH_, CW_)
-
-flags = []
-for j in range(n):
+  flags = []
+  for j in range(n):
     fi = F0 + j
     t = fi / 30
-    s = 1 + 0.018 * min(1, max(0, (t - S3_T0) / (S3_T1 - S3_T0)))
+    s = 1 + 0.018 * min(1, max(0, (t - S3_T0) / (S3_T1 - S3_T0)))  
     x0v, y0v = 2 * (960 - 799 * s), 2 * (540 - 476.5 * s)
     k = 2 * VS * s                                      # clip px -> rendered px
     X = lambda cx: int(x0v + cx * k) - CX
@@ -40,7 +45,9 @@ for j in range(n):
     ys, ye = max(0, Y(900)), min(CH_, Y(1200))
     far = img[ys:ye, X(1050):X(1210)]
     left = img[ys:ye, X(535):X(685)]
-    rows = np.where(((far < DARK).sum(axis=1) >= 12 * k / 2) & ((left < DARK).sum(axis=1) >= 8 * k / 2))[0]
+    gap = img[ys:ye, X(440):X(525)]                     # blank for a SOURCE row, text for code lines
+    rows = np.where(((far < DARK).sum(axis=1) >= 12 * k / 2) & ((left < DARK).sum(axis=1) >= 8 * k / 2)
+                    & ((gap < DARK).sum(axis=1) <= 1))[0]
     if len(rows) == 0:
         continue
     bands, start = [], rows[0]
@@ -61,6 +68,11 @@ for j in range(n):
         if not cov:
             flags.append((fi, round(cy0), round(cy1), clip_frame))
 
-print(f'{n} frames scanned, {len(flags)} uncovered path-like rows')
-for f in flags[:40]:
+  print(f'{name}: {n} frames scanned, {len(flags)} uncovered path-like rows')
+  for f in flags[:40]:
     print(' LEAK? frame', f[0], 'clip-y', f[1], '-', f[2], 'clipFrame', f[3])
+  return len(flags)
+
+total = sum(sweep(*sc) for sc in SCENES)
+print(f'total uncovered: {total}')
+sys.exit(1 if total else 0)

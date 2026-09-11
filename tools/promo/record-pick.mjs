@@ -11,7 +11,7 @@ fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT);
 
 const browser = await puppeteer.launch({
-  executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: 'new',
   timeout: 120000,
   args: ['--no-first-run', '--hide-scrollbars', '--force-device-scale-factor=2',
@@ -101,6 +101,27 @@ const waitChild = (prefix, timeoutMs = 300000) => new Promise((resolve, reject) 
     else if (Date.now() - t0 > timeoutMs) { clearInterval(iv); reject(new Error(`timeout waiting for ${prefix}`)); }
   }, 100);
 });
+// UI mode prepares the device for the next run right after a run finishes
+// (background app reset), which would put the app back on the home screen
+// before we can pick anything. Turn that preference off for this take.
+async function setPrepareBetweenRuns(on) {
+  const chip = await rectOf('.rc-device-actionable');
+  if (!chip) { console.error('worker chip not found'); return; }
+  await mouse.click(chip.x, chip.y, { button: 'right' });
+  await sleep(400);
+  const state = await page.evaluate(() => {
+    const el = [...document.querySelectorAll('.rc-context-item')].find((b) => (b.textContent || '').includes('Prepare device between runs'));
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { checked: el.getAttribute('aria-checked') === 'true', x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  if (!state) { console.error('prepare toggle not found'); await page.keyboard.press('Escape'); return; }
+  if (state.checked !== on) { await mouse.click(state.x, state.y); } else { await page.keyboard.press('Escape'); }
+  await sleep(500);
+  console.log('prepare between runs ->', on);
+}
+await setPrepareBetweenRuns(false);
+
 if (!process.env.SKIP_RUN) {
   child.stdin.write('connect\n');
   await waitChild('connected');
@@ -130,16 +151,23 @@ await sleep(900);
 
 // 2. Hover across app elements on the mirror — green highlight tracks them.
 // Mirror canvas geometry: find the device frame canvas.
-const canvas = await rectOf('canvas');
-if (!canvas) { console.error('mirror canvas not found'); process.exit(1); }
-const cx = (fx) => canvas.left + canvas.w * fx;
-const cy = (fy) => canvas.top + canvas.h * fy;
-await glide(cx(0.17), cy(0.267), 900);  // "Fetch Posts" button
+// Mirror canvas geometry: the device screen canvas specifically (in pick mode
+// the overlay adds another canvas). Fractions are of the 402x874pt screen;
+// recalibrate with probe-pick.mjs if the API Calls layout changes.
+// The rail grows a status row for a moment after a run finishes, shifting the
+// mirror column ~27px, so the rect is re-read right before every hover.
+async function hoverScreen(fx, fy, ms) {
+  const canvas = await rectOf('.dm-canvas');
+  if (!canvas) { console.error('mirror canvas not found'); process.exit(1); }
+  console.log('canvas rect', JSON.stringify(canvas));
+  await glide(canvas.left + canvas.w * fx, canvas.top + canvas.h * fy, ms);
+}
+await hoverScreen(0.18, 0.265, 900);   // "Fetch Posts" button
 await sleep(950);
 mark('hover1');
-await glide(cx(0.40), cy(0.318), 800);  // error banner
+await hoverScreen(0.50, 0.391, 800);   // error banner
 await sleep(950);
-await glide(cx(0.83), cy(0.267), 800);  // "Fetch 404" button
+await hoverScreen(0.815, 0.265, 800);  // "Fetch 404" button
 await sleep(1000);
 mark('hover2');
 
@@ -173,5 +201,6 @@ await cdp.send('Page.stopScreencast');
 await sleep(300);
 fs.writeFileSync(`${OUT}/meta.json`, JSON.stringify({ frames: meta, marks }));
 console.log('frames:', n, 'marks:', JSON.stringify(marks));
+await setPrepareBetweenRuns(true);
 await browser.close();
 process.exit(0);

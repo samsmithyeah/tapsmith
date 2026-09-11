@@ -1,0 +1,5 @@
+{
+  // The main ruleset requires a DCO sign-off on every commit (see CONTRIBUTING.md).
+  // This adds the Signed-off-by trailer to commits made from VS Code's Source Control view.
+  "git.alwaysSignOff": true
+}
