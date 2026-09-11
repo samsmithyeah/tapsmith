@@ -6,7 +6,7 @@
 # beat into its scene. Keep them, comp.html and synth-music.py in sync.
 set -euo pipefail
 cd "$(dirname "$0")"
-DUR=120.8
+DUR=131.9
 
 # 1. audio mix (VO segments placed on the timeline + music bed), normalized
 ffmpeg -y -v error \
@@ -15,15 +15,15 @@ ffmpeg -y -v error \
   -i music.wav \
   -filter_complex "\
 [0:a]adelay=600|600[a1];\
-[1:a]adelay=13000|13000[a2];\
-[2:a]adelay=15350|15350[a3];\
-[3:a]adelay=26000|26000[a4];\
-[4:a]adelay=44600|44600[a5];\
-[5:a]adelay=55900|55900[a6];\
-[6:a]adelay=69000|69000[a7];\
-[7:a]adelay=85800|85800[a8];\
-[8:a]adelay=98400|98400[a9];\
-[9:a]adelay=114500|114500[a10];\
+[1:a]adelay=15200|15200[a2];\
+[2:a]adelay=17550|17550[a3];\
+[3:a]adelay=32900|32900[a4];\
+[4:a]adelay=51500|51500[a5];\
+[5:a]adelay=62800|62800[a6];\
+[6:a]adelay=75900|75900[a7];\
+[7:a]adelay=92700|92700[a8];\
+[8:a]adelay=109500|109500[a9];\
+[9:a]adelay=125600|125600[a10];\
 [a1][a2][a3][a4][a5][a6][a7][a8][a9][a10]amix=inputs=10:normalize=0,volume=1.0[vo];\
 [10:a]volume=0.9[mus];\
 [vo][mus]amix=inputs=2:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[aout]" \

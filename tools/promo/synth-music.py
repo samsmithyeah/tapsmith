@@ -10,9 +10,9 @@ import numpy as np
 import wave
 
 SR = 44100
-DUR = 120.8
-BEAT = 14.8
-SCENES = [4.4, 24.8, 44.0, 55.2, 68.2, 85.2, 98.0, 114.2]   # scene boundaries after the beat scene
+DUR = 131.9
+BEAT = 17.0
+SCENES = [4.4, 31.7, 50.9, 62.1, 75.1, 92.1, 109.1, 125.3]   # scene boundaries after the beat scene
 N = int(SR * DUR)
 t = np.arange(N) / SR
 mix = np.zeros(N)

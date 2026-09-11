@@ -14,8 +14,8 @@ import numpy as np
 # scene constants — keep in sync with comp.html (T, UI_RATE/UI_CLIP_OFFSET, MULTI_RATE)
 SCENES = [
     # name, t0, t1, clip rate, clip offset, patch table file, JS var
-    ('S3 UI mode', 24.8, 44.0, 1.18, 0.4, 'patch-table.js', 'PATCH_RUNS'),
-    ('S3.8 multi-device', 55.2, 68.2, 1.0, 0.0, 'patch-table-multi.js', 'PATCH_RUNS_MULTI'),
+    ('S3 UI mode', 31.7, 50.9, 1.18, 0.4, 'patch-table.js', 'PATCH_RUNS'),
+    ('S3.8 multi-device', 62.1, 75.1, 1.0, 0.0, 'patch-table-multi.js', 'PATCH_RUNS_MULTI'),
 ]
 VS = 1598 / 1920
 CX, CY, CW_, CH_ = 1100, 1560, 1280, 600               # crop in rendered (2x) px

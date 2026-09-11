@@ -1,6 +1,6 @@
 # Promo video pipeline
 
-Generates `tapsmith-promo.mp4` — a ~121s promotional video (1080p30, voiceover,
+Generates `tapsmith-promo.mp4` — a ~132s promotional video (1080p30, voiceover,
 music, real screen recordings of UI mode, the selector playground, a two-device
 run and the trace viewer, plus synthetic scenes: a YAML-flow -> TypeScript
 morph with an autocomplete moment, and an MCP-server scene showing an agent
@@ -10,12 +10,19 @@ The video is defined as a deterministic timeline in **`comp.html`**
 (`window.seekComp(t)` renders the exact frame for any time `t`), rendered
 frame-by-frame in headless Chrome, then assembled with ffmpeg.
 
-The dramatic turn is **`BEAT`** (14.8s): the problem section runs cold (glow
+The dramatic turn is **`BEAT`** (17.0s): the problem section runs cold (glow
 off, red crosses, greyed YAML under a "status quo" caption, a thin two-chord
 bed), the music rests while "Tapsmith is the next step." is spoken, and the
 chord hit, thump, warm bloom, logo flash and YAML->TypeScript morph all land
 as the phrase ends. `BEAT` lives in `comp.html` and `synth-music.py`; the 2a/2b
 `adelay`s in `assemble.sh` are placed around it.
+
+Two more synthetic beats sit on top of real footage: the multi-device scene
+shows the test's code in a card over the (still empty) trace pane while both
+devices act, and the trace-viewer scene opens on a failed CI job with its
+`trace.zip` artifact and `npx tapsmith show-trace` typed in a terminal
+(`TRACE_INTRO`) before the viewer slides in — the VO walks through exactly
+that workflow.
 
 ## Prerequisites
 
