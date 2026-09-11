@@ -174,6 +174,36 @@ it writes the test. A passing run's feed shows no absolute paths (verified); a F
 does (trace path in the result), so if the on-camera run fails, restart the
 server and re-take rather than shipping those frames.
 
+## Docs / website screenshots
+
+`docs-shots/shoot.mjs` captures the four UI screenshots in `docs/images/`
+(copied to `website/public/` by the site build) at 1512x828 @2x, driving the
+real product the same way the promo recorders do:
+
+```bash
+# two-platform UI mode (e2e/tapsmith.config.mjs: Android emulator + iPhone 17)
+cd ../../e2e && PATH="$(pwd)/../tools/promo/shim:$PATH" \
+  node node_modules/.bin/tapsmith test --ui --ui-port 4830 -c tapsmith.config.mjs &
+cd ../tools/promo
+FORCE_RUN=1 node docs-shots/shoot.mjs ui-mode      http://127.0.0.1:4830 ../../docs/images/ui-mode.png
+node docs-shots/shoot.mjs pick-locator             http://127.0.0.1:4830 ../../docs/images/ui-mode-pick-locator.png
+
+# HTML report + a failing trace: run a temporary typo'd-login test headless
+# with the html reporter, video and trace on retain-on-failure, then
+node docs-shots/shoot.mjs html-report  file:///…/index.html          ../../docs/images/html-report.png
+node server.mjs &   # serves e2e/tapsmith-report/<trace>.zip at /t/<name>
+node docs-shots/shoot.mjs trace-viewer 'http://127.0.0.1:4820/?trace=/t/<trace>.zip' ../../docs/images/trace-viewer.png
+```
+
+`ui-mode` runs the network-mocking test on both platforms, waits on the rail's
+elapsed timer, re-runs any row that did not go green (a loaded machine makes
+the Android agent time out), turns "Prepare device between runs" off so both
+mirrors stay on the API Calls screen, and leaves it off for `pick-locator`.
+The pick fractions target "Fetch Posts" on the Android mirror; recalibrate with
+`docs-shots/canvas.mjs` (prints the canvas rect) if the screen layout changes.
+Show the trace viewer's **Errors** tab, never Call — its SOURCE row shows the
+real filesystem path.
+
 ## Publishing the video to the website
 
 The front page embeds `/promo.mp4`, fetched at build time by
