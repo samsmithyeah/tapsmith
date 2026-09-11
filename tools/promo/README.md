@@ -29,7 +29,7 @@ the page), so no patch is needed there.
 ## Prerequisites
 
 - **ffmpeg** (`brew install ffmpeg`)
-- **Google Chrome** at `/Applications/Google Chrome.app`
+- **Google Chrome** at `/Applications/Google Chrome.app` (or any Chrome via `CHROME_PATH`)
 - **Node 22+** — on Apple Silicon make sure `node` resolves to an **arm64**
   build (the Claude/Rosetta x64 trap breaks the UI-mode recording step; see
   the note in `record-ui` below)
@@ -212,6 +212,17 @@ The pick fractions target "Fetch Posts" on the Android mirror; recalibrate with
 `docs-shots/canvas.mjs` (prints the canvas rect) if the screen layout changes.
 Show the trace viewer's **Errors** tab, never Call — its SOURCE row shows the
 real filesystem path.
+
+## Rendering in GitHub Actions
+
+`.github/workflows/promo-video.yml` does the device-free half of this pipeline
+on a Linux runner: music bed, frame render (Chrome from `@puppeteer/browsers`,
+picked up via `CHROME_PATH`), leak sweep, assembly, web encode, QC stills —
+uploaded as the `promo-video` artifact. It runs on every push to `main` that
+touches `tools/promo/`, and on demand from the Actions tab; ticking **publish**
+also replaces the mp4 on the `promo-video` release and redeploys the website.
+Fonts are bundled (`assets/*.woff2`, incl. a variable Inter) so a runner render
+matches a Mac render. Screen recordings and voiceover stay local + committed.
 
 ## Publishing the video to the website
 

@@ -11,7 +11,7 @@ fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT);
 
 const browser = await puppeteer.launch({
-  executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: 'new',
   timeout: 120000,
   args: ['--no-first-run', '--hide-scrollbars', '--force-device-scale-factor=2',

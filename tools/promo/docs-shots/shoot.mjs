@@ -14,7 +14,7 @@ const [shot, url, out] = process.argv.slice(2);
 if (!shot || !url || !out) { console.error('usage: shoot.mjs <ui-mode|pick-locator|trace-viewer|html-report> <url> <out.png>'); process.exit(2); }
 
 const browser = await puppeteer.launch({
-  executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: 'new', timeout: 120000, protocolTimeout: 600000,
   args: ['--no-first-run', '--hide-scrollbars', '--force-device-scale-factor=2',
          '--user-data-dir=/tmp/docs-shots-chrome', '--no-default-browser-check'],

@@ -6,10 +6,13 @@
   @font-face { font-family: 'Poppins'; font-weight: 500; src: url('assets/poppins-500.woff2') format('woff2'); }
   @font-face { font-family: 'Poppins'; font-weight: 600; src: url('assets/poppins-600.woff2') format('woff2'); }
   @font-face { font-family: 'JetBrains Mono'; font-weight: 400; src: url('assets/jetbrains-mono-latin.woff2') format('woff2'); }
+  /* Inter is bundled too so the render is identical on a Mac and on a Linux CI runner */
+  @font-face { font-family: 'Inter'; font-weight: 100 900; src: url('assets/inter-variable-latin.woff2') format('woff2'); }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 1920px; height: 1080px; overflow: hidden; background: #171310; }
   #stage { position: absolute; width: 1920px; height: 1080px; overflow: hidden;
-           font-family: -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif; }
+           font-family: 'Inter', -apple-system, 'Helvetica Neue', sans-serif;
+           font-variant-ligatures: none; }   /* JetBrains Mono would ligate => into an arrow */
   .glow { position: absolute; width: 1400px; height: 1400px; left: 260px; top: -160px;
           background: radial-gradient(circle, rgba(253,133,103,0.10) 0%, rgba(253,133,103,0.035) 40%, transparent 70%);
           pointer-events: none; }
@@ -42,7 +45,7 @@
 
   /* S2 problem + code */
   .prob { position: absolute; left: 0; right: 0; text-align: center;
-          font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 54px; color: #d8d2ca; }
+          font-family: 'JetBrains Mono', 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 54px; color: #d8d2ca; }
   .prob .x { color: #e5484d; margin-right: 22px; }   /* cold red: the problem section is pre-Tapsmith */
   #code-window { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
                  width: 1400px; background: #211c17; border: 1px solid #383026; border-radius: 18px;
@@ -50,8 +53,8 @@
   #code-window .bar { height: 52px; background: #26201a; display: flex; align-items: center; padding: 0 22px;
                       border-bottom: 1px solid #383026; }
   .dot { width: 14px; height: 14px; border-radius: 50%; margin-right: 10px; }
-  #code-window .fname { margin-left: 18px; font-family: ui-monospace, Menlo, monospace; font-size: 21px; color: #a89f93; }
-  #code2 { position: relative; padding: 40px 48px 48px; font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  #code-window .fname { margin-left: 18px; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 21px; color: #a89f93; }
+  #code2 { position: relative; padding: 40px 48px 48px; font-family: 'JetBrains Mono', 'JetBrains Mono', ui-monospace, Menlo, monospace;
            font-size: 27px; line-height: 1.72; white-space: pre; color: #e8e4df; height: 560px; }
   .cl { position: absolute; left: 48px; right: 48px; height: 46.44px; opacity: 0; }
   .kw { color: #fd8567; } .st { color: #9ec98a; } .fn { color: #82aaff; } .cm { color: #6f675c; }
@@ -59,7 +62,7 @@
   /* autocomplete dropdown */
   #acbox { position: absolute; width: 380px; background: #2a241d; border: 1px solid #4a4030;
            border-radius: 10px; box-shadow: 0 18px 60px rgba(0,0,0,0.6); overflow: hidden; opacity: 0;
-           font-family: ui-monospace, Menlo, monospace; font-size: 22px; z-index: 5; white-space: normal; }
+           font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 22px; z-index: 5; white-space: normal; }
   .ac-row { display: flex; align-items: center; gap: 14px; padding: 7px 18px; color: #c9c2b8; }
   .ac-row.hl { background: rgba(253,133,103,0.18); color: #f0ece6; }
   .ac-row .fico { color: #82aaff; font-style: normal; }
@@ -80,13 +83,13 @@
   .chip { font-size: 26px; padding: 12px 28px; border-radius: 999px; color: #e8e4df; white-space: nowrap;
           background: rgba(253,133,103,0.12); border: 1px solid rgba(253,133,103,0.45); }
   .chip-setup { opacity: 0; }
-  .chip-setup code { font-family: ui-monospace, Menlo, monospace; font-size: 24px; color: #fd8567; }
+  .chip-setup code { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 24px; color: #fd8567; }
 
   /* S4 intro: a failed CI job with its trace artifact, then show-trace in a terminal */
   #ci-card { position: absolute; left: 50%; top: 27%; transform: translate(-50%, 0); width: 980px; opacity: 0;
              background: #1c1712; border: 1px solid #3a3228; border-radius: 16px; overflow: hidden;
              box-shadow: 0 40px 120px rgba(0,0,0,0.55);
-             font-family: -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif; color: #d8d2ca; }
+             font-family: 'Inter', -apple-system, 'Helvetica Neue', sans-serif; color: #d8d2ca; }
   #ci-card .bar { height: 52px; background: #26201a; display: flex; align-items: center; padding: 0 22px;
                   border-bottom: 1px solid #383026; gap: 12px; font-size: 19px; color: #a89f93; }
   #ci-card .bar b { color: #d8d2ca; font-weight: 600; }
@@ -95,7 +98,7 @@
   .ci-x { width: 26px; height: 26px; border-radius: 50%; background: #e5484d; color: #fff; display: flex;
           align-items: center; justify-content: center; font-size: 16px; font-weight: 700; flex-shrink: 0; }
   .ci-dim { color: #a89f93; }
-  .ci-mono { font-family: ui-monospace, Menlo, monospace; font-size: 20px; }
+  .ci-mono { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 20px; }
   .ci-dl { margin-left: auto; font-size: 17px; font-weight: 600; padding: 8px 16px; border-radius: 999px;
            border: 1px solid #4a4030; color: #c9c2b8; }
   .ci-dl.hot { color: #fd8567; border-color: rgba(253,133,103,0.6); background: rgba(253,133,103,0.1); }
@@ -104,7 +107,7 @@
                box-shadow: 0 40px 120px rgba(0,0,0,0.55); }
   #term-card .bar { height: 52px; background: #26201a; display: flex; align-items: center; padding: 0 22px;
                     border-bottom: 1px solid #383026; }
-  #term-body { padding: 26px 30px 30px; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 23px;
+  #term-body { padding: 26px 30px 30px; font-family: 'JetBrains Mono', 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 23px;
                line-height: 1.7; color: #d8d2ca; white-space: pre; min-height: 120px; }
   #term-body .ps { color: #fd8567; margin-right: 14px; }
   #term-body .dim { color: #a89f93; }
@@ -115,7 +118,7 @@
              border: 1px solid #3a3228; box-shadow: 0 44px 140px rgba(0,0,0,0.6); }
   .browser .bar { height: 46px; display: flex; align-items: center; padding: 0 20px; background: #26201a;
                   border-bottom: 1px solid #38302655; }
-  .browser .url { margin: 0 auto; font-family: ui-monospace, Menlo, monospace; font-size: 18px;
+  .browser .url { margin: 0 auto; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 18px;
                   color: #a89f93; background: #1c1712; border-radius: 8px; padding: 6px 60px; }
   .browser video { display: block; width: 1598px; height: 999px; object-fit: cover; }
   .scene-label { position: absolute; bottom: 56px; left: 96px; display: flex; align-items: center; gap: 14px;
@@ -130,7 +133,7 @@
                box-shadow: 0 40px 120px rgba(0,0,0,0.55); overflow: hidden; }
   #agent-win .bar { height: 52px; background: #26201a; display: flex; align-items: center; padding: 0 22px;
                     border-bottom: 1px solid #383026; }
-  #ag-body { padding: 34px 42px 40px; font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  #ag-body { padding: 34px 42px 40px; font-family: 'JetBrains Mono', 'JetBrains Mono', ui-monospace, Menlo, monospace;
              font-size: 23px; line-height: 1.6; color: #d8d2ca; height: 700px; white-space: pre-wrap; }
   .ag-prompt { color: #e8e4df; }
   .ag-prompt .ps { color: #fd8567; margin-right: 14px; }
@@ -176,7 +179,7 @@
   #s6 .url { position: absolute; left: 0; right: 0; top: 55%; text-align: center; font-size: 54px;
              font-weight: 700; color: #fd8567; letter-spacing: 0.01em; }
   #s6 .pill { position: absolute; left: 50%; top: 66%; transform: translateX(-50%);
-              font-family: ui-monospace, Menlo, monospace; font-size: 28px; color: #d8d2ca;
+              font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 28px; color: #d8d2ca;
               background: #211c17; border: 1px solid #3a3228; border-radius: 12px; padding: 16px 34px; }
   .fade { position: absolute; inset: 0; background: #000; opacity: 0; }
 </style>

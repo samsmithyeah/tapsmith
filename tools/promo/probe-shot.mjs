@@ -1,5 +1,5 @@
 import puppeteer from 'puppeteer-core';
-const browser = await puppeteer.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: 'new', args: ['--no-first-run','--hide-scrollbars','--user-data-dir=/tmp/promo-chrome-profile'] });
+const browser = await puppeteer.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: 'new', args: ['--no-first-run','--hide-scrollbars','--user-data-dir=/tmp/promo-chrome-profile'] });
 const page = await browser.newPage();
 await page.setViewport({ width: 1600, height: 1000, deviceScaleFactor: 1 });
 await page.goto('http://127.0.0.1:4830/', { waitUntil: 'networkidle2' });
