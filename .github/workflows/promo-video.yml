@@ -16,8 +16,9 @@ on:
         description: Upload promo.mp4 to the promo-video release and redeploy the website
         type: boolean
         default: false
+  # Any branch: a PR that touches the pipeline gets a rendered artifact to
+  # review. Publishing is only ever the manual dispatch with `publish` ticked.
   push:
-    branches: [main]
     paths:
       - tools/promo/**
       - .github/workflows/promo-video.yml
