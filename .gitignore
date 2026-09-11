@@ -55,3 +55,6 @@ dogfooding/
 
 # Generated promo video (rebuild via tools/promo)
 tapsmith-promo.mp4
+
+# Experimental promo video (keep locally for future edits)
+tools/promo-experimental/
