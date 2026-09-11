@@ -38,8 +38,17 @@ const comparisonRows = [
   ['Auto-waiting on every action', 'Y', 'N', 'Y', 'Y'],
   ['Rich assertions with auto-retry', 'Y', 'N', 'P', 'P'],
   ['Network mocking (no proxy, no mock server)', 'Y', 'P', 'N', 'N'],
+  // Appium: file push/pull primitives exist, but no container snapshot, no
+  // Keystore-preserving restore and no runner integration. Maestro and Detox
+  // only clear state (clearState / launchApp({ delete }), resetAppState).
+  ['Save & restore app state (log in once)', 'Y', 'P', 'N', 'N'],
   ['Trace viewer', 'Y', 'N', 'N', 'P'],
   ['CI sharding with merged reports', 'Y', 'N', 'P', 'P'],
+  // Appium: two driver sessions in one test is a documented pattern, but the
+  // test orchestrates them itself and nothing joins the two devices' traces.
+  // Maestro (issue #2957) and Detox (issue #393) have no way to drive two
+  // devices from one flow/test.
+  ['Multi-device tests (two devices, one test)', 'Y', 'P', 'N', 'N'],
   ['Interactive UI mode', 'Y', 'N', 'Y', 'N'],
   ['MCP for AI agents (selectors, traces)', 'Y', 'P', 'P', 'N'],
 ]
@@ -360,7 +369,7 @@ const threeThings = [
           </div>
           <p class="tp-table-legend">
             ✓ supported &nbsp;&nbsp; ◐ partial / via plugin &nbsp;&nbsp; — not available
-            &nbsp;&nbsp; last verified Aug 2026
+            &nbsp;&nbsp; last verified Sep 2026
           </p>
         </div>
       </section>
