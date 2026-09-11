@@ -28,7 +28,7 @@ See [Telemetry](telemetry.md) for exactly what is (and is not) collected.
 |---|---|
 | `TAPSMITH_TELEMETRY` | Set to `0` (or `false`, `no`, `off`) to disable anonymous usage telemetry for this process and every worker it forks. Equivalent to `telemetry: false` in the config, without editing a shared config. Cannot re-enable telemetry a config has switched off. |
 | `DO_NOT_TRACK` | The cross-tool convention ([consoledonottrack.com](https://consoledonottrack.com)). Any value other than `0`, `false`, `no`, or `off` disables telemetry, as `TAPSMITH_TELEMETRY=0` does. |
-| `TAPSMITH_TELEMETRY_ENDPOINT` | Send telemetry events to this URL instead of PostHog's EU capture endpoint — for organisations that want their own copy, must route through a proxy, or run a self-hosted PostHog. The payload is a standard PostHog capture envelope. |
+| `TAPSMITH_TELEMETRY_ENDPOINT` | Send telemetry events to this URL instead of PostHog's EU capture endpoint — for organisations that want their own copy, must route through a proxy, or run a self-hosted PostHog. The payload is a standard PostHog capture envelope. Must be HTTPS (or plain HTTP only to a loopback host such as `localhost`); a cleartext remote endpoint is refused and telemetry is disabled for that process rather than sent in the clear, and redirects are never followed. |
 | `TAPSMITH_TELEMETRY_DEBUG` | Dry run: set to `1` to print every event that would be sent to stderr, prefixed `[telemetry]`, and send nothing. The way to see exactly what leaves your machine. |
 
 ## iOS Network Capture

@@ -222,6 +222,26 @@ function isDebug(env: NodeJS.ProcessEnv): boolean {
   return flag !== undefined && flag !== '' && !FALSEY.has(flag);
 }
 
+/**
+ * A custom telemetry endpoint must not send anonymous data in cleartext.
+ * `https` is always allowed; `http` only to a loopback host (a local proxy or
+ * a self-hosted instance on the same machine). Anything else — cleartext to a
+ * remote host, or an unparseable URL — is refused, and sending is disabled
+ * rather than silently falling back to the public collector.
+ */
+export function isAllowedEndpoint(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === 'https:') return true;
+  if (parsed.protocol !== 'http:') return false;
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  return host === 'localhost' || host === '::1' || /^127\./.test(host);
+}
+
 /** Environment variable carrying the shared session id across forked children. */
 export const SESSION_ENV = 'TAPSMITH_TELEMETRY_SESSION';
 
@@ -260,7 +280,18 @@ export class Telemetry {
   constructor(opts: TelemetryOptions = {}) {
     this._env = opts.env ?? process.env;
     this._stateFile = opts.stateFile ?? defaultStateFile();
-    this._endpoint = opts.endpoint ?? this._env.TAPSMITH_TELEMETRY_ENDPOINT ?? DEFAULT_ENDPOINT;
+    // An explicit `opts.endpoint` is an internal/test override and is trusted;
+    // a user-provided `TAPSMITH_TELEMETRY_ENDPOINT` must be HTTPS (or loopback
+    // HTTP), or sending is disabled — never downgraded to cleartext, never
+    // silently redirected to the public collector (CWE-319, CodeRabbit).
+    const envEndpoint = this._env.TAPSMITH_TELEMETRY_ENDPOINT;
+    if (opts.endpoint !== undefined) {
+      this._endpoint = opts.endpoint;
+    } else if (envEndpoint !== undefined && envEndpoint !== '') {
+      this._endpoint = isAllowedEndpoint(envEndpoint) ? envEndpoint : '';
+    } else {
+      this._endpoint = DEFAULT_ENDPOINT;
+    }
     this._fetch = opts.fetchFn ?? ((input, init) => fetch(input, init));
     this._sdkVersion = opts.sdkVersion;
     this._apiKey = opts.apiKey ?? POSTHOG_PROJECT_KEY;
@@ -425,8 +456,9 @@ export class Telemetry {
       return;
     }
     // No project token compiled in (a source build before the project
-    // existed): there is nowhere to send to.
-    if (!this._apiKey) return;
+    // existed), or no usable endpoint (a rejected cleartext custom endpoint):
+    // there is nowhere to send to.
+    if (!this._apiKey || !this._endpoint) return;
     if (this._consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) return;
     const attempt = (async () => {
       try {
@@ -434,6 +466,9 @@ export class Telemetry {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(payload),
+          // Never follow a redirect: it could downgrade to cleartext or point
+          // the anonymous payload at an unintended host (CWE-319, CodeRabbit).
+          redirect: 'error',
           signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
         });
         if (res.ok) {

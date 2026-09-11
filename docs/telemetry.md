@@ -47,7 +47,7 @@ prints every event to stderr, prefixed `[telemetry]`, and sends nothing. It is t
 
 ## What is collected
 
-One event is sent when a **test-file run finishes** (`tapsmith run`), plus a one-off `tapsmith install` event the first time a machine creates its anonymous id. A file that Tapsmith retries after an infrastructure failure reports one event per attempt; a file whose run is aborted mid-way may report none. Treat the events as a sample of activity, not an exact file count. Events go to [PostHog](https://posthog.com), hosted in its EU region, as a standard PostHog capture envelope:
+One event is sent when a **test-file run finishes** (`tapsmith run`), plus a one-off `tapsmith install` event the first time a machine creates its anonymous id. When a file is retried after an infrastructure failure (agent disconnect, daemon unavailable) on the paths that retry — the CLI, parallel workers, and UI mode — only the final attempt is reported; the discarded attempt is not counted, so a recovered file still yields one event. Watch mode and the MCP server run a file once and report that single run even when it hit an infrastructure error. Treat the events as a sample of activity, not an exact file count. Events go to [PostHog](https://posthog.com), hosted in its EU region, as a standard PostHog capture envelope:
 
 | Field | Example | Why |
 |---|---|---|
@@ -130,6 +130,8 @@ TAPSMITH_TELEMETRY_ENDPOINT=https://posthog.internal.example.com/i/v0/e/ npx tap
 ```
 
 The payload is the PostHog capture envelope documented above, sent with `Content-Type: application/json`, so any PostHog-compatible endpoint accepts it. It still carries Tapsmith's project token; a self-hosted instance ignores an unknown token, so pair the override with a proxy that swaps in your own if you want the events to land in your project.
+
+The endpoint must be **HTTPS**, or plain HTTP only to a loopback host (`localhost`, `127.0.0.1`, `::1`) for a local proxy. A cleartext endpoint to any other host is refused and telemetry is disabled for that process rather than sent in the clear, and redirects are never followed.
 
 ## Where this is implemented
 

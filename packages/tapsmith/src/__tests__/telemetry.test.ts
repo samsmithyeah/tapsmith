@@ -9,6 +9,7 @@ import {
   telemetryNoticeText,
   readSdkVersion,
   ensureSessionEnv,
+  isAllowedEndpoint,
   TELEMETRY_DOCS_URL,
   type TelemetryPayload,
   type TelemetryRunEvent,
@@ -281,6 +282,45 @@ describe('Telemetry.recordRun()', () => {
     t.recordRun({}, RUN);
     await t.flush();
     expect(calls[0].url).toBe('http://127.0.0.1:1/x');
+  });
+
+  it('refuses a cleartext remote custom endpoint and disables sending (CWE-319)', async () => {
+    const { fn } = fakeFetch();
+    const t = new Telemetry({
+      stateFile,
+      env: { TAPSMITH_TELEMETRY_ENDPOINT: 'http://collector.example.com/i/v0/e/' },
+      fetchFn: fn,
+      apiKey: 'phc_test',
+      writeNotice: () => undefined,
+    });
+    // Endpoint is blanked, not downgraded and not silently pointed at PostHog.
+    expect(t.status({}).endpoint).toBe('');
+    t.recordRun({}, RUN);
+    await t.flush();
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('never follows a redirect on send', async () => {
+    const seen: RequestInit[] = [];
+    const fn = (async (_url: string, init: RequestInit) => {
+      seen.push(init);
+      return new Response('', { status: 200 });
+    }) as unknown as typeof fetch;
+    const t = new Telemetry({ stateFile, endpoint: 'https://c.test/e', env: {}, fetchFn: fn, apiKey: 'phc_test', writeNotice: () => undefined });
+    t.recordRun({}, RUN);
+    await t.flush();
+    expect(seen.every((i) => i.redirect === 'error')).toBe(true);
+  });
+
+  it('isAllowedEndpoint requires HTTPS or loopback HTTP', () => {
+    expect(isAllowedEndpoint('https://eu.i.posthog.com/i/v0/e/')).toBe(true);
+    expect(isAllowedEndpoint('http://localhost:8000/e')).toBe(true);
+    expect(isAllowedEndpoint('http://127.0.0.1/e')).toBe(true);
+    expect(isAllowedEndpoint('http://[::1]:9000/e')).toBe(true);
+    expect(isAllowedEndpoint('http://collector.example.com/e')).toBe(false);
+    expect(isAllowedEndpoint('http://10.0.0.5/e')).toBe(false);
+    expect(isAllowedEndpoint('ftp://host/e')).toBe(false);
+    expect(isAllowedEndpoint('not a url')).toBe(false);
   });
 
   it('reports ci=false when CI is unset or "false"', async () => {
