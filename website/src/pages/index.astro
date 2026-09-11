@@ -1,19 +1,45 @@
 ---
 import '../styles/global.css'
+import { Code } from 'astro:components'
 
-const codeSnippet = `<span class="ck">import</span> { test, expect } <span class="ck">from</span> <span class="cs">"tapsmith"</span>
+// Every code block on the page is highlighted at build time by Astro's <Code>
+// (Shiki) with this small theme drawn from the site palette, so the hero, the
+// API tabs and the one-liners all read the same. Backgrounds come from the
+// surrounding cards, not the theme.
+const codeTheme = {
+  name: 'tapsmith',
+  type: 'dark',
+  colors: { 'editor.background': '#00000000', 'editor.foreground': '#d4cfc8' },
+  tokenColors: [
+    { scope: ['comment', 'punctuation.definition.comment'], settings: { foreground: '#7a7570', fontStyle: 'italic' } },
+    { scope: ['string', 'punctuation.definition.string'], settings: { foreground: '#e8a86c' } },
+    { scope: ['keyword', 'storage.type', 'storage.modifier', 'keyword.control', 'keyword.operator.expression', 'keyword.operator.new'], settings: { foreground: '#e8914b' } },
+    { scope: ['entity.name.function', 'support.function', 'entity.name.command'], settings: { foreground: '#9fc1e0' } },
+    { scope: ['meta.object-literal.key', 'variable.other.property', 'support.variable.property', 'support.type.property-name'], settings: { foreground: '#cfc3ad' } },
+    { scope: ['constant.numeric', 'constant.language', 'support.constant'], settings: { foreground: '#d9a066' } },
+    { scope: ['variable.parameter', 'variable.other.readwrite', 'variable.other.object', 'variable.other.constant'], settings: { foreground: '#d4cfc8' } },
+    { scope: ['punctuation', 'meta.brace', 'keyword.operator', 'storage.type.function.arrow'], settings: { foreground: '#a39d95' } },
+    { scope: ['keyword.operator.arrow', 'storage.type.function.arrow'], settings: { foreground: '#e8914b' } },
+  ],
+} as const
 
-<span class="cf">test</span>(<span class="cs">"user can complete checkout"</span>, <span class="ck">async</span> ({ device }) =&gt; {
-  <span class="ck">await</span> device.<span class="cf">getByRole</span>(<span class="cs">"button"</span>, { name: <span class="cs">"Add to cart"</span> }).<span class="cf">tap</span>()
-  <span class="ck">await</span> device.<span class="cf">getByText</span>(<span class="cs">"Checkout"</span>).<span class="cf">tap</span>()
+const codeSnippet = `import { test, expect } from "tapsmith"
 
-  <span class="cc">// mock the payment API</span>
-  <span class="ck">await</span> device.<span class="cf">route</span>(<span class="cs">"**/api/payment"</span>, <span class="ck">async</span> (route) =&gt; {
-    <span class="ck">await</span> route.<span class="cf">fulfill</span>({ json: { status: <span class="cs">"success"</span> } })
+test("user can complete checkout", async ({ device }) => {
+  await device.getByRole("button", { name: "Add to cart" }).tap()
+  await device.getByText("Checkout").tap()
+
+  // mock the payment API
+  await device.route("**/api/payment", async (route) => {
+    await route.fulfill({ json: { status: "success" } })
   })
 
-  <span class="ck">await</span> <span class="cf">expect</span>(device.<span class="cf">getByText</span>(<span class="cs">"Order Confirmed"</span>)).<span class="cf">toBeVisible</span>()
+  await expect(device.getByText("Order Confirmed")).toBeVisible()
 })`
+
+// GitHub mark (octicon), used inline next to the GitHub links
+const githubMark =
+  '<svg class="tp-gh-mark" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>'
 
 const snippets = {
   locators: `// Same readable API across platforms
@@ -55,17 +81,17 @@ const comparisonRows = [
 
 const threeThings = [
   {
-    n: '01',
+    n: '1',
     title: 'Mock the network without a mock server.',
     body: 'In every other framework, mocking an API means a separate mock server, a proxy with certificate fiddling, or a special build of your app. In Tapsmith it’s <code>device.route("**/api/payment", r => r.fulfill({ json }))</code>. One line, inline, done.',
   },
   {
-    n: '02',
+    n: '2',
     title: 'A real language, not a YAML ceiling.',
     body: 'Maestro flows are brilliantly simple, right up until the suite grows and logic ends up scattered across YAML, env-var parameters, and <code>runScript</code> snippets. Tapsmith tests are plain TypeScript: extract helpers, loop over fixtures, share setup between tests, and refactor with autocomplete and type-checking behind you.',
   },
   {
-    n: '03',
+    n: '3',
     title: 'Replay the failure, don’t reconstruct it.',
     body: 'Every run records a trace: every tap, every network call, every frame. When a test fails at 3 am, open the trace viewer and scrub through it like a video instead of staring at a stack trace.',
   },
@@ -109,8 +135,11 @@ const threeThings = [
           <a href="/getting-started/">Docs</a>
           <a href="/reference/api/locators/">API</a>
           <a href="/guides/network/">Guides</a>
-          <a href="https://github.com/samsmithyeah/tapsmith" target="_blank" rel="noopener"
-            >GitHub</a
+          <a
+            href="https://github.com/samsmithyeah/tapsmith"
+            target="_blank"
+            rel="noopener"
+            class="tp-link-icon"><Fragment set:html={githubMark} />GitHub</a
           >
         </nav>
         <div class="tp-header-actions">
@@ -230,7 +259,7 @@ const threeThings = [
                   passed · 1.4s
                 </span>
               </div>
-              <pre class="tp-code-body"><code set:html={codeSnippet} /></pre>
+              <Code class="tp-code-body" code={codeSnippet} lang="ts" theme={codeTheme} />
             </div>
             <div class="tp-hero-phone">
               <img src="/hero-iphone.png" alt="Tapsmith driving an iOS app" class="tp-phone-img" />
@@ -250,38 +279,9 @@ const threeThings = [
             preload="metadata"
             playsinline></video>
           <p class="tp-demo-caption">
-            Tapsmith in 100 seconds: UI mode, the selector playground, the MCP server, and the trace
-            viewer.
+            Tapsmith in 2 minutes: UI mode, the selector playground, multi-device tests, the MCP
+            server, and the trace viewer.
           </p>
-        </div>
-      </section>
-
-      <!-- 3. Proof strip -->
-      <section class="tp-proof">
-        <div class="tp-container tp-proof-inner">
-          <p class="tp-proof-text">
-            Open source under the Apache 2.0 licence. Native agents on XCUITest and UIAutomator2
-            drive your app from the outside: no code changes, no embedded SDK, no browser shims or
-            half-working bridges.
-          </p>
-          <div class="tp-proof-stats">
-            <div class="tp-stat">
-              <span class="tp-stat-num">Apache</span>
-              <span class="tp-stat-label">2.0 licence</span>
-            </div>
-            <div class="tp-stat">
-              <span class="tp-stat-num">2</span>
-              <span class="tp-stat-label">platforms</span>
-            </div>
-            <div class="tp-stat">
-              <span class="tp-stat-num">TS</span>
-              <span class="tp-stat-label">TypeScript-first</span>
-            </div>
-            <div class="tp-stat">
-              <span class="tp-stat-num">Traces</span>
-              <span class="tp-stat-label">every test run</span>
-            </div>
-          </div>
         </div>
       </section>
 
@@ -310,7 +310,6 @@ const threeThings = [
       <section class="tp-compare">
         <div class="tp-container">
           <div class="tp-compare-header">
-            <p class="tp-eyebrow">How it stacks up</p>
             <h2 class="tp-h2-large">We've all tried the others.</h2>
             <p class="tp-compare-desc">
               This is a snapshot, not a sales pitch. Every tool in this list does something well; we
@@ -410,42 +409,32 @@ const threeThings = [
             </div>
           </div>
           <div class="tp-snippet-panel">
-            <pre
+            <div
               class="tp-snippet-code"
               data-snippet="locators"
               role="tabpanel"
               id="panel-locators"
-              aria-labelledby="tab-locators">{snippets.locators}</pre>
-            <pre
+              aria-labelledby="tab-locators">
+              <Code code={snippets.locators} lang="ts" theme={codeTheme} />
+            </div>
+            <div
               class="tp-snippet-code"
               data-snippet="network"
               role="tabpanel"
               id="panel-network"
               aria-labelledby="tab-network"
-              hidden>{snippets.network}</pre>
-            <pre
+              hidden>
+              <Code code={snippets.network} lang="ts" theme={codeTheme} />
+            </div>
+            <div
               class="tp-snippet-code"
               data-snippet="gestures"
               role="tabpanel"
               id="panel-gestures"
               aria-labelledby="tab-gestures"
-              hidden>{snippets.gestures}</pre>
-          </div>
-        </div>
-      </section>
-
-      <!-- 7. Social proof -->
-      <section class="tp-quote">
-        <div class="tp-container">
-          <p class="tp-eyebrow">Early access</p>
-          <blockquote class="tp-blockquote">
-            Tapsmith is in early access. If you've tried it on a real project, we'd love to feature
-            your experience here.
-          </blockquote>
-          <div class="tp-attribution">
-            <a href="mailto:info@tapsmith.dev" class="tp-btn-ghost tp-btn-sm">
-              Share your experience →
-            </a>
+              hidden>
+              <Code code={snippets.gestures} lang="ts" theme={codeTheme} />
+            </div>
           </div>
         </div>
       </section>
@@ -454,7 +443,6 @@ const threeThings = [
       <section class="tp-devtools">
         <div class="tp-container">
           <div class="tp-devtools-header">
-            <p class="tp-eyebrow">Developer tools</p>
             <h2 class="tp-h2-large">See exactly what happened, and when.</h2>
           </div>
           <div class="tp-devtools-grid">
@@ -478,7 +466,7 @@ const threeThings = [
                 />
               </button>
               <div class="tp-devtools-code">
-                <pre class="tp-snippet-code">npx tapsmith show-trace trace.zip</pre>
+                <Code class="tp-snippet-code" code="npx tapsmith show-trace trace.zip" lang="sh" theme={codeTheme} />
               </div>
             </div>
             <div class="tp-devtools-card">
@@ -500,7 +488,7 @@ const threeThings = [
                 />
               </button>
               <div class="tp-devtools-code">
-                <pre class="tp-snippet-code">npx tapsmith test --ui</pre>
+                <Code class="tp-snippet-code" code="npx tapsmith test --ui" lang="sh" theme={codeTheme} />
               </div>
             </div>
           </div>
@@ -576,8 +564,11 @@ const threeThings = [
           </div>
           <div class="tp-footer-col">
             <h4>Community</h4>
-            <a href="https://github.com/samsmithyeah/tapsmith" target="_blank" rel="noopener"
-              >GitHub</a
+            <a
+              href="https://github.com/samsmithyeah/tapsmith"
+              target="_blank"
+              rel="noopener"
+              class="tp-link-icon"><Fragment set:html={githubMark} />GitHub</a
             >
             <a href="https://github.com/samsmithyeah/tapsmith/issues" target="_blank" rel="noopener"
               >Issues</a
@@ -891,6 +882,16 @@ const threeThings = [
       .tp-nav a:hover {
         color: var(--tp-ink);
       }
+      .tp-link-icon {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .tp-gh-mark {
+        flex-shrink: 0;
+        position: relative;
+        top: -0.5px;
+      }
       .tp-header-actions {
         display: flex;
         gap: 10px;
@@ -1050,18 +1051,17 @@ const threeThings = [
         color: var(--tp-code-fg);
         overflow-x: auto;
       }
-      .ck {
-        color: #d4cfc8;
+      /* Shiki (<Code>) sets an inline background from the theme; the cards own it */
+      .tp-code-body,
+      .tp-snippet-code,
+      .tp-snippet-code .astro-code {
+        background: transparent !important;
       }
-      .cf {
-        color: #d4cfc8;
-      }
-      .cs {
-        color: var(--tp-code-string);
-      }
-      .cc {
-        color: var(--tp-code-comment);
-        font-style: italic;
+      .tp-code-body code,
+      .tp-snippet-code code {
+        font-family: inherit;
+        font-size: inherit;
+        line-height: inherit;
       }
 
       /* Phone overlay */
@@ -1101,52 +1101,10 @@ const threeThings = [
         color: var(--tp-ink-3);
       }
 
-      /* ─── 3. Proof strip ─── */
-      .tp-proof {
-        border-top: 1px solid var(--tp-border);
-        border-bottom: 1px solid var(--tp-border);
-        background: var(--tp-bg-2);
-      }
-      .tp-proof-inner {
-        padding-top: 40px;
-        padding-bottom: 40px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 40px;
-      }
-      .tp-proof-text {
-        font-size: 14px;
-        color: var(--tp-ink-3);
-        max-width: 420px;
-        margin: 0;
-      }
-      .tp-proof-stats {
-        display: flex;
-        gap: 32px;
-      }
-      .tp-stat {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 4px;
-      }
-      .tp-stat-num {
-        font-size: 20px;
-        font-weight: 500;
-        letter-spacing: -0.02em;
-        color: var(--tp-ink);
-      }
-      .tp-stat-label {
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: var(--tp-ink-4);
-      }
-
       /* ─── 4. Three things ─── */
       .tp-three {
-        padding: 120px 0 100px;
+        padding: 96px 0 100px;
+        border-top: 1px solid var(--tp-border);
       }
       .tp-three-header {
         display: flex;
@@ -1184,9 +1142,14 @@ const threeThings = [
         align-items: flex-start;
       }
       .tp-three-num {
-        font-family: var(--tp-font-mono);
-        font-size: 12px;
+        font-family: var(--tp-font-sans);
+        font-size: 30px;
+        font-weight: 600;
+        letter-spacing: -0.03em;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
         color: var(--tp-ink-4);
+        padding-top: 2px;
       }
       .tp-three-title {
         font-size: 20px;
@@ -1215,14 +1178,6 @@ const threeThings = [
       }
       .tp-compare-header {
         margin-bottom: 40px;
-      }
-      .tp-eyebrow {
-        font-family: var(--tp-font-mono);
-        font-size: 12px;
-        color: var(--tp-accent);
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-bottom: 12px;
       }
       .tp-compare-desc {
         font-size: 16px;
@@ -1358,29 +1313,19 @@ const threeThings = [
         /* Long unbreakable tokens must scroll, not widen the mobile layout viewport */
         overflow-x: auto;
       }
+      /* the tab panels are wrappers around Shiki's <pre>: whitespace lives in the pre only */
+      div.tp-snippet-code {
+        white-space: normal;
+      }
+      .tp-snippet-code .astro-code {
+        margin: 0;
+        white-space: pre-wrap;
+        overflow-x: auto;
+      }
 
-      /* ─── 7. Quote ─── */
-      .tp-quote {
-        padding: 40px 0 120px;
-      }
-      .tp-blockquote {
-        font-size: 30px;
-        line-height: 1.35;
-        font-weight: 500;
-        letter-spacing: -0.025em;
-        color: var(--tp-ink);
-        max-width: 880px;
-        padding: 0;
-      }
-      .tp-attribution {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        margin-top: 28px;
-      }
       /* ─── 8. Dev tools ─── */
       .tp-devtools {
-        padding: 0 0 120px;
+        padding: 40px 0 120px;
       }
       .tp-devtools-header {
         margin-bottom: 40px;
@@ -1608,10 +1553,6 @@ const threeThings = [
           gap: 20px;
           align-items: flex-start;
         }
-        .tp-proof-inner {
-          flex-direction: column;
-          align-items: flex-start;
-        }
         .tp-devtools-card {
           grid-template-columns: 1fr;
         }
@@ -1695,14 +1636,6 @@ const threeThings = [
           line-height: 1.75;
         }
 
-        /* Proof strip */
-        .tp-proof-stats {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 20px 24px;
-          width: 100%;
-        }
-
         /* Section rhythm */
         .tp-three {
           padding: 72px 0 64px;
@@ -1727,11 +1660,8 @@ const threeThings = [
         .tp-snippets {
           padding: 0 0 80px;
         }
-        .tp-quote {
-          padding: 24px 0 80px;
-        }
         .tp-devtools {
-          padding: 0 0 80px;
+          padding: 24px 0 80px;
         }
         .tp-cta {
           padding: 0 0 80px;
@@ -1778,9 +1708,6 @@ const threeThings = [
         }
 
         /* Type scale */
-        .tp-blockquote {
-          font-size: 22px;
-        }
         .tp-h2-large {
           font-size: 28px;
         }
