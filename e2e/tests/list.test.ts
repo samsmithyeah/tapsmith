@@ -57,6 +57,7 @@ describe("List screen", () => {
     const firstText = await items[0].getText();
     expect(firstText.length).toBeGreaterThan(0);
   });
+
 });
 
 // PILOT-287 follow-up: the all() snapshot contract, on a device. Handles from
@@ -117,5 +118,38 @@ describe("List screen — all() snapshot semantics", () => {
       await search.clear()
       await expect(listScreen.itemCount).toHaveText("30 items")
     }
+  })
+})
+
+// PILOT-345: scrollIntoView() judges visibility against the element the
+// locator actually denotes — filter/and/or/scope and the positional index all
+// apply — not against the raw selector's first match.
+//
+// Last in the file on purpose: it leaves the list scrolled, re-opening the deep
+// link does not reset scroll position, and the per-file app reset restores it
+// for the next file. (Scrolling back with `scrollIntoView({ direction: "down" })`
+// is not reliable here: a screen-wide "down" swipe at the default distance
+// starts above this FlatList, on the item-count text — PILOT-348.)
+describe("List screen — scrollIntoView on a modified locator", () => {
+  test.beforeAll(async ({ device }) => {
+    await device.openDeepLink("tapsmithtest:///list")
+    // The previous describe leaves focus in the search box and re-opening the
+    // deep link does not dismiss the keyboard. scrollIntoView() swipes the
+    // whole screen, and an "up" swipe starts inside the keyboard: Gboard
+    // glide-types "GT" per swipe into the search box (0 items) instead of
+    // scrolling the list (PILOT-348).
+    await device.hideKeyboard()
+  })
+
+  test("scrollIntoView() on a filtered locator scrolls to THAT row", async ({ device }) => {
+    // getByRole("button") alone is ambiguous (every rendered row, plus the
+    // header's back button). Before the fix the scroll probe read that raw
+    // selector, so this threw a strict-mode violation — or, for a raw selector
+    // whose single visible match the filter excluded, reported "already
+    // visible" and never swiped. The FlatList virtualises, so Item 25 is not
+    // even in the tree until the list has been scrolled.
+    const row = device.getByRole("button").filter({ hasText: "Item 25" })
+    await row.scrollIntoView()
+    await expect(row).toBeVisible()
   })
 })

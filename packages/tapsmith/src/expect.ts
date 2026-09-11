@@ -17,14 +17,13 @@
  *   await expect.poll(async () => fetchCount()).toBe(5);
  */
 
-import { ElementHandle, ELEMENT_HANDLE_BRAND, isStrictModeViolation, isRetryableResolutionError } from "./element-handle.js";
+import { ElementHandle, ELEMENT_HANDLE_BRAND, isStrictModeViolation, isRetryableResolutionError, POLL_INTERVAL_MS } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { formatSelector } from "./selectors.js";
 import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
 import { WebViewLocator, WEBVIEW_LOCATOR_BRAND } from "./webview-locator.js";
 
 const DEFAULT_ASSERTION_TIMEOUT_MS = 5_000;
-const POLL_INTERVAL_MS = 250;
 // Short server-side timeout for element lookups inside assertion polls.
 // Must be > 0 because the Rust daemon treats 0 as "use 30s default".
 // 100ms was too aggressive under multi-emulator load and produced false
