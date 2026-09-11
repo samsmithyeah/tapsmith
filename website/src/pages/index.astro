@@ -1,27 +1,70 @@
 ---
 import '../styles/global.css'
 import { Code } from 'astro:components'
+import type { ComponentProps } from 'astro/types'
 
 // Every code block on the page is highlighted at build time by Astro's <Code>
 // (Shiki) with this small theme drawn from the site palette, so the hero, the
 // API tabs and the one-liners all read the same. Backgrounds come from the
 // surrounding cards, not the theme.
-const codeTheme = {
+type CodeTheme = NonNullable<ComponentProps<typeof Code>['theme']>
+const codeTheme: CodeTheme = {
   name: 'tapsmith',
   type: 'dark',
   colors: { 'editor.background': '#00000000', 'editor.foreground': '#d4cfc8' },
   tokenColors: [
-    { scope: ['comment', 'punctuation.definition.comment'], settings: { foreground: '#7a7570', fontStyle: 'italic' } },
+    {
+      scope: ['comment', 'punctuation.definition.comment'],
+      settings: { foreground: '#7a7570', fontStyle: 'italic' },
+    },
     { scope: ['string', 'punctuation.definition.string'], settings: { foreground: '#e8a86c' } },
-    { scope: ['keyword', 'storage.type', 'storage.modifier', 'keyword.control', 'keyword.operator.expression', 'keyword.operator.new'], settings: { foreground: '#e8914b' } },
-    { scope: ['entity.name.function', 'support.function', 'entity.name.command'], settings: { foreground: '#9fc1e0' } },
-    { scope: ['meta.object-literal.key', 'variable.other.property', 'support.variable.property', 'support.type.property-name'], settings: { foreground: '#cfc3ad' } },
-    { scope: ['constant.numeric', 'constant.language', 'support.constant'], settings: { foreground: '#d9a066' } },
-    { scope: ['variable.parameter', 'variable.other.readwrite', 'variable.other.object', 'variable.other.constant'], settings: { foreground: '#d4cfc8' } },
-    { scope: ['punctuation', 'meta.brace', 'keyword.operator', 'storage.type.function.arrow'], settings: { foreground: '#a39d95' } },
-    { scope: ['keyword.operator.arrow', 'storage.type.function.arrow'], settings: { foreground: '#e8914b' } },
+    {
+      scope: [
+        'keyword',
+        'storage.type',
+        'storage.modifier',
+        'keyword.control',
+        'keyword.operator.expression',
+        'keyword.operator.new',
+      ],
+      settings: { foreground: '#e8914b' },
+    },
+    {
+      scope: ['entity.name.function', 'support.function', 'entity.name.command'],
+      settings: { foreground: '#9fc1e0' },
+    },
+    {
+      scope: [
+        'meta.object-literal.key',
+        'variable.other.property',
+        'support.variable.property',
+        'support.type.property-name',
+      ],
+      settings: { foreground: '#cfc3ad' },
+    },
+    {
+      scope: ['constant.numeric', 'constant.language', 'support.constant'],
+      settings: { foreground: '#d9a066' },
+    },
+    {
+      scope: [
+        'variable.parameter',
+        'variable.other.readwrite',
+        'variable.other.object',
+        'variable.other.constant',
+      ],
+      settings: { foreground: '#d4cfc8' },
+    },
+    {
+      scope: ['punctuation', 'meta.brace', 'keyword.operator', 'storage.type.function.arrow'],
+      settings: { foreground: '#a39d95' },
+    },
+    {
+      scope: ['keyword.operator.arrow', 'storage.type.function.arrow'],
+      settings: { foreground: '#e8914b' },
+    },
   ],
-} as const
+}
 
 const codeSnippet = `import { test, expect } from "tapsmith"
 
@@ -414,7 +457,8 @@ const threeThings = [
               data-snippet="locators"
               role="tabpanel"
               id="panel-locators"
-              aria-labelledby="tab-locators">
+              aria-labelledby="tab-locators"
+            >
               <Code code={snippets.locators} lang="ts" theme={codeTheme} />
             </div>
             <div
@@ -423,7 +467,8 @@ const threeThings = [
               role="tabpanel"
               id="panel-network"
               aria-labelledby="tab-network"
-              hidden>
+              hidden
+            >
               <Code code={snippets.network} lang="ts" theme={codeTheme} />
             </div>
             <div
@@ -432,7 +477,8 @@ const threeThings = [
               role="tabpanel"
               id="panel-gestures"
               aria-labelledby="tab-gestures"
-              hidden>
+              hidden
+            >
               <Code code={snippets.gestures} lang="ts" theme={codeTheme} />
             </div>
           </div>
@@ -466,7 +512,12 @@ const threeThings = [
                 />
               </button>
               <div class="tp-devtools-code">
-                <Code class="tp-snippet-code" code="npx tapsmith show-trace trace.zip" lang="sh" theme={codeTheme} />
+                <Code
+                  class="tp-snippet-code"
+                  code="npx tapsmith show-trace trace.zip"
+                  lang="sh"
+                  theme={codeTheme}
+                />
               </div>
             </div>
             <div class="tp-devtools-card">
@@ -488,7 +539,12 @@ const threeThings = [
                 />
               </button>
               <div class="tp-devtools-code">
-                <Code class="tp-snippet-code" code="npx tapsmith test --ui" lang="sh" theme={codeTheme} />
+                <Code
+                  class="tp-snippet-code"
+                  code="npx tapsmith test --ui"
+                  lang="sh"
+                  theme={codeTheme}
+                />
               </div>
             </div>
           </div>
