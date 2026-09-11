@@ -18,7 +18,8 @@ agent/local.properties
 # IDE
 .idea/
 *.iml
-.vscode/
+.vscode/*
+!.vscode/settings.json
 *.swp
 *.swo
 *~
