@@ -6,6 +6,12 @@
 // Server: tapsmith test --ui --ui-port 4830 -c tapsmith.config.ios-multi.mjs
 import puppeteer from 'puppeteer-core';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// The checkout's absolute path, as it appears in the UI (Source tab header);
+// scrubbed to a neutral one in the footage.
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const OUT = 'multi-frames';
 fs.rmSync(OUT, { recursive: true, force: true });
@@ -51,8 +57,8 @@ await page.evaluate(() => {
 // The Source tab heads its panel with the file's absolute path. Rewrite it to
 // the neutral path used everywhere else in the video, live, as the panel
 // re-renders (same scrub as demo-trace.zip; nothing else in the UI changes).
-await page.evaluate(() => {
-  const REAL = '/Users/samsmithredbadger/projects/tapsmith', NEUTRAL = '/Users/dev/acme-mobile';
+await page.evaluate((REAL) => {
+  const NEUTRAL = '/Users/dev/acme-mobile';
   const scrub = () => {
     for (const el of document.querySelectorAll('.source-filename')) {
       if (el.textContent && el.textContent.includes(REAL)) el.textContent = el.textContent.split(REAL).join(NEUTRAL);
@@ -60,7 +66,7 @@ await page.evaluate(() => {
   };
   new MutationObserver(scrub).observe(document.body, { childList: true, subtree: true, characterData: true });
   scrub();
-});
+}, REPO_ROOT);
 
 const cdp = await page.createCDPSession();
 let n = 0;
