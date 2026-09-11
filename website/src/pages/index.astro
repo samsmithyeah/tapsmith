@@ -104,6 +104,11 @@ const comparisonRows = [
   ['Playwright-style TypeScript API', 'Y', 'N', 'N', 'P'],
   ['Reusable helpers, loops & fixtures', 'Y', 'Y', 'P', 'Y'],
   ['iOS + Android single suite', 'Y', 'Y', 'Y', 'Y'],
+  // Appium: a server plus a driver per platform, each on its own release
+  // train, plus capabilities to keep in step with Xcode / Android. Maestro's
+  // single CLI install is genuinely easy. Detox needs native project
+  // integration, applesimutils and a Jest/runner config per app.
+  ['One npm install, no server or drivers', 'Y', 'N', 'Y', 'P'],
   ['Auto-waiting on every action', 'Y', 'N', 'Y', 'Y'],
   ['Rich assertions with auto-retry', 'Y', 'N', 'P', 'P'],
   ['Network mocking (no proxy, no mock server)', 'Y', 'P', 'N', 'N'],
@@ -137,6 +142,11 @@ const threeThings = [
     n: '3',
     title: 'Replay the failure, don’t reconstruct it.',
     body: 'Every run records a trace: every tap, every network call, every frame. When a test fails at 3 am, open the trace viewer and scrub through it like a video instead of staring at a stack trace.',
+  },
+  {
+    n: '4',
+    title: 'Set up in minutes, not sprints.',
+    body: 'Appium means a server, a driver per platform, a capabilities blob, and keeping all three in step with every Xcode and Android release. Tapsmith is one npm package: the daemon, the device agents and the trace viewer come with it, <code>tapsmith init</code> writes your config, and <code>tapsmith doctor</code> tells you what’s missing. No server to start, no drivers to update.',
   },
 ]
 ---
