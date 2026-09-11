@@ -4277,6 +4277,60 @@ describe("scrollIntoView honours the handle's modifiers (PILOT-345)", () => {
     expect(swipe).toHaveBeenCalledTimes(1);
   });
 
+  it('or() unites the operands before judging visibility — the right operand alone can satisfy the scroll', async () => {
+    // The or-handle carries the LEFT operand's selector. Before the fix the
+    // probe read that raw selector, so an element only the right operand
+    // matches never counted: the scroll swiped to exhaustion and failed.
+    let rightReads = 0;
+    const findElements = vi.fn(async (selector: Selector) => {
+      const proto = selectorToProto(selector);
+      if (proto.text === 'Zèbre') {
+        rightReads++;
+        // Ticks 1-2 (probe, confirmation) miss; from tick 3 (post-swipe) the
+        // right operand's element is on screen.
+        return makeFindElementsResponse(rightReads >= 3 ? [row('z', 'Zèbre', true, 300)] : []);
+      }
+      return makeFindElementsResponse([]); // the left operand never matches
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const left = new ElementHandle(client, _text('Zebra'), 5000);
+    const right = new ElementHandle(client, _text('Zèbre'), 5000);
+
+    await left.or(right).scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('a scoped child (parent.first().getByText) is judged within its parent, not against a same-text element elsewhere', async () => {
+    // Two lists on screen. The target text exists, visible, in the SECOND
+    // list; the first list's copy is off-screen until one swipe. Before the
+    // fix the probe read the raw child selector, saw the other list's copy
+    // visible and never swiped.
+    const lists = [
+      makeElementInfo({ elementId: 'list1', bounds: { left: 0, top: 500, right: 400, bottom: 1200 } }),
+      makeElementInfo({ elementId: 'list2', bounds: { left: 0, top: 1300, right: 400, bottom: 2000 } }),
+    ];
+    let childReads = 0;
+    const findElements = vi.fn(async (selector: Selector) => {
+      const desc = formatSelector(selector);
+      if (desc.includes('getByText')) {
+        childReads++;
+        const children = [row('z-other', 'Zebra', true, 1500)]; // inside list2, visible
+        if (childReads >= 3) children.push(row('z-in', 'Zebra', true, 700)); // inside list1, after the swipe
+        return makeFindElementsResponse(children);
+      }
+      return makeFindElementsResponse(lists);
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const child = new ElementHandle(client, _testId('list'), 5000).first().getByText('Zebra');
+
+    await child.scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+  });
+
   it('probes with the poll-tick budget, not the handle timeout', async () => {
     // A filtered handle with a 30s timeout re-times the whole chain to one
     // poll interval per read, so a wedged agent cannot hold a probe for the
@@ -4311,8 +4365,9 @@ describe("scrollIntoView honours the handle's modifiers (PILOT-345)", () => {
 
     expect(swipe).toHaveBeenCalledTimes(1);
     expect(findElement).not.toHaveBeenCalled();
-    // probe, confirmation, post-swipe probe, then one (stable) stabilization read
-    expect(findElements).toHaveBeenCalledTimes(4);
+    // probe, confirmation, post-swipe probe, then two stabilization reads that
+    // both match the probe's position → settled
+    expect(findElements).toHaveBeenCalledTimes(5);
   });
 
   it('a stale snapshot on a modified handle is an unreliable tick — re-probed, never swiped on', async () => {
@@ -4330,6 +4385,313 @@ describe("scrollIntoView honours the handle's modifiers (PILOT-345)", () => {
 
     expect(calls).toBe(2);
     expect(swipe).not.toHaveBeenCalled();
+  });
+
+  it('a handle from all() re-captures by index before every probe, so a row captured off-screen still scrolls into view (review follow-up)', async () => {
+    // rows[i] answers readers from its capture, but a scroll exists to watch
+    // the screen change: reading the frozen capture would miss on every tick
+    // (5 swipes, then "not visible") even once the row is on screen.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      // Call 1: the all() capture, Zebra rendered off-screen. Calls 2-3: the
+      // probe's and the confirmation's re-captures, unchanged → swipe. From
+      // call 4 (post-swipe re-capture, then stabilization) Zebra is on screen.
+      const onScreen = calls >= 4;
+      return makeFindElementsResponse([
+        row('r0', 'Apple', true, 100),
+        row('r1', 'Banana', true, 200),
+        row('r2', 'Zebra', onScreen, onScreen ? 300 : 2000),
+      ]);
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const rows = await new ElementHandle(client, _role('listitem'), 5000).all();
+
+    await rows[2].scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+    expect(findElements.mock.calls.length).toBeGreaterThanOrEqual(4);
+    // The handle now holds the post-scroll capture, so the action that
+    // follows the scroll addresses the row where it is NOW.
+    expect((await rows[2].boundingBox())?.y).toBe(300);
+  });
+
+  it('a handle from all() whose row has scrolled away since the capture swipes instead of reporting it visible (review follow-up)', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      // Captured visible (call 1); gone off-screen by the time of the scroll
+      // (calls 2-3); back after one swipe (call 4 onwards).
+      const onScreen = calls === 1 || calls >= 4;
+      return makeFindElementsResponse([
+        row('r0', 'Apple', true, 100),
+        row('r2', 'Zebra', onScreen, onScreen ? 300 : -500),
+      ]);
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const rows = await new ElementHandle(client, _role('listitem'), 5000).all();
+
+    await rows[1].scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('an ambiguous stabilization read is waited out — it neither fails a scroll whose target is already visible nor swipes again (review follow-up)', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls < 3) return makeFindElementsResponse([]); // probe + confirmation miss → swipe
+      if (calls === 3) return makeFindElementsResponse([row('r9', 'Zebra', true, 300)]); // visible
+      // Every stabilization tick: a second same-text row is passing through.
+      return makeFindElementsResponse([row('r9', 'Zebra', true, 300), row('r10', 'Zebra', true, 900)]);
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Zebra'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+    // 3 pre-visible reads + all 10 stabilization ticks (never a clean reading).
+    expect(findElements).toHaveBeenCalledTimes(13);
+  });
+
+  it('a one-tick miss during post-swipe stabilization is waited out, not taken as "settled" (review follow-up)', async () => {
+    // The old stabilization read let the agent wait 500ms for the element; the
+    // single-shot read must not turn a cell flickering out of the tree
+    // mid-deceleration into an early return that hands a moving list to the
+    // next tap.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls < 3) return makeFindElementsResponse([]); // probe + confirmation miss → swipe
+      if (calls === 4) return makeFindElementsResponse([]); // stabilization tick 1: flicker
+      return makeFindElementsResponse([row('r9', 'Zebra', true, 300)]); // visible, then stable
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Zebra'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+    // probe, confirmation, post-swipe probe, flicker tick, then two ticks that
+    // read the same position as the probe did → settled.
+    expect(findElements).toHaveBeenCalledTimes(6);
+  });
+
+  it('one matching position read is not "settled" — the position must hold for two consecutive ticks (review follow-up)', async () => {
+    // A stalled frame or a velocity null mid-deceleration can make two raw
+    // reads 100ms apart agree; the replaced Android read settled agent-side
+    // before answering, so a lone match must not end stabilization.
+    let calls = 0;
+    const tops = [300, 300, 220, 160, 160, 160]; // stall, then motion resumes, then still
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls < 3) return makeFindElementsResponse([]); // probe + confirmation miss → swipe
+      return makeFindElementsResponse([row('r9', 'Zebra', true, tops[Math.min(calls - 3, tops.length - 1)])]);
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Zebra'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+    // post-swipe probe (300), tick 300 (1 stable), 220 (reset), 160, 160 (1), 160 (2) → settled
+    expect(findElements).toHaveBeenCalledTimes(8);
+  });
+
+  it('an unreadable tick restarts the settle count — two matching reads around a gap are not stillness (review follow-up)', async () => {
+    let calls = 0;
+    // post-swipe probe 300; then 300 (1 stable), miss (restart), 300 (1), 300 (2) → settled
+    const reads: Array<number | null> = [300, 300, null, 300, 300];
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls < 3) return makeFindElementsResponse([]); // probe + confirmation miss → swipe
+      const r = reads[Math.min(calls - 3, reads.length - 1)];
+      return makeFindElementsResponse(r === null ? [] : [row('r9', 'Zebra', true, r)]);
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Zebra'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+    expect(findElements).toHaveBeenCalledTimes(7); // 2 misses + probe + 4 stabilization reads
+  });
+
+  it('an ambiguous stabilization tick restarts the settle count like any other unreadable tick (review follow-up)', async () => {
+    let calls = 0;
+    // post-swipe probe 300; then 300 (1), two matches (restart), 300 (1), 300 (2) → settled
+    const reads: Array<number | 'ambiguous'> = [300, 300, 'ambiguous', 300, 300];
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls < 3) return makeFindElementsResponse([]); // probe + confirmation miss → swipe
+      const r = reads[Math.min(calls - 3, reads.length - 1)];
+      return makeFindElementsResponse(
+        r === 'ambiguous'
+          ? [row('r9', 'Zebra', true, 300), row('r10', 'Zebra', true, 900)]
+          : [row('r9', 'Zebra', true, r)],
+      );
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Zebra'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+    expect(findElements).toHaveBeenCalledTimes(7); // 2 misses + probe + 4 stabilization reads
+  });
+
+  it('bounds missing for one tick after the probe saw them are a gap, not "no position to settle" (review follow-up)', async () => {
+    let calls = 0;
+    // post-swipe probe 300; then no bounds (restart), 300 (1), 300 (2) → settled
+    const reads: Array<number | null> = [300, null, 300, 300];
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls < 3) return makeFindElementsResponse([]); // probe + confirmation miss → swipe
+      const r = reads[Math.min(calls - 3, reads.length - 1)];
+      return makeFindElementsResponse([
+        r === null
+          ? makeElementInfo({ elementId: 'r9', text: 'Zebra', visible: true, bounds: undefined })
+          : row('r9', 'Zebra', true, r),
+      ]);
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Zebra'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+    expect(findElements).toHaveBeenCalledTimes(6); // 2 misses + probe + 3 stabilization reads
+  });
+
+  it('DOCUMENTED CONTRACT: rows[i].scrollIntoView() on a list whose window shifts stops on whatever is at index i, like .nth(i) (PILOT-346 rewrites this)', async () => {
+    // A virtualised list renders a moving window. all() captured [A, B, C];
+    // after one swipe the rendered window is [B, C, D]. The captured handle is
+    // re-captured BY INDEX before every check (the refresh-not-clear
+    // semantics), so rows[2] now denotes D — the api-reference all() section
+    // says so and tells users to name the row instead. Pinned here so the
+    // behaviour is explicit for PILOT-346, not so it is desirable.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      const before = [row('a', 'A', true, 100), row('b', 'B', true, 200), row('c', 'C', false, 900)];
+      const after = [row('b', 'B', true, 100), row('c', 'C', true, 200), row('d', 'D', true, 300)];
+      return makeFindElementsResponse(calls >= 4 ? after : before);
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const rows = await new ElementHandle(client, _role('listitem'), 5000).all();
+
+    await rows[2].scrollIntoView(); // C is captured off-screen → one swipe
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+    // Index 2 of the scrolled window is D: the scroll stopped on it and the
+    // handle now describes it.
+    expect((await rows[2].find()).elementId).toBe('d');
+    expect((await rows[2].boundingBox())?.y).toBe(300);
+  });
+
+  it('an element without bounds ends stabilization after one read — there is no position to settle (review follow-up)', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls < 3) return makeFindElementsResponse([]); // probe + confirmation miss → swipe
+      return makeFindElementsResponse([makeElementInfo({ elementId: 'nb', text: 'Zebra', visible: true, bounds: undefined })]);
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Zebra'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+    expect(findElements).toHaveBeenCalledTimes(4); // probe, confirmation, post-swipe probe, one stabilization read
+  });
+
+  it('a user stop raised by the all() re-capture inside the scroll probe propagates (review follow-up)', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls === 1) return makeFindElementsResponse([row('r0', 'Apple', true, 100), row('r2', 'Zebra', false, 2000)]);
+      throw new TestAbortedError(); // the first re-capture: the user stopped the run
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const rows = await new ElementHandle(client, _role('listitem'), 5000).all();
+
+    await expect(rows[1].scrollIntoView()).rejects.toSatisfy(isAbortError);
+    expect(swipe).not.toHaveBeenCalled();
+    expect(findElements).toHaveBeenCalledTimes(2);
+  });
+
+  it('scrollIntoView() on an all() row that is already visible re-reads once and does not swipe (review follow-up)', async () => {
+    // The zero-swipe path still refreshes the capture: the handle then
+    // describes the row as it is now, not as it was captured.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      // Captured at y=300 (call 1); a banner has since nudged the list to y=340.
+      return makeFindElementsResponse([row('r0', 'Apple', true, 100), row('r2', 'Zebra', true, calls === 1 ? 300 : 340)]);
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const waitForIdle = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe, waitForIdle });
+    const rows = await new ElementHandle(client, _role('listitem'), 5000).all();
+
+    await rows[1].scrollIntoView();
+
+    expect(swipe).not.toHaveBeenCalled();
+    expect(waitForIdle).not.toHaveBeenCalled();
+    expect(findElements).toHaveBeenCalledTimes(2); // the capture, then one live probe
+    expect((await rows[1].boundingBox())?.y).toBe(340);
+  });
+
+  it('a user stop during post-swipe stabilization propagates instead of being waited out (review follow-up)', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls < 3) return makeFindElementsResponse([]); // probe + confirmation miss → swipe
+      if (calls === 3) return makeFindElementsResponse([row('r9', 'Zebra', true, 300)]); // visible
+      throw new TestAbortedError(); // stabilization tick: the user stopped the run
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Zebra'), 5000);
+
+    await expect(handle.scrollIntoView()).rejects.toSatisfy(isAbortError);
+    expect(swipe).toHaveBeenCalledTimes(1);
+    expect(findElements).toHaveBeenCalledTimes(4); // nothing after the abort
+  });
+
+  it('an all() handle whose one refresh timed out still reports "not found" once the agent recovers (review follow-up)', async () => {
+    // tap() on a captured-but-disabled row: the first re-capture times out at
+    // the agent, every later one answers cleanly with a shorter list. The
+    // deadline error must be the genuine positional miss — not the long-cleared
+    // timeout, which would also trip session-level recovery.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls === 1) {
+        return makeFindElementsResponse([
+          row('r0', 'A', true, 100), row('r1', 'B', true, 200), row('r2', 'C', true, 300),
+          row('r3', 'D', true, 400), { ...row('r4', 'E', true, 500), enabled: false },
+        ]);
+      }
+      if (calls === 2) return { requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' };
+      return makeFindElementsResponse([row('r0', 'A', true, 100), row('r1', 'B', true, 200), row('r2', 'C', true, 300)]);
+    });
+    const client = makeMockClient({ findElements });
+    const rows = await new ElementHandle(client, _role('listitem'), 800).all();
+
+    await expect(rows[4].tap()).rejects.toThrow(/was not found after waiting 800ms \(nth\(4\): expected at least 5 element\(s\), but found 3\)/);
   });
 
   it('an ambiguous filtered handle is still a strict-mode violation', async () => {

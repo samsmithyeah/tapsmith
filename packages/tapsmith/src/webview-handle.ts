@@ -5,13 +5,13 @@ import {
   STRICT_ERROR_MAX_ELEMENTS,
   truncateText,
   type StrictModeViolationError,
+  POLL_INTERVAL_MS,
 } from './element-handle.js';
 import { WebViewLocator } from './webview-locator.js';
 import type { TraceCollector } from './trace/trace-collector.js';
 import { extractStack } from './trace/trace-collector.js';
 import type { WebKitInspectorClient } from './webkit-inspector.js';
 
-const POLL_INTERVAL_MS = 250;
 const WEB_SOCKET_CONNECT_TIMEOUT_MS = 5_000;
 const WEBVIEW_CLOSE_RPC_TIMEOUT_MS = 2_000;
 const WEBVIEW_BEST_EFFORT_CDP_TIMEOUT_MS = 2_000;

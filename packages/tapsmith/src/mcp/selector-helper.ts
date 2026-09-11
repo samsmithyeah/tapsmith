@@ -2,7 +2,7 @@ import { parseSelectorString, resolvePositionalIndex } from '../trace-viewer/com
 import type { ParsedSelector } from '../trace-viewer/components/selector-matching.js';
 import type { Selector, SelectorKind } from '../selectors.js';
 import { makeSelector } from '../selectors.js';
-import { buildStrictModeViolationError, collapseSameTargetDuplicates } from '../element-handle.js';
+import { buildStrictModeViolationError, collapseSameTargetDuplicates, POLL_INTERVAL_MS } from '../element-handle.js';
 import type { TapsmithGrpcClient, ElementInfo } from '../grpc-client.js';
 
 export interface ParsedRuntimeSelector {
@@ -66,7 +66,6 @@ function selectorForElement(el: ElementInfo): Selector | undefined {
 }
 
 const RESOLVE_TIMEOUT_MS = 5_000;
-const RESOLVE_POLL_MS = 250;
 
 export interface ResolvedActionTarget {
   /** Selector to dispatch the action with (fallback / display). */
@@ -98,7 +97,7 @@ export async function resolveActionTarget(
 
   let elements: ElementInfo[] = [];
   while (true) {
-    const res = await client.findElements(selector, RESOLVE_POLL_MS);
+    const res = await client.findElements(selector, POLL_INTERVAL_MS);
     if (res.errorMessage) {
       // Daemon-level failure (agent dead, command error) — surface it
       // immediately instead of busy-waiting toward a generic "no match".
@@ -106,7 +105,7 @@ export async function resolveActionTarget(
     }
     elements = collapseSameTargetDuplicates(res.elements ?? []);
     if (elements.length > 0 || Date.now() >= deadline) break;
-    await new Promise((r) => setTimeout(r, RESOLVE_POLL_MS));
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 
   if (elements.length === 0) {

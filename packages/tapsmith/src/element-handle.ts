@@ -40,10 +40,13 @@ export interface BoundingBox {
 /**
  * Cadence of every host-side poll loop in the SDK — action auto-wait,
  * `waitFor`, the visibility probes, `scrollIntoView`'s probe and
- * stabilisation, and the assertion poller in expect.ts (which imports it).
- * Also the budget handed to each single read those loops issue (see
- * {@link tickBudget}). One constant, so the loops cannot drift apart again
- * (PILOT-345 found it hand-copied in five places).
+ * stabilisation, `exists()`, the WebView locator loops, the MCP selector
+ * resolver and the assertion poller in expect.ts (which import it). It is
+ * also the budget of each read the action and probe loops issue (see
+ * {@link tickBudget}); `waitFor` and the assertion poller keep their own,
+ * deliberately longer, 500 ms read budget. One constant, so the cadences
+ * cannot drift apart again (PILOT-345 found it hand-copied in seven places).
+ * @internal
  */
 export const POLL_INTERVAL_MS = 250;
 /** Settle time after swipe-based scrolling.  On iOS, ScrollView momentum
@@ -1069,11 +1072,7 @@ export class ElementHandle {
       // satisfied from it re-captures by index before the next one, so this
       // is a real wait (like .nth(i)) rather than a busy-wait on a frozen list.
       // A refresh that fails is classified like any tick's read error.
-      const refreshErr = await this._refreshSnapshot();
-      if (refreshErr) {
-        if (isRetryableResolutionError(refreshErr)) lastTransientErr = refreshErr;
-        else if (!isPollableNotFoundError(refreshErr)) throw refreshErr;
-      }
+      lastTransientErr = await this._refreshBetweenTicks(lastTransientErr);
       const sleepMs = Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now()));
       if (sleepMs > 0) await sleep(sleepMs, this._client._getAbortSignal?.());
     }
@@ -1145,6 +1144,41 @@ export class ElementHandle {
           throw err;
       }
     }
+  }
+
+  /**
+   * @internal — {@link _resolveTick} against the LIVE tree. A handle from
+   * `all()` answers `_resolveTick` from its capture, which is right for the
+   * action ladders (a check and the action it guards must describe the same
+   * captured element; those loops re-capture *between* ticks). A loop that
+   * exists to watch the screen change — `scrollIntoView`'s probe and
+   * stabilisation — must instead re-capture by index before every read, or it
+   * reads the same frozen answer on every iteration and never converges (a row
+   * captured off-screen would "miss" through all its swipes and then fail).
+   * The refresh is bounded by `budgetMs` like any tick. A failed refresh is
+   * returned as the classified tick (stale / fault / miss) without a read —
+   * the handle keeps holding its previous capture for later readers, as
+   * `_refreshSnapshot` guarantees. A handle without a capture reads exactly
+   * as `_resolveTick`.
+   */
+  private async _resolveLiveTick(budgetMs: number): Promise<ResolveTick> {
+    const refreshErr = await this._refreshSnapshot(budgetMs);
+    if (refreshErr) {
+      switch (classifyResolutionError(refreshErr)) {
+        case 'stale':
+          return { kind: 'stale' };
+        case 'fault':
+          return { kind: 'fault', error: refreshErr };
+        case 'miss':
+          // Not reachable today — a refresh runs `_resolveAll`, which answers
+          // an empty match with `[]` rather than throwing — but spelled out so
+          // every class the classifier can return has a home here.
+          return { kind: 'miss' };
+        default:
+          throw refreshErr;
+      }
+    }
+    return this._resolveTick(budgetMs);
   }
 
   /**
@@ -1301,11 +1335,7 @@ export class ElementHandle {
       }
       // A captured (all()) element that is disabled or gone cannot change in
       // the snapshot: re-capture by index before the next tick (see _strictResolve).
-      const refreshErr = await this._refreshSnapshot();
-      if (refreshErr) {
-        if (isRetryableResolutionError(refreshErr)) lastTransientErr = refreshErr;
-        else if (!isPollableNotFoundError(refreshErr)) throw refreshErr;
-      }
+      lastTransientErr = await this._refreshBetweenTicks(lastTransientErr);
       const sleepMs = Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now()));
       if (sleepMs > 0) await sleep(sleepMs, this._client._getAbortSignal?.());
     }
@@ -1342,10 +1372,10 @@ export class ElementHandle {
    * falls back to the previous capture so the handle is never left holding a
    * cached rejection.
    */
-  private _refreshSnapshot(): Promise<Error | undefined> {
+  private _refreshSnapshot(budgetMs: number = SNAPSHOT_REFRESH_BUDGET_MS): Promise<Error | undefined> {
     const previous = this._options.resolvedElementsPromise;
     if (!previous) return Promise.resolve(undefined);
-    const fresh = ElementHandle._cloneWithTimeout(this, SNAPSHOT_REFRESH_BUDGET_MS)._resolveAll();
+    const fresh = ElementHandle._cloneWithTimeout(this, budgetMs)._resolveAll();
     this._options.resolvedElementsPromise = fresh;
     return fresh.then(
       () => undefined,
@@ -1354,6 +1384,35 @@ export class ElementHandle {
         return err instanceof Error ? err : new Error(String(err));
       },
     );
+  }
+
+  /**
+   * @internal — The between-ticks step the action ladders (`_strictResolve`,
+   * `_waitForEnabled`) share for a handle from `all()`: an all() capture
+   * cannot change on its own, so a tick that could not be satisfied from it
+   * re-captures by index before the next one (a real wait, like `.nth(i)`,
+   * rather than a busy-wait on a frozen list). Folds the refresh's outcome
+   * into the ladder's remembered transient fault and returns the new value:
+   * a failed refresh is classified like a tick's read error (a fault is
+   * remembered, a stale or not-found answer changes nothing, anything fatal
+   * is thrown); a successful refresh IS this handle's device read — the agent
+   * answered, so an earlier fault has cleared, and it must not be reported at
+   * the deadline as the cause of a plain "not found". A handle without a
+   * capture is left alone.
+   */
+  private async _refreshBetweenTicks(lastTransientErr: Error | undefined): Promise<Error | undefined> {
+    if (!this._options.resolvedElementsPromise) return lastTransientErr;
+    const refreshErr = await this._refreshSnapshot();
+    if (!refreshErr) return undefined;
+    switch (classifyResolutionError(refreshErr)) {
+      case 'fault':
+        return refreshErr;
+      case 'stale':
+      case 'miss':
+        return lastTransientErr;
+      default:
+        throw refreshErr;
+    }
   }
 
   private async _actionTarget(preResolved?: ElementInfo): Promise<ActionTarget> {
@@ -1493,7 +1552,6 @@ export class ElementHandle {
         // internal error — is an unreliable tick: retry within the budget
         // rather than reporting a momentary infra fault as absence.
         const deadline = Date.now() + this._timeoutMs;
-        const RETRY_POLL_MS = 250;
         while (true) {
           const budget = Math.max(1, deadline - Date.now());
           const res = await this._client.findElement(this._selector, budget);
@@ -1515,10 +1573,10 @@ export class ElementHandle {
             found = false;
             break;
           }
-          if (Date.now() + RETRY_POLL_MS >= deadline) {
+          if (Date.now() + POLL_INTERVAL_MS >= deadline) {
             throw new Error(`findElement failed: ${msg}`);
           }
-          await sleep(RETRY_POLL_MS, this._client._getAbortSignal?.());
+          await sleep(POLL_INTERVAL_MS, this._client._getAbortSignal?.());
         }
       }
       await this._traceQuery('exists', `Exists: ${found}`, Date.now() - start);
@@ -2569,8 +2627,10 @@ export class ElementHandle {
       // Strict mode (PILOT-226) applies too: scrolling toward an ambiguous
       // selector is an error — which match should end up on screen? — and
       // propagates, as does any other fatal error (gRPC transport failure,
-      // user stop).
-      const tick = await this._resolveTick(POLL_INTERVAL_MS);
+      // user stop). A handle from all() is re-captured by index first: the
+      // probe watches the screen change, so it must never answer from the
+      // capture it was created with.
+      const tick = await this._resolveLiveTick(POLL_INTERVAL_MS);
       switch (tick.kind) {
         case 'fault':
           // A momentary agent fault or agent command timeout is retried by
@@ -2639,22 +2699,69 @@ export class ElementHandle {
           // element's position is stable for two consecutive checks.
           if (swipes > 0) {
             let lastY = el.bounds?.top;
+            // Settled = the position has held for two consecutive ticks (three
+            // equal reads, ~200ms of observed stillness on top of
+            // SCROLL_SETTLE_MS). The reads below are single live snapshots, so
+            // one matching pair could be a momentary velocity null or a
+            // stalled frame mid-deceleration; the `findElement` read this
+            // replaced settled agent-side on Android (WaitEngine, three
+            // positional re-checks) before it answered, so a lone match used
+            // to carry that margin already.
+            let stableTicks = 0;
             for (let s = 0; s < 10; s++) {
               await sleep(100, this._client._getAbortSignal?.());
-              // The same modifier-aware read as the probe, so a filtered or
-              // scoped handle tracks ITS element's position, not the raw
-              // selector's first match. Fatal errors (transport, user abort)
-              // propagate; anything else that is not a clean match — a slow
-              // (transient) tick, a stale snapshot, a momentary miss as the
-              // list settles — means no stable reading is available. The
-              // target was already visible, so stop stabilizing rather than
-              // burning up to ~5s per remaining tick re-probing, or falling
-              // through to another swipe that could scroll it back off-screen.
-              const stabilityTick = await this._resolveTick(POLL_INTERVAL_MS);
-              if (stabilityTick.kind !== 'found') break;
+              // The same modifier-aware, live read as the probe, so a filtered
+              // or scoped handle tracks ITS element's position, not the raw
+              // selector's first match. Transport errors and a user abort
+              // propagate. The target was already found visible, so nothing
+              // here may fail the scroll or fall through to another swipe
+              // (which could scroll it back off-screen); the tick just decides
+              // how to keep waiting for the position to settle:
+              // - a slow agent (`fault`: command timeout / momentary fault)
+              //   stops stabilizing — each further read could cost the daemon's
+              //   ~5s headroom, and the old single-probe loop stopped here too;
+              // - a momentary miss, a stale snapshot or an ambiguous read
+              //   (a cell dropping out of the tree or a same-text row passing
+              //   through mid-deceleration) is waited out: the old read let the
+              //   agent wait 500ms for the element, so a one-tick flicker must
+              //   not end stabilization early and hand a moving list to the
+              //   next tap. Bounded by the tick cap above.
+              let stabilityTick: ResolveTick;
+              try {
+                stabilityTick = await this._resolveLiveTick(POLL_INTERVAL_MS);
+              } catch (err) {
+                if (!isStrictModeViolation(err)) throw err;
+                // An ambiguous read is an unreadable tick like any other (see
+                // below): it restarts the count.
+                stableTicks = 0;
+                continue;
+              }
+              if (stabilityTick.kind === 'fault') break;
+              if (stabilityTick.kind !== 'found') {
+                // Consecutive means consecutive: an unreadable tick restarts
+                // the count, so two matching reads on either side of a gap
+                // are not taken as stillness.
+                stableTicks = 0;
+                continue;
+              }
               const curY = stabilityTick.element.bounds?.top;
-              if (curY !== undefined && curY === lastY) break;
-              lastY = curY;
+              if (curY === undefined) {
+                // An element the probe already saw without bounds has no
+                // position to track — nothing to stabilize, and waiting out
+                // all 10 ticks would only add dead time (a full chain read
+                // each) after a successful scroll. Bounds that were there at
+                // the probe and are missing THIS tick are a momentary gap
+                // (a cell mid-recycle): an unreadable tick, like a miss.
+                if (lastY === undefined) break;
+                stableTicks = 0;
+                continue;
+              }
+              if (curY === lastY) {
+                if (++stableTicks >= 2) break;
+              } else {
+                stableTicks = 0;
+                lastY = curY;
+              }
             }
           }
           await this._traceQuery(
