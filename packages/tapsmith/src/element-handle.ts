@@ -1171,9 +1171,12 @@ export class ElementHandle {
           return { kind: 'fault', error: refreshErr };
         case 'miss':
           // Not reachable today — a refresh runs `_resolveAll`, which answers
-          // an empty match with `[]` rather than throwing — but spelled out so
-          // every class the classifier can return has a home here.
-          return { kind: 'miss' };
+          // an empty match with `[]` rather than throwing. Spelled out so every
+          // class the classifier can return has a home here, and mapped to an
+          // unreliable tick rather than a miss: a refresh that failed is not
+          // evidence the element is off-screen, and a miss would let the
+          // scroll probe swipe on a read that never happened (PILOT-283).
+          return { kind: 'stale' };
         default:
           throw refreshErr;
       }
@@ -2697,8 +2700,10 @@ export class ElementHandle {
           // deceleration is consumed by the ScrollView (stops the scroll)
           // rather than being delivered to the child view.  Poll until the
           // element's position is stable for two consecutive checks.
+          // The last clean read of the settle loop, so the trace shows where
+          // the row ended up rather than where the probe saw it mid-motion.
+          let settled: ElementInfo = el;
           if (swipes > 0) {
-            let lastY = el.bounds?.top;
             // Settled = the position has held for two consecutive ticks (three
             // equal reads, ~200ms of observed stillness on top of
             // SCROLL_SETTLE_MS). The reads below are single live snapshots, so
@@ -2706,7 +2711,12 @@ export class ElementHandle {
             // stalled frame mid-deceleration; the `findElement` read this
             // replaced settled agent-side on Android (WaitEngine, three
             // positional re-checks) before it answered, so a lone match used
-            // to carry that margin already.
+            // to carry that margin already. An unreadable tick (miss, stale,
+            // ambiguous, bounds missing) clears both the count AND the last
+            // position, so the three equal reads are always adjacent — a
+            // post-gap read never counts against a pre-gap one.
+            const trackable = el.bounds?.top !== undefined;
+            let lastY = el.bounds?.top;
             let stableTicks = 0;
             for (let s = 0; s < 10; s++) {
               await sleep(100, this._client._getAbortSignal?.());
@@ -2731,17 +2741,15 @@ export class ElementHandle {
                 stabilityTick = await this._resolveLiveTick(POLL_INTERVAL_MS);
               } catch (err) {
                 if (!isStrictModeViolation(err)) throw err;
-                // An ambiguous read is an unreadable tick like any other (see
-                // below): it restarts the count.
+                // An ambiguous read is an unreadable tick like any other.
                 stableTicks = 0;
+                lastY = undefined;
                 continue;
               }
               if (stabilityTick.kind === 'fault') break;
               if (stabilityTick.kind !== 'found') {
-                // Consecutive means consecutive: an unreadable tick restarts
-                // the count, so two matching reads on either side of a gap
-                // are not taken as stillness.
                 stableTicks = 0;
+                lastY = undefined;
                 continue;
               }
               const curY = stabilityTick.element.bounds?.top;
@@ -2752,10 +2760,12 @@ export class ElementHandle {
                 // each) after a successful scroll. Bounds that were there at
                 // the probe and are missing THIS tick are a momentary gap
                 // (a cell mid-recycle): an unreadable tick, like a miss.
-                if (lastY === undefined) break;
+                if (!trackable) break;
                 stableTicks = 0;
+                lastY = undefined;
                 continue;
               }
+              settled = stabilityTick.element;
               if (curY === lastY) {
                 if (++stableTicks >= 2) break;
               } else {
@@ -2768,7 +2778,7 @@ export class ElementHandle {
             'scrollIntoView',
             `Visible after ${swipes} scroll(s)`,
             Date.now() - start,
-            el.bounds,
+            settled.bounds,
           );
           return;
         }

@@ -1020,7 +1020,7 @@ Swipes in the given direction, checking visibility between each attempt. Throws 
 
 If the element is already visible, this is a no-op — it returns without scrolling, so calling `scrollIntoView()` before every `tap()` is safe even when the target is on screen (an unnecessary swipe could otherwise shift it under a pinned app bar). When the element isn't found on the first check, Tapsmith waits for the UI to settle and re-checks before the first swipe, so a briefly stale accessibility tree (e.g. right after navigation) doesn't trigger a spurious scroll. For a handle from `all()` the check first re-captures the row by index — see the note in the [`all()`](#elementhandleall-promiseelementhandle) section for what that means on a virtualised list.
 
-The visibility check honours every modifier on the locator — `filter()`, `and()`/`or()`, scoping and `first()`/`nth()`/`last()` — so `device.getByRole("listitem").filter({ hasText: "Zebra" }).scrollIntoView()` swipes until *that* row is on screen rather than stopping at the first list item. Strict mode applies as for any single-element query: an ambiguous locator throws before any swipe rather than scrolling toward an arbitrary match.
+The visibility check honours every modifier on the locator — `filter()`, `and()`/`or()`, scoping and `first()`/`nth()`/`last()` — so `device.getByRole("listitem").filter({ hasText: "Zebra" }).scrollIntoView()` swipes until *that* row is on screen rather than stopping at the first list item. Strict mode applies as for any single-element query: an ambiguous locator throws (before the first swipe, if it is ambiguous from the start) rather than scrolling toward an arbitrary match.
 
 | Option | Default | Description |
 |---|---|---|

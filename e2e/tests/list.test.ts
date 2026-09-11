@@ -130,6 +130,12 @@ describe("List screen — all() snapshot semantics", () => {
 // on the item-count text — PILOT-348). The per-file app reset restores the
 // screen for the next file.
 describe("List screen — scrollIntoView on a modified locator", () => {
+  // The swipes, settle sleeps and probe reads inside scrollIntoView() are not
+  // progress-tracked, so they all count against the per-test timeout; on a
+  // cold software-GPU CI emulator the ~3 s of fixed sleeps plus ~10 hierarchy
+  // reads can approach the Android CI default of 15 s.
+  test.use({ timeout: 45_000 })
+
   test("scrollIntoView() on a filtered locator scrolls to THAT row", async ({ device, listScreen }) => {
     // Establish the precondition inside the test, not in beforeAll, so a CI
     // retry cannot pass trivially against an already-scrolled list. A process
@@ -139,7 +145,9 @@ describe("List screen — scrollIntoView on a modified locator", () => {
     // glide-types into it, PILOT-348). Re-opening the deep link alone is not
     // enough: it resets neither scroll nor focus, and `forceColdLaunch` only
     // applies to iOS simulators.
-    await device.resetApp({ mode: "restart" })
+    // fallback: false — a restart that fails must fail THIS test, not quietly
+    // escalate to a data clear that signs the app out for the rest of the shard.
+    await device.resetApp({ mode: "restart", fallback: false })
     await device.openDeepLink("tapsmithtest:///list")
     await expect(listScreen.itemCount).toHaveText("30 items")
 
@@ -150,6 +158,11 @@ describe("List screen — scrollIntoView on a modified locator", () => {
     // visible" and never swiped. Item 25 starts below the fold (the FlatList
     // may not even have rendered it yet) — assert it is not visible first, so
     // the scroll below is known to have been exercised.
+    // Pin the locator shape first: a visible row through the same shape, so a
+    // later "not visible after N scroll(s)" cannot be a platform text-exposure
+    // mismatch masquerading as a scroll regression. Word-bounded: hasText is a
+    // substring match and iOS mounts Items 10-19 into the tree straight away.
+    await expect(device.getByRole("button").filter({ hasText: /\bItem 1\b/ })).toBeVisible()
     const row = device.getByRole("button").filter({ hasText: "Item 25" })
     await expect(row).not.toBeVisible()
     // ~15 rows of travel; 5 default swipes cover it about twice over on both CI

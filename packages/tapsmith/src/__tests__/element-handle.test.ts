@@ -4477,9 +4477,9 @@ describe("scrollIntoView honours the handle's modifiers (PILOT-345)", () => {
     await handle.scrollIntoView();
 
     expect(swipe).toHaveBeenCalledTimes(1);
-    // probe, confirmation, post-swipe probe, flicker tick, then two ticks that
-    // read the same position as the probe did → settled.
-    expect(findElements).toHaveBeenCalledTimes(6);
+    // probe, confirmation, post-swipe probe, flicker tick, then a tick that
+    // re-establishes the position and two more that hold it → settled.
+    expect(findElements).toHaveBeenCalledTimes(7);
   });
 
   it('one matching position read is not "settled" — the position must hold for two consecutive ticks (review follow-up)', async () => {
@@ -4521,7 +4521,8 @@ describe("scrollIntoView honours the handle's modifiers (PILOT-345)", () => {
     await handle.scrollIntoView();
 
     expect(swipe).toHaveBeenCalledTimes(1);
-    expect(findElements).toHaveBeenCalledTimes(7); // 2 misses + probe + 4 stabilization reads
+    // 2 misses + probe + 5 stabilization reads: 300 (1), gap, 300 (re-established), 300 (1), 300 (2)
+    expect(findElements).toHaveBeenCalledTimes(8);
   });
 
   it('an ambiguous stabilization tick restarts the settle count like any other unreadable tick (review follow-up)', async () => {
@@ -4545,7 +4546,8 @@ describe("scrollIntoView honours the handle's modifiers (PILOT-345)", () => {
     await handle.scrollIntoView();
 
     expect(swipe).toHaveBeenCalledTimes(1);
-    expect(findElements).toHaveBeenCalledTimes(7); // 2 misses + probe + 4 stabilization reads
+    // 2 misses + probe + 5 stabilization reads: 300 (1), ambiguous, 300 (re-established), 300 (1), 300 (2)
+    expect(findElements).toHaveBeenCalledTimes(8);
   });
 
   it('bounds missing for one tick after the probe saw them are a gap, not "no position to settle" (review follow-up)', async () => {
@@ -4569,7 +4571,8 @@ describe("scrollIntoView honours the handle's modifiers (PILOT-345)", () => {
     await handle.scrollIntoView();
 
     expect(swipe).toHaveBeenCalledTimes(1);
-    expect(findElements).toHaveBeenCalledTimes(6); // 2 misses + probe + 3 stabilization reads
+    // 2 misses + probe + 4 stabilization reads: no bounds, 300 (re-established), 300 (1), 300 (2)
+    expect(findElements).toHaveBeenCalledTimes(7);
   });
 
   it('DOCUMENTED CONTRACT: rows[i].scrollIntoView() on a list whose window shifts stops on whatever is at index i, like .nth(i) (PILOT-346 rewrites this)', async () => {
