@@ -82,18 +82,6 @@
   .chip-setup { opacity: 0; }
   .chip-setup code { font-family: ui-monospace, Menlo, monospace; font-size: 24px; color: #fd8567; }
 
-  /* S3.8: the two-device test, shown over the empty trace pane while the run streams */
-  /* browser-relative: the trace pane sits at x 670-1300 / y 300-780 while the run streams */
-  .snippet-card { position: absolute; left: 672px; top: 330px; width: 628px; opacity: 0;
-                  background: rgba(28,23,18,0.97); border: 1px solid #3a3228; border-radius: 14px;
-                  box-shadow: 0 30px 90px rgba(0,0,0,0.55); padding: 20px 26px 22px;
-                  font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 15px; line-height: 1.7;
-                  color: #d8d2ca; white-space: pre; }
-  .snippet-card .sl { display: block; opacity: 0; }
-  .snippet-card .lab { display: block; font-family: -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif;
-                       font-size: 14px; font-weight: 600; color: #fd8567; letter-spacing: 0.04em;
-                       text-transform: uppercase; margin-bottom: 12px; white-space: normal; }
-
   /* S4 intro: a failed CI job with its trace artifact, then show-trace in a terminal */
   #ci-card { position: absolute; left: 50%; top: 27%; transform: translate(-50%, 0); width: 980px; opacity: 0;
              background: #1c1712; border: 1px solid #3a3228; border-radius: 16px; overflow: hidden;
@@ -284,7 +272,6 @@
       <video id="v-multi" src="clip-multi.mp4" muted preload="auto"></video>
       <div class="src-patch" id="src-patch-m0"></div>
       <div class="src-patch" id="src-patch-m1"></div>
-      <div class="snippet-card" id="multi-code"><span class="lab">tapsmith.config.ts · chat.test.ts</span><span class="sl">use: { devices: [{ name: <span class="st">'alice'</span> }, { name: <span class="st">'bob'</span> }] }</span><span class="sl"> </span><span class="sl"><span class="fn">test</span>(<span class="st">'alice messages bob'</span>, <span class="kw">async</span> ({ devices }) =&gt; {</span><span class="sl">  <span class="kw">const</span> [alice, bob] = devices</span><span class="sl">  <span class="kw">await</span> alice.<span class="fn">getByRole</span>(<span class="st">'textfield'</span>, { name: <span class="st">'Message'</span> })</span><span class="sl">    .<span class="fn">type</span>(<span class="st">'Hi Bob'</span>)</span><span class="sl">  <span class="kw">await</span> alice.<span class="fn">pressKey</span>(<span class="st">'Enter'</span>)</span><span class="sl">  <span class="kw">await</span> <span class="fn">expect</span>(bob.<span class="fn">getByText</span>(<span class="st">'alice: Hi Bob'</span>)).<span class="fn">toBeVisible</span>()</span><span class="sl">})</span></div>
     </div>
     <div class="scene-label" id="l38"><div class="pin"></div>Multi-device — two users, one test</div>
   </div>
@@ -650,13 +637,8 @@ window.seekComp = async function(t) {
     $('b38').style.transform = `translate(-50%, -50%) scale(${1.0 + 0.018 * P(t, S, E)})`;
     const l = $('l38');
     l.style.opacity = P(t, S + 0.6, S + 1.2) * (1 - P(t, E - 1.6, E - 0.8));
-    // the test's code, over the still-empty trace pane while both devices act;
-    // gone before the pass lands and the two screenshot panes fill (clip ~7.9s)
-    const card = $('multi-code');
-    const ck = P(t, S + 1.0, S + 1.4) * (1 - P(t, S + 7.0, S + 7.5));
-    card.style.opacity = ck;
-    card.style.transform = `translateY(${(1 - easeOut(P(t, S + 1.0, S + 1.5))) * 14}px)`;
-    card.querySelectorAll('.sl').forEach((el, i) => { el.style.opacity = P(t, S + 1.3 + i * 0.16, S + 1.55 + i * 0.16); });
+    // (the test's source is on screen in the footage itself: the recorder opens
+    // the Source tab before the run, so it shows the code while both devices act)
     // same SOURCE-row cover as S3 (patch-table-multi.js, from clip-multi.mp4)
     const clipFrame = applyPatches(rel * MULTI_RATE, window.PATCH_RUNS_MULTI, 'src-patch-m');
     jobs.push(seekVideo($('v-multi'), (clipFrame + 0.5) / 30));

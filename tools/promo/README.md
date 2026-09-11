@@ -17,12 +17,14 @@ chord hit, thump, warm bloom, logo flash and YAML->TypeScript morph all land
 as the phrase ends. `BEAT` lives in `comp.html` and `synth-music.py`; the 2a/2b
 `adelay`s in `assemble.sh` are placed around it.
 
-Two more synthetic beats sit on top of real footage: the multi-device scene
-shows the test's code in a card over the (still empty) trace pane while both
-devices act, and the trace-viewer scene opens on a failed CI job with its
-`trace.zip` artifact and `npx tapsmith show-trace` typed in a terminal
-(`TRACE_INTRO`) before the viewer slides in — the VO walks through exactly
-that workflow.
+One more synthetic beat sits on top of real footage: the trace-viewer scene
+opens on a failed CI job with its `trace.zip` artifact and
+`npx tapsmith show-trace` typed in a terminal (`TRACE_INTRO`) before the
+viewer slides in — the VO walks through exactly that workflow. The
+multi-device scene shows the test's code through the real UI instead:
+`record-multi.mjs` opens the Source tab before the run, and rewrites the
+absolute path in its header to the neutral one live (a MutationObserver in
+the page), so no patch is needed there.
 
 ## Prerequisites
 

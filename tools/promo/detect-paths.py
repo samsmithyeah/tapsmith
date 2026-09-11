@@ -31,8 +31,10 @@ CLIPS = {
                   lines=[26, 30, 34, 38, 41, 45, 47, 30, 34, 41, 47, 52]),
 }[CLIP]
 
-X0, Y0, W, H = 500, 900, 710, 300      # scanned region, clip coords
-SLICE = (550, 710)                     # x-slice rel to X0 == clip 1050..1210
+X0, Y0, W, H = 400, 900, 810, 300      # scanned region, clip coords
+SLICE = (650, 810)                     # x-slice rel to X0 == clip 1050..1210
+GAP = (40, 125)                        # clip 440..525: blank between a SOURCE label and its value;
+                                       # source-code lines (Source tab) have text here
 DARK, MIN_DARK, FPS = 120, 12, 30
 
 subprocess.run(['ffmpeg', '-y', '-v', 'error', '-i', CLIPS['src'],
@@ -45,11 +47,13 @@ frames = data[:n*W*H].reshape(n, H, W)
 per_frame = []                          # frame -> (y0, y1) in clip coords, or None
 for i in range(n):
     col = frames[i][:, SLICE[0]:SLICE[1]]
-    left = frames[i][:, 35:185]      # value column start (clip x 535-685):
-    # a real SOURCE path is dark both here and far right; long URLs in the
-    # network panel and UI chrome rows are not.
+    left = frames[i][:, 135:285]     # value column start (clip x 535-685):
+    gap = frames[i][:, GAP[0]:GAP[1]]
+    # a real SOURCE path is dark both here and far right, with nothing in the
+    # label/value gap; long URLs, UI chrome rows and Source-tab code lines are not.
     rows = np.where(((col < DARK).sum(axis=1) >= MIN_DARK)
-                    & ((left < DARK).sum(axis=1) >= 8))[0]
+                    & ((left < DARK).sum(axis=1) >= 8)
+                    & ((gap < DARK).sum(axis=1) <= 1))[0]
     if len(rows) == 0:
         per_frame.append(None)
         continue
@@ -62,7 +66,7 @@ for i in range(n):
     # keep only bands whose text is one continuous monospace run spanning the
     # value column (a path); table rows have >=40px inter-column gaps.
     def is_path(y0, y1):
-        seg = frames[i][y0:y1+1, 35:]          # clip x 535..1210
+        seg = frames[i][y0:y1+1, 135:]         # clip x 535..1210
         dark_cols = np.where((seg < DARK).any(axis=0))[0]
         if len(dark_cols) < 40: return False
         span = dark_cols[-1] - dark_cols[0]

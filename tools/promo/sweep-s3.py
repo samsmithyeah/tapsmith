@@ -18,7 +18,7 @@ SCENES = [
     ('S3.8 multi-device', 62.1, 75.1, 1.0, 0.0, 'patch-table-multi.js', 'PATCH_RUNS_MULTI'),
 ]
 VS = 1598 / 1920
-CX, CY, CW_, CH_ = 1100, 1560, 1280, 600               # crop in rendered (2x) px
+CX, CY, CW_, CH_ = 900, 1560, 1480, 600                # crop in rendered (2x) px (includes the label/value gap)
 DARK = 120
 
 def sweep(name, S3_T0, S3_T1, UI_RATE, UI_OFF, table, var):
@@ -45,7 +45,9 @@ def sweep(name, S3_T0, S3_T1, UI_RATE, UI_OFF, table, var):
     ys, ye = max(0, Y(900)), min(CH_, Y(1200))
     far = img[ys:ye, X(1050):X(1210)]
     left = img[ys:ye, X(535):X(685)]
-    rows = np.where(((far < DARK).sum(axis=1) >= 12 * k / 2) & ((left < DARK).sum(axis=1) >= 8 * k / 2))[0]
+    gap = img[ys:ye, X(440):X(525)]                     # blank for a SOURCE row, text for code lines
+    rows = np.where(((far < DARK).sum(axis=1) >= 12 * k / 2) & ((left < DARK).sum(axis=1) >= 8 * k / 2)
+                    & ((gap < DARK).sum(axis=1) <= 1))[0]
     if len(rows) == 0:
         continue
     bands, start = [], rows[0]

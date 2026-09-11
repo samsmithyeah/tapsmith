@@ -48,6 +48,20 @@ await page.evaluate(() => {
   document.head.appendChild(st);
 });
 
+// The Source tab heads its panel with the file's absolute path. Rewrite it to
+// the neutral path used everywhere else in the video, live, as the panel
+// re-renders (same scrub as demo-trace.zip; nothing else in the UI changes).
+await page.evaluate(() => {
+  const REAL = '/Users/samsmithredbadger/projects/tapsmith', NEUTRAL = '/Users/dev/acme-mobile';
+  const scrub = () => {
+    for (const el of document.querySelectorAll('.source-filename')) {
+      if (el.textContent && el.textContent.includes(REAL)) el.textContent = el.textContent.split(REAL).join(NEUTRAL);
+    }
+  };
+  new MutationObserver(scrub).observe(document.body, { childList: true, subtree: true, characterData: true });
+  scrub();
+});
+
 const cdp = await page.createCDPSession();
 let n = 0;
 const meta = [];
@@ -103,6 +117,10 @@ if (!row) { console.error('test row not found'); await page.screenshot({ path: '
 // Make sure the mirror shows every member (the "All" tab).
 const allTab = await rectOf('.worker-tab', 'All');
 if (allTab) { await glide(allTab.x, allTab.y, 400); await click(); await sleep(600); }
+// Show the test's source in the detail panel while the run streams (the tab
+// choice persists, so it stays on Source as actions arrive).
+const srcTab = await rectOf('.detail-tab', 'Source');
+if (srcTab) { await glide(srcTab.x, srcTab.y, 500); await click(); await sleep(700); }
 
 await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 88, everyNthFrame: 1 });
 await sleep(700);
