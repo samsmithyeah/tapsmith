@@ -57,7 +57,10 @@ export interface ActionProgressEvent {
  * own end event. Bodies that have nothing to add simply ignore it.
  */
 export interface ActionProgressHandle {
-  setDetail(detail: string): void
+  /** Pass `undefined` to clear a detail set earlier in the same action — a body
+   *  that retries must not let an earlier attempt's annotation describe a later
+   *  attempt's outcome. */
+  setDetail(detail: string | undefined): void
 }
 
 export type ActionProgressListener = (ev: ActionProgressEvent) => void;
