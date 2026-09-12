@@ -43,6 +43,21 @@ export interface ActionProgressEvent {
   aborted?: boolean
   /** Error message. End events with success=false only. */
   error?: string
+  /**
+   * Short annotation set by the action body via {@link ActionProgressHandle},
+   * e.g. `'foreground probe 9.1s'`. Renderers append it to the end line so a
+   * slow sub-step is attributable without reading the whole duration as one
+   * opaque number (PILOT-350). End events only.
+   */
+  detail?: string
+}
+
+/**
+ * Handle passed to a {@link withActionProgress} body so it can annotate its
+ * own end event. Bodies that have nothing to add simply ignore it.
+ */
+export interface ActionProgressHandle {
+  setDetail(detail: string): void
 }
 
 export type ActionProgressListener = (ev: ActionProgressEvent) => void;
@@ -99,18 +114,21 @@ export function emitActionProgress(ev: ActionProgressEvent): void {
 export async function withActionProgress<T>(
   action: SlowActionName,
   target: string | undefined,
-  fn: () => Promise<T>,
+  fn: (progress: ActionProgressHandle) => Promise<T>,
 ): Promise<T> {
-  if (listeners.size === 0) return fn();
+  let detail: string | undefined;
+  const handle: ActionProgressHandle = { setDetail: (d) => { detail = d; } };
+
+  if (listeners.size === 0) return fn(handle);
 
   const id = nextId++;
   emitActionProgress({ kind: 'start', id, action, target });
   const start = Date.now();
   try {
-    const result = await fn();
+    const result = await fn(handle);
     emitActionProgress({
       kind: 'end', id, action, target,
-      durationMs: Date.now() - start, success: true,
+      durationMs: Date.now() - start, success: true, detail,
     });
     return result;
   } catch (err) {
@@ -119,6 +137,7 @@ export async function withActionProgress<T>(
       durationMs: Date.now() - start, success: false,
       aborted: isAbortError(err),
       error: err instanceof Error ? err.message : String(err),
+      detail,
     });
     throw err;
   }

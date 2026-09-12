@@ -3,7 +3,7 @@ import type { Device } from './device.js';
 import { appResetAction, parseHooksMarker, satisfies, type AppResetPolicy, type AppResetReport, type AppResetStep, type PreparedState, type ResetCapabilities } from './app-reset.js';
 import type { LaunchAppOptions, TapsmithGrpcClient } from './grpc-client.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
-import { withActionProgress } from './action-progress.js';
+import { withActionProgress, type ActionProgressHandle } from './action-progress.js';
 
 type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'restoreAppState' | 'openDeepLink' | 'getAppState' | '_resetApp'>
 type SessionClient = Pick<TapsmithGrpcClient, 'ping' | 'getUiHierarchy'>
@@ -108,6 +108,12 @@ export interface EnsureSessionReadyOptions {
    * overridable so unit tests don't sleep for real.
    */
   retryBackoffMs?: number[]
+  /**
+   * Total budget for the iOS foreground probe, defaulting to
+   * {@link IOS_FOREGROUND_PROBE_BUDGET_MS}. Overridable so unit tests don't
+   * burn the real budget waiting out a permanently slow agent.
+   */
+  iosForegroundProbeBudgetMs?: number
 }
 
 class BlockingDialogError extends Error {}
@@ -143,6 +149,28 @@ const IOS_APP_READY_POLL_DEADLINE_MS = 5_000;
  *  one-shot relaunch. Covers an app that crashed mid-launch or lost the
  *  foreground to SpringBoard on a slow runner. */
 const IOS_APP_READY_RELAUNCH_AFTER_MS = 20_000;
+/** Per-attempt gRPC deadline for the iOS foreground probe in
+ *  {@link verifySession}. The XCUITest agent drains commands one at a time on
+ *  its main RunLoop, so at a test boundary `getAppState` queues behind the
+ *  previous test's last hierarchy dump / trace capture. On a loaded macOS CI
+ *  runner that queue alone regularly costs 5-10s — 89% of iOS shard jobs show
+ *  at least one 5s+ readiness wait — so the old fixed 10s deadline sat right
+ *  on the cliff (PILOT-350). */
+const IOS_FOREGROUND_PROBE_DEADLINE_MS = 12_000;
+/** Total budget for the foreground probe across retries. A slow-but-answering
+ *  agent is not a dead one: below this budget we re-probe (each attempt
+ *  reconnects the agent socket, which also clears a desynced stream) rather
+ *  than declaring the session broken. Only when nothing answers for the whole
+ *  budget do we throw and let {@link ensureSessionReady} recover — the
+ *  recovery costs 25-47s and destroys beforeAll state, so it must not fire for
+ *  ordinary runner slowness. Kept under the daemon's own 30s agent timeout so
+ *  the failure we surface is our deadline, not a half-torn-down agent. */
+const IOS_FOREGROUND_PROBE_BUDGET_MS = 25_000;
+/** Error signatures meaning "the agent did not answer in time" as opposed to
+ *  "the session is broken". Only these are retried inside the probe budget;
+ *  transport failures (dropped socket, unavailable daemon) still throw
+ *  straight into recovery, preserving the behaviour #68 added. */
+const AGENT_SLOW_SIGNATURES = ['DEADLINE_EXCEEDED', 'Agent command timed out'];
 const HIERARCHY_POLL_INTERVAL_MS = 500;
 /** How long a cold-launched Android app gets to render its first content
  * before we proceed anyway (see {@link waitForAndroidAppReady}). */
@@ -155,13 +183,13 @@ export async function ensureSessionReady(
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
   options: EnsureSessionReadyOptions = {},
 ): Promise<void> {
-  return withActionProgress('sessionReady', ctx.config.package, async () => {
+  return withActionProgress('sessionReady', ctx.config.package, async (progress) => {
     let lastError: unknown;
     const backoff = options.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        await verifySession(ctx);
+        await verifySession(ctx, progress, options.iosForegroundProbeBudgetMs);
         return;
       } catch (err) {
         lastError = err;
@@ -486,7 +514,72 @@ function formatSeconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-async function verifySession(ctx: SessionPreflightContext): Promise<void> {
+function isAgentSlowError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return AGENT_SLOW_SIGNATURES.some((sig) => message.includes(sig));
+}
+
+/**
+ * Ask the iOS agent whether `pkg` is in the foreground, tolerating a
+ * slow-but-alive agent (PILOT-350).
+ *
+ * `ping` has already confirmed the daemon holds an agent connection; this call
+ * is a *state* query, not a liveness check, and it queues behind whatever the
+ * agent is still finishing from the previous test. Re-probe within
+ * {@link IOS_FOREGROUND_PROBE_BUDGET_MS} instead of treating the first missed
+ * deadline as a dead session — a retry costs one cheap queued command, the
+ * recovery it replaces costs 25-47s and a CI retry.
+ *
+ * Reports its latency through `progress` so slow-runner drift is visible on
+ * the "App ready" line *before* it crosses the budget.
+ */
+async function probeIosForegroundState(
+  ctx: SessionPreflightContext,
+  pkg: string,
+  progress?: ActionProgressHandle,
+  budgetMs = IOS_FOREGROUND_PROBE_BUDGET_MS,
+): Promise<string> {
+  const started = Date.now();
+  let attempts = 0;
+  let lastError: unknown;
+
+  const report = (): void => {
+    const suffix = attempts > 1 ? ` after ${attempts} attempts` : '';
+    progress?.setDetail(`foreground probe ${formatSeconds(Date.now() - started)}${suffix}`);
+  };
+
+  for (;;) {
+    const remaining = budgetMs - (Date.now() - started);
+    // Always spend at least one attempt, however small the budget — a probe
+    // that never asked has nothing to report and no error to recover from.
+    if (remaining <= 0 && attempts > 0) break;
+    attempts++;
+    try {
+      const state = await ctx.device.getAppState(pkg, {
+        timeout: Math.max(1, Math.min(IOS_FOREGROUND_PROBE_DEADLINE_MS, remaining)),
+      });
+      report();
+      return state;
+    } catch (err) {
+      lastError = err;
+      // A transport-level failure means the session really is broken — throw
+      // now rather than spending the rest of the budget on it.
+      if (!isAgentSlowError(err)) break;
+      process.stderr.write(
+        `[tapsmith] iOS foreground probe slow (attempt ${attempts}, ${formatSeconds(Date.now() - started)} elapsed): ${formatError(err)}\n`,
+      );
+    }
+  }
+
+  report();
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function verifySession(
+  ctx: SessionPreflightContext,
+  progress?: ActionProgressHandle,
+  iosForegroundProbeBudgetMs?: number,
+): Promise<void> {
   const pong = await ctx.client.ping();
   if (!pong.agentConnected) {
     throw new Error('agent is not connected');
@@ -502,15 +595,15 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
     // post-launch readiness check.
     if (ctx.config.package) {
       try {
-        const state = await ctx.device.getAppState(ctx.config.package, { timeout: 10_000 });
+        const state = await probeIosForegroundState(ctx, ctx.config.package, progress, iosForegroundProbeBudgetMs);
         if (state !== 'foreground') {
           await ctx.device.launchApp(ctx.config.package);
         }
       } catch (err) {
-        // Agent communication failures (timeout, socket disconnect) mean the
-        // session is broken. Throw so ensureSessionReady triggers a proper
-        // recovery (agent restart + app relaunch) instead of letting the test
-        // run against a dead connection.
+        // Agent communication failures (socket disconnect, or nothing answering
+        // for the whole probe budget) mean the session is broken. Throw so
+        // ensureSessionReady triggers a proper recovery (agent restart + app
+        // relaunch) instead of letting the test run against a dead connection.
         const message = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[tapsmith] iOS verifySession recovery failed: ${message}\n`);
         throw err;

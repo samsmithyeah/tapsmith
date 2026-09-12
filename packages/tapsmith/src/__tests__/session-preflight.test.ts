@@ -501,6 +501,126 @@ describe('session-preflight', () => {
     expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(2);
   });
 
+  describe('iOS foreground probe tolerates a slow agent (PILOT-350)', () => {
+    const deadline = () => new Error('4 DEADLINE_EXCEEDED: Deadline exceeded after 12.001s,remote_addr=127.0.0.1:50051');
+
+    function iosContext() {
+      const ctx = makeContext({
+        config: { package: 'com.example.app', activity: undefined, platform: 'ios' },
+      });
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue(iosHierarchy);
+      return ctx;
+    }
+
+    it('re-probes after a missed deadline instead of recovering the session', async () => {
+      const ctx = iosContext();
+      const onRecovery = vi.fn();
+      vi.mocked(ctx.device.getAppState)
+        .mockRejectedValueOnce(deadline())
+        .mockResolvedValueOnce('foreground');
+
+      await expect(
+        ensureSessionReady(ctx, 'before test', undefined, { onRecovery, retryBackoffMs: [0] }),
+      ).resolves.toBeUndefined();
+
+      expect(ctx.device.getAppState).toHaveBeenCalledTimes(2);
+      // The whole point: no agent restart + relaunch for a slow-but-alive agent.
+      expect(onRecovery).not.toHaveBeenCalled();
+      expect(ctx.device.startAgent).not.toHaveBeenCalled();
+      expect(ctx.device.launchApp).not.toHaveBeenCalled();
+    });
+
+    it('relaunches a displaced app found by the retry, same as a first-try answer', async () => {
+      const ctx = iosContext();
+      vi.mocked(ctx.device.getAppState)
+        .mockRejectedValueOnce(deadline())
+        .mockResolvedValueOnce('background');
+
+      await expect(ensureSessionReady(ctx, 'before test')).resolves.toBeUndefined();
+
+      expect(ctx.device.launchApp).toHaveBeenCalledWith('com.example.app');
+      expect(ctx.device.startAgent).not.toHaveBeenCalled();
+    });
+
+    it('a daemon-side agent timeout is retried too, not treated as a dead session', async () => {
+      const ctx = iosContext();
+      const onRecovery = vi.fn();
+      vi.mocked(ctx.device.getAppState)
+        .mockRejectedValueOnce(new Error('Agent command timed out after 30s'))
+        .mockResolvedValueOnce('foreground');
+
+      await expect(
+        ensureSessionReady(ctx, 'before test', undefined, { onRecovery, retryBackoffMs: [0] }),
+      ).resolves.toBeUndefined();
+
+      expect(onRecovery).not.toHaveBeenCalled();
+    });
+
+    it('a transport failure still recovers immediately — no budget spent on a dead socket', async () => {
+      const ctx = iosContext();
+      const onRecovery = vi.fn();
+      vi.mocked(ctx.device.getAppState)
+        .mockRejectedValueOnce(new Error('Agent connection dropped (empty response); reconnecting'))
+        .mockResolvedValue('foreground');
+
+      await expect(
+        ensureSessionReady(ctx, 'before test', undefined, { onRecovery, retryBackoffMs: [0] }),
+      ).resolves.toBeUndefined();
+
+      // One attempt before the session was declared broken (not a budget's worth),
+      // then recovery, then the post-recovery verification's own probe.
+      expect(onRecovery).toHaveBeenCalledTimes(1);
+      expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
+      expect(ctx.device.getAppState).toHaveBeenCalledTimes(2);
+    });
+
+    it('an agent that never answers within the budget still escalates to recovery', async () => {
+      const ctx = iosContext();
+      const onRecovery = vi.fn();
+      vi.mocked(ctx.device.getAppState).mockRejectedValue(deadline());
+
+      await expect(
+        ensureSessionReady(ctx, 'before test', 2, {
+          onRecovery,
+          retryBackoffMs: [0],
+          iosForegroundProbeBudgetMs: 0,
+        }),
+      ).rejects.toThrow(/session preflight failed during before test/);
+
+      expect(onRecovery).toHaveBeenCalledTimes(1);
+      expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('narrows the per-attempt deadline to what is left of the budget', async () => {
+      const ctx = iosContext();
+      vi.mocked(ctx.device.getAppState).mockResolvedValue('foreground');
+
+      await ensureSessionReady(ctx, 'before test', undefined, { iosForegroundProbeBudgetMs: 400 });
+
+      const [, options] = vi.mocked(ctx.device.getAppState).mock.calls[0];
+      expect(options?.timeout).toBeGreaterThan(0);
+      expect(options?.timeout).toBeLessThanOrEqual(400);
+    });
+
+    it('reports the probe latency on the App ready progress event', async () => {
+      const ctx = iosContext();
+      vi.mocked(ctx.device.getAppState)
+        .mockRejectedValueOnce(deadline())
+        .mockResolvedValueOnce('foreground');
+
+      const events: ActionProgressEvent[] = [];
+      const unsubscribe = onActionProgress((ev) => events.push(ev));
+      try {
+        await ensureSessionReady(ctx, 'before test');
+      } finally {
+        unsubscribe();
+      }
+
+      const end = events.find((e) => e.kind === 'end');
+      expect(end?.detail).toMatch(/^foreground probe \d+\.\ds after 2 attempts$/);
+    });
+  });
+
   it('iOS clear policy runs the daemon ladder then the readiness waits', async () => {
     const ctx = makeContext({
       config: { package: 'com.example.app', activity: undefined, platform: 'ios' },
