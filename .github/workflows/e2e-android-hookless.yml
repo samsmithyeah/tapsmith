@@ -310,9 +310,8 @@ jobs:
             -memory 4096 \
             &>/tmp/emulator.log &
           echo "Waiting for emulator to boot..."
-          adb wait-for-device
-          # Wall-clock bounded — see e2e-android.yml for why a counter
-          # decremented per iteration is a poll count, not a timeout.
+          # Wall-clock bounded, and no `adb wait-for-device` ahead of it — see
+          # e2e-android.yml for both rationales.
           BOOT_DEADLINE=$(( $(date +%s) + 300 ))
           BOOT=""
           while [ "$(date +%s)" -lt "$BOOT_DEADLINE" ]; do

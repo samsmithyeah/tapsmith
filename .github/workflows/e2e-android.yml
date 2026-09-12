@@ -308,11 +308,16 @@ jobs:
             -memory 4096 \
             &>/tmp/emulator.log &
           echo "Waiting for emulator to boot..."
-          adb wait-for-device
           # Wall-clock bounded, not tick-counted: `adb shell getprop` itself
           # takes seconds on a loaded runner, so the old "decrement a counter
           # by 2 per iteration" loop was a *poll count*, not a timeout — a
           # nominal 120s ran for 229s on the runner that motivated this change.
+          #
+          # No `adb wait-for-device` in front of it either: that blocks forever
+          # for an emulator that never registers, which would put an unbounded
+          # wait ahead of the deadline and defeat the point. The poll below
+          # already tolerates an absent device (`getprop` fails, BOOT stays
+          # empty), exactly as the multi-device job does.
           BOOT_DEADLINE=$(( $(date +%s) + 300 ))
           BOOT=""
           while [ "$(date +%s)" -lt "$BOOT_DEADLINE" ]; do
