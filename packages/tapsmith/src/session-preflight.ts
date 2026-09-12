@@ -176,6 +176,24 @@ const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_RETRY_BACKOFF_MS = [1_000, 2_000];
 /** Time to wait for UIAutomator2 to produce a non-empty hierarchy on cold start. */
 const HIERARCHY_READY_TIMEOUT_MS = 10_000;
+/** Time to wait for the *configured app's* nodes to appear in the Android
+ *  hierarchy after a launch. Deliberately much larger than
+ *  {@link HIERARCHY_READY_TIMEOUT_MS}: that one only asks UIAutomator2 for any
+ *  dump at all, while this one waits for a cold RN launch to actually paint.
+ *  On an oversubscribed CI runner the app process can start, run its JS bundle
+ *  and still have no drawn window for tens of seconds — and a system ANR
+ *  dialog from an unrelated package (Google Play services on a thrashing
+ *  emulator) can own the screen for minutes before it does. This check sits
+ *  outside `ensureSessionReady`'s retry envelope on the startup launch, so a
+ *  single timeout kills the whole shard before one test runs; err on the side
+ *  of patience, exactly as {@link IOS_APP_READY_TIMEOUT_MS} does. The poll
+ *  returns the instant the app appears, so a healthy launch pays nothing.
+ *
+ *  NOTE: this sits INSIDE `ensureSessionReady`'s attempt loop, so a genuinely
+ *  broken app costs up to DEFAULT_MAX_ATTEMPTS x this before the session is
+ *  declared dead. That is the deliberate trade: a slow launch must not fail,
+ *  and a broken one has a whole shard's worth of time to spare anyway. */
+const ANDROID_APP_HIERARCHY_TIMEOUT_MS = 60_000;
 /** Time to wait for a cold-launched iOS app to render a non-empty accessibility
  *  hierarchy. A first RN launch on a loaded CI runner (right after the agent's
  *  xcodebuild warmup) can take well over 30s to paint — observed when the app
@@ -226,6 +244,18 @@ const HIERARCHY_POLL_INTERVAL_MS = 500;
  * before we proceed anyway (see {@link waitForAndroidAppReady}). */
 const ANDROID_APP_READY_TIMEOUT_MS = 10_000;
 const DEFAULT_SOFT_RESET_WAIT_MS = 750;
+/**
+ * Buttons that dismiss a system ANR/crash dialog, in the order we prefer them.
+ * "Wait" before "Close app" so an app that is merely slow gets to finish
+ * launching rather than being killed out from under the session.
+ */
+const SYSTEM_DIALOG_DISMISS_LABELS = ['Not Now', 'Wait', 'Close app', 'OK'] as const;
+
+/** Dismissal rounds. Clearing one dialog often reveals the next (a thrashing
+ *  emulator queues several), but the count is bounded so a dialog that keeps
+ *  reappearing fails fast instead of spinning. */
+const SYSTEM_DIALOG_DISMISS_ROUNDS = 4;
+
 
 export async function ensureSessionReady(
   ctx: SessionPreflightContext,
@@ -898,7 +928,7 @@ async function waitForAndroidAppHierarchy(
     }
   }
 
-  const deadline = Date.now() + HIERARCHY_READY_TIMEOUT_MS;
+  const deadline = Date.now() + ANDROID_APP_HIERARCHY_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
       const h = await ctx.client.getUiHierarchy();
@@ -921,7 +951,51 @@ async function waitForAndroidAppHierarchy(
     await new Promise((resolve) => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
   }
 
-  throw new Error(`Android app hierarchy for ${packageName} not ready after launch`);
+  throw new Error(
+    `Android app hierarchy for ${packageName} not ready ` +
+    `${ANDROID_APP_HIERARCHY_TIMEOUT_MS}ms after launch; ` +
+    `last hierarchy ${describeHierarchyForDiagnostics(hierarchyXml)}`,
+  );
+}
+
+/**
+ * One-line description of what the hierarchy actually held, for the timeout
+ * message. Without it "hierarchy not ready" is the same sentence whether the
+ * app crashed, a system ANR dialog owned the screen, or UIAutomator2 returned
+ * nothing at all — three very different causes that each cost an hour of
+ * logcat archaeology to tell apart.
+ */
+export function describeHierarchyForDiagnostics(hierarchyXml: string): string {
+  const trimmed = hierarchyXml.trim();
+  if (!trimmed) return 'was empty (UIAutomator2 returned nothing)';
+  // A dump with no nodes at all: the app is mid-launch with no drawn window,
+  // or the window list is genuinely empty. Distinct from "returned nothing".
+  if (!trimmed.includes('<node')) return 'held no windows (app has not drawn yet)';
+
+  const packages = [...new Set(
+    [...trimmed.matchAll(/\bpackage="([^"]+)"/g)].map((m) => m[1]),
+  )];
+  const shown = packages.slice(0, 3).join(', ') || 'no package attributes';
+  const more = packages.length > 3 ? ` (+${packages.length - 3} more)` : '';
+
+  const title = androidAlertTitle(trimmed);
+  return title
+    ? `showed the system dialog "${title}" (packages: ${shown}${more})`
+    : `showed packages: ${shown}${more}`;
+}
+
+/** Text of the `android:id/alertTitle` node, whichever order the attributes
+ *  appear in. Both bounded to a single tag by `[^>]`. */
+function androidAlertTitle(hierarchyXml: string): string | undefined {
+  const ALERT_ID = 'resource-id="android:id/alertTitle"';
+  for (const re of [
+    new RegExp(`\\btext="([^"]+)"[^>]*${ALERT_ID}`),
+    new RegExp(`${ALERT_ID}[^>]*\\btext="([^"]+)"`),
+  ]) {
+    const match = hierarchyXml.match(re);
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
 }
 
 function hierarchyContainsPackage(hierarchyXml: string, packageName: string): boolean {
@@ -986,13 +1060,28 @@ async function dismissBlockingSystemUi(ctx: SessionPreflightContext): Promise<vo
 
   if (!detectBlockingSystemDialog(hierarchy)) return;
 
-  for (const label of ['Not Now', 'Wait', 'Close app', 'OK']) {
+  for (let round = 0; round < SYSTEM_DIALOG_DISMISS_ROUNDS; round++) {
+    // Only tap a label the dump we are holding actually shows. Tapping blind
+    // costs a full auto-wait timeout PER ABSENT LABEL — on a loaded emulator
+    // that was ~30s of the preflight budget spent waiting for buttons that
+    // were never going to appear, on exactly the runs least able to spare it.
+    const label = SYSTEM_DIALOG_DISMISS_LABELS.find((l) => androidHierarchyHasText(hierarchy, l));
+    if (!label) break;
+
     try {
       await ctx.device.getByText(label, { exact: true }).tap();
       await ctx.device.waitForIdle(1_000);
     } catch {
-      // Best effort
+      // The dialog may have gone on its own between the dump and the tap.
+      break;
     }
+
+    try {
+      hierarchy = (await ctx.client.getUiHierarchy()).hierarchyXml;
+    } catch {
+      return;
+    }
+    if (!detectBlockingSystemDialog(hierarchy)) return;
   }
 
   try {
@@ -1001,6 +1090,23 @@ async function dismissBlockingSystemUi(ctx: SessionPreflightContext): Promise<vo
   } catch {
     // Best effort
   }
+}
+
+/**
+ * True when the hierarchy has a node whose `text` is exactly `text`. Matches
+ * what `getByText(text, { exact: true })` resolves, so it is a safe guard
+ * against blind taps. Exported for tests.
+ */
+export function androidHierarchyHasText(hierarchyXml: string, text: string): boolean {
+  return hierarchyXml.includes(`text="${escapeXmlAttribute(text)}"`);
+}
+
+function escapeXmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function launchOptions(config: Pick<TapsmithConfig, 'activity'>): LaunchAppOptions {

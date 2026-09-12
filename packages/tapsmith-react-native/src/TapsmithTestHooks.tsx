@@ -111,12 +111,39 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
 
   if (!active) return null;
 
+  const marker = formatMarker({ epoch, nav, boot: BOOT_TOKEN, urlPrefix: prefix, error });
+
   return (
-    <View pointerEvents="none" style={styles.marker} accessibilityElementsHidden={false} importantForAccessibility="yes">
-      <Text testID="tapsmith-hooks" style={styles.text}>
-        {formatMarker({ epoch, nav, boot: BOOT_TOKEN, urlPrefix: prefix, error })}
-      </Text>
-    </View>
+    <>
+      {/*
+        The readable marker, and the one `testID` points at. Deliberately
+        screen-sized rather than tucked into a corner: a platform's own UI can
+        sit on top of a corner — Android's three-button navigation bar covers
+        the bottom-right outright on an edge-to-edge app — and UIAutomator
+        omits occluded nodes from its dump entirely (every node in a dump
+        carries visible-to-user="true"). A corner marker therefore just
+        vanishes, Tapsmith concludes the app has no hooks, and `appReset:
+        'auto'` silently resolves to clear instead of warm: ~5-10s per reset
+        against ~1s, with a green suite and no warning.
+
+        Something screen-sized always has a visible region left over whatever
+        the system draws on top, so this node survives the dump. The text is
+        transparent, so nothing about the app's appearance changes, and the
+        wrapper is pointerEvents="none" so it swallows no touches.
+      */}
+      <View pointerEvents="none" style={styles.carrier} importantForAccessibility="yes">
+        <Text testID="tapsmith-hooks" style={styles.carrierText}>
+          {marker}
+        </Text>
+      </View>
+      {/*
+        The same string, visible, for a human watching the screen. No testID:
+        it is the occludable one, so nothing may depend on finding it.
+      */}
+      <View pointerEvents="none" style={styles.marker} accessibilityElementsHidden={false} importantForAccessibility="yes">
+        <Text style={styles.text}>{marker}</Text>
+      </View>
+    </>
   );
 }
 
@@ -126,6 +153,26 @@ function normalisePrefix(prefix: string): string {
 }
 
 const styles = StyleSheet.create({
+  // Screen-sized so no system bar, notch or inset can occlude it away.
+  carrier: {
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+  },
+  // Fills the carrier, so the *text node itself* — the one the hierarchy dump
+  // reports — is screen-sized too, not just its parent. Transparent, so the
+  // marker changes nothing on screen.
+  carrierText: {
+    bottom: 0,
+    color: 'transparent',
+    fontSize: 8,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+  },
   marker: {
     bottom: 2,
     position: 'absolute',

@@ -14,6 +14,16 @@ env:
   # Tapsmith's own CI is not a user; keep its runs out of the usage counts.
   TAPSMITH_TELEMETRY: "0"
   ANDROID_API_LEVEL: "36"
+  # Google APIs, not AOSP. Swapping to `default` removes the Google Play
+  # services ANR storm, and PR #231 confirmed WebView, Multi-device and (once
+  # the hooks marker got its occlusion-proof carrier) the reset ladder all work
+  # on it. It still cannot be used: AOSP ships three-button navigation, whose
+  # Launcher3 taskbar covers the bottom 126px, and the TEST APP does not inset
+  # its content for navigation bars — so content at the bottom of a scroll view
+  # (e.g. visibility.test.ts's error text) is occluded and reads as not
+  # visible. Retrying the swap means forcing gesture navigation on
+  # (`adb shell cmd overlay enable com.android.internal.systemui.navbar.gestural`)
+  # or giving the test app safe-area insets.
   ANDROID_SYSTEM_IMAGE: "system-images;android-36;google_apis;x86_64"
   AVD_NAME: "Tapsmith_Phone_API_36"
   SHARD_TOTAL: 5
@@ -302,17 +312,31 @@ jobs:
             -memory 4096 \
             &>/tmp/emulator.log &
           echo "Waiting for emulator to boot..."
-          adb wait-for-device
-          # Poll until boot_completed
-          TIMEOUT=120
-          while [ $TIMEOUT -gt 0 ]; do
+          # Wall-clock bounded, not tick-counted: `adb shell getprop` itself
+          # takes seconds on a loaded runner, so the old "decrement a counter
+          # by 2 per iteration" loop was a *poll count*, not a timeout — a
+          # nominal 120s ran for 229s on the runner that motivated this change.
+          #
+          # No `adb wait-for-device` in front of it either: that blocks forever
+          # for an emulator that never registers, which would put an unbounded
+          # wait ahead of the deadline and defeat the point. The poll below
+          # already tolerates an absent device (`getprop` fails, BOOT stays
+          # empty), exactly as the multi-device job does.
+          BOOT_DEADLINE=$(( $(date +%s) + 300 ))
+          BOOT=""
+          while [ "$(date +%s)" -lt "$BOOT_DEADLINE" ]; do
             BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
             if [ "$BOOT" = "1" ]; then break; fi
             sleep 2
-            TIMEOUT=$((TIMEOUT - 2))
           done
+          # The sleep can carry the loop past the deadline, leaving the last
+          # interval unprobed — so the budget is only really honoured with one
+          # final read before declaring the emulator dead.
           if [ "$BOOT" != "1" ]; then
-            echo "::error::Emulator failed to boot within 120s"
+            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+          fi
+          if [ "$BOOT" != "1" ]; then
+            echo "::error::Emulator failed to boot within 300s"
             cat /tmp/emulator.log | tail -30
             exit 1
           fi
@@ -350,16 +374,53 @@ jobs:
             'packages/tapsmith-react-native/tsconfig*.json') }}-${{
             hashFiles('e2e/tests/auth.setup.ts', 'e2e/fixtures.ts', 'e2e/screens/**') }}
 
+      # `retries: 2` in the config covers a flaky *test*. It cannot cover a
+      # session preflight that fails before the first test starts: that aborts
+      # the shard with no blob report at all, so one emulator blip costs every
+      # test in the shard and the merged report has a hole in it. Retry exactly
+      # that case, once — a run that produced results failed on its merits and
+      # must never be re-run here, or a real regression would be retried into
+      # green.
       - name: Run E2E tests
         working-directory: e2e
         env:
           TAPSMITH_DAEMON_LOG: /tmp/tapsmith-daemon-android-${{ matrix.shard }}.log
         run: |
           SERIAL=$(adb devices | grep -w device | head -1 | awk '{print $1}')
-          npx tapsmith test -c tapsmith.config.android-ci.mjs \
-            --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} \
-            --workers 1 \
-            --device "$SERIAL"
+          run_shard() {
+            npx tapsmith test -c tapsmith.config.android-ci.mjs \
+              --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} \
+              --workers 1 \
+              --device "$SERIAL"
+          }
+
+          # `|| STATUS=$?` is load-bearing: the step runs under `bash -e`, so a
+          # bare `run_shard` that exits non-zero would abort the step here and
+          # never reach the retry decision below.
+          STATUS=0
+          run_shard || STATUS=$?
+          if [ "$STATUS" -eq 0 ]; then exit 0; fi
+
+          if [ -n "$(ls -A blob-report 2>/dev/null)" ]; then
+            echo "Shard produced results; the failure is the tests', not the session's."
+            exit "$STATUS"
+          fi
+
+          # Preserve attempt 1's evidence: the collection step below runs once,
+          # after the retry, and would otherwise only ever show the attempt that
+          # succeeded — leaving the startup failure we are retrying invisible.
+          echo "::warning::Shard produced no results (session startup failed); retrying once."
+          mkdir -p tapsmith-results
+          for log in /tmp/tapsmith-daemon-android-${{ matrix.shard }}*.log; do
+            [ -e "$log" ] || continue
+            cp "$log" "tapsmith-results/$(basename "$log" .log)-attempt1.log"
+          done
+          adb logcat -d -v time TapsmithAgent:V TapsmithSocket:V TestRunner:V \
+            AndroidRuntime:E ActivityManager:I ReactNativeJS:V '*:W' \
+            > "tapsmith-results/logcat-${{ matrix.shard }}-attempt1.txt" 2>&1 || true
+          adb logcat -c || true
+
+          run_shard
 
       # Only shards that ran auth.setup produce the archive (hashFiles is
       # empty otherwise), and only a green run may seed the cache. The
@@ -564,11 +625,13 @@ jobs:
             TIMEOUT=300
             BOOT=""
 
-            while [ $TIMEOUT -gt 0 ]; do
+            # Wall-clock bounded — see the single-emulator job for why a
+            # counter decremented per iteration is not a timeout.
+            DEADLINE=$(( $(date +%s) + TIMEOUT ))
+            while [ "$(date +%s)" -lt "$DEADLINE" ]; do
               BOOT=$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
               if [ "$BOOT" = "1" ]; then break; fi
               sleep 2
-              TIMEOUT=$((TIMEOUT - 2))
             done
             if [ "$BOOT" != "1" ]; then
               echo "::error::$SERIAL failed to boot within 300s"
