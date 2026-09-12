@@ -1,9 +1,9 @@
 import { DEFAULT_APP_RESET_COLD_EVERY, type TapsmithConfig } from './config.js';
 import type { Device } from './device.js';
 import { appResetAction, parseHooksMarker, satisfies, type AppResetPolicy, type AppResetReport, type AppResetStep, type PreparedState, type ResetCapabilities } from './app-reset.js';
-import type { LaunchAppOptions, TapsmithGrpcClient } from './grpc-client.js';
+import type { AppState, LaunchAppOptions, TapsmithGrpcClient } from './grpc-client.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
-import { withActionProgress } from './action-progress.js';
+import { withActionProgress, type ActionProgressHandle } from './action-progress.js';
 
 type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'restoreAppState' | 'openDeepLink' | 'getAppState' | '_resetApp'>
 type SessionClient = Pick<TapsmithGrpcClient, 'ping' | 'getUiHierarchy'>
@@ -108,6 +108,56 @@ export interface EnsureSessionReadyOptions {
    * overridable so unit tests don't sleep for real.
    */
   retryBackoffMs?: number[]
+  /**
+   * Overrides for the iOS foreground probe's timing, defaulting to
+   * {@link IOS_FOREGROUND_PROBE_BUDGET_MS} and
+   * {@link IOS_FOREGROUND_PROBE_DEADLINE_MS}. Overridable so unit tests can
+   * drive the retry ladder without burning the real budget.
+   */
+  iosForegroundProbe?: Partial<IosForegroundProbeTiming>
+}
+
+/**
+ * Probe timing for one ladder rung of {@link ensureSessionReady}.
+ *
+ * A rung is clamped to a single deadline only when the previous rung already
+ * spent a whole probe budget AND the `recoverSession` between them completed.
+ * Nothing outside `ensureSessionReady` bounds preflight time, so without the
+ * clamp a wedged agent would cost `maxAttempts x budget` (~90s) per preflight.
+ *
+ * Both conditions matter. A rung whose predecessor died at `ping` (probe never
+ * ran) follows a terminate + launch, when `getAppState` is slowest, so it keeps
+ * the full budget. A rung whose recovery THREW restarted nothing, so clamping it
+ * would reintroduce the single-shot behaviour this change removes.
+ */
+function probeTimingForAttempt(
+  clamp: boolean,
+  overrides: Partial<IosForegroundProbeTiming> = {},
+): Partial<IosForegroundProbeTiming> {
+  if (!clamp) return overrides;
+  const attemptDeadlineMs = overrides.attemptDeadlineMs ?? IOS_FOREGROUND_PROBE_DEADLINE_MS;
+  return { ...overrides, budgetMs: Math.min(overrides.budgetMs ?? Infinity, attemptDeadlineMs) };
+}
+
+/** Thrown when the probe spent its whole budget without the agent answering,
+ *  so the ladder can tell "already gave this agent a full budget" from "the
+ *  probe never ran". */
+class ProbeBudgetExhaustedError extends Error {}
+
+/** Running total of probe time across one ladder. Each probe measures only its
+ *  own run and the annotation is cleared per rung, so without this a ladder
+ *  that burned 30s, recovered and then answered instantly would report
+ *  `foreground probe 0.2s` and hide where the time went. */
+interface ProbeLatencyTally { totalMs: number; probes: number }
+
+/** Resolved timing for one {@link probeIosForegroundState} run. */
+interface IosForegroundProbeTiming {
+  /** Total wall-clock the probe may spend across attempts. */
+  budgetMs: number
+  /** gRPC deadline for a single attempt. */
+  attemptDeadlineMs: number
+  /** Pause between attempts; see {@link IOS_FOREGROUND_PROBE_RETRY_DELAY_MS}. */
+  retryDelayMs: number
 }
 
 class BlockingDialogError extends Error {}
@@ -143,6 +193,34 @@ const IOS_APP_READY_POLL_DEADLINE_MS = 5_000;
  *  one-shot relaunch. Covers an app that crashed mid-launch or lost the
  *  foreground to SpringBoard on a slow runner. */
 const IOS_APP_READY_RELAUNCH_AFTER_MS = 20_000;
+/** Per-attempt gRPC deadline for the iOS foreground probe in
+ *  {@link verifySession}. The XCUITest agent drains commands one at a time, so
+ *  at a test boundary `getAppState` queues behind the previous test's last
+ *  hierarchy dump. On a loaded macOS CI runner that alone costs 5-10s, so the
+ *  old fixed 10s deadline sat right on the cliff (PILOT-350). Must stay under
+ *  the daemon's own 30s agent timeout so the error we surface is ours. */
+const IOS_FOREGROUND_PROBE_DEADLINE_MS = 12_000;
+/** Pause between probe attempts. Must not be zero: a timeout-shaped error that
+ *  rejects faster than its deadline would otherwise turn the loop into a hot
+ *  spin of RPCs and stderr lines. */
+const IOS_FOREGROUND_PROBE_RETRY_DELAY_MS = 500;
+/** Total budget for the foreground probe across attempts. A slow-but-answering
+ *  agent is not a dead one; the recovery it would otherwise trigger costs
+ *  25-47s and destroys beforeAll state.
+ *
+ *  INVARIANT: an attempt is only admitted while a full deadline still fits, so
+ *  the budget must cover `n * (DEADLINE_MS + RETRY_DELAY_MS)` plus slack for a
+ *  late-firing Node timer on a pegged runner. 30s / 12s / 0.5s gives two
+ *  attempts with ~5.5s of lag tolerance; trimming toward 2x the deadline
+ *  silently degrades the probe back to single-shot. */
+const IOS_FOREGROUND_PROBE_BUDGET_MS = 30_000;
+/** Error signatures meaning "the agent did not answer in time", the only ones
+ *  retried inside the budget. Transport failures (`14 UNAVAILABLE`, dropped
+ *  socket) still escalate to recovery immediately, as #68 intended. A daemon
+ *  that is alive but wedged also answers `DEADLINE_EXCEEDED`, so the budget
+ *  bounds that case too. `Agent command timed out` is the daemon's 30s timeout,
+ *  unreachable while the per-attempt deadline is shorter; kept as defence. */
+const AGENT_SLOW_SIGNATURES = ['DEADLINE_EXCEEDED', 'Agent command timed out'];
 const HIERARCHY_POLL_INTERVAL_MS = 500;
 /** How long a cold-launched Android app gets to render its first content
  * before we proceed anyway (see {@link waitForAndroidAppReady}). */
@@ -155,16 +233,31 @@ export async function ensureSessionReady(
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
   options: EnsureSessionReadyOptions = {},
 ): Promise<void> {
-  return withActionProgress('sessionReady', ctx.config.package, async () => {
+  return withActionProgress('sessionReady', ctx.config.package, async (progress) => {
     let lastError: unknown;
+    // Whether the recovery before THIS rung completed. Drives the probe's
+    // budget clamp — see {@link probeTimingForAttempt}.
+    let recovered = false;
+    // Whether the previous rung's probe burned a whole budget (as opposed to
+    // never running, or dying on a transport error). Together with `recovered`
+    // this is what makes the clamp's premise true — see
+    // {@link probeTimingForAttempt}.
+    let budgetSpent = false;
+    const tally: ProbeLatencyTally = { totalMs: 0, probes: 0 };
     const backoff = options.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        await verifySession(ctx);
+        // Drop any annotation the previous attempt left: this attempt may fail
+        // before it reaches the probe (a rejected `ping`, a disconnected
+        // agent), and a stale detail would then describe the wrong attempt on
+        // the end event.
+        progress.setDetail(undefined);
+        await verifySession(ctx, progress, probeTimingForAttempt(recovered && budgetSpent, options.iosForegroundProbe), tally);
         return;
       } catch (err) {
         lastError = err;
+        budgetSpent = err instanceof ProbeBudgetExhaustedError;
         if (attempt === maxAttempts) break;
         options.onRecovery?.(err);
         // Give a transient agent-connection drop time to clear before
@@ -173,11 +266,17 @@ export async function ensureSessionReady(
         await delay(backoff[attempt - 1] ?? backoff.at(-1) ?? 0);
         try {
           await recoverSession(ctx);
+          recovered = true;
         } catch (recoveryErr) {
+          recovered = false;
           // The recovery RPC can hit the same transient agent/ADB transport
           // blip that caused verification to fail. If the caller allowed more
           // attempts, loop back and probe the session again before giving up.
           lastError = recoveryErr;
+          // The reported error is now the recovery's, not the probe's. Drop the
+          // probe annotation so the end event does not read as though the probe
+          // produced it (same misattribution guarded at rung start).
+          progress.setDetail(undefined);
           if (attempt === maxAttempts - 1) break;
         }
       }
@@ -486,7 +585,110 @@ function formatSeconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-async function verifySession(ctx: SessionPreflightContext): Promise<void> {
+function isAgentSlowError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return AGENT_SLOW_SIGNATURES.some((sig) => message.includes(sig));
+}
+
+/**
+ * Ask the iOS agent whether `pkg` is in the foreground, tolerating a
+ * slow-but-alive agent (PILOT-350).
+ *
+ * `ping` has already confirmed the daemon holds an agent connection; this is a
+ * *state* query that queues behind whatever the agent is still finishing from
+ * the previous test. Keep asking for the whole budget instead of treating the
+ * first missed deadline as a dead session.
+ *
+ * The agent drains one FIFO (`SocketServer.swift`) and an abandoned command
+ * still runs to completion, so a retry never answers *earlier* than one wide
+ * deadline would. What it adds is a fresh daemon-side stream, which is what
+ * recovers a stale cached socket. Headroom against a busy agent comes from the
+ * budget, not the attempt count.
+ *
+ * Reports its latency through `progress` so slow-runner drift is visible on
+ * the "App ready" line before it crosses the budget.
+ */
+async function probeIosForegroundState(
+  ctx: SessionPreflightContext,
+  pkg: string,
+  progress?: ActionProgressHandle,
+  timing: Partial<IosForegroundProbeTiming> = {},
+  tally: ProbeLatencyTally = { totalMs: 0, probes: 0 },
+): Promise<AppState> {
+  const budgetMs = timing.budgetMs ?? IOS_FOREGROUND_PROBE_BUDGET_MS;
+  const attemptDeadlineMs = timing.attemptDeadlineMs ?? IOS_FOREGROUND_PROBE_DEADLINE_MS;
+  const retryDelayMs = timing.retryDelayMs ?? IOS_FOREGROUND_PROBE_RETRY_DELAY_MS;
+  const started = Date.now();
+  let attempts = 0;
+  let lastError: unknown;
+
+  const report = (): void => {
+    const elapsed = Date.now() - started;
+    tally.totalMs += elapsed;
+    tally.probes += 1;
+    const suffix = attempts > 1 ? ` after ${attempts} attempts` : '';
+    const across = tally.probes > 1
+      ? ` (${formatSeconds(tally.totalMs)} across ${tally.probes} probes)`
+      : '';
+    progress?.setDetail(`foreground probe ${formatSeconds(elapsed)}${suffix}${across}`);
+  };
+
+  let exhausted = true;
+  let effectiveDeadlineMs = attemptDeadlineMs;
+  for (;;) {
+    const remaining = budgetMs - (Date.now() - started);
+    // Only start an attempt that can run to a full deadline: a sliver at the
+    // end of the budget cannot tell a slow agent from a dead one, and its
+    // "Deadline exceeded after 1.0s" would replace the real timeout as the
+    // reported error. The first attempt is exempt so a tiny budget still asks
+    // once; its deadline is clamped to the budget and reported as used.
+    if (attempts > 0 && remaining < attemptDeadlineMs) break;
+    attempts++;
+    effectiveDeadlineMs = Math.max(1, Math.min(attemptDeadlineMs, remaining));
+    try {
+      const state = await ctx.device.getAppState(pkg, { timeout: effectiveDeadlineMs });
+      report();
+      return state;
+    } catch (err) {
+      lastError = err;
+      // A transport-level failure means the session really is broken — throw
+      // now rather than spending the rest of the budget on it.
+      if (!isAgentSlowError(err)) {
+        exhausted = false;
+        break;
+      }
+      process.stderr.write(
+        `[tapsmith] iOS foreground probe slow (attempt ${attempts}, ${formatSeconds(Date.now() - started)} elapsed): ${formatError(err)}\n`,
+      );
+      // Decide pacing and admission together: the loop-top check runs after
+      // the delay, so the delay must be counted here or it either burns as a
+      // hot spin or consumes the attempt it was pacing for.
+      if (budgetMs - (Date.now() - started) < attemptDeadlineMs + retryDelayMs) break;
+      await delay(retryDelayMs);
+    }
+  }
+
+  if (!exhausted) {
+    // A dropped socket is not probe latency; leave the progress line unannotated.
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+  report();
+  // Name the budget, not just the last attempt's deadline. The original message
+  // stays embedded so `isRecoverableInfrastructureError` still matches on it.
+  throw new ProbeBudgetExhaustedError(
+    `iOS foreground probe gave up after ${formatSeconds(Date.now() - started)}`
+    + ` (${attempts} attempt${attempts === 1 ? '' : 's'},`
+    + ` ${formatSeconds(effectiveDeadlineMs)} deadline each, ${formatSeconds(budgetMs)} budget):`
+    + ` ${formatError(lastError)}`,
+  );
+}
+
+async function verifySession(
+  ctx: SessionPreflightContext,
+  progress?: ActionProgressHandle,
+  iosForegroundProbe?: Partial<IosForegroundProbeTiming>,
+  tally?: ProbeLatencyTally,
+): Promise<void> {
   const pong = await ctx.client.ping();
   if (!pong.agentConnected) {
     throw new Error('agent is not connected');
@@ -501,19 +703,28 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
     // waitForIosAppReady (used only by launchConfiguredApp) for the
     // post-launch readiness check.
     if (ctx.config.package) {
+      let state: AppState;
       try {
-        const state = await ctx.device.getAppState(ctx.config.package, { timeout: 10_000 });
-        if (state !== 'foreground') {
-          await ctx.device.launchApp(ctx.config.package);
-        }
+        state = await probeIosForegroundState(ctx, ctx.config.package, progress, iosForegroundProbe, tally);
       } catch (err) {
-        // Agent communication failures (timeout, socket disconnect) mean the
-        // session is broken. Throw so ensureSessionReady triggers a proper
-        // recovery (agent restart + app relaunch) instead of letting the test
-        // run against a dead connection.
+        // A socket disconnect, or nothing answering for the whole budget, means
+        // the session is broken. Throw so ensureSessionReady decides whether to
+        // recover; this line must not promise a recovery that may not happen.
         const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[tapsmith] iOS verifySession recovery failed: ${message}\n`);
+        process.stderr.write(`[tapsmith] iOS foreground probe failed: ${message}\n`);
         throw err;
+      }
+      if (state !== 'foreground') {
+        try {
+          await ctx.device.launchApp(ctx.config.package);
+        } catch (err) {
+          // The probe answered; the relaunch is what broke. Drop the probe
+          // annotation so triage is not pointed at the deadline constant.
+          progress?.setDetail(undefined);
+          const message = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`[tapsmith] iOS app was '${state}', relaunch failed: ${message}\n`);
+          throw err;
+        }
       }
     }
     return;

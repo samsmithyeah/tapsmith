@@ -96,6 +96,27 @@ describe('createActionProgressMessenger', () => {
     ]);
   });
 
+  it('appends a body-supplied detail to the end line (PILOT-350)', () => {
+    subscribe();
+    emitActionProgress({
+      kind: 'end', id: 1, action: 'sessionReady', target: 'com.foo',
+      durationMs: 9_400, success: true, detail: 'foreground probe 9.1s',
+    });
+    expect(messages.at(-1)?.text).toBe('\u2713 App ready (com.foo) (9.4s) \u2014 foreground probe 9.1s');
+  });
+
+  it('keeps the detail on a failed end line, before the error (PILOT-350)', () => {
+    subscribe();
+    emitActionProgress({
+      kind: 'end', id: 1, action: 'sessionReady', target: 'com.foo',
+      durationMs: 25_000, success: false, detail: 'foreground probe 25.0s after 3 attempts',
+      error: '4 DEADLINE_EXCEEDED',
+    });
+    expect(messages.at(-1)?.text).toBe(
+      '\u2717 App readiness check failed (com.foo) (25.0s) \u2014 foreground probe 25.0s after 3 attempts: 4 DEADLINE_EXCEEDED',
+    );
+  });
+
   it('tracks overlapping actions independently', () => {
     subscribe();
     start(1, 'sessionReady', 'com.foo');

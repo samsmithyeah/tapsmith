@@ -92,13 +92,15 @@ export function createActionProgressMessenger(options: ActionProgressMessengerOp
     if (!announced && (ev.durationMs ?? 0) < startDelayMs) return;
 
     const duration = `(${formatDuration(ev.durationMs ?? 0)})`;
+    // Sub-step attribution, when the action body supplied it (PILOT-350).
+    const detail = ev.detail ? ` — ${ev.detail}` : '';
     if (ev.aborted) {
-      options.emit(`– Stopped ${withTarget(lowerFirst(labels.active), ev.target)} ${duration}`, 'end', ev);
+      options.emit(`– Stopped ${withTarget(lowerFirst(labels.active), ev.target)} ${duration}${detail}`, 'end', ev);
     } else if (ev.success) {
-      options.emit(`✓ ${withTarget(labels.done, ev.target)} ${duration}`, 'end', ev);
+      options.emit(`✓ ${withTarget(labels.done, ev.target)} ${duration}${detail}`, 'end', ev);
     } else {
       const errorSuffix = ev.error ? `: ${ev.error}` : '';
-      options.emit(`✗ ${withTarget(labels.failed, ev.target)} ${duration}${errorSuffix}`, 'end', ev);
+      options.emit(`✗ ${withTarget(labels.failed, ev.target)} ${duration}${detail}${errorSuffix}`, 'end', ev);
     }
   });
 
