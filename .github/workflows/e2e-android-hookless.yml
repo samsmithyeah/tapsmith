@@ -36,9 +36,7 @@ env:
   # Tapsmith's own CI is not a user; keep its runs out of the usage counts.
   TAPSMITH_TELEMETRY: "0"
   ANDROID_API_LEVEL: "36"
-  # AOSP, matching e2e-android.yml — see the comment there for why
-  # google_apis costs this job whole runs on a loaded emulator.
-  ANDROID_SYSTEM_IMAGE: "system-images;android-36;default;x86_64"
+  ANDROID_SYSTEM_IMAGE: "system-images;android-36;google_apis;x86_64"
   AVD_NAME: "Tapsmith_Phone_API_36"
 
 jobs:

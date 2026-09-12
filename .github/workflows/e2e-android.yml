@@ -14,13 +14,16 @@ env:
   # Tapsmith's own CI is not a user; keep its runs out of the usage counts.
   TAPSMITH_TELEMETRY: "0"
   ANDROID_API_LEVEL: "36"
-  # AOSP, deliberately NOT google_apis. Nothing in the test app touches Google
-  # Play services, but on an oversubscribed runner GMS thrashes hard enough to
-  # ANR repeatedly, and a "Google Play services isn't responding" dialog then
-  # owns the screen through the whole session preflight — the app never reaches
-  # the hierarchy and the shard dies before its first test. AOSP images still
-  # support `adb root`, so HTTPS capture is unaffected (see docs/network.md).
-  ANDROID_SYSTEM_IMAGE: "system-images;android-36;default;x86_64"
+  # Google APIs, not AOSP. Swapping to `default` to escape the Google Play
+  # services ANR storm on loaded runners was tried and reverted: AOSP images
+  # ship three-button navigation, whose Launcher3 taskbar covers the bottom
+  # 126px of the screen — exactly where @tapsmith/react-native pins its hooks
+  # marker (bottom: 2, right: 4). UIAutomator drops the occluded marker, the
+  # daemon reports hooks=false, and every warm reset silently degrades to
+  # restart. See PR #231 for the evidence; the swap needs gesture navigation
+  # forced on first, and the marker itself is arguably too fragile to sit
+  # under system UI at all.
+  ANDROID_SYSTEM_IMAGE: "system-images;android-36;google_apis;x86_64"
   AVD_NAME: "Tapsmith_Phone_API_36"
   SHARD_TOTAL: 5
   # Cached login state for the `authenticated` project. Shards restore it
