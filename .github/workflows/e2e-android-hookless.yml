@@ -36,7 +36,9 @@ env:
   # Tapsmith's own CI is not a user; keep its runs out of the usage counts.
   TAPSMITH_TELEMETRY: "0"
   ANDROID_API_LEVEL: "36"
-  ANDROID_SYSTEM_IMAGE: "system-images;android-36;google_apis;x86_64"
+  # AOSP, matching e2e-android.yml — see the comment there for why
+  # google_apis costs this job whole runs on a loaded emulator.
+  ANDROID_SYSTEM_IMAGE: "system-images;android-36;default;x86_64"
   AVD_NAME: "Tapsmith_Phone_API_36"
 
 jobs:
@@ -309,15 +311,17 @@ jobs:
             &>/tmp/emulator.log &
           echo "Waiting for emulator to boot..."
           adb wait-for-device
-          TIMEOUT=120
-          while [ $TIMEOUT -gt 0 ]; do
+          # Wall-clock bounded — see e2e-android.yml for why a counter
+          # decremented per iteration is a poll count, not a timeout.
+          BOOT_DEADLINE=$(( $(date +%s) + 300 ))
+          BOOT=""
+          while [ "$(date +%s)" -lt "$BOOT_DEADLINE" ]; do
             BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
             if [ "$BOOT" = "1" ]; then break; fi
             sleep 2
-            TIMEOUT=$((TIMEOUT - 2))
           done
           if [ "$BOOT" != "1" ]; then
-            echo "::error::Emulator failed to boot within 120s"
+            echo "::error::Emulator failed to boot within 300s"
             cat /tmp/emulator.log | tail -30
             exit 1
           fi
