@@ -111,12 +111,43 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
 
   if (!active) return null;
 
+  const marker = formatMarker({ epoch, nav, boot: BOOT_TOKEN, urlPrefix: prefix, error });
+
   return (
-    <View pointerEvents="none" style={styles.marker} accessibilityElementsHidden={false} importantForAccessibility="yes">
-      <Text testID="tapsmith-hooks" style={styles.text}>
-        {formatMarker({ epoch, nav, boot: BOOT_TOKEN, urlPrefix: prefix, error })}
-      </Text>
-    </View>
+    <>
+      <View pointerEvents="none" style={styles.marker} accessibilityElementsHidden={false} importantForAccessibility="yes">
+        <Text testID="tapsmith-hooks" style={styles.text}>
+          {marker}
+        </Text>
+      </View>
+      {/*
+        The corner marker above is 8px text pinned to the bottom-right, and a
+        platform's own UI can sit on top of it: Android's three-button
+        navigation bar covers that corner outright on an edge-to-edge app.
+        UIAutomator omits occluded nodes from its dump entirely — every node in
+        a dump carries visible-to-user="true" — so the marker simply vanishes,
+        Tapsmith concludes the app has no hooks, and every warm reset silently
+        degrades to a clear. Green suite, no warning, ~5-10s per reset instead
+        of ~1s.
+
+        This carrier says the same thing somewhere geometry cannot hide: a
+        full-bleed, fully transparent view whose accessibility label holds the
+        marker. Something screen-sized always has a visible region left over
+        whatever the system draws on top, so the node survives the dump. Both
+        marker parsers scan the whole XML for the prefix and stop at the
+        closing quote, so content-desc reads exactly like text.
+
+        Deliberately NOT an accessibility element: it carries a label for the
+        dump without taking focus or becoming a TalkBack stop.
+      */}
+      <View
+        pointerEvents="none"
+        style={styles.carrier}
+        accessible={false}
+        importantForAccessibility="yes"
+        accessibilityLabel={marker}
+      />
+    </>
   );
 }
 
@@ -126,6 +157,15 @@ function normalisePrefix(prefix: string): string {
 }
 
 const styles = StyleSheet.create({
+  // Screen-sized so no system bar, notch or inset can occlude it away, and
+  // fully transparent with no children so it changes nothing on screen.
+  carrier: {
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+  },
   marker: {
     bottom: 2,
     position: 'absolute',
