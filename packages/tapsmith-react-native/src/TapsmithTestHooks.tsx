@@ -115,38 +115,34 @@ export function TapsmithTestHooks({ onReset, clear = [], urlPrefix, scheme, enab
 
   return (
     <>
-      <View pointerEvents="none" style={styles.marker} accessibilityElementsHidden={false} importantForAccessibility="yes">
-        <Text testID="tapsmith-hooks" style={styles.text}>
+      {/*
+        The readable marker, and the one `testID` points at. Deliberately
+        screen-sized rather than tucked into a corner: a platform's own UI can
+        sit on top of a corner — Android's three-button navigation bar covers
+        the bottom-right outright on an edge-to-edge app — and UIAutomator
+        omits occluded nodes from its dump entirely (every node in a dump
+        carries visible-to-user="true"). A corner marker therefore just
+        vanishes, Tapsmith concludes the app has no hooks, and `appReset:
+        'auto'` silently resolves to clear instead of warm: ~5-10s per reset
+        against ~1s, with a green suite and no warning.
+
+        Something screen-sized always has a visible region left over whatever
+        the system draws on top, so this node survives the dump. The text is
+        transparent, so nothing about the app's appearance changes, and the
+        wrapper is pointerEvents="none" so it swallows no touches.
+      */}
+      <View pointerEvents="none" style={styles.carrier} importantForAccessibility="yes">
+        <Text testID="tapsmith-hooks" style={styles.carrierText}>
           {marker}
         </Text>
       </View>
       {/*
-        The corner marker above is 8px text pinned to the bottom-right, and a
-        platform's own UI can sit on top of it: Android's three-button
-        navigation bar covers that corner outright on an edge-to-edge app.
-        UIAutomator omits occluded nodes from its dump entirely — every node in
-        a dump carries visible-to-user="true" — so the marker simply vanishes,
-        Tapsmith concludes the app has no hooks, and every warm reset silently
-        degrades to a clear. Green suite, no warning, ~5-10s per reset instead
-        of ~1s.
-
-        This carrier says the same thing somewhere geometry cannot hide: a
-        full-bleed, fully transparent view whose accessibility label holds the
-        marker. Something screen-sized always has a visible region left over
-        whatever the system draws on top, so the node survives the dump. Both
-        marker parsers scan the whole XML for the prefix and stop at the
-        closing quote, so content-desc reads exactly like text.
-
-        Deliberately NOT an accessibility element: it carries a label for the
-        dump without taking focus or becoming a TalkBack stop.
+        The same string, visible, for a human watching the screen. No testID:
+        it is the occludable one, so nothing may depend on finding it.
       */}
-      <View
-        pointerEvents="none"
-        style={styles.carrier}
-        accessible={false}
-        importantForAccessibility="yes"
-        accessibilityLabel={marker}
-      />
+      <View pointerEvents="none" style={styles.marker} accessibilityElementsHidden={false} importantForAccessibility="yes">
+        <Text style={styles.text}>{marker}</Text>
+      </View>
     </>
   );
 }
@@ -157,10 +153,21 @@ function normalisePrefix(prefix: string): string {
 }
 
 const styles = StyleSheet.create({
-  // Screen-sized so no system bar, notch or inset can occlude it away, and
-  // fully transparent with no children so it changes nothing on screen.
+  // Screen-sized so no system bar, notch or inset can occlude it away.
   carrier: {
     bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+  },
+  // Fills the carrier, so the *text node itself* — the one the hierarchy dump
+  // reports — is screen-sized too, not just its parent. Transparent, so the
+  // marker changes nothing on screen.
+  carrierText: {
+    bottom: 0,
+    color: 'transparent',
+    fontSize: 8,
     left: 0,
     position: 'absolute',
     right: 0,

@@ -14,19 +14,17 @@ env:
   # Tapsmith's own CI is not a user; keep its runs out of the usage counts.
   TAPSMITH_TELEMETRY: "0"
   ANDROID_API_LEVEL: "36"
-  # AOSP, deliberately NOT google_apis. Nothing in the test app touches Google
-  # Play services, but on an oversubscribed runner GMS thrashes hard enough to
-  # ANR repeatedly, and a "Google Play services isn't responding" dialog then
-  # owns the screen through the whole session preflight — the app never reaches
-  # the hierarchy and the shard dies before its first test. AOSP images still
-  # support `adb root`, so HTTPS capture is unaffected (see docs/network.md).
-  #
-  # This image also gives us the only three-button-navigation coverage we have.
-  # A first attempt at the swap failed because Launcher3's taskbar covers the
-  # bottom 126px, occluding the hooks marker out of the UIAutomator dump; the
-  # marker now has an occlusion-proof carrier (TapsmithTestHooks.tsx), and this
-  # job is what proves it.
-  ANDROID_SYSTEM_IMAGE: "system-images;android-36;default;x86_64"
+  # Google APIs, not AOSP. Swapping to `default` removes the Google Play
+  # services ANR storm, and PR #231 confirmed WebView, Multi-device and (once
+  # the hooks marker got its occlusion-proof carrier) the reset ladder all work
+  # on it. It still cannot be used: AOSP ships three-button navigation, whose
+  # Launcher3 taskbar covers the bottom 126px, and the TEST APP does not inset
+  # its content for navigation bars — so content at the bottom of a scroll view
+  # (e.g. visibility.test.ts's error text) is occluded and reads as not
+  # visible. Retrying the swap means forcing gesture navigation on
+  # (`adb shell cmd overlay enable com.android.internal.systemui.navbar.gestural`)
+  # or giving the test app safe-area insets.
+  ANDROID_SYSTEM_IMAGE: "system-images;android-36;google_apis;x86_64"
   AVD_NAME: "Tapsmith_Phone_API_36"
   SHARD_TOTAL: 5
   # Cached login state for the `authenticated` project. Shards restore it
@@ -331,6 +329,12 @@ jobs:
             if [ "$BOOT" = "1" ]; then break; fi
             sleep 2
           done
+          # The sleep can carry the loop past the deadline, leaving the last
+          # interval unprobed — so the budget is only really honoured with one
+          # final read before declaring the emulator dead.
+          if [ "$BOOT" != "1" ]; then
+            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+          fi
           if [ "$BOOT" != "1" ]; then
             echo "::error::Emulator failed to boot within 300s"
             cat /tmp/emulator.log | tail -30
