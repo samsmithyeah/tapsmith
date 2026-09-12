@@ -871,13 +871,17 @@ The returned handles carry the snapshot they were resolved from, so reading and 
 does not re-query the device for every element: `find()`, `getText()`, `isEnabled()`, `isChecked()`,
 `isEditable()`, `inputValue()`, `boundingBox()`, `isVisible()`, `isHidden()` and actions all address
 the element captured by `all()`, so a check and the action it guards describe the same element
-(and after an action that moves the list, `items[i].boundingBox()` still reports the captured
-coordinates). Scoped children (`items[i].getByRole("button")`) resolve their parent live by index, like
+(after an action other than `scrollIntoView()` that moves the list, `items[i].boundingBox()` still
+reports the captured coordinates). Scoped children (`items[i].getByRole("button")`) resolve their parent live by index, like
 `.nth(i)`: once the list has changed they address whatever row is now at index `i`, so call `all()` again
-after the list changes before acting on a row's children. Two things refresh the snapshot from a fresh
-read by the same index: an action whose captured element went stale mid-action, and a wait the
+after the list changes before acting on a row's children. Three things refresh the snapshot from a fresh
+read by the same index: an action whose captured element went stale mid-action, a wait the
 capture cannot satisfy (a disabled control, a `setChecked()` state change being confirmed, an index the
-capture no longer has); the handle keeps answering from the refreshed capture. `expect(items[i])` assertions and
+capture no longer has), and `items[i].scrollIntoView()`, which re-captures before every check because it
+exists to watch the screen change; the handle keeps answering from the refreshed capture. Note what that
+means: after `items[i].scrollIntoView()` the handle describes whatever row is at index `i` in the *scrolled*
+list — on a virtualised list that can be a different row from the one captured, exactly as `.nth(i)` would
+resolve — so prefer a locator that names the row (`getByText`, `filter({ hasText })`) when scrolling to it. `expect(items[i])` assertions and
 `waitFor()` also re-query the device by index, so they reflect what is on screen now. Because a handle
 from `all()` already names one element, `first()`, `last()`, `nth()`, `filter()`, `and()` and `or()`
 throw on it, and so does passing it as the other operand or as `has`/`hasNot` — narrow the locator
@@ -1014,7 +1018,9 @@ Scroll the viewport until this element is visible on screen. Useful for reaching
 
 Swipes in the given direction, checking visibility between each attempt. Throws if the element is not visible after `maxScrolls` attempts.
 
-If the element is already visible, this is a no-op — it returns without scrolling, so calling `scrollIntoView()` before every `tap()` is safe even when the target is on screen (an unnecessary swipe could otherwise shift it under a pinned app bar). When the element isn't found on the first check, Tapsmith waits for the UI to settle and re-checks before the first swipe, so a briefly stale accessibility tree (e.g. right after navigation) doesn't trigger a spurious scroll.
+If the element is already visible, this is a no-op — it returns without scrolling, so calling `scrollIntoView()` before every `tap()` is safe even when the target is on screen (an unnecessary swipe could otherwise shift it under a pinned app bar). When the element isn't found on the first check, Tapsmith waits for the UI to settle and re-checks before the first swipe, so a briefly stale accessibility tree (e.g. right after navigation) doesn't trigger a spurious scroll. For a handle from `all()` the check first re-captures the row by index — see the note in the [`all()`](#elementhandleall-promiseelementhandle) section for what that means on a virtualised list.
+
+The visibility check honours every modifier on the locator — `filter()`, `and()`/`or()`, scoping and `first()`/`nth()`/`last()` — so `device.getByRole("listitem").filter({ hasText: "Zebra" }).scrollIntoView()` swipes until *that* row is on screen rather than stopping at the first list item. Strict mode applies as for any single-element query: an ambiguous locator throws (before the first swipe, if it is ambiguous from the start) rather than scrolling toward an arbitrary match.
 
 | Option | Default | Description |
 |---|---|---|
