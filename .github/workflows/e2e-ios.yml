@@ -451,8 +451,14 @@ jobs:
             echo "No simulator UDID resolved; skipping wait."
             exit 0
           fi
-          TIMEOUT=120
-          while [ $TIMEOUT -gt 0 ]; do
+          # Wall-clock bounded, not tick-counted: each iteration shells out to
+          # simctl AND python3, which on a loaded macOS runner costs far more
+          # than the sleep — so "120" was a poll count that could idle for
+          # several minutes. Nothing gates on the result (the state is only
+          # echoed), so over-waiting was pure dead time before the shard ran.
+          BOOT_DEADLINE=$(( $(date +%s) + 120 ))
+          STATE=""
+          while [ "$(date +%s)" -lt "$BOOT_DEADLINE" ]; do
             STATE=$(xcrun simctl list devices -j | python3 -c "
           import json,sys
           d=json.load(sys.stdin)
@@ -463,7 +469,6 @@ jobs:
           ")
             if [ "$STATE" = "Booted" ]; then break; fi
             sleep 2
-            TIMEOUT=$((TIMEOUT - 2))
           done
           echo "Simulator state: $STATE"
 
