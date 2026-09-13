@@ -36,8 +36,7 @@ env:
   # Tapsmith's own CI is not a user; keep its runs out of the usage counts.
   TAPSMITH_TELEMETRY: "0"
   ANDROID_API_LEVEL: "36"
-  # AOSP, matching e2e-android.yml — see the comment there.
-  ANDROID_SYSTEM_IMAGE: "system-images;android-36;default;x86_64"
+  ANDROID_SYSTEM_IMAGE: "system-images;android-36;google_apis;x86_64"
   AVD_NAME: "Tapsmith_Phone_API_36"
 
 jobs:
@@ -326,22 +325,6 @@ jobs:
           if [ "$BOOT" != "1" ]; then
             echo "::error::Emulator failed to boot within 300s"
             cat /tmp/emulator.log | tail -30
-            exit 1
-          fi
-          # AOSP defaults to three-button navigation; Google's images default to
-          # gestures. That difference is not cosmetic: Launcher3's taskbar
-          # covers the bottom 126px of an edge-to-edge app, occluding content
-          # the tests assert on (visibility.test.ts's error text) and, until it
-          # got an occlusion-proof carrier, the hooks marker. Match the Google
-          # images so the only remaining difference is the absence of Play
-          # services. Verified rather than hoped: a silent failure here reads
-          # as a pile of unrelated test failures 25 minutes later.
-          adb shell cmd overlay enable com.android.internal.systemui.navbar.gestural || true
-          sleep 3
-          NAV=$(adb shell cmd overlay list 2>/dev/null | grep -i navbar || true)
-          echo "Navigation overlays:"; echo "$NAV"
-          if ! echo "$NAV" | grep -qi '\[x\].*gestural'; then
-            echo "::error::Could not enable gesture navigation; the taskbar would occlude bottom-of-screen content"
             exit 1
           fi
           adb shell settings put global window_animation_scale 0

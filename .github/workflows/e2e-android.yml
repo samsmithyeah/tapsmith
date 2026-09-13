@@ -14,19 +14,28 @@ env:
   # Tapsmith's own CI is not a user; keep its runs out of the usage counts.
   TAPSMITH_TELEMETRY: "0"
   ANDROID_API_LEVEL: "36"
-  # AOSP, deliberately NOT google_apis. Nothing in the test app touches Google
-  # Play services, but on an oversubscribed runner GMS thrashes hard enough to
-  # ANR repeatedly, and a "Google Play services isn't responding" dialog then
-  # owns the screen through the whole session preflight — the app never reaches
-  # the hierarchy and the shard dies before its first test. AOSP images still
-  # support `adb root`, so HTTPS capture is unaffected (see docs/network.md).
+  # Google APIs, not AOSP. Swapping to `default` would remove the Google Play
+  # services ANR storm that killed a shard on an oversubscribed runner (the
+  # reason this workflow was hardened), and PR #231 got two of the three
+  # blockers out of the way before stopping:
   #
-  # The swap needed two things first, both now done: the hooks marker had to
-  # stop living somewhere system UI can occlude it (TapsmithTestHooks.tsx), and
-  # the boot step has to force gesture navigation, because AOSP's three-button
-  # taskbar covers the bottom 126px of an edge-to-edge app and the test app
-  # does not inset its content for navigation bars.
-  ANDROID_SYSTEM_IMAGE: "system-images;android-36;default;x86_64"
+  #   1. FIXED - the hooks marker was occluded by AOSP's three-button taskbar,
+  #      so every warm reset degraded to clear. TapsmithTestHooks.tsx now
+  #      carries it on a full-bleed node nothing can hide.
+  #   2. FIXED - the same taskbar occluded ordinary content at the bottom of a
+  #      scroll view (visibility.test.ts's error text), because the test app
+  #      does not inset for navigation bars. Forcing gesture navigation with
+  #      `adb shell cmd overlay enable com.android.internal.systemui.navbar.gestural`
+  #      fixes it; verified working, that failure did not recur.
+  #   3. OPEN - on AOSP a file reset can leave the LAUNCHER in the foreground
+  #      instead of the app: "hierarchy ... not ready 60000ms after launch;
+  #      last hierarchy showed packages: com.android.launcher3". Reproduced on
+  #      app-state.test.ts and auth-gate.test.ts across two separate runs, with
+  #      and without gesture navigation. Unexplained; that is where to start.
+  #
+  # Also confirmed working on AOSP, so do not re-derive it: WebView
+  # (com.android.webview, CDP and all), Multi-device, and the reset ladder.
+  ANDROID_SYSTEM_IMAGE: "system-images;android-36;google_apis;x86_64"
   AVD_NAME: "Tapsmith_Phone_API_36"
   SHARD_TOTAL: 5
   # Cached login state for the `authenticated` project. Shards restore it
@@ -342,22 +351,6 @@ jobs:
             cat /tmp/emulator.log | tail -30
             exit 1
           fi
-          # AOSP defaults to three-button navigation; Google's images default to
-          # gestures. That difference is not cosmetic: Launcher3's taskbar
-          # covers the bottom 126px of an edge-to-edge app, occluding content
-          # the tests assert on (visibility.test.ts's error text) and, until it
-          # got an occlusion-proof carrier, the hooks marker. Match the Google
-          # images so the only remaining difference is the absence of Play
-          # services. Verified rather than hoped: a silent failure here reads
-          # as a pile of unrelated test failures 25 minutes later.
-          adb shell cmd overlay enable com.android.internal.systemui.navbar.gestural || true
-          sleep 3
-          NAV=$(adb shell cmd overlay list 2>/dev/null | grep -i navbar || true)
-          echo "Navigation overlays:"; echo "$NAV"
-          if ! echo "$NAV" | grep -qi '\[x\].*gestural'; then
-            echo "::error::Could not enable gesture navigation; the taskbar would occlude bottom-of-screen content"
-            exit 1
-          fi
           # Disable animations for test stability
           adb shell settings put global window_animation_scale 0
           adb shell settings put global transition_animation_scale 0
@@ -655,14 +648,6 @@ jobs:
               echo "::error::$SERIAL failed to boot within 300s"
               adb devices
               tail -40 "/tmp/$SERIAL.log"
-              exit 1
-            fi
-            # Gesture navigation, as in the shard jobs — see the comment there.
-            adb -s "$SERIAL" shell cmd overlay enable com.android.internal.systemui.navbar.gestural || true
-            sleep 3
-            NAV=$(adb -s "$SERIAL" shell cmd overlay list 2>/dev/null | grep -i navbar || true)
-            if ! echo "$NAV" | grep -qi '\[x\].*gestural'; then
-              echo "::error::$SERIAL: could not enable gesture navigation"
               exit 1
             fi
             # Disable animations for test stability
