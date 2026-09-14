@@ -20,8 +20,8 @@ on:
   # trigger: `paths` filters are ignored for tag pushes, so one would render
   # on every release tag, and the merge to main is rendered again by the
   # publish run anyway. Publishing is the dispatch with `publish` ticked —
-  # by hand, or from release.yml when the pipeline changed since the last
-  # published video.
+  # by hand, or from release.yml when tools/promo changed since the previous
+  # release.
   pull_request:
     paths:
       - tools/promo/**
@@ -103,16 +103,12 @@ jobs:
             tools/promo/probe-*.jpg
           retention-days: 30
 
-      # promo-source.txt records which tools/promo tree this mp4 was rendered
-      # from; release.yml compares it against the tree being released and only
-      # re-renders when they differ.
       - name: Publish to the promo-video release
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ./source-hash.sh > promo-source.txt
-          gh release upload promo-video promo.mp4 promo-source.txt --clobber
+          gh release upload promo-video promo.mp4 --clobber
           gh release view promo-video --json assets -q '.assets[] | "\(.name) \(.size) \(.updatedAt)"'
 
       # workflow_dispatch is one of the events the default GITHUB_TOKEN may trigger
