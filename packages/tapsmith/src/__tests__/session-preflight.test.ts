@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { androidHierarchyHasRenderedContent, ensureSessionReady, executeAppReset, launchConfiguredApp, probeResetCapabilities } from '../session-preflight.js';
+import { androidHierarchyHasRenderedContent, androidHierarchyHasText, describeHierarchyForDiagnostics, ensureSessionReady, executeAppReset, launchConfiguredApp, probeResetCapabilities } from '../session-preflight.js';
 import type { AppResetPolicy } from '../app-reset.js';
 import { onActionProgress, type ActionProgressEvent } from '../action-progress.js';
 import { isRecoverableInfrastructureError } from '../worker-protocol.js';
@@ -360,6 +360,37 @@ describe('session-preflight', () => {
       expect(androidHierarchyHasRenderedContent('<hierarchy><node package="com.example.app" content-desc="Menu" /></hierarchy>', 'com.example.app')).toBe(true);
       // System UI text does not count: the app has not drawn anything yet.
       expect(androidHierarchyHasRenderedContent('<hierarchy><node package="com.android.systemui" text="10:06" /><node package="com.example.app" /></hierarchy>', 'com.example.app')).toBe(false);
+    });
+
+    it('androidHierarchyHasText matches an exact node text, XML-escaped', () => {
+      expect(androidHierarchyHasText('<node text="Wait" />', 'Wait')).toBe(true);
+      // Substring matches must not count — "Waiting" is not the "Wait" button.
+      expect(androidHierarchyHasText('<node text="Waiting" />', 'Wait')).toBe(false);
+      // UIAutomator escapes the apostrophe in dialog copy; the label lookup has
+      // to speak the same dialect or it silently never matches.
+      expect(androidHierarchyHasText('<node text="Google Play services isn&apos;t responding" />', 'Wait')).toBe(false);
+      expect(androidHierarchyHasText('<node text="Say &quot;hi&quot;" />', 'Say "hi"')).toBe(true);
+    });
+
+    it('describeHierarchyForDiagnostics names the real cause behind a readiness timeout', () => {
+      // Three very different failures that used to share one error sentence.
+      expect(describeHierarchyForDiagnostics('')).toContain('UIAutomator2 returned nothing');
+      expect(describeHierarchyForDiagnostics('<?xml version="1.0"?>\n<hierarchy rotation="0" />'))
+        .toContain('has not drawn yet');
+
+      const anr = '<node text="Google Play services isn&apos;t responding" resource-id="android:id/alertTitle" package="android" />';
+      const described = describeHierarchyForDiagnostics(anr);
+      expect(described).toContain('Google Play services isn&apos;t responding');
+      expect(described).toContain('android');
+
+      // Attribute order is not guaranteed across API levels.
+      expect(describeHierarchyForDiagnostics(
+        '<node resource-id="android:id/alertTitle" text="App keeps stopping" package="android" />',
+      )).toContain('App keeps stopping');
+
+      // No dialog: just say which packages held the screen.
+      expect(describeHierarchyForDiagnostics('<node package="com.android.launcher3" text="Home" />'))
+        .toBe('showed packages: com.android.launcher3');
     });
 
     it('a clear reset polls until the app has rendered content (regression: deep link lost into a booting RN app)', async () => {
@@ -1069,7 +1100,68 @@ describe('session-preflight', () => {
 
     await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
     expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
-    expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(3);
+    // 1 verify + 1 dismissal dump + 1 re-read confirming the dialog cleared
+    // + 1 re-verify. The re-read is what lets the loop stop after one tap.
+    expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(4);
+  });
+
+  it('taps only the dismissal labels the dialog actually shows', async () => {
+    const ctx = makeContext();
+    vi.mocked(ctx.client.ping)
+      .mockResolvedValueOnce({ version: '0.1.0', agentConnected: true })
+      .mockResolvedValueOnce({ version: '0.1.0', agentConnected: true });
+    // The ANR dialog offers "Wait" and "Close app" — never "Not Now" or "OK".
+    const anr = {
+      requestId: '1',
+      hierarchyXml: '<node text="Google Play services isn&apos;t responding" /><node text="Wait" /><node text="Close app" />',
+      errorMessage: '',
+    };
+    const home = {
+      requestId: '1',
+      hierarchyXml: '<hierarchy><node package="com.example.app" text="Home" /></hierarchy>',
+      errorMessage: '',
+    };
+    vi.mocked(ctx.client.getUiHierarchy)
+      .mockResolvedValueOnce(anr)
+      .mockResolvedValueOnce(anr)
+      .mockResolvedValueOnce(home)
+      .mockResolvedValueOnce(home);
+
+    await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
+
+    // Blind tapping cost a full auto-wait timeout per absent label — the whole
+    // point of the guard. "Wait" wins over "Close app" so a merely-slow app is
+    // not killed out from under the session.
+    const labels = vi.mocked(ctx.device.getByText).mock.calls.map(([label]) => label);
+    expect(labels).toEqual(['Wait']);
+  });
+
+  it('keeps dismissing when clearing one dialog reveals another', async () => {
+    const ctx = makeContext();
+    vi.mocked(ctx.client.ping)
+      .mockResolvedValueOnce({ version: '0.1.0', agentConnected: true })
+      .mockResolvedValueOnce({ version: '0.1.0', agentConnected: true });
+    const dialog = (text: string, button: string) => ({
+      requestId: '1',
+      hierarchyXml: `<node text="${text} isn&apos;t responding" /><node text="${button}" />`,
+      errorMessage: '',
+    });
+    const home = {
+      requestId: '1',
+      hierarchyXml: '<hierarchy><node package="com.example.app" text="Home" /></hierarchy>',
+      errorMessage: '',
+    };
+    vi.mocked(ctx.client.getUiHierarchy)
+      .mockResolvedValueOnce(dialog('Google Play services', 'Wait'))
+      .mockResolvedValueOnce(dialog('Google Play services', 'Wait'))
+      .mockResolvedValueOnce(dialog('Pixel Launcher', 'Close app'))
+      .mockResolvedValueOnce(home)
+      .mockResolvedValueOnce(home);
+
+    await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
+
+    const labels = vi.mocked(ctx.device.getByText).mock.calls.map(([label]) => label);
+    expect(labels).toEqual(['Wait', 'Close app']);
   });
 
   describe('reset capabilities', () => {
