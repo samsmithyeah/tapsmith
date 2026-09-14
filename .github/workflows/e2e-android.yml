@@ -644,6 +644,12 @@ jobs:
               if [ "$BOOT" = "1" ]; then break; fi
               sleep 2
             done
+            # One final read before giving up: the sleep can carry the loop
+            # past the deadline while the emulator finished booting inside it,
+            # leaving BOOT stale. Same guard as the single-emulator jobs.
+            if [ "$BOOT" != "1" ]; then
+              BOOT=$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            fi
             if [ "$BOOT" != "1" ]; then
               echo "::error::$SERIAL failed to boot within 300s"
               adb devices
