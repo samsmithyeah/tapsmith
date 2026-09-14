@@ -221,6 +221,11 @@ picked up via `CHROME_PATH`), leak sweep, assembly, web encode, QC stills —
 uploaded as the `promo-video` artifact. It runs on pull requests that touch
 `tools/promo/`, and on demand from the Actions tab; ticking **publish**
 also replaces the mp4 on the `promo-video` release and redeploys the website.
+Releases publish automatically when needed: `release.yml` compares
+`source-hash.sh` (a fingerprint of the committed `tools/promo/` tree, minus
+README and the screenshot tooling) with the `promo-source.txt` stored beside
+the published mp4, and dispatches a publish run only if they differ — so a
+release whose video inputs are unchanged costs no render.
 Fonts are bundled (`assets/*.woff2`, incl. a variable Inter) so a runner render
 matches a Mac render. Screen recordings and voiceover stay local + committed.
 
