@@ -218,8 +218,8 @@ real filesystem path.
 `.github/workflows/promo-video.yml` does the device-free half of this pipeline
 on a Linux runner: music bed, frame render (Chrome from `@puppeteer/browsers`,
 picked up via `CHROME_PATH`), leak sweep, assembly, web encode, QC stills —
-uploaded as the `promo-video` artifact. It runs on every push to `main` that
-touches `tools/promo/`, and on demand from the Actions tab; ticking **publish**
+uploaded as the `promo-video` artifact. It runs on pull requests that touch
+`tools/promo/`, and on demand from the Actions tab; ticking **publish**
 also replaces the mp4 on the `promo-video` release and redeploys the website.
 Fonts are bundled (`assets/*.woff2`, incl. a variable Inter) so a runner render
 matches a Mac render. Screen recordings and voiceover stay local + committed.
