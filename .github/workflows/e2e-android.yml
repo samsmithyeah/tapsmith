@@ -323,6 +323,13 @@ jobs:
             -memory 4096 \
             &>/tmp/emulator.log &
           echo "Waiting for emulator to boot..."
+          # Every probe is `timeout`-wrapped: a wall-clock loop is only
+          # bounded if each iteration returns. An emulator that registers with
+          # adb but whose shell never answers would otherwise block inside a
+          # single `adb shell` forever, and the deadline below would never be
+          # re-tested. The `| tr` keeps the pipeline's status zero under
+          # `bash -e` when timeout kills the probe (exit 124).
+          #
           # Wall-clock bounded, not tick-counted: `adb shell getprop` itself
           # takes seconds on a loaded runner, so the old "decrement a counter
           # by 2 per iteration" loop was a *poll count*, not a timeout — a
@@ -336,7 +343,7 @@ jobs:
           BOOT_DEADLINE=$(( $(date +%s) + 300 ))
           BOOT=""
           while [ "$(date +%s)" -lt "$BOOT_DEADLINE" ]; do
-            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            BOOT=$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
             if [ "$BOOT" = "1" ]; then break; fi
             sleep 2
           done
@@ -344,7 +351,7 @@ jobs:
           # interval unprobed — so the budget is only really honoured with one
           # final read before declaring the emulator dead.
           if [ "$BOOT" != "1" ]; then
-            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            BOOT=$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
           fi
           if [ "$BOOT" != "1" ]; then
             echo "::error::Emulator failed to boot within 300s"
@@ -640,7 +647,7 @@ jobs:
             # counter decremented per iteration is not a timeout.
             DEADLINE=$(( $(date +%s) + TIMEOUT ))
             while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-              BOOT=$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+              BOOT=$(timeout 10 adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
               if [ "$BOOT" = "1" ]; then break; fi
               sleep 2
             done
@@ -648,7 +655,7 @@ jobs:
             # past the deadline while the emulator finished booting inside it,
             # leaving BOOT stale. Same guard as the single-emulator jobs.
             if [ "$BOOT" != "1" ]; then
-              BOOT=$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+              BOOT=$(timeout 10 adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
             fi
             if [ "$BOOT" != "1" ]; then
               echo "::error::$SERIAL failed to boot within 300s"

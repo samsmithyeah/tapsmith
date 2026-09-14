@@ -313,14 +313,14 @@ jobs:
           BOOT_DEADLINE=$(( $(date +%s) + 300 ))
           BOOT=""
           while [ "$(date +%s)" -lt "$BOOT_DEADLINE" ]; do
-            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            BOOT=$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
             if [ "$BOOT" = "1" ]; then break; fi
             sleep 2
           done
           # One final read: the sleep can carry the loop past the deadline and
           # leave the last interval unprobed. See e2e-android.yml.
           if [ "$BOOT" != "1" ]; then
-            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            BOOT=$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
           fi
           if [ "$BOOT" != "1" ]; then
             echo "::error::Emulator failed to boot within 300s"
