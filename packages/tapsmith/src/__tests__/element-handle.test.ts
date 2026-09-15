@@ -382,10 +382,13 @@ describe('find()', () => {
 // ─── exists() ───
 
 describe('exists()', () => {
-  it('returns true when the element is found', async () => {
+  it('returns true when the element is found — one read, no confirmation', async () => {
     const client = makeMockClient();
     const handle = new ElementHandle(client, _text('Present'), 5000);
     expect(await handle.exists()).toBe(true);
+    // The docs promise a present element costs one hierarchy read.
+    expect(client.findElements).toHaveBeenCalledTimes(1);
+    expect(client.waitForIdle).not.toHaveBeenCalled();
   });
 
   it('returns false at once for an absent element — one read plus a confirming re-read, not a poll to the timeout (PILOT-344)', async () => {
@@ -464,21 +467,6 @@ describe('exists()', () => {
     expect(calls).toBe(2);
   });
 
-  it('still classifies the agents’ genuine not-found messages as absence, not as a fault', async () => {
-    // Both agents answer findElements with an empty list today, but a
-    // not-found error message from a future agent path must keep reading as
-    // "doesn't exist" — not be retried as an infra fault and then thrown.
-    const findElements = vi.fn(async (): Promise<FindElementsResponse> => ({
-      requestId: '1',
-      elements: [],
-      errorMessage: 'Timed out after 5000ms: element not found after waiting. No element found matching: text("Absent")',
-    }));
-    const client = makeMockClient({ findElements });
-    const handle = new ElementHandle(client, _text('Absent'), 5000);
-    expect(await withFakeClock(5000, () => handle.exists())).toBe(false);
-    expect(findElements).toHaveBeenCalledTimes(2); // the read and its confirmation
-  });
-
   it('surfaces a persistent agent fault instead of returning false', async () => {
     const client = makeMockClient({
       findElements: vi.fn(async (): Promise<FindElementsResponse> => ({
@@ -519,6 +507,70 @@ describe('exists()', () => {
     const handle = new ElementHandle(client, _text('X'), 30_000);
     await expect(withFakeClock(60_000, () => handle.exists())).rejects.toThrow(/UNAVAILABLE/);
     expect(findElements).toHaveBeenCalledTimes(1);
+  });
+
+  it('an agent command timeout is re-probed until the handle deadline, not for the short fault window (slow agent)', async () => {
+    // A CPU-starved CI emulator's hierarchy dump outruns the daemon's read
+    // budget on every read for a while; the agent is alive, just slow. The
+    // probe must ride it out like tap() does, not throw after 2 s.
+    let calls = 0;
+    const findElements = vi.fn(async (): Promise<FindElementsResponse> => {
+      calls++;
+      return calls <= 12
+        ? { requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5250ms' }
+        : makeFindElementsResponse([makeElementInfo()]);
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Slow'), 30_000);
+    let elapsed = -1;
+    expect(await withFakeClock(60_000, async () => {
+      const start = Date.now();
+      try {
+        return await handle.exists();
+      } finally {
+        elapsed = Date.now() - start;
+      }
+    })).toBe(true);
+    expect(calls).toBe(13);
+    expect(elapsed).toBe(3000); // 12 retry gaps of 250ms — well past the 2s fault window
+  });
+
+  it('a persistent agent command timeout surfaces unchanged at the handle deadline, so session recovery still matches', async () => {
+    const findElements = vi.fn(async (): Promise<FindElementsResponse> => ({
+      requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5250ms',
+    }));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Slow'), 5000);
+    let elapsed = -1;
+    await expect(withFakeClock(20_000, async () => {
+      const start = Date.now();
+      try {
+        return await handle.exists();
+      } finally {
+        elapsed = Date.now() - start;
+      }
+    })).rejects.toThrow(/findElements failed: Agent command timed out/);
+    expect(elapsed).toBeGreaterThanOrEqual(4500);
+    expect(elapsed).toBeLessThanOrEqual(5000);
+  });
+
+  it('an agent command timeout during the miss confirmation keeps re-probing rather than throwing or guessing', async () => {
+    // Read 1 is empty, the confirming re-reads time out for a while, then a
+    // read completes empty: the answer is false, not a thrown timeout after
+    // the 2 s confirmation window.
+    let calls = 0;
+    const findElements = vi.fn(async (): Promise<FindElementsResponse> => {
+      calls++;
+      if (calls === 1 || calls > 12) return makeFindElementsResponse([]);
+      return { requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5250ms' };
+    });
+    const client = makeMockClient({ findElements });
+    expect(await withFakeClock(60_000, () => new ElementHandle(client, _text('Absent'), 30_000).exists())).toBe(false);
+    expect(calls).toBe(13);
+    // isVisible() shares the ladder.
+    calls = 0;
+    expect(await withFakeClock(60_000, () => new ElementHandle(client, _text('Absent'), 30_000).isVisible())).toBe(false);
+    expect(calls).toBe(13);
   });
 
   describe('on a modified handle', () => {
@@ -603,6 +655,105 @@ describe('exists()', () => {
       expect(await rows[1].exists()).toBe(true);
       expect(findElements).toHaveBeenCalledTimes(1);
     });
+
+    it('a snapshot index that fell out of range answers false at once — no idle wait, no re-read of a frozen capture (review follow-up)', async () => {
+      // The shape an action ladder leaves behind when it refreshed rows[i]'s
+      // snapshot and the list had shrunk: the capture is local, so confirming
+      // the miss could only cost a device round trip for the same answer.
+      const findElements = vi.fn(async () => makeFindElementsResponse([]));
+      const client = makeMockClient({ findElements });
+      const shrunk = new ElementHandle(client, _role('listitem'), 20_000, {
+        nthIndex: 5,
+        resolvedElementsPromise: Promise.resolve([makeElementInfo({ elementId: 'a' })]),
+      });
+      const start = Date.now();
+      expect(await shrunk.exists()).toBe(false);
+      expect(Date.now() - start).toBeLessThan(500);
+      expect(client.waitForIdle).not.toHaveBeenCalled();
+      expect(findElements).not.toHaveBeenCalled();
+      // Same for the visibility probes, which read the same snapshot.
+      expect(await shrunk.isVisible()).toBe(false);
+      expect(client.waitForIdle).not.toHaveBeenCalled();
+    });
+
+    it('answers false, not a throw, for a scoped child whose parent is absent', async () => {
+      // _scopeToParent promises an empty scope (not the parent's "not found")
+      // so count()/exists() on a scoped handle report 0/false like Playwright.
+      const buttons = [makeElementInfo({ elementId: 'b1', role: 'button', bounds: { left: 10, top: 10, right: 90, bottom: 40 } })];
+      const findElements = vi.fn(async (selector: Selector) =>
+        makeFindElementsResponse(formatSelector(selector).includes('getByRole') ? buttons : []));
+      const client = makeMockClient({ findElements });
+      const child = new ElementHandle(client, _testId('dialog'), 20_000).first().getByRole('button');
+      expect(await child.exists()).toBe(false);
+    });
+
+    it('answers true for a scoped child geometrically inside its parent', async () => {
+      const dialogs = [makeElementInfo({ elementId: 'd1', bounds: { left: 0, top: 0, right: 200, bottom: 100 } })];
+      const buttons = [makeElementInfo({ elementId: 'b1', role: 'button', bounds: { left: 10, top: 10, right: 90, bottom: 40 } })];
+      const findElements = vi.fn(async (selector: Selector) =>
+        makeFindElementsResponse(formatSelector(selector).includes('getByRole') ? buttons : dialogs));
+      const client = makeMockClient({ findElements });
+      const child = new ElementHandle(client, _testId('dialog'), 5000).first().getByRole('button');
+      expect(await child.exists()).toBe(true);
+    });
+
+    it('and(): true when the operands intersect, false when they do not', async () => {
+      const shared = makeElementInfo({ elementId: 'a', text: 'A' });
+      let roleMatches: ElementInfo[] = [shared];
+      const findElements = vi.fn(async (selector: Selector) =>
+        makeFindElementsResponse(formatSelector(selector).includes('getByRole') ? roleMatches : [shared]));
+      const client = makeMockClient({ findElements });
+      const both = new ElementHandle(client, _text('A'), 20_000).and(new ElementHandle(client, _role('button'), 20_000));
+      expect(await both.exists()).toBe(true);
+      roleMatches = [];
+      expect(await both.exists()).toBe(false);
+    });
+
+    it('or(): true when either operand matches', async () => {
+      const findElements = vi.fn(async (selector: Selector) =>
+        makeFindElementsResponse(
+          formatSelector(selector).includes('getByRole') ? [makeElementInfo({ elementId: 'b' })] : []));
+      const client = makeMockClient({ findElements });
+      const either = new ElementHandle(client, _text('A'), 5000).or(new ElementHandle(client, _role('button'), 5000));
+      expect(await either.exists()).toBe(true);
+    });
+  });
+
+  it('timeout 0 is the single-shot opt-out: one read with a 0 deadline, no confirmation', async () => {
+    const findElements = vi.fn(async () => makeFindElementsResponse([]));
+    const client = makeMockClient({ findElements });
+    expect(await new ElementHandle(client, _text('Absent'), 0).exists()).toBe(false);
+    expect(findElements).toHaveBeenCalledTimes(1);
+    expect(findElements).toHaveBeenCalledWith(expect.anything(), 0);
+    expect(client.waitForIdle).not.toHaveBeenCalled();
+  });
+
+  it('a stale snapshot whose platform text mentions "not found" is still an unreliable tick, not a miss (review follow-up)', async () => {
+    // The Android agent interpolates the raw StaleObjectException message into
+    // its stale response; the not-found guard must not read that as absence.
+    let calls = 0;
+    const findElements = vi.fn(async (): Promise<FindElementsResponse> => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: 'Element is stale (UI changed): element not found in tree' }
+        : makeFindElementsResponse([makeElementInfo()]);
+    });
+    const client = makeMockClient({ findElements });
+    expect(await withFakeClock(5000, () => new ElementHandle(client, _text('X'), 5000).exists())).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it('throws a descriptive error pointing at the waiting presence forms when the hierarchy never settles (review follow-up)', async () => {
+    const findElements = vi.fn(async (): Promise<FindElementsResponse> => ({
+      requestId: '1', elements: [], errorMessage: 'Element is stale (UI changed): null',
+    }));
+    const client = makeMockClient({ findElements });
+    const err = await withFakeClock(10_000, () => new ElementHandle(client, _text('Spinner'), 5000).exists()).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/Could not read the state of .*Spinner/);
+    expect(err.message).toMatch(/toExist\(\)/);
+    expect(err.message).toMatch(/waitFor\(\{ state: 'attached' \}\)/);
+    expect(err.message).not.toMatch(/toBeVisible/);
   });
 });
 
@@ -1161,11 +1312,13 @@ describe('isVisible()', () => {
     expect(findElements.mock.calls.length).toBeLessThanOrEqual(3);
   });
 
-  it('treats an agent command timeout as a momentary fault: re-probed within the short window, then surfaced unchanged (review follow-up)', async () => {
+  it('re-probes an agent command timeout until the handle deadline (slow agent), each read still tick-bounded, then surfaces it unchanged', async () => {
     // Every read carries one poll interval of budget (the daemon's headroom
     // bounds the dump), so a timeout never means "the agent had the whole
-    // handle timeout". It is retried like any fault; a persistent one is thrown
-    // unchanged after ~2s — not 30s — so session recovery still fires.
+    // handle timeout". But the agent IS alive — a starved emulator's dump is
+    // just slow — so, like the action ladders, the probe rides it out to the
+    // handle deadline instead of throwing after the 2s fault window, and a
+    // persistent one is then thrown unchanged so session recovery fires.
     const budgets: number[] = [];
     const findElements = vi.fn(async (_sel: unknown, budget?: number): Promise<FindElementsResponse> => {
       budgets.push(budget!);
@@ -1181,10 +1334,11 @@ describe('isVisible()', () => {
         elapsed = Date.now() - start;
       }
     })).rejects.toThrow(/Agent command timed out/);
-    expect(findElements.mock.calls.length).toBeGreaterThan(1);
-    for (const b of budgets) expect(b).toBe(250);
-    expect(elapsed).toBeGreaterThanOrEqual(1500);
-    expect(elapsed).toBeLessThan(5000);
+    expect(findElements.mock.calls.length).toBeGreaterThan(100);
+    for (const b of budgets) expect(b).toBeLessThanOrEqual(250);
+    expect(budgets.slice(0, -1).every((b) => b === 250)).toBe(true);
+    expect(elapsed).toBeGreaterThanOrEqual(29_500);
+    expect(elapsed).toBeLessThanOrEqual(30_000);
   });
 
   it('re-probes stale snapshots until the handle timeout and reads the element once a tick lands (review follow-up)', async () => {
@@ -1267,7 +1421,7 @@ describe('isVisible()', () => {
     expect(budgets).toEqual([250, 250, 250]);
   });
 
-  it('still surfaces agent command timeouts that persist on re-reads, after the short fault window (review follow-up)', async () => {
+  it('a stale read followed by persistent agent command timeouts surfaces the timeout at the handle deadline, not a stall error (review follow-up)', async () => {
     let calls = 0;
     const findElements = vi.fn(async (): Promise<FindElementsResponse> => ({
       requestId: '1', elements: [],
@@ -1283,7 +1437,10 @@ describe('isVisible()', () => {
         elapsed = Date.now() - start;
       }
     })).rejects.toThrow(/Agent command timed out/);
-    expect(elapsed).toBeLessThan(5000);
+    // A slow agent gets the handle deadline (like an action), then the real
+    // error — not "Could not read the state" — so session recovery matches.
+    expect(elapsed).toBeGreaterThanOrEqual(29_500);
+    expect(elapsed).toBeLessThanOrEqual(30_000);
   });
 
   it('a fault that is slow to fail is not re-read once the fault window has less than a poll gap left (review follow-up)', async () => {

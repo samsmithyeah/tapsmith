@@ -125,7 +125,10 @@ describe("Gestures screen", () => {
     const start = Date.now()
     expect(await device.getByText("Definitely not on this screen", { exact: true }).exists()).toBe(false)
     expect(Date.now() - start).toBeLessThan(pollToDeadlineMs)
-    // And a present element still answers true from the same probe.
+    // And a present element still answers true from the same probe — settled
+    // first, as the isVisible test above does, since beforeEach only waits
+    // for the heading.
+    await expect(gesturesScreen.tapArea).toBeVisible()
     expect(await gesturesScreen.tapArea.exists()).toBe(true)
   })
 })

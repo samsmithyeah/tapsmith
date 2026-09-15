@@ -843,9 +843,12 @@ The `ElementInfo` object contains:
 
 Returns `true` if the element exists in the UI hierarchy **right now**, whether or not it is visible.
 
-Like Playwright's `locator.count() > 0`, this does **not** wait for the element to appear: it reads the
-current hierarchy and returns `false` at once when nothing matches, so it is safe to branch on
-presence. To wait for an element, use `expect(locator).toExist()` or `waitFor({ state: "attached" })`.
+Like a Playwright presence check (Playwright has no `exists()`; `locator.count() > 0` is the idiom
+there), this does **not** wait for the element to appear: it reads the current hierarchy and returns
+`false` without waiting for it when nothing matches (two reads and a short idle wait, see below), so it
+is safe to branch on presence. To wait for an element, use `expect(locator).toExist()` or `waitFor({ state: "attached" })`.
+Both of those are strict (see below), so if the locator may match several elements, narrow it with
+`.first()` first or wait on `expect(locator).toHaveCount(n)`.
 
 ```typescript
 const exists = await device.getByText("Optional banner", { exact: true }).exists();
@@ -865,16 +868,30 @@ invisible element exists.
 The reliability contract is the same as `isVisible()`: a present element costs one hierarchy read; an
 absent one costs two (the first empty read is confirmed after waiting for the UI to settle, at most
 1.5 s); a stale mid-re-render snapshot is re-read; a momentary agent fault is retried for about two
-seconds and then thrown; and a user stop propagates instead of being reported as "doesn't exist".
-Infrastructure problems are never reported as an answer. On a screen that never stops re-rendering the
-call re-reads for the handle's timeout and then throws, pointing at `expect(locator).toExist()` /
-`.not.toExist()` and `waitFor({ state: "attached" })`. A handle obtained from `all()` answers from the
-snapshot it was created from.
+seconds and then thrown (an agent command timeout, which means the agent is alive but slow, is retried
+until the handle's timeout instead, like an action); and a user stop propagates instead of being reported as "doesn't exist".
+Infrastructure problems are never reported as an answer. If every read is a stale snapshot (a screen
+that never stops re-rendering, with no empty read to fall back on) the call re-reads for the handle's
+timeout and then throws, pointing at `expect(locator).toExist()` / `.not.toExist()` and
+`waitFor({ state: "attached" })`. A handle obtained from `all()` answers from its snapshot (as last
+refreshed by that handle's own actions), never from a fresh read, so `exists()` on it says whether the
+captured row was there, not whether it still is; re-query the list (`count()` or a fresh `all()`) to
+check that.
 
 > **Behaviour change.** Before this release `exists()` handed the handle's timeout to the on-device
 > agent, which waited for the element, so an absent element cost the whole action timeout (30 s by
 > default) before `false` came back. It now answers at once. Code that relied on `exists()` to wait for
-> an element to appear should use `await expect(x).toExist()` or `x.waitFor({ state: "attached" })`.
+> an element to appear should use `await expect(x).toExist()` or `x.waitFor({ state: "attached" })` —
+> or, for a locator that may match several elements, `await expect(x.first()).toExist()` or
+> `await expect(x).toHaveCount(n)`, since the waiting forms are strict and `exists()` is not.
+>
+> Two further changes affect handles with `.filter()`, `.and()`, `.or()`, or a `getBy*` scoped to a
+> modified parent. Those used to report `false` for *any* error, so `x.filter({ hasText: "X" }).exists()`
+> answered `false` when the filter kept several candidates; it now answers `true`, as an ambiguous
+> selector should for a multi-element query. And a user stop, a transport failure or a persistent
+> device fault now propagates as an error instead of being reported as "doesn't exist" — including the
+> descriptive error thrown when the hierarchy never settles for the whole timeout, which the
+> unmodified form already threw.
 
 #### `elementHandle.count(): Promise<number>`
 
@@ -1178,11 +1195,11 @@ lag a just-rendered screen, so the first empty read is confirmed by waiting for 
 most 1.5 s) and reading once more, as `scrollIntoView()` does before its first swipe. If that re-read
 only yields stale snapshots (a spinner keeps the tree churning), it is retried for a couple of seconds
 and then the first empty read stands as the answer — an absent element never costs the whole timeout. Infrastructure
-problems are never reported as a visibility answer: a momentary agent fault or agent timeout is retried
-for a short window after it first appears (about two seconds, capped by the handle's timeout) and then thrown.
-The window bounds when the next re-read may be scheduled, not the wall clock: a read that is itself slow
-to fail (an agent command timeout takes ~5 s to come back) can add one more such read before the fault
-is thrown. A stale mid-re-render snapshot
+problems are never reported as a visibility answer: a momentary agent fault is retried for a short
+window after it first appears (about two seconds, capped by the handle's timeout) and then thrown. An
+agent command timeout is different: the agent is alive but slow (a CPU-starved CI emulator's hierarchy
+dump), so it is retried until the handle's timeout, exactly as an action would be, and only then thrown.
+A stale mid-re-render snapshot
 just means the screen is busy, so — like `find()` and `waitFor()` — it is re-read until the handle's
 timeout; if the hierarchy never settles (a screen that never stops animating) the call keeps re-reading
 for the handle's timeout and then throws a descriptive error, pointing at `expect(locator).toBeVisible()` /
