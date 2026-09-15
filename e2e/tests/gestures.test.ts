@@ -115,4 +115,20 @@ describe("Gestures screen", () => {
     expect(await absent.isHidden()).toBe(true)
     expect(Date.now() - start).toBeLessThan(pollToDeadlineMs)
   })
+
+  // PILOT-344: exists() is the third non-waiting presence probe. Before the
+  // fix it handed the action timeout to the agent's waiting findElement RPC,
+  // so an absent element cost the whole timeout before `false` came back.
+  // Same bound as above, for the same reason.
+  test("exists answers for an absent element without waiting", async ({ device, gesturesScreen }) => {
+    const pollToDeadlineMs = device._getDefaultTimeout()
+    const start = Date.now()
+    expect(await device.getByText("Definitely not on this screen", { exact: true }).exists()).toBe(false)
+    expect(Date.now() - start).toBeLessThan(pollToDeadlineMs)
+    // And a present element still answers true from the same probe — settled
+    // first, as the isVisible test above does, since beforeEach only waits
+    // for the heading.
+    await expect(gesturesScreen.tapArea).toBeVisible()
+    expect(await gesturesScreen.tapArea.exists()).toBe(true)
+  })
 })

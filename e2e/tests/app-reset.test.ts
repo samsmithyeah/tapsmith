@@ -24,7 +24,19 @@ describe("App reset (declared isolation)", () => {
     // successful!" and a Log out button. Sign out first so one failed attempt
     // cannot cascade through every retry in the file.
     const logOut = device.getByRole("button", { name: "Log out" })
-    if (await logOut.exists()) {
+    // exists() is non-waiting (PILOT-344): settle on the login route — in
+    // either of its states — before branching on which one is showing.
+    // expect.poll defaults to 5 s regardless of the config timeout; a cold CI
+    // emulator can take longer than that to render the route.
+    await expect
+      .poll(async () => (await logOut.count()) + (await loginScreen.heading.count()), {
+        timeout: device._getDefaultTimeout(),
+      })
+      .toBeGreaterThan(0)
+    // The poll has just read which state is showing; branch on a single
+    // count() read rather than exists(), which would confirm a miss with an
+    // idle wait the settle already paid for.
+    if ((await logOut.count()) > 0) {
       await logOut.tap()
       await expect(loginScreen.heading).toBeVisible()
     }

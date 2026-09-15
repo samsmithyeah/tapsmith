@@ -43,11 +43,16 @@ describe("strict mode", () => {
     await expect(listScreen.selectedCount).toContainText("0 selected")
   })
 
-  test("count() and all() remain exempt from strict mode", async ({ device }) => {
+  test("count(), all() and exists() remain exempt from strict mode", async ({ device }) => {
     const handle = device.getByText("Item ")
     expect(await handle.count()).toBeGreaterThan(1)
     const items = await handle.all()
     expect(items.length).toBeGreaterThan(1)
+    // PILOT-344: exists() answers presence over all matches. On a modified
+    // handle the old implementation swallowed the strict violation as
+    // "doesn't exist", so the filtered form is the regression check.
+    expect(await handle.exists()).toBe(true)
+    expect(await handle.filter({ hasText: "Item" }).exists()).toBe(true)
   })
 
   test("absence assertions evaluate over all matches without throwing", async ({ device }) => {

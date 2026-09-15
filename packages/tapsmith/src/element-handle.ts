@@ -39,8 +39,8 @@ export interface BoundingBox {
 
 /**
  * Cadence of every host-side poll loop in the SDK — action auto-wait,
- * `waitFor`, the visibility probes, `scrollIntoView`'s probe and
- * stabilisation, `exists()`, the WebView locator loops, the MCP selector
+ * `waitFor`, the presence probes (`isVisible`/`isHidden`/`exists`),
+ * `scrollIntoView`'s probe and stabilisation, the WebView locator loops, the MCP selector
  * resolver and the assertion poller in expect.ts (which import it). It is
  * also the budget of each read the action and probe loops issue (see
  * {@link tickBudget}); `waitFor` and the assertion poller keep their own,
@@ -184,8 +184,8 @@ function boundsContain(
 const STALE_SNAPSHOT_SIGNATURE = 'is stale (UI changed)';
 
 /**
- * How long the non-waiting visibility probes (`isVisible`/`isHidden`) keep
- * re-probing after a momentary agent command *fault* before surfacing it.
+ * How long the non-waiting presence probes (`isVisible`/`isHidden`/`exists`)
+ * keep re-probing after a momentary agent command *fault* before surfacing it.
  * Measured from the first fault, capped by the handle's own timeout, and
  * short: a real infrastructure error should not be hidden for 30s. (Stale
  * snapshots are NOT bounded by this — see `_probeOnce`.)
@@ -194,7 +194,7 @@ const PROBE_FAULT_RETRY_WINDOW_MS = 2000;
 /** Budget of the device read that refreshes an all() snapshot (see _refreshSnapshot). */
 const SNAPSHOT_REFRESH_BUDGET_MS = POLL_INTERVAL_MS;
 /**
- * Idle-wait budget used by the visibility probes to confirm a first empty
+ * Idle-wait budget used by the presence probes to confirm a first empty
  * read. Right after navigation or app launch the accessibility tree can lag
  * the rendered screen — briefly describing the previous screen with no error
  * (PILOT-283) — so a presence branch taken on one empty read could skip an
@@ -346,16 +346,28 @@ function classifyResolutionError(err: unknown): ResolutionErrorClass {
 }
 
 /**
- * The outcome of one bounded, modifier-aware read of a handle's single target
- * (see `ElementHandle._resolveTick`). `found` and `miss` are answers; `stale`
- * and `fault` are unreliable ticks that carry no information about presence
- * (see {@link classifyResolutionError} for the split).
+ * The outcome of one bounded, modifier-aware read of a handle (see
+ * `ElementHandle._resolveTick` for the strict single-target read and
+ * `_existsTick` for the non-strict presence read). `found` and `miss` are
+ * answers; `stale` and `fault` are unreliable ticks that carry no information
+ * about presence (see {@link classifyResolutionError} for the split).
  */
 type ResolveTick =
   | { readonly kind: 'found'; readonly element: ElementInfo }
   | { readonly kind: 'miss'; readonly positionalMiss?: Error }
   | { readonly kind: 'stale' }
   | { readonly kind: 'fault'; readonly error: Error };
+
+/**
+ * Apply a positional modifier (`first()` = 0, `last()` = -1, `nth(i)`) to a
+ * match list: the selected element as a one-item list, or `[]` when the index
+ * is out of range. Without a modifier the list is returned as-is.
+ */
+function selectNth(elements: ElementInfo[], nthIndex: number | undefined): ElementInfo[] {
+  if (nthIndex === undefined) return elements;
+  const idx = nthIndex < 0 ? elements.length + nthIndex : nthIndex;
+  return idx >= 0 && idx < elements.length ? [elements[idx]] : [];
+}
 
 // ─── Strict mode (PILOT-226) ───
 
@@ -824,14 +836,7 @@ export class ElementHandle {
     // with any layout shift, text mutates and testIDs repeat — so every
     // "smarter" match has a silent wrong-row failure. Live-by-index is the
     // documented behaviour; live all() handles are PILOT-346.
-    const parentEls = await parent._resolveAll();
-    const nthIndex = parent._options.nthIndex;
-
-    let scopedParents = parentEls;
-    if (nthIndex !== undefined) {
-      const idx = nthIndex < 0 ? parentEls.length + nthIndex : nthIndex;
-      scopedParents = idx >= 0 && idx < parentEls.length ? [parentEls[idx]] : [];
-    }
+    const scopedParents = selectNth(await parent._resolveAll(), parent._options.nthIndex);
 
     return children.filter((child) =>
       scopedParents.some((p) => boundsContain(p.bounds, child.bounds) === 'contained'),
@@ -1130,19 +1135,59 @@ export class ElementHandle {
         : await this._findOneStrict(budgetMs);
       return element ? { kind: 'found', element } : { kind: 'miss' };
     } catch (err) {
-      switch (classifyResolutionError(err)) {
-        case 'stale':
-          return { kind: 'stale' };
-        case 'fault':
-          return { kind: 'fault', error: err as Error };
-        case 'miss':
-          return {
-            kind: 'miss',
-            positionalMiss: err instanceof Error && err.message.startsWith('nth(') ? err : undefined,
-          };
-        default:
-          throw err;
-      }
+      return ElementHandle._classifyTickError(err);
+    }
+  }
+
+  /**
+   * @internal — The tick a failed read amounts to, for {@link _resolveTick}
+   * and {@link _existsTick}: a stale snapshot, a momentary agent fault or a
+   * genuine miss come back as ticks (a positional miss keeps its
+   * `nth(i): expected …` error so a deadline message can name the index).
+   * Fatal errors — strict violations, user aborts, transport failures — are
+   * rethrown for the caller to propagate.
+
+   */
+  private static _classifyTickError(err: unknown): ResolveTick {
+    switch (classifyResolutionError(err)) {
+      case 'stale':
+        return { kind: 'stale' };
+      case 'fault':
+        return { kind: 'fault', error: err as Error };
+      case 'miss':
+        return {
+          kind: 'miss',
+          positionalMiss: err instanceof Error && err.message.startsWith('nth(') ? err : undefined,
+        };
+      default:
+        throw err;
+    }
+  }
+
+  /**
+   * @internal — One bounded, modifier-aware, NON-STRICT read of this handle's
+   * current matches, classified for a poll loop: the presence primitive behind
+   * `exists()` (PILOT-344). Where {@link _resolveTick} resolves the single
+   * target and throws on an ambiguous selector, this resolves every match
+   * (after the positional modifier) and answers `found` when there is at
+   * least one — `exists()` is a multi-element query like `count()` and
+   * `all()`, exempt from strict mode.
+   *
+   * Filters, and/or, scope and the positional index all apply, through the
+   * same re-timed resolution the assertion poller uses
+   * ({@link _resolveForAssertion} with `strict: false`), so every read of a
+   * chain is bounded by `budgetMs`. A handle from `all()` answers from its
+   * snapshot, like every other reader on that handle. A failed read
+   * classifies exactly as {@link _classifyTickError} does for the strict tick.
+   */
+  private async _existsTick(budgetMs: number): Promise<ResolveTick> {
+    try {
+      const elements = this._options.resolvedElementsPromise
+        ? selectNth(await this._options.resolvedElementsPromise, this._options.nthIndex)
+        : await this._resolveForAssertion(budgetMs, false);
+      return elements.length > 0 ? { kind: 'found', element: elements[0] } : { kind: 'miss' };
+    } catch (err) {
+      return ElementHandle._classifyTickError(err);
     }
   }
 
@@ -1245,10 +1290,7 @@ export class ElementHandle {
     }
 
     const nthIndex = this._options.nthIndex;
-    if (nthIndex !== undefined) {
-      const idx = nthIndex < 0 ? elements.length + nthIndex : nthIndex;
-      return idx >= 0 && idx < elements.length ? [elements[idx]] : [];
-    }
+    if (nthIndex !== undefined) return selectNth(elements, nthIndex);
     if (strict && elements.length > 1) {
       throw buildStrictModeViolationError(this._describe(), elements);
     }
@@ -1534,54 +1576,43 @@ export class ElementHandle {
     }
   }
 
-  /** Returns true if the element exists in the current UI. */
+  /**
+   * Returns whether the element exists in the UI hierarchy **right now** —
+   * attached, visible or not.
+   *
+   * Does **not** wait for the element to appear (PILOT-344): like a Playwright
+   * presence check (Playwright has no `exists()`; `locator.count() > 0` is the
+   * idiom), it reads the current hierarchy and answers `false` without
+   * waiting for the element when nothing matches, so it is safe to branch on presence
+   * (`if (await banner.exists()) …`). To wait for an element use
+   * `expect(locator).toExist()` or `waitFor({ state: 'attached' })` — both
+   * are strict, so narrow a locator that may match several elements with
+   * `.first()` first, or wait on `expect(locator).toHaveCount(n)`.
+   *
+   * Exempt from strict mode, like `count()` and `all()`: an ambiguous selector
+   * answers `true`. Contrast {@link isVisible}, which also checks visibility
+   * and is strict.
+   *
+   * Same reliability contract as {@link isVisible}: a first empty read is
+   * confirmed once after a short idle wait, a stale mid-re-render snapshot is
+   * re-read, a momentary agent fault is retried briefly and then thrown, and a
+   * user stop propagates — never swallowed as "doesn't exist". A handle from
+   * `all()` answers from its snapshot — as last refreshed by that handle's own
+   * actions, never a fresh read — so it says whether the captured row was
+   * there, not whether it still is; re-query the list to check that.
+   */
   async exists(): Promise<boolean> {
     this._emitQueryStarted('exists');
     const start = Date.now();
     try {
-      let found: boolean;
-      if (this._hasModifiers()) {
-        try {
-          await this._resolveOne();
-          found = true;
-        } catch {
-          found = false;
-        }
-      } else {
-        // The daemon maps ANY agent failure to `found: false` + errorMessage,
-        // so classify before trusting a negative: only a genuine not-found
-        // (the agents' wait-timeout / no-match messages) means "doesn't
-        // exist". Anything else — a stale snapshot mid-re-render, an agent
-        // internal error — is an unreliable tick: retry within the budget
-        // rather than reporting a momentary infra fault as absence.
-        const deadline = Date.now() + this._timeoutMs;
-        while (true) {
-          const budget = Math.max(1, deadline - Date.now());
-          const res = await this._client.findElement(this._selector, budget);
-          if (res.found) {
-            found = true;
-            break;
-          }
-          const msg = res.errorMessage ?? '';
-          // The agents' genuine not-found shapes: Android WaitEngine
-          // ("…element not found after waiting"), iOS WaitEngine ("…waiting
-          // for element to exist"), and both agents' direct finders
-          // ("No element found matching…", "Element not found").
-          if (
-            msg === '' ||
-            /element not found|no element found matching|not found after waiting|waiting for element to exist/i.test(
-              msg,
-            )
-          ) {
-            found = false;
-            break;
-          }
-          if (Date.now() + POLL_INTERVAL_MS >= deadline) {
-            throw new Error(`findElement failed: ${msg}`);
-          }
-          await sleep(POLL_INTERVAL_MS, this._client._getAbortSignal?.());
-        }
-      }
+      const info = await this._probeOnce(
+        (budgetMs) => this._existsTick(budgetMs),
+        "expect(locator).toExist() / .not.toExist() or waitFor({ state: 'attached' }) " +
+          '(toExist() and waitFor() are strict: narrow a locator that may match several elements with .first() first)',
+      );
+      // No bounds on the trace row: like count(), a true answer may cover
+      // several elements, and highlighting the first would misname it.
+      const found = info !== undefined;
       await this._traceQuery('exists', `Exists: ${found}`, Date.now() - start);
       return found;
     } catch (err) {
@@ -1708,8 +1739,7 @@ export class ElementHandle {
       // Respect nthIndex — target the specific element, not the full set
       const nthIndex = this._options.nthIndex;
       if (nthIndex !== undefined) {
-        const idx = nthIndex < 0 ? elements.length + nthIndex : nthIndex;
-        elements = (idx >= 0 && idx < elements.length) ? [elements[idx]] : [];
+        elements = selectNth(elements, nthIndex);
       } else if ((state === 'visible' || state === 'attached') && elements.length > 1) {
         // Strict mode (PILOT-226): waiting for presence on an ambiguous
         // selector is an error. Absence states ('hidden'/'detached') are
@@ -2355,7 +2385,8 @@ export class ElementHandle {
    *
    * Like Playwright's `locator.isEnabled()` this waits for the element to be
    * present (up to the handle's timeout) and throws if it never appears —
-   * only {@link isVisible}/{@link isHidden} are non-waiting presence probes.
+   * only {@link isVisible}/{@link isHidden}/{@link exists} are non-waiting
+   * presence probes.
    */
   async isEnabled(): Promise<boolean> {
     const info = await this.find();
@@ -2408,7 +2439,10 @@ export class ElementHandle {
     this._emitQueryStarted(probe);
     const start = Date.now();
     try {
-      const info = await this._probeOnce();
+      const info = await this._probeOnce(
+        (budgetMs) => this._resolveTick(budgetMs),
+        'expect(locator).toBeVisible() / .not.toBeVisible() or waitFor()',
+      );
       const visible = info !== undefined && info.visible; // absent ⇒ not visible
       const result = probe === 'isHidden' ? !visible : visible;
       await this._traceQuery(probe, `${probe === 'isHidden' ? 'Hidden' : 'Visible'}: ${result}`, Date.now() - start, info?.bounds);
@@ -2421,12 +2455,15 @@ export class ElementHandle {
 
   /**
    * @internal — Resolve the element's CURRENT state without waiting for it to
-   * appear: `undefined` when nothing matches right now.
+   * appear: `undefined` when nothing matches right now. The shared ladder of
+   * the presence probes: `isVisible`/`isHidden` read through
+   * {@link _resolveTick} (strict, single target) and `exists()` through
+   * {@link _existsTick} (non-strict, any match) — `tick` is that read, and
+   * `waitingForms` names the polling APIs the stall error points the user at.
    *
    * Both agents answer `findElements` in a single shot (no on-device wait),
    * and `_resolveOne()` is likewise a single-tick resolution, so one call is
-   * the non-waiting probe. Strict mode still applies — an ambiguous selector
-   * throws rather than reporting the first match's state.
+   * the non-waiting probe. Whether strict mode applies is the tick's call.
    *
    * Every read is issued with one poll interval of budget — the same tick
    * budget the waiting loops use — on every handle shape (modified handles
@@ -2435,9 +2472,12 @@ export class ElementHandle {
    * the daemon's fixed headroom does (see the note by
    * {@link POLL_INTERVAL_MS}), so on a healthy device a call costs one
    * read, and on a wedged agent no single read can hold the call for the
-   * whole timeout plus headroom. An agent command timeout is therefore a
-   * momentary fault like any other and is re-probed within the short fault
-   * window; a persistent one surfaces unchanged, so session recovery fires.
+   * whole timeout plus headroom. An agent command timeout means the agent is
+   * alive but slow — a CPU-starved CI emulator's hierarchy dump — so, as the
+   * action ladders do, it is re-probed until the handle deadline rather than
+   * for the short fault window below, and a persistent one surfaces unchanged
+   * at the deadline, so session recovery fires. The probe still never waits
+   * for the *element*: it waits for a readable answer.
    *
    * Two kinds of *unreliable tick* — a read that carries no information about
    * presence — are re-probed, on different budgets:
@@ -2456,7 +2496,8 @@ export class ElementHandle {
    *   infrastructure error, so it is re-probed only briefly
    *   ({@link PROBE_FAULT_RETRY_WINDOW_MS} from the first fault, capped by the
    *   handle timeout) and then surfaced unchanged, so session-level recovery
-   *   patterns still match. As in `_strictResolve`, a later definitive answer
+   *   patterns still match. (An agent command *timeout* is the exception, see
+   *   above: the agent is responsive, so it gets the handle deadline.) As in `_strictResolve`, a later definitive answer
    *   from the agent — including a stale tick — clears the remembered fault,
    *   so a long-recovered blip is never reported as the cause of a stall.
    *
@@ -2475,11 +2516,18 @@ export class ElementHandle {
    * everywhere else in the probe. As with any definitive tick, an empty read
    * clears a remembered fault.
    *
+   * A handle from `all()` reads its snapshot rather than the device, so a miss
+   * is answered without the confirmation (nothing could change) — and no read
+   * of it can be stale or faulty.
+   *
    * `timeout: 0` is the explicit single-shot opt-out: one read, no retries and
    * no confirmation. That read is issued with a 0 deadline, which the daemon
    * maps to its default command deadline — the same as `count()` at timeout 0.
    */
-  private async _probeOnce(): Promise<ElementInfo | undefined> {
+  private async _probeOnce(
+    tick: (budgetMs: number) => Promise<ResolveTick>,
+    waitingForms: string,
+  ): Promise<ElementInfo | undefined> {
     const start = Date.now();
     const deadline = start + this._timeoutMs;
     const faultWindowMs = Math.min(PROBE_FAULT_RETRY_WINDOW_MS, this._timeoutMs);
@@ -2496,11 +2544,11 @@ export class ElementHandle {
     while (true) {
       // A 0 budget is right only for the explicit timeout-0 opt-out (the
       // daemon maps it to its default deadline).
-      const tick = await this._resolveTick(this._timeoutMs === 0 ? 0 : tickBudget(deadline));
+      const read = await tick(this._timeoutMs === 0 ? 0 : tickBudget(deadline));
       let miss = false;
-      switch (tick.kind) {
+      switch (read.kind) {
         case 'found':
-          return tick.element;
+          return read.element;
         case 'miss':
           miss = true;
           break;
@@ -2512,14 +2560,24 @@ export class ElementHandle {
           faultDeadline = undefined;
           break;
         case 'fault':
-          // Momentary agent fault or agent command timeout.
           faultReads++;
-          lastFault = tick.error;
-          if (faultDeadline === undefined) faultDeadline = Date.now() + faultWindowMs;
+          lastFault = read.error;
+          if (isTransientAgentError(read.error)) {
+            // Agent alive but slow: no short window — re-probe to the handle
+            // deadline, as the action ladders do (a starved CI emulator must
+            // not turn a presence branch into a thrown timeout after 2 s).
+            faultDeadline = undefined;
+          } else if (faultDeadline === undefined) {
+            // Momentary agent fault: a short grace, then surface it.
+            faultDeadline = Date.now() + faultWindowMs;
+          }
           break;
       }
       if (miss) {
-        if (missConfirmed || this._timeoutMs === 0) return undefined;
+        // A handle from all() answered from its snapshot, which no idle wait
+        // or re-read can change — confirming would only cost a device round
+        // trip for the same answer.
+        if (missConfirmed || this._timeoutMs === 0 || this._options.resolvedElementsPromise) return undefined;
         // A definitive answer: any earlier fault has recovered.
         lastFault = undefined;
         faultDeadline = undefined;
@@ -2538,11 +2596,14 @@ export class ElementHandle {
       }
       const now = Date.now();
       // While a fault window is open it is the nearer deadline (a blip keeps
-      // its full grace even mid-confirmation); otherwise, once a first empty
-      // read is being confirmed, the confirmation window is.
+      // its full grace even mid-confirmation); a slow-agent timeout has no
+      // window and is bounded by the handle deadline alone, even
+      // mid-confirmation (a timed-out confirming read is not a confirmation);
+      // otherwise, once a first empty read is being confirmed, the
+      // confirmation window is.
       let nearestDeadline = deadline;
       if (lastFault && faultDeadline !== undefined) nearestDeadline = Math.min(nearestDeadline, faultDeadline);
-      else if (confirmDeadline !== undefined) nearestDeadline = Math.min(nearestDeadline, confirmDeadline);
+      else if (confirmDeadline !== undefined && !lastFault) nearestDeadline = Math.min(nearestDeadline, confirmDeadline);
       const remaining = nearestDeadline - now;
       // Stop once another poll gap no longer fits before the nearest deadline
       // (so a short handle timeout still gets its second tick, as find() does).
@@ -2573,7 +2634,7 @@ export class ElementHandle {
         }
         throw new Error(
           `Could not read the state of ${this._describe()}: ${detail}. ` +
-            `Use expect(locator).toBeVisible() / .not.toBeVisible() or waitFor(), which poll until the screen settles.`,
+            `Use ${waitingForms}, which poll until the screen settles.`,
         );
       }
       await sleep(POLL_INTERVAL_MS, this._client._getAbortSignal?.());

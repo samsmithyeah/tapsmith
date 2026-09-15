@@ -8,8 +8,11 @@ describe("getByRole expanded option", () => {
   })
 
   beforeEach(async ({ device }) => {
+    // exists() is non-waiting (PILOT-344), so a lagging accessibility tree can
+    // answer false while the screen is showing. Re-open the route (a deep link,
+    // idempotent) rather than tapping a home-screen row that is not here.
     if (!(await device.getByText("Visibility Testing", { exact: true }).exists())) {
-      await device.getByDescription("Visibility").tap()
+      await openScreen(device, "/visibility")
       await expect(device.getByText("Visibility Testing", { exact: true })).toBeVisible()
     }
   })

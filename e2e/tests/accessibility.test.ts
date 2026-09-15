@@ -8,8 +8,12 @@ describe("Accessibility screen", () => {
   })
 
   test.beforeEach(async ({ device, accessibilityScreen }) => {
+    // exists() is non-waiting (PILOT-344): a lagging accessibility tree can
+    // answer false while the screen is showing, so settle after the re-open
+    // rather than returning mid-navigation.
     if (!(await accessibilityScreen.heading.exists())) {
       await openScreen(device, "/accessibility")
+      await expect(accessibilityScreen.heading).toBeVisible()
     }
   })
 
