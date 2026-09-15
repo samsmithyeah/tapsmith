@@ -24,6 +24,11 @@ describe("App reset (declared isolation)", () => {
     // successful!" and a Log out button. Sign out first so one failed attempt
     // cannot cascade through every retry in the file.
     const logOut = device.getByRole("button", { name: "Log out" })
+    // exists() is non-waiting (PILOT-344): settle on the login route — in
+    // either of its states — before branching on which one is showing.
+    await expect
+      .poll(async () => (await logOut.count()) + (await loginScreen.heading.count()))
+      .toBeGreaterThan(0)
     if (await logOut.exists()) {
       await logOut.tap()
       await expect(loginScreen.heading).toBeVisible()

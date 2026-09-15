@@ -841,11 +841,40 @@ The `ElementInfo` object contains:
 
 #### `elementHandle.exists(): Promise<boolean>`
 
-Returns `true` if the element exists in the current UI hierarchy.
+Returns `true` if the element exists in the UI hierarchy **right now**, whether or not it is visible.
+
+Like Playwright's `locator.count() > 0`, this does **not** wait for the element to appear: it reads the
+current hierarchy and returns `false` at once when nothing matches, so it is safe to branch on
+presence. To wait for an element, use `expect(locator).toExist()` or `waitFor({ state: "attached" })`.
 
 ```typescript
 const exists = await device.getByText("Optional banner", { exact: true }).exists();
+
+// Presence branch — answers at once, no timeout is spent on a missing element
+const logOut = device.getByRole("button", { name: "Log out" });
+if (await logOut.exists()) {
+  await logOut.tap();
+}
 ```
+
+`exists()` is **exempt from strict mode**, like `count()` and `all()`: a selector that matches several
+elements answers `true` rather than throwing. That is the difference from `isVisible()`, which is a
+strict single-element query and also requires the match to be visible. An attached but off-screen or
+invisible element exists.
+
+The reliability contract is the same as `isVisible()`: a present element costs one hierarchy read; an
+absent one costs two (the first empty read is confirmed after waiting for the UI to settle, at most
+1.5 s); a stale mid-re-render snapshot is re-read; a momentary agent fault is retried for about two
+seconds and then thrown; and a user stop propagates instead of being reported as "doesn't exist".
+Infrastructure problems are never reported as an answer. On a screen that never stops re-rendering the
+call re-reads for the handle's timeout and then throws, pointing at `expect(locator).toExist()` /
+`.not.toExist()` and `waitFor({ state: "attached" })`. A handle obtained from `all()` answers from the
+snapshot it was created from.
+
+> **Behaviour change.** Before this release `exists()` handed the handle's timeout to the on-device
+> agent, which waited for the element, so an absent element cost the whole action timeout (30 s by
+> default) before `false` came back. It now answers at once. Code that relied on `exists()` to wait for
+> an element to appear should use `await expect(x).toExist()` or `x.waitFor({ state: "attached" })`.
 
 #### `elementHandle.count(): Promise<number>`
 
@@ -1166,7 +1195,7 @@ answers from the snapshot it was created from, like every other reader on that h
 > new screen is still appearing. To wait for visibility, use `await expect(x).toBeVisible()`; use
 > `isVisible()`/`isHidden()` only to branch on the current state.
 
-Only `isVisible()` and `isHidden()` are non-waiting. `isEnabled()`, `isChecked()` and `isEditable()`
+Only `isVisible()`, `isHidden()` and `exists()` are non-waiting. `isEnabled()`, `isChecked()` and `isEditable()`
 follow Playwright too: they wait for the element to be present and throw if it never appears, so a
 negative answer always describes a real element.
 

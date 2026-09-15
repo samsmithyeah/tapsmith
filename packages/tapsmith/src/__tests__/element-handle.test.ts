@@ -382,64 +382,227 @@ describe('find()', () => {
 // ─── exists() ───
 
 describe('exists()', () => {
-  it('returns true when element is found', async () => {
+  it('returns true when the element is found', async () => {
     const client = makeMockClient();
     const handle = new ElementHandle(client, _text('Present'), 5000);
-    const result = await handle.exists();
-    expect(result).toBe(true);
+    expect(await handle.exists()).toBe(true);
   });
 
-  it('returns false when element is not found', async () => {
-    const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: false,
-        errorMessage: '',
-      })),
-    });
-    const handle = new ElementHandle(client, _text('Absent'), 5000);
-    const result = await handle.exists();
-    expect(result).toBe(false);
-  });
-
-  it('returns false on a genuine agent not-found message', async () => {
-    const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: false,
-        errorMessage: 'Timed out after 5000ms: element not found after waiting. No element found matching: text("Absent")',
-      })),
-    });
-    const handle = new ElementHandle(client, _text('Absent'), 5000);
+  it('returns false at once for an absent element — one read plus a confirming re-read, not a poll to the timeout (PILOT-344)', async () => {
+    const findElements = vi.fn(async () => makeFindElementsResponse([]));
+    const client = makeMockClient({ findElements });
+    // A long timeout: the old implementation handed it to the agent's waiting
+    // findElement RPC, so an absent element cost the whole action timeout.
+    const handle = new ElementHandle(client, _text('Absent'), 20_000);
+    const start = Date.now();
     expect(await handle.exists()).toBe(false);
+    expect(Date.now() - start).toBeLessThan(1000);
+    // Same shape as isVisible(): the first empty read is confirmed once after
+    // a bounded idle wait (a lagging accessibility tree, PILOT-283), and the
+    // second empty read is the answer.
+    expect(findElements).toHaveBeenCalledTimes(2);
+    expect(client.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(client.waitForIdle).toHaveBeenCalledWith(1500);
+    // The agent-side waiting RPC is never used: it would wait for the element.
+    expect(client.findElement).not.toHaveBeenCalled();
   });
 
-  it('does not report a momentary agent error as absence — retries and returns true when it clears', async () => {
-    // The daemon maps ANY agent failure to found:false + errorMessage; an
-    // infra blip must not read as "doesn't exist".
+  it('is exempt from strict mode: an ambiguous selector answers true instead of throwing', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () =>
+        makeFindElementsResponse([makeElementInfo({ elementId: 'a' }), makeElementInfo({ elementId: 'b' })])),
+    });
+    const handle = new ElementHandle(client, _text('Dup'), 5000);
+    expect(await handle.exists()).toBe(true);
+  });
+
+  it('answers presence, not visibility: an attached but invisible element exists', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo({ visible: false })])),
+    });
+    const handle = new ElementHandle(client, _text('Offscreen'), 5000);
+    expect(await handle.exists()).toBe(true);
+  });
+
+  it('confirms a first empty read, so a lagging accessibility tree does not read as absence', async () => {
     let calls = 0;
-    const findElement = vi.fn(async () => {
+    const findElements = vi.fn(async () =>
+      ++calls === 1 ? makeFindElementsResponse([]) : makeFindElementsResponse([makeElementInfo()]));
+    const client = makeMockClient({ findElements });
+    expect(await new ElementHandle(client, _text('Heading'), 5000).exists()).toBe(true);
+    expect(calls).toBe(2);
+    expect(client.waitForIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report a momentary agent fault as absence — retries and answers once it clears', async () => {
+    // The daemon maps ANY agent failure to an errorMessage; an infra blip
+    // must not read as "doesn't exist".
+    let calls = 0;
+    const findElements = vi.fn(async (): Promise<FindElementsResponse> => {
       calls++;
       return calls < 2
-        ? { requestId: '1', found: false, errorMessage: 'Unknown error' }
-        : { requestId: '1', found: true, element: makeElementInfo(), errorMessage: '' };
+        ? { requestId: '1', elements: [], errorMessage: 'Unknown error' }
+        : makeFindElementsResponse([makeElementInfo()]);
     });
-    const client = makeMockClient({ findElement });
+    const client = makeMockClient({ findElements });
     const handle = new ElementHandle(client, _text('Present'), 5000);
-    expect(await handle.exists()).toBe(true);
-    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(await withFakeClock(5000, () => handle.exists())).toBe(true);
+    expect(calls).toBe(2);
   });
 
-  it('surfaces a persistent agent error instead of returning false', async () => {
+  it('treats a stale snapshot as an unreliable tick, not a confirmed miss', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async (): Promise<FindElementsResponse> => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: 'Element is stale (UI changed): null' }
+        : makeFindElementsResponse([makeElementInfo()]);
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('X'), 5000);
+    expect(await withFakeClock(5000, () => handle.exists())).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it('still classifies the agents’ genuine not-found messages as absence, not as a fault', async () => {
+    // Both agents answer findElements with an empty list today, but a
+    // not-found error message from a future agent path must keep reading as
+    // "doesn't exist" — not be retried as an infra fault and then thrown.
+    const findElements = vi.fn(async (): Promise<FindElementsResponse> => ({
+      requestId: '1',
+      elements: [],
+      errorMessage: 'Timed out after 5000ms: element not found after waiting. No element found matching: text("Absent")',
+    }));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Absent'), 5000);
+    expect(await withFakeClock(5000, () => handle.exists())).toBe(false);
+    expect(findElements).toHaveBeenCalledTimes(2); // the read and its confirmation
+  });
+
+  it('surfaces a persistent agent fault instead of returning false', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
+      findElements: vi.fn(async (): Promise<FindElementsResponse> => ({
         requestId: '1',
-        found: false,
+        elements: [],
         errorMessage: 'UiAutomation not connected',
       })),
     });
     const handle = new ElementHandle(client, _text('X'), 600);
-    await expect(handle.exists()).rejects.toThrow(/findElement failed: UiAutomation not connected/);
+    await expect(withFakeClock(5000, () => handle.exists()))
+      .rejects.toThrow(/findElements failed: UiAutomation not connected/);
+  });
+
+  it('re-probes a persistent fault only for the short window, not the handle timeout', async () => {
+    const findElements = vi.fn(async (): Promise<FindElementsResponse> => ({
+      requestId: '1', elements: [], errorMessage: 'UiAutomation not connected',
+    }));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('X'), 30_000);
+    let elapsed = -1;
+    await expect(withFakeClock(60_000, async () => {
+      const start = Date.now();
+      try {
+        return await handle.exists();
+      } finally {
+        elapsed = Date.now() - start;
+      }
+    })).rejects.toThrow(/findElements failed/);
+    expect(elapsed).toBeGreaterThanOrEqual(1500);
+    expect(elapsed).toBeLessThan(5000);
+  });
+
+  it('propagates a transport failure at once, without the fault retry window', async () => {
+    const findElements = vi.fn(async (): Promise<FindElementsResponse> => {
+      throw new Error('14 UNAVAILABLE: No connection established');
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('X'), 30_000);
+    await expect(withFakeClock(60_000, () => handle.exists())).rejects.toThrow(/UNAVAILABLE/);
+    expect(findElements).toHaveBeenCalledTimes(1);
+  });
+
+  describe('on a modified handle', () => {
+    it('returns false for an absent element on .first()', async () => {
+      const findElements = vi.fn(async () => makeFindElementsResponse([]));
+      const client = makeMockClient({ findElements });
+      const handle = new ElementHandle(client, _text('Absent'), 20_000).first();
+      const start = Date.now();
+      expect(await handle.exists()).toBe(false);
+      expect(Date.now() - start).toBeLessThan(1000);
+      expect(findElements).toHaveBeenCalledTimes(2); // one read + the confirming read
+    });
+
+    it('returns false when nth() is out of range', async () => {
+      const client = makeMockClient({
+        findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo({ elementId: 'only' })])),
+      });
+      expect(await new ElementHandle(client, _text('X'), 20_000).nth(3).exists()).toBe(false);
+    });
+
+    it('returns false when a filter excludes every candidate', async () => {
+      const client = makeMockClient({
+        findElements: vi.fn(async () =>
+          makeFindElementsResponse([makeElementInfo({ elementId: 'a', text: 'Other' })])),
+      });
+      const handle = new ElementHandle(client, _text('X'), 20_000).filter({ hasText: 'Wanted' });
+      expect(await handle.exists()).toBe(false);
+    });
+
+    it('returns true when a filter keeps several candidates (no strict throw)', async () => {
+      const client = makeMockClient({
+        findElements: vi.fn(async () =>
+          makeFindElementsResponse([
+            makeElementInfo({ elementId: 'a', text: 'Wanted 1' }),
+            makeElementInfo({ elementId: 'b', text: 'Wanted 2' }),
+          ])),
+      });
+      const handle = new ElementHandle(client, _text('X'), 5000).filter({ hasText: 'Wanted' });
+      expect(await handle.exists()).toBe(true);
+    });
+
+    it('propagates a user abort instead of answering false', async () => {
+      // The old path did `try { resolve } catch { return false }`, swallowing
+      // the stop signal (PILOT-222) as "doesn't exist".
+      const findElements = vi.fn(async (): Promise<FindElementsResponse> => { throw new TestAbortedError(); });
+      const client = makeMockClient({ findElements });
+      const handle = new ElementHandle(client, _text('X'), 5000).first();
+      const err = await handle.exists().catch((e: unknown) => e);
+      expect(isAbortError(err)).toBe(true);
+    });
+
+    it('propagates a persistent agent fault instead of answering false', async () => {
+      const client = makeMockClient({
+        findElements: vi.fn(async (): Promise<FindElementsResponse> => ({
+          requestId: '1', elements: [], errorMessage: 'UiAutomation not connected',
+        })),
+      });
+      const handle = new ElementHandle(client, _text('X'), 600).first();
+      await expect(withFakeClock(5000, () => handle.exists()))
+        .rejects.toThrow(/findElements failed: UiAutomation not connected/);
+    });
+
+    it('retries a transient fault within the bounded window and answers once it clears', async () => {
+      let calls = 0;
+      const findElements = vi.fn(async (): Promise<FindElementsResponse> => {
+        calls++;
+        return calls < 2
+          ? { requestId: '1', elements: [], errorMessage: 'Unknown error' }
+          : makeFindElementsResponse([makeElementInfo({ text: 'Wanted' })]);
+      });
+      const client = makeMockClient({ findElements });
+      const handle = new ElementHandle(client, _text('X'), 5000).filter({ hasText: 'Wanted' });
+      expect(await withFakeClock(5000, () => handle.exists())).toBe(true);
+      expect(calls).toBe(2);
+    });
+
+    it('a handle from all() answers from its snapshot without another device read', async () => {
+      const findElements = vi.fn(async () =>
+        makeFindElementsResponse([makeElementInfo({ elementId: 'a' }), makeElementInfo({ elementId: 'b' })]));
+      const client = makeMockClient({ findElements });
+      const rows = await new ElementHandle(client, _role('listitem'), 5000).all();
+      expect(await rows[1].exists()).toBe(true);
+      expect(findElements).toHaveBeenCalledTimes(1);
+    });
   });
 });
 
