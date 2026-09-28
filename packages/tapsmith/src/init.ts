@@ -658,7 +658,7 @@ async function runInitInner(): Promise<void> {
   // Step 8.5: AGENTS.md for coding agents
   const writeAgents = await ask<boolean>({
     type: 'confirm',
-    message: 'Add a Tapsmith section to AGENTS.md? (helps AI coding agents use tapsmith correctly)',
+    message: 'Add a Tapsmith section to AGENTS.md? (helps AI coding agents use Tapsmith correctly)',
     initial: true,
   });
   if (writeAgents) {

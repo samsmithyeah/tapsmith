@@ -107,7 +107,7 @@ function newestIphoneosXctestrun(productsDir: string): string | undefined {
  *
  * Resolution order:
  *   1. Auto-build cache (`~/.tapsmith/ios-simulator-agent/`) — SDK-matched
- *      local builds produced by `tapsmith build-ios-agent --simulator`.
+ *      simulator builds Tapsmith makes on demand (ios-simulator-build.ts).
  *   2. Prebuilt npm package (`@tapsmith/agent-ios-simulator-{arch}`) — ships
  *      a ready-to-use xctestrun with `__TAPSMITH_PKG__` path placeholders
  *      that the daemon resolves at runtime.

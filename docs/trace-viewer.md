@@ -69,7 +69,7 @@ Open [trace.tapsmith.dev](https://trace.tapsmith.dev) and drag a `.zip` trace fi
 ### Local viewer
 
 ```bash
-npx tapsmith show-trace test-results/traces/trace-my_test.zip
+npx tapsmith show-trace tapsmith-results/traces/trace-my_test-1767225600000.zip
 ```
 
 This starts a local server and opens the trace viewer in your browser.

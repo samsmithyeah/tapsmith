@@ -507,6 +507,18 @@ function buildProgram(deps: RunCliDeps, io: CliIo, state: ParseState): Command {
   return program;
 }
 
+/**
+ * The command tree `runCli` parses with, with inert handlers: the one table of
+ * commands, subcommands and flags. The docs guard (cli-docs.test.ts) checks
+ * every documented `tapsmith …` invocation against it, so it is never a copy.
+ */
+export function cliCommandTree(): Command {
+  const inert = async (): Promise<void> => {};
+  const handlers = new Proxy({} as CliHandlers, { get: () => inert });
+  const io: CliIo = { out: () => {}, err: () => {} };
+  return buildProgram({ handlers, version: '0.0.0', io }, io, { json: false, exitCode: 0 });
+}
+
 // ─── Banner ───
 
 const BANNER_COMMANDS = new Set([
@@ -573,9 +585,10 @@ function bundleEndingInValueFlag(token: string, byFlag: Map<string, Option>): Op
 /**
  * Rewrite `-j=4` to `--workers=4`, and refuse a flag where a value flag
  * expects its value. Returns the argv commander should parse; reports a
- * refused value through `cmd.error`, which throws.
+ * refused value through `cmd.error`, which throws. Exported for the docs
+ * guard, which applies the same rules to documented invocations.
  */
-function prepareCommandArgs(cmd: Command, args: string[]): string[] {
+export function prepareCommandArgs(cmd: Command, args: string[]): string[] {
   const valueOptions = cmd.options.filter((o) => o.required);
   const byFlag = new Map<string, Option>();
   for (const option of valueOptions) {

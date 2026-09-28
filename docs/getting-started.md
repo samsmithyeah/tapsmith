@@ -66,18 +66,39 @@ After setup, verify everything is working:
 npx tapsmith doctor
 ```
 
-`tapsmith doctor` runs a non-interactive health check and reports the status of each prerequisite:
+`tapsmith doctor` runs a non-interactive health check and reports the status of each prerequisite, grouped by platform. For example, on a Mac set up for both platforms:
 
 ```
-  ✓ Node.js 22.5.0
-  ✓ Tapsmith daemon found (/Users/you/.npm/.../tapsmith-core)
-  ✓ ADB 35.0.2
-  ✓ Android emulator available (Pixel_9_API_35)
-  ✓ Tapsmith agent APK found
-  ✓ Tapsmith agent test APK found
+Tapsmith Doctor
+
+  Core
+  ✓ Node.js 22.21.0
+  ✓ Tapsmith daemon found (…/node_modules/@tapsmith/core-darwin-arm64/tapsmith-core)
+  ✓ Config file found (tapsmith.config.ts)
+
+  Android
+  ✓ ADB 37.0.0
+  ✓ ANDROID_HOME /Users/you/Library/Android/sdk
+  ⚠ No Android devices connected
+    ↳ Start an emulator or connect a device with USB debugging enabled
+  ✓ Android agent (@tapsmith/agent-android)
+
+  iOS
+  ✓ Xcode 26.0
+  ✓ iOS simulators available
+  ✓ Simulator xctestrun found (auto-build cache, SDK 26.0)
+
+  Network Capture
+  ✓ MITM CA exists (~/.tapsmith/ca.pem)
+  ✓ AVD system images support HTTPS capture (1 AVD checked)
+  ✓ mitmproxy installed
+  ✓ Network Extension enabled
+  ✓ macOS system proxy not set by Tapsmith
+
+14 checks passed, 1 warning
 ```
 
-If anything is missing, `tapsmith doctor` prints the exact command to fix it. Run it whenever tests fail in unexpected ways to rule out setup issues.
+A warning (`⚠`) or error (`✗`) that Tapsmith knows how to fix is followed by a `↳` line saying how, often the exact command to run. `tapsmith doctor --json` prints the same checks for scripts and AI agents, with a `fix` field wherever there is one. The command exits 1 if any check is an error. Run it whenever tests fail in unexpected ways to rule out setup issues.
 
 ## Make runs faster (optional, one line)
 
