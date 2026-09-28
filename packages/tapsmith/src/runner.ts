@@ -1650,7 +1650,7 @@ async function runSuiteContext(
         // Extension redirector, so there's no CLI-side proxy setup.
         //
         // The daemon may surface a non-fatal warning (e.g. "SE not approved
-        // — run tapsmith setup-ios") via the `errorMessage` field even when
+        // — run tapsmith ios network setup-simulator") via the `errorMessage` field even when
         // `success` is true and the proxy port was allocated. We log it
         // loudly (once per run — same failure applies to every test) so
         // users whose trace has no network entries know exactly why and

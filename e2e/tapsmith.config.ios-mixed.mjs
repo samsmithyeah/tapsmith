@@ -14,12 +14,12 @@
  *      test-app/build/Build/Products/Release-iphonesimulator/TapsmithTestApp.app
  *      and a built simulator agent xctestrun (auto-detected via
  *      findLatestXctestrun()).
- *   2. Device side: `tapsmith build-ios-agent` run once to produce the signed
+ *   2. Device side: `tapsmith ios build-agent` run once to produce the signed
  *      xctestrun under ios-agent/.build-device/ (auto-resolved), plus a
  *      device build of the test-app at
  *      test-app/ios/build/Build/Products/Release-iphoneos/TapsmithTestApp.app
  *      (build via `cd test-app && npx expo run:ios --configuration Release --device <udid>`).
- *   3. Network capture on the physical device: `tapsmith configure-ios-network
+ *   3. Network capture on the physical device: `tapsmith ios network configure
  *      <udid>` once (see docs/ios-physical-devices.md).
  *
  * Set TAPSMITH_IOS_SIMULATOR / TAPSMITH_IOS_XCTESTRUN / TAPSMITH_IOS_DEVICE to pin

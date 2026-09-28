@@ -1,5 +1,5 @@
 /**
- * `tapsmith build-ios-agent` — thin xcodebuild wrapper for building the Tapsmith
+ * `tapsmith ios build-agent` — thin xcodebuild wrapper for building the Tapsmith
  * XCUITest runner for physical iOS devices.
  *
  * Simulator builds don't need this command — the existing
@@ -127,7 +127,7 @@ interface SigningIdentity {
  * team ID from entries like:
  *   1) ABC123 "Apple Development: Jane Developer (TEAMID)"
  *
- * Kept as a public helper for the preflight checklist (`setup-ios-device`)
+ * Kept as a public helper for the preflight checklist (`ios setup-device`)
  * which uses the presence of an identity as a "signed in" signal. Note
  * that keychain identities and Xcode's registered teams can diverge — the
  * cert-based team ID is only used as a fallback; `xcodebuild` consults
@@ -251,7 +251,7 @@ export async function resolveTeamId(explicit?: string): Promise<string> {
         '    1. Open Xcode → Settings → Accounts.\n' +
         '    2. Sign in with your Apple ID (free accounts work too).\n' +
         '    3. Select your team so Xcode registers it for automatic signing.\n' +
-        '    4. Re-run `tapsmith build-ios-agent`.',
+        '    4. Re-run `tapsmith ios build-agent`.',
     );
   }
 
@@ -456,7 +456,7 @@ export async function buildIosAgent(options: BuildIosAgentOptions): Promise<stri
       console.log();
       console.log(dim('Re-run with --verbose for full xcodebuild output.'));
     }
-    throw new Error(`tapsmith build-ios-agent failed (${elapsedSec}s)`);
+    throw new Error(`tapsmith ios build-agent failed (${elapsedSec}s)`);
   }
 
   // Locate the freshly built xctestrun under DerivedData.
@@ -633,7 +633,7 @@ async function runXcodebuild(
 
 export async function runBuildIosAgent(opts: BuildIosAgentOptions): Promise<void> {
   if (process.platform !== 'darwin') {
-    console.error(red('tapsmith build-ios-agent is only supported on macOS.'));
+    console.error(red('tapsmith ios build-agent is only supported on macOS.'));
     process.exit(1);
   }
 

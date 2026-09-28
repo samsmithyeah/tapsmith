@@ -58,7 +58,7 @@ xcodebuild build-for-testing \
   -scheme TapsmithAgentUITests \
   -destination 'platform=iOS Simulator,name=iPhone 16'
 # Physical device build (signed via the Tapsmith CLI, one-time per device/profile):
-npx tapsmith build-ios-agent                    # auto-detects team ID from Xcode
+npx tapsmith ios build-agent                    # auto-detects team ID from Xcode
 ```
 
 See `docs/ios-physical-devices.md` for the full physical-device walkthrough.

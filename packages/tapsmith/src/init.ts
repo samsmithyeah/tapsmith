@@ -256,7 +256,7 @@ async function configureIos(env: EnvScan): Promise<IosConfig> {
         console.log(`  ${green('✓')} iOS agent built`);
       } catch (err) {
         console.log(`  ${YELLOW}⚠${RESET} iOS agent build failed: ${err instanceof Error ? err.message : String(err)}`);
-        console.log(dim('  You can run `npx tapsmith build-ios-agent` later.'));
+        console.log(dim('  You can run `npx tapsmith ios build-agent` later.'));
       }
     }
 
@@ -312,12 +312,12 @@ async function setupNetworkCapture(
     if (hasMitmproxy) {
       lines.push(`  ${green('✓')} iOS simulator — mitmproxy ready`);
     } else {
-      lines.push(`  ${YELLOW}⚠${RESET} iOS simulator — run \`brew install mitmproxy\` then \`npx tapsmith setup-ios\``);
+      lines.push(`  ${YELLOW}⚠${RESET} iOS simulator — run \`brew install mitmproxy\` then \`npx tapsmith ios network setup-simulator\``);
     }
   }
 
   if (iosHasPhysicalDevice) {
-    lines.push(`  ${YELLOW}⚠${RESET} iOS physical — run \`npx tapsmith configure-ios-network <udid>\` per device`);
+    lines.push(`  ${YELLOW}⚠${RESET} iOS physical — run \`npx tapsmith ios network configure <udid>\` per device`);
   }
 
   if (lines.length > 0) {

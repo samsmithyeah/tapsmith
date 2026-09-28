@@ -30,7 +30,7 @@ describe('formatExpiryWarning', () => {
   it('warns when inside the warning window', () => {
     const msg = formatExpiryWarning(info(2));
     expect(msg).toMatch(/2 day/);
-    expect(msg).toMatch(/tapsmith build-ios-agent/);
+    expect(msg).toMatch(/tapsmith ios build-agent/);
   });
 
   it('distinguishes expires-today from expires-soon', () => {

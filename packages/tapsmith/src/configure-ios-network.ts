@@ -1,9 +1,9 @@
 /**
- * `tapsmith configure-ios-network <udid>` and `tapsmith refresh-ios-network <udid>`
- * — generate / regenerate a per-device mobileconfig for physical iOS
- * network capture (PILOT-185).
+ * `tapsmith ios network configure <udid> [--refresh]` — generate /
+ * regenerate a per-device mobileconfig for physical iOS network capture
+ * (PILOT-185; `--refresh` replaced `refresh-ios-network` in PILOT-271).
  *
- * Both commands delegate the heavy lifting to the daemon's
+ * Both modes delegate the heavy lifting to the daemon's
  * `GenerateIosNetworkProfile` RPC so the mobileconfig generation logic
  * lives in one place (Rust). The only CLI-side wrapping is:
  *   1. Start a temporary `tapsmith-core` daemon
@@ -11,9 +11,10 @@
  *   3. Tear down the daemon
  *   4. Print a concise walkthrough for installing the profile on the device
  *
- * `refresh-` differs from `configure-` only in the wording of its output
- * — both regenerate unconditionally, because the primary need for
- * refresh is a host Wi-Fi IP change that the user has already observed.
+ * `--refresh` differs only in its walkthrough (remove the old profile
+ * first, update the proxy URL) — both regenerate unconditionally, because
+ * the primary need for refresh is a host Wi-Fi IP change that the user has
+ * already observed.
  */
 
 import { execFileSync, spawn } from 'node:child_process';
@@ -36,20 +37,14 @@ const green = (s: string): string => `${GREEN}${s}${RESET}`;
 const yellow = (s: string): string => `${YELLOW}${s}${RESET}`;
 const red = (s: string): string => `${RED}${s}${RESET}`;
 
-interface Options {
-  udid: string
-  ssid?: string
-  deviceName?: string
-  mode: 'configure' | 'refresh'
-  /**
-   * When true, offer to auto-disable macOS Application Firewall stealth
-   * mode via sudo. Scoped to the network-capture track: stealth mode only
-   * matters when setting up the Wi-Fi proxy, so this flag lives here and
-   * NOT on `setup-ios-device`, keeping the basic track free of firewall /
-   * sudo mentions entirely.
-   */
-  fixFirewall?: boolean
-}
+/**
+ * `fixFirewall` offers to auto-disable macOS Application Firewall stealth
+ * mode via sudo. Scoped to the network-capture track: stealth mode only
+ * matters when setting up the Wi-Fi proxy, so the flag lives here and NOT on
+ * `tapsmith ios setup-device`, keeping the basic track free of firewall /
+ * sudo mentions entirely.
+ */
+type Options = IosNetworkCommandOptions;
 
 /**
  * Best-effort check for macOS Application Firewall stealth mode. Returns
@@ -120,12 +115,7 @@ async function promptForSsid(): Promise<string | undefined> {
  * overkill for a one-shot setup command. A minimal spawn-connect-shutdown
  * cycle keeps the command fast and isolated.
  */
-async function callGenerateProfile(opts: Options): Promise<{
-  profilePath: string
-  hostIp: string
-  port: number
-  ssid: string
-}> {
+async function callGenerateProfile(opts: Options): Promise<GeneratedProfile> {
   const port = String(await pickFreePort());
   const address = `127.0.0.1:${port}`;
 
@@ -163,79 +153,94 @@ async function callGenerateProfile(opts: Options): Promise<{
   }
 }
 
-function printWalkthrough(opts: Options, result: {
+interface GeneratedProfile {
   profilePath: string
   hostIp: string
   port: number
   ssid: string
-}): void {
-  console.log();
-  console.log(green('✓ Generated Tapsmith network capture profile'));
-  console.log();
-  console.log('  ' + dim('device:   ') + bold(opts.udid));
-  console.log('  ' + dim('profile:  ') + result.profilePath);
-  console.log('  ' + dim('host IP:  ') + result.hostIp);
-  console.log('  ' + dim('port:     ') + result.port);
-  console.log('  ' + dim('SSID:     ') + result.ssid);
-  console.log();
+}
 
+/**
+ * The install walkthrough, as lines. A refresh is the same walkthrough with
+ * the old profile removed first: the proxy URL is typed into the device's
+ * Wi-Fi settings by hand and carries the host IP, so a refresh that skipped
+ * it would leave a host-IP change unfixed (PILOT-255).
+ */
+export function walkthroughLines(opts: { udid: string; refresh: boolean }, result: GeneratedProfile): string[] {
+  const lines: string[] = [];
+  const log = (line = ''): void => { lines.push(line); };
+  const pacUrl = `http://${result.hostIp}:${result.port}/tapsmith.pac`;
+
+  log();
+  log(green(opts.refresh ? '✓ Regenerated Tapsmith network capture profile' : '✓ Generated Tapsmith network capture profile'));
+  log();
+  log('  ' + dim('device:   ') + bold(opts.udid));
+  log('  ' + dim('profile:  ') + result.profilePath);
+  log('  ' + dim('host IP:  ') + result.hostIp);
+  log('  ' + dim('port:     ') + result.port);
+  log('  ' + dim('SSID:     ') + result.ssid);
+  log();
+
+  if (opts.refresh) {
+    log(bold('To apply the refreshed profile:'));
+    log();
+    log(`  ${bold('0)')} ${bold('Remove')} the old profile. On the device, open ${bold('Settings → General → VPN & Device Management')}`);
+    log('     and remove the existing "Tapsmith Network Capture" profile.');
+    log();
+  } else {
+    log(bold('To install on the device:'));
+    log();
+  }
+  log(`  ${bold('1)')} ${bold('Send')} the profile to the device.`);
+  log(`     ${dim('•')} The Finder window we just opened has it pre-selected —`);
+  log(`       right-click → ${bold('Share')} → ${bold('AirDrop')} → pick your iPhone.`);
+  log(`     ${dim('•')} Or email / Messages the .mobileconfig as an attachment.`);
+  log();
+  log(`  ${bold('2)')} ${bold('Install')} the profile on the device.`);
+  log(`     Open ${bold('Settings')} on the iPhone — there'll be a "Profile Downloaded"`);
+  log(`     banner near the top. Tap it (or open ${bold('General → VPN & Device')}`);
+  log(`     ${bold('Management')}) → "Tapsmith Network Capture" → ${bold('Install')} →`);
+  log(`     enter passcode → ${bold('Install')}.`);
+  log();
+  log(`  ${bold('3)')} ${bold('Trust')} the Tapsmith MITM CA.`);
+  log(`     ${dim('This menu only appears AFTER step 2 — installing the profile is what')}`);
+  log(`     ${dim('makes iOS reveal the Certificate Trust Settings row.')}`);
+  log(`     Open ${bold('Settings → General → About → Certificate Trust Settings')}`);
+  log(`     and enable the toggle next to ${bold('Tapsmith MITM CA')}.`);
+  log();
+  if (opts.refresh) {
+    log(`  ${bold('4)')} ${bold('Update the proxy URL')} — it carries the Mac's IP, so it changes when that does.`);
+    log(`     Open ${bold('Settings → Wi-Fi')} → tap ${bold('(i)')} next to ${bold(result.ssid)} →`);
+    log(`     ${bold('Configure Proxy')} → ${bold('Automatic')} → replace the URL with this one → ${bold('Save')}:`);
+    log(`     ${green(pacUrl)}`);
+  } else {
+    log(`  ${bold('4)')} ${bold('Set the proxy URL.')} Open ${bold('Settings → Wi-Fi')} → tap ${bold('(i)')}`);
+    log(`     next to ${bold(result.ssid)} → ${bold('Configure Proxy')} → ${bold('Automatic')} →`);
+    log(`     enter this URL → ${bold('Save')}:`);
+    log(`     ${green(pacUrl)}`);
+    log(`     ${dim('One-time step per Wi-Fi network. The profile handles the CA cert')}`);
+    log(`     ${dim('(which genuinely requires a mobileconfig); the proxy URL must be')}`);
+    log(`     ${dim('set manually because iOS doesn\'t enforce proxy config from profiles')}`);
+    log(`     ${dim('on unsupervised devices.')}`);
+  }
+  log();
+  log(`  ${bold('5)')} ${bold('Verify')} HTTPS capture with a normal system-trust client:`);
+  log(`     ${green('tapsmith ios network verify ' + opts.udid)}`);
+  log();
+  log(yellow('  Important: the device must be on Wi-Fi "') + bold(result.ssid) + yellow('" for'));
+  log(yellow('  the proxy to route traffic. If the host Mac changes Wi-Fi or IP address,'));
+  log(yellow(`  re-run: ${bold('tapsmith ios network configure ' + opts.udid + ' --refresh')}`));
+  log();
+  return lines;
+}
+
+function printWalkthrough(opts: Options, result: GeneratedProfile): void {
   // Reveal the .mobileconfig in Finder so the user can right-click → Share
   // → AirDrop without hunting through the filesystem. Best-effort — we
   // ignore failures (e.g. running over SSH) and the printed instructions
   // still work.
   revealInFinder(result.profilePath);
-
-  if (opts.mode === 'refresh') {
-    console.log(bold('To apply the refreshed profile:'));
-    console.log();
-    console.log(`  1) On the device, open ${bold('Settings → General → VPN & Device Management')}`);
-    console.log('     and remove the existing "Tapsmith Network Capture" profile.');
-    console.log();
-    console.log('  2) AirDrop the new profile from the Finder window we just opened,');
-    console.log('     then ' + bold('Install') + ' it from Settings as before.');
-    console.log();
-    console.log(yellow('  Important: the device must be on Wi-Fi "') + bold(result.ssid) + yellow('" for'));
-    console.log(yellow('  the proxy to route traffic. If the host Mac changes Wi-Fi,'));
-    console.log(yellow(`  re-run: ${bold('tapsmith refresh-ios-network ' + opts.udid)}`));
-    console.log();
-    return;
-  }
-
-  console.log(bold('To install on the device:'));
-  console.log();
-  console.log(`  ${bold('1)')} ${bold('Send')} the profile to the device.`);
-  console.log(`     ${dim('•')} The Finder window we just opened has it pre-selected —`);
-  console.log(`       right-click → ${bold('Share')} → ${bold('AirDrop')} → pick your iPhone.`);
-  console.log(`     ${dim('•')} Or email / Messages the .mobileconfig as an attachment.`);
-  console.log();
-  console.log(`  ${bold('2)')} ${bold('Install')} the profile on the device.`);
-  console.log(`     Open ${bold('Settings')} on the iPhone — there'll be a "Profile Downloaded"`);
-  console.log(`     banner near the top. Tap it (or open ${bold('General → VPN & Device')}`);
-  console.log(`     ${bold('Management')}) → "Tapsmith Network Capture" → ${bold('Install')} →`);
-  console.log(`     enter passcode → ${bold('Install')}.`);
-  console.log();
-  console.log(`  ${bold('3)')} ${bold('Trust')} the Tapsmith MITM CA.`);
-  console.log(`     ${dim('This menu only appears AFTER step 2 — installing the profile is what')}`);
-  console.log(`     ${dim('makes iOS reveal the Certificate Trust Settings row.')}`);
-  console.log(`     Open ${bold('Settings → General → About → Certificate Trust Settings')}`);
-  console.log(`     and enable the toggle next to ${bold('Tapsmith MITM CA')}.`);
-  console.log();
-  console.log(`  ${bold('4)')} ${bold('Set the proxy URL.')} Open ${bold('Settings → Wi-Fi')} → tap ${bold('(i)')}`);
-  console.log(`     next to ${bold(result.ssid)} → ${bold('Configure Proxy')} → ${bold('Automatic')} →`);
-  console.log(`     enter this URL → ${bold('Save')}:`);
-  console.log(`     ${green(`http://${result.hostIp}:${result.port}/tapsmith.pac`)}`);
-  console.log(`     ${dim('One-time step per Wi-Fi network. The profile handles the CA cert')}`);
-  console.log(`     ${dim('(which genuinely requires a mobileconfig); the proxy URL must be')}`);
-  console.log(`     ${dim('set manually because iOS doesn\'t enforce proxy config from profiles')}`);
-  console.log(`     ${dim('on unsupervised devices.')}`);
-  console.log();
-  console.log(`  ${bold('5)')} ${bold('Verify')} HTTPS capture with a normal system-trust client:`);
-  console.log(`     ${green('tapsmith verify-ios-network ' + opts.udid)}`);
-  console.log();
-  console.log(yellow('  Important: the device must be on Wi-Fi "') + bold(result.ssid) + yellow('" for'));
-  console.log(yellow('  the proxy to route traffic. If the host Mac changes Wi-Fi,'));
-  console.log(yellow(`  re-run: ${bold('tapsmith refresh-ios-network ' + opts.udid)}`));
-  console.log();
+  for (const line of walkthroughLines(opts, result)) console.log(line);
 }
 
 /**
@@ -255,18 +260,9 @@ function revealInFinder(filePath: string): void {
 
 // ─── Entry points ───────────────────────────────────────────────────────
 
-export async function runConfigureIosNetwork(args: IosNetworkCommandOptions): Promise<void> {
-  await run({ ...args, mode: 'configure' });
-}
-
-export async function runRefreshIosNetwork(args: IosNetworkCommandOptions): Promise<void> {
-  await run({ ...args, mode: 'refresh' });
-}
-
-async function run(opts: Options): Promise<void> {
-  const { mode } = opts;
+export async function runConfigureIosNetwork(opts: IosNetworkCommandOptions): Promise<void> {
   if (process.platform !== 'darwin') {
-    console.error(red(`tapsmith ${mode}-ios-network is only supported on macOS.`));
+    console.error(red('tapsmith ios network configure is only supported on macOS.'));
     process.exit(1);
   }
 
@@ -300,7 +296,7 @@ async function run(opts: Options): Promise<void> {
     // loudly so they don't get silent zero-entry captures later.
     console.log(yellow('⚠ macOS Application Firewall stealth mode is ON.'));
     console.log(dim('  Inbound TCP SYNs to the Tapsmith proxy will be silently dropped.'));
-    console.log(dim('  Fix once: tapsmith configure-ios-network <udid> --fix-firewall'));
+    console.log(dim('  Fix once: tapsmith ios network configure <udid> --fix-firewall'));
     console.log(dim('  Or run manually: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setstealthmode off'));
     console.log();
   }

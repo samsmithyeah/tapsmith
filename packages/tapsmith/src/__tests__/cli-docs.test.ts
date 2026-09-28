@@ -595,6 +595,12 @@ const NOT_COMMANDS: Array<{ text: string; files: string[]; reason: string }> = [
   { text: 'tapsmith install', files: ['docs/telemetry.md', 'packages/tapsmith/src/telemetry.ts'], reason: 'telemetry event name' },
   { text: 'tapsmith show-trace t.zip --force-install', files: ['docs/api-reference.md'], reason: 'the documented example of a refused flag' },
   { text: 'tapsmith test --device --workers 2', files: ['docs/api-reference.md'], reason: 'the documented example of a value flag given a flag' },
+  { text: 'tapsmith setup-ios-device', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)' },
+  { text: 'tapsmith build-ios-agent', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)' },
+  { text: 'tapsmith setup-ios', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)' },
+  { text: 'tapsmith configure-ios-network <udid>', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)' },
+  { text: 'tapsmith refresh-ios-network <udid>', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)' },
+  { text: 'tapsmith verify-ios-network <udid>', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)' },
 ];
 
 // ─── Sources ───

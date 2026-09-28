@@ -1,5 +1,8 @@
 /**
- * Interactive first-run setup for iOS network capture (PILOT-182).
+ * `tapsmith ios network setup-simulator` — interactive first-run setup for
+ * iOS *simulator* network capture (PILOT-182; renamed from `setup-ios` in
+ * PILOT-271 so the name says which track it is for). Physical devices use
+ * `tapsmith ios setup-device` and `tapsmith ios network configure` instead.
  *
  * Runs the user through the (currently three-step) install flow:
  *   1. mitmproxy present via Homebrew
@@ -11,7 +14,7 @@
  * opens System Settings directly to the correct pane and polls
  * `systemextensionsctl list` until the SE flips to `[activated enabled]`.
  *
- * Usage: `npx tapsmith setup-ios`
+ * Usage: `npx tapsmith ios network setup-simulator`
  */
 
 import { execFileSync } from 'node:child_process';
@@ -110,117 +113,165 @@ function openLoginItemsExtensions(): boolean {
   return tryOpen();
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** Everything the setup touches, injectable so each exit path is unit-tested. */
+export interface SetupSimulatorDeps {
+  platform: NodeJS.Platform;
+  isMitmproxyInstalled(): boolean;
+  checkSeStatus(): SeStatus;
+  openSettings(): boolean;
+  sleep(ms: number): Promise<void>;
+  now(): number;
+  log(line?: string): void;
+  error(line: string): void;
+  /** Progress dots, without a newline. */
+  write(text: string): void;
+}
+
+const defaultDeps: SetupSimulatorDeps = {
+  platform: process.platform,
+  isMitmproxyInstalled: isMitmproxyInstalledViaBrew,
+  checkSeStatus,
+  openSettings: openLoginItemsExtensions,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now: () => Date.now(),
+  log: (line = '') => console.log(line),
+  error: (line) => console.error(line),
+  write: (text) => { process.stdout.write(text); },
+};
+
+const SELF = 'npx tapsmith ios network setup-simulator';
+
+/**
+ * The other track, printed on every exit: a physical-device user who ran
+ * this first learns where their setup lives.
+ */
+function printDeviceTrack(log: SetupSimulatorDeps['log']): void {
+  log();
+  log(dim('   Testing on a physical iPhone or iPad instead? That track is separate:'));
+  log(dim(`      ${bold('npx tapsmith ios setup-device')}${DIM}                 (device preflight)`));
+  log(dim(`      ${bold('npx tapsmith ios network configure <udid>')}${DIM}     (its network capture)`));
 }
 
 /**
- * Main entry point for the `tapsmith setup-ios` command. Exits the process
- * with code 0 on success, non-zero on any failure that requires user
- * action.
+ * `tapsmith ios network setup-simulator`. Resolves to the exit code: 0 when
+ * capture is ready or will set itself up on the first simulator run (the
+ * fresh-machine state, where nothing is wrong), 1 when the user must act.
  */
-export async function runSetupIos(): Promise<void> {
-  if (process.platform !== 'darwin') {
-    console.error(red('tapsmith setup-ios is only supported on macOS.'));
-    process.exit(1);
+export async function setupSimulatorNetworkCapture(deps: SetupSimulatorDeps = defaultDeps): Promise<number> {
+  const { log } = deps;
+  if (deps.platform !== 'darwin') {
+    deps.error(red('tapsmith ios network setup-simulator is only supported on macOS.'));
+    return 1;
   }
 
-  console.log(bold('Tapsmith iOS network capture setup'));
-  console.log(dim('Verifying prerequisites for iOS simulator network capture...'));
-  console.log();
+  const fail = (): number => {
+    printDeviceTrack(log);
+    return 1;
+  };
+  const ready = (): number => {
+    log(green('✓ iOS simulator network capture is ready.'));
+    log();
+    log('   Run your tests as normal:');
+    log(`      ${bold('npx tapsmith test')}`);
+    printDeviceTrack(log);
+    return 0;
+  };
+
+  log(bold('Tapsmith iOS simulator network capture setup'));
+  log(dim('Checks what HTTP(S) capture on iOS simulators needs: mitmproxy and its macOS Network Extension.'));
+  log();
 
   // ─── Step 1: Homebrew + mitmproxy ────────────────────────────────────
-  console.log(bold('1. Homebrew mitmproxy install'));
-  if (isMitmproxyInstalledViaBrew()) {
-    console.log(`   ${green('✓')} mitmproxy is installed`);
+  log(bold('1. Homebrew mitmproxy install'));
+  if (deps.isMitmproxyInstalled()) {
+    log(`   ${green('✓')} mitmproxy is installed`);
   } else {
-    console.log(`   ${red('✗')} mitmproxy is not installed via Homebrew`);
-    console.log();
-    console.log('   Install it with:');
-    console.log(`      ${bold('brew install mitmproxy')}`);
-    console.log();
-    console.log('   Then re-run:');
-    console.log(`      ${bold('npx tapsmith setup-ios')}`);
-    process.exit(1);
+    log(`   ${red('✗')} mitmproxy is not installed via Homebrew`);
+    log();
+    log('   Install it with:');
+    log(`      ${bold('brew install mitmproxy')}`);
+    log();
+    log('   Then re-run:');
+    log(`      ${bold(SELF)}`);
+    return fail();
   }
-  console.log();
+  log();
 
   // ─── Step 2: Network Extension state ─────────────────────────────────
-  console.log(bold('2. Mitmproxy Redirector Network Extension'));
-  let status = checkSeStatus();
+  log(bold('2. Mitmproxy Redirector Network Extension'));
+  let status = deps.checkSeStatus();
 
   if (status === 'enabled') {
-    console.log(`   ${green('✓')} Network Extension is activated and enabled`);
-    console.log();
-    console.log(green('✓ iOS network capture is ready.'));
-    console.log();
-    console.log('   Run your tests as normal:');
-    console.log(`      ${bold('npx tapsmith test')}`);
-    return;
+    log(`   ${green('✓')} Network Extension is activated and enabled`);
+    log();
+    return ready();
   }
 
   if (status === 'not-registered') {
-    console.log(`   ${dim('○')} Network Extension has not been registered yet.`);
-    console.log();
-    console.log('   This registers automatically on your first iOS test run.');
-    console.log(`   After the first ${bold('npx tapsmith test')} run, macOS will prompt you to allow the extension.`);
-    console.log();
-    console.log('   If the prompt does not appear, open System Settings manually:');
-    console.log(`      ${bold('System Settings → General → Login Items & Extensions → Network Extensions')}`);
-    console.log();
-    console.log(`   Once approved, re-run ${bold('npx tapsmith setup-ios')} to verify.`);
-    process.exit(1);
+    // The expected state on a fresh machine: nothing is wrong, the first
+    // simulator run registers the extension. Not a failure.
+    log(`   ${dim('○')} Network Extension has not been registered yet — nothing to fix.`);
+    log();
+    log('   It registers automatically on your first iOS simulator test run with');
+    log(`   network capture on. During that ${bold('npx tapsmith test')} run, macOS asks you to allow it.`);
+    log();
+    log('   If the prompt does not appear, open System Settings manually:');
+    log(`      ${bold('System Settings → General → Login Items & Extensions → Network Extensions')}`);
+    log();
+    log(`   Once approved, re-run ${bold(SELF)} to confirm.`);
+    printDeviceTrack(log);
+    return 0;
   }
 
   if (status === 'waiting-for-user') {
-    console.log(`   ${yellow('⚠')} Network Extension is registered but not yet approved`);
-    console.log();
-    console.log('   Approve it in:');
-    console.log(`      ${bold('System Settings → General → Login Items & Extensions → Network Extensions')}`);
-    console.log();
-    console.log(dim('   Opening System Settings to the right pane...'));
-    if (!openLoginItemsExtensions()) {
-      console.log(
-        dim('   (Could not auto-open — please navigate manually using the path above.)'),
-      );
+    log(`   ${yellow('⚠')} Network Extension is registered but not yet approved`);
+    log();
+    log('   Approve it in:');
+    log(`      ${bold('System Settings → General → Login Items & Extensions → Network Extensions')}`);
+    log();
+    log(dim('   Opening System Settings to the right pane...'));
+    if (!deps.openSettings()) {
+      log(dim('   (Could not auto-open — please navigate manually using the path above.)'));
     }
-    console.log();
-    console.log(dim(`   Waiting for approval (up to ${APPROVAL_POLL_TIMEOUT_MS / 1000}s)...`));
+    log();
+    log(dim(`   Waiting for approval (up to ${APPROVAL_POLL_TIMEOUT_MS / 1000}s)...`));
 
-    const deadline = Date.now() + APPROVAL_POLL_TIMEOUT_MS;
-    process.stdout.write('   ');
-    while (Date.now() < deadline) {
-      await sleep(APPROVAL_POLL_INTERVAL_MS);
-      status = checkSeStatus();
+    const deadline = deps.now() + APPROVAL_POLL_TIMEOUT_MS;
+    deps.write('   ');
+    while (deps.now() < deadline) {
+      await deps.sleep(APPROVAL_POLL_INTERVAL_MS);
+      status = deps.checkSeStatus();
       if (status === 'enabled') {
-        console.log();
-        console.log();
-        console.log(`   ${green('✓')} Network Extension approved`);
-        console.log();
-        console.log(green('✓ iOS network capture is ready.'));
-        console.log();
-        console.log('   Run your tests as normal:');
-        console.log(`      ${bold('npx tapsmith test')}`);
-        return;
+        log();
+        log();
+        log(`   ${green('✓')} Network Extension approved`);
+        log();
+        return ready();
       }
-      process.stdout.write(dim('.'));
+      deps.write(dim('.'));
     }
-    console.log();
-    console.log();
-    console.log(red('✗ Timed out waiting for Network Extension approval.'));
-    console.log();
-    console.log('   When you have approved the extension, re-run:');
-    console.log(`      ${bold('npx tapsmith setup-ios')}`);
-    process.exit(1);
+    log();
+    log();
+    log(red('✗ Timed out waiting for Network Extension approval.'));
+    log();
+    log('   When you have approved the extension, re-run:');
+    log(`      ${bold(SELF)}`);
+    return fail();
   }
 
   // status === 'unknown' — systemextensionsctl missing, errored, or unparseable
-  console.log(`   ${yellow('⚠')} Could not determine Network Extension status`);
-  console.log();
-  console.log('   Try running manually:');
-  console.log(`      ${bold('systemextensionsctl list')}`);
-  console.log();
-  console.log(`   Look for ${dim(REDIRECTOR_SE_BUNDLE_ID)}`);
-  console.log(`   in state ${dim('[activated enabled]')}.`);
-  process.exit(1);
+  log(`   ${yellow('⚠')} Could not determine Network Extension status`);
+  log();
+  log('   Try running manually:');
+  log(`      ${bold('systemextensionsctl list')}`);
+  log();
+  log(`   Look for ${dim(REDIRECTOR_SE_BUNDLE_ID)}`);
+  log(`   in state ${dim('[activated enabled]')}.`);
+  return fail();
+}
+
+/** CLI entry: exits non-zero when the user must act. */
+export async function runSetupIos(): Promise<void> {
+  const code = await setupSimulatorNetworkCapture();
+  if (code !== 0) process.exit(code);
 }

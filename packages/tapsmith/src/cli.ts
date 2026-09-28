@@ -588,7 +588,7 @@ async function setupSequentialDevice(
       console.error('  find \x1b[1mApple Development: <your name>\x1b[0m, and tap \x1b[1mTrust\x1b[0m.');
       console.error();
       console.error(dim('  Free Apple Developer accounts re-roll the profile every 7 days,'));
-      console.error(dim('  so this step recurs weekly. Re-run `tapsmith build-ios-agent`'));
+      console.error(dim('  so this step recurs weekly. Re-run `tapsmith ios build-agent`'));
       console.error(dim('  before trusting so the profile on the phone matches.'));
       console.error();
       throw new Error('iOS developer certificate not trusted on device');
@@ -604,7 +604,7 @@ async function setupSequentialDevice(
           progress.note(
             `Host IP drift detected: profile points at ${drift.sidecarHostIp}, Mac is now ${drift.currentHostIp}.`,
           );
-          progress.note(`Run \`tapsmith refresh-ios-network ${deviceSerial}\` and reinstall the updated profile.`);
+          progress.note(`Run \`tapsmith ios network configure ${deviceSerial} --refresh\` and reinstall the updated profile.`);
         } else {
           console.log();
           console.log('\x1b[33m⚠ Host IP drift detected.\x1b[0m');
@@ -612,7 +612,7 @@ async function setupSequentialDevice(
             dim(`  Installed profile points at ${drift.sidecarHostIp}, Mac is now ${drift.currentHostIp}.`),
           );
           console.log(
-            dim(`  Run \`tapsmith refresh-ios-network ${deviceSerial}\` and reinstall the updated`),
+            dim(`  Run \`tapsmith ios network configure ${deviceSerial} --refresh\` and reinstall the updated`),
           );
           console.log(dim('  profile on the device, otherwise traces will come back empty.'));
           console.log();
@@ -710,8 +710,8 @@ async function setupSequentialDevice(
   if (!progress) console.log(dim(`Using device: ${deviceSerial}`));
 
   // Physical-iOS provisioning-profile expiry warning, now that the xctestrun
-  // is resolved. Three-point surfacing (here + build-ios-agent tail +
-  // setup-ios-device preflight) so users hit the warning whichever path they
+  // is resolved. Three-point surfacing (here + ios build-agent tail +
+  // ios setup-device preflight) so users hit the warning whichever path they
   // took to get to this point.
   if (cfg.platform === 'ios' && targetIsPhysical && session.context.iosXctestrunPath) {
     const { getProfileExpiryInfo, formatExpiryWarning } = await import('./ios-profile-expiry.js');
@@ -1589,12 +1589,11 @@ const cliHandlers: CliHandlers = {
   },
 
   listDevices: async (opts) => (await import('./list-devices.js')).runListDevices(opts),
-  setupIos: async () => (await import('./setup-ios.js')).runSetupIos(),
-  setupIosDevice: async () => (await import('./setup-ios-device.js')).runSetupIosDevice(),
-  configureIosNetwork: async (opts) => (await import('./configure-ios-network.js')).runConfigureIosNetwork(opts),
-  refreshIosNetwork: async (opts) => (await import('./configure-ios-network.js')).runRefreshIosNetwork(opts),
-  verifyIosNetwork: async (opts) => (await import('./verify-ios-network.js')).runVerifyIosNetwork(opts),
-  buildIosAgent: async (opts) => (await import('./build-ios-agent.js')).runBuildIosAgent(opts),
+  iosSetupDevice: async () => (await import('./setup-ios-device.js')).runSetupIosDevice(),
+  iosBuildAgent: async (opts) => (await import('./build-ios-agent.js')).runBuildIosAgent(opts),
+  iosNetworkSetupSimulator: async () => (await import('./setup-ios.js')).runSetupIos(),
+  iosNetworkConfigure: async (opts) => (await import('./configure-ios-network.js')).runConfigureIosNetwork(opts),
+  iosNetworkVerify: async (opts) => (await import('./verify-ios-network.js')).runVerifyIosNetwork(opts),
   createAvd: async (opts) => (await import('./create-avd.js')).runCreateAvd(opts),
   init: async (opts) => (await import('./init.js')).runInit(opts),
   verify: async (opts) => (await import('./verify.js')).runVerify(opts),

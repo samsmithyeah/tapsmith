@@ -509,7 +509,7 @@ impl IosRedirect {
                      \n\
                      Approve it in: System Settings → General → Login Items & Extensions → Network Extensions → Mitmproxy Redirector\n\
                      \n\
-                     Or run: npx tapsmith setup-ios"
+                     Or run: npx tapsmith ios network setup-simulator"
                 );
             }
             SeStatus::NotRegistered => {

@@ -24,7 +24,7 @@
 //!   - iOS caches PAC responses aggressively, typically until the device
 //!     leaves and rejoins the Wi-Fi network. Changes to `trace.networkHosts`
 //!     in tapsmith.config.ts may not take effect until the user toggles Wi-Fi.
-//!     `tapsmith verify-ios-network` fetches the live PAC from the daemon and
+//!     `tapsmith ios network verify` fetches the live PAC from the daemon and
 //!     compares it to the configured one, so stale caches are caught rather
 //!     than silently producing wrong traces.
 //!   - The proxy listener must be bound *before* iOS tries to fetch the PAC

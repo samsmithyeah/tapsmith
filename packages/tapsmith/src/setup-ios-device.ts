@@ -1,5 +1,5 @@
 /**
- * `tapsmith setup-ios-device` — first-run preflight for physical iOS devices.
+ * `tapsmith ios setup-device` — first-run preflight for physical iOS devices.
  *
  * Runs an idempotent ✓ / ✗ checklist of the tribal knowledge users would
  * otherwise have to pick up from Stack Overflow and Apple's docs. Each
@@ -255,7 +255,7 @@ export function checkSudoTruePasswordless(): CheckResult {
  * runner. Free Apple Developer accounts re-roll the profile every 7 days,
  * and a profile that's about to expire is the single most common cause of
  * "it suddenly stopped working" reports. Surfacing it here means users
- * running `tapsmith setup-ios-device` before a test session get an immediate
+ * running `tapsmith ios setup-device` before a test session get an immediate
  * "rebuild now" nudge rather than learning mid-test.
  *
  * Returns `ok: true` with no detail when no runner is built yet (that's
@@ -302,16 +302,16 @@ export function checkProfileExpiry(): CheckResult {
     label: 'Provisioning profile expiry',
     ok: false,
     advisory: true,
-    fix: warning ? [warning] : ['Profile near expiry — re-run `tapsmith build-ios-agent`.'],
+    fix: warning ? [warning] : ['Profile near expiry — re-run `tapsmith ios build-agent`.'],
   };
 }
 
 /**
  * Check whether the signed TapsmithAgent runner has been built for physical
  * devices. This is a cheap cache lookup under `ios-agent/.build-device`
- * that saves the user from having to remember to run `tapsmith build-ios-agent`
+ * that saves the user from having to remember to run `tapsmith ios build-agent`
  * separately. Advisory because the check isn't strictly required — users
- * can run `tapsmith build-ios-agent` any time — but surfacing its state here
+ * can run `tapsmith ios build-agent` any time — but surfacing its state here
  * means one less step in the "next steps" list when it's already done.
  */
 export function checkIosAgentBuilt(): CheckResult {
@@ -348,7 +348,7 @@ export function checkIosAgentBuilt(): CheckResult {
     advisory: true,
     fix: [
       'Not built yet. Run this once (takes 60–120s first run, <10s incremental):',
-      '  tapsmith build-ios-agent',
+      '  tapsmith ios build-agent',
       '(advisory — you can build it at any time before `tapsmith test`)',
     ],
   };
@@ -419,11 +419,25 @@ function printDeviceStatus(devices: PhysicalDeviceInfo[]): void {
   }
 }
 
+/**
+ * Where network capture goes from here, printed on every exit: this device's
+ * own capture setup, and the simulator track for a user who is in the wrong
+ * place (PILOT-271).
+ */
+export function networkCaptureNextSteps(): string[] {
+  return [
+    bold('Network capture (optional):'),
+    `  ${dim('•')} On a physical device: ${bold('tapsmith ios network configure <udid>')}, then ${bold('tapsmith ios network verify <udid>')}`,
+    `  ${dim('•')} On an iOS simulator instead: ${bold('tapsmith ios network setup-simulator')}`,
+    '',
+  ];
+}
+
 // ─── Main entry point ───────────────────────────────────────────────────
 
 export async function runSetupIosDevice(): Promise<void> {
   if (process.platform !== 'darwin') {
-    console.error(red('tapsmith setup-ios-device is only supported on macOS.'));
+    console.error(red('tapsmith ios setup-device is only supported on macOS.'));
     process.exit(1);
   }
 
@@ -469,6 +483,7 @@ export async function runSetupIosDevice(): Promise<void> {
   if (!hardOk) {
     console.log(red('✗ Some checks failed. Address the issues above and re-run.'));
     console.log();
+    for (const line of networkCaptureNextSteps()) console.log(line);
     process.exit(1);
   }
 
@@ -508,4 +523,5 @@ export async function runSetupIosDevice(): Promise<void> {
   console.log(dim('       { platform: \'ios\', device: \'<UDID>\', iosXctestrun: \'<path>\', app: \'<signed .app>\' }'));
   console.log(`  ${dim('2.')} ${bold('tapsmith test --config <your-config>')}`);
   console.log();
+  for (const line of networkCaptureNextSteps()) console.log(line);
 }

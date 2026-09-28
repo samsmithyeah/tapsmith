@@ -41,7 +41,7 @@ impl IproxyHandle {
             bail!(
                 "iproxy not found on PATH. Install libimobiledevice:\n  \
                  brew install libimobiledevice\n\
-                 Then re-run `tapsmith setup-ios-device` to verify."
+                 Then re-run `tapsmith ios setup-device` to verify."
             );
         }
 

@@ -22,22 +22,22 @@ The fastest path is to use Tapsmith's interactive setup command, which checks yo
 
 ```sh
 brew install mitmproxy
-npx tapsmith setup-ios
+npx tapsmith ios network setup-simulator
 ```
 
-`tapsmith setup-ios` reports each step with a ✓ / ✗ status, opens System Settings directly to the correct pane if approval is still needed, and polls until the Network Extension flips to `[activated enabled]`. On a fresh machine you'll see:
+`tapsmith ios network setup-simulator` reports each step with a ✓ / ✗ status, opens System Settings directly to the correct pane if approval is still needed, and polls until the Network Extension flips to `[activated enabled]`. On a fresh machine you'll see:
 
 1. `✓ mitmproxy is installed`
-2. `⚠ Network Extension is registered but not yet approved` (or `○ not yet registered` on a brand-new install)
+2. `⚠ Network Extension is registered but not yet approved` (or `○ Network Extension has not been registered yet` on a brand-new install)
 3. Tapsmith opens **System Settings → General → Login Items & Extensions → Network Extensions**
 4. Click **(i)** next to the `Network Extensions` row, toggle **Mitmproxy Redirector** on, enter your password
-5. Tapsmith detects the state change and prints `✓ iOS network capture is ready.`
+5. Tapsmith detects the state change and prints `✓ iOS simulator network capture is ready.`
 
 From this point on, `npx tapsmith test` with iOS network capture enabled (the default when tracing is on) silently spawns the redirector and routes traffic through Tapsmith's MITM proxy.
 
 ### If the Network Extension isn't registered yet
 
-On a truly fresh machine the Network Extension is registered the first time Tapsmith spawns the redirector (which happens automatically on your first `tapsmith test` run with tracing). If `tapsmith setup-ios` reports `○ not yet registered`, do the following:
+On a truly fresh machine the Network Extension is registered the first time Tapsmith spawns the redirector (which happens automatically on your first `tapsmith test` run with tracing). If `tapsmith ios network setup-simulator` reports that the extension has not been registered yet, nothing is wrong (it exits 0); do the following:
 
 1. Run any iOS test once to trigger the registration prompt:
    ```sh
@@ -46,11 +46,11 @@ On a truly fresh machine the Network Extension is registered the first time Taps
    (Or any test with tracing enabled.)
 2. macOS will show a **"System Extension Blocked"** dialog. Click through to System Settings.
 3. Approve the extension in **System Settings → General → Login Items & Extensions → Network Extensions**.
-4. Re-run `npx tapsmith setup-ios` to verify, or just re-run your tests.
+4. Re-run `npx tapsmith ios network setup-simulator` to verify, or just re-run your tests.
 
 ### Manual fallback
 
-If you prefer to do the setup by hand (or if `tapsmith setup-ios` doesn't work for some reason):
+If you prefer to do the setup by hand (or if `tapsmith ios network setup-simulator` doesn't work for some reason):
 
 ```sh
 brew install mitmproxy
@@ -138,7 +138,7 @@ Tapsmith now **auto-cleans orphaned redirectors at startup** (looks for redirect
 
 4. **Re-run setup.**
    ```sh
-   npx tapsmith setup-ios
+   npx tapsmith ios network setup-simulator
    ```
    This re-registers the SE and can recover from registration glitches.
 
@@ -208,7 +208,7 @@ The stock mitmproxy launcher reuses any `mitmproxy` extension configuration that
 
 ### Physical iOS device network capture
 
-See the [Physical iOS devices](#physical-ios-devices) section below — physical devices use a different setup flow (`tapsmith configure-ios-network`) because they can't share the macOS Network Extension that simulators use.
+See the [Physical iOS devices](#physical-ios-devices) section below — physical devices use a different setup flow (`tapsmith ios network configure`) because they can't share the macOS Network Extension that simulators use.
 
 ## Physical iOS devices
 
@@ -216,7 +216,7 @@ Physical iPhones/iPads have their own network stack — the macOS Network Extens
 
 ### How it works (physical)
 
-1. `tapsmith configure-ios-network <udid>` generates a `.mobileconfig` containing two payloads:
+1. `tapsmith ios network configure <udid>` generates a `.mobileconfig` containing two payloads:
    - `com.apple.wifi.managed` — targets your current Wi-Fi SSID with `ProxyType: Manual`, `ProxyServer: <host-ip>`, `ProxyServerPort: <deterministic-port>`. The port is `9000 + CRC32(udid) % 1000`, so it's stable per device and multiple devices can run in parallel without colliding.
    - `com.apple.security.root` — the Tapsmith CA, for HTTPS trust.
 2. You install the profile on the device once (AirDrop / email / Messages) and trust the CA in **Settings → General → About → Certificate Trust Settings**.
@@ -224,21 +224,21 @@ Physical iPhones/iPads have their own network stack — the macOS Network Extens
 
 ### First-run setup (physical)
 
-Prerequisites — `tapsmith setup-ios-device` checks the host tools, device pairing and (in a Tapsmith checkout) the agent build for you; Developer Mode you check on the device:
+Prerequisites — `tapsmith ios setup-device` checks the host tools, device pairing and (in a Tapsmith checkout) the agent build for you; Developer Mode you check on the device:
 
 - Xcode 15+ with command-line tools
 - `libimobiledevice` installed (`brew install libimobiledevice`)
-- A signed TapsmithAgent built for iOS device (`tapsmith build-ios-agent`)
+- A signed TapsmithAgent built for iOS device (`tapsmith ios build-agent`)
 - Your device plugged in via USB, paired with Xcode, Developer Mode enabled
 
 Then, for each physical device you want to test against:
 
 ```sh
 # 1. Verify environment + see the device's UDID
-tapsmith setup-ios-device
+tapsmith ios setup-device
 
 # 2. Generate the mobileconfig (auto-detects host Wi-Fi IP, SSID, device name)
-tapsmith configure-ios-network <UDID>
+tapsmith ios network configure <UDID>
 ```
 
 Follow the on-screen walkthrough to install the profile on the device:
@@ -278,23 +278,23 @@ Tapsmith applies the filter when stopping the capture, so filtered-out entries n
 
 ### Running parallel physical devices
 
-The deterministic per-UDID port means multiple physical devices on the same Wi-Fi network each get their own host port without collision. Run `tapsmith configure-ios-network` once per device; each installs a profile with a distinct port, and parallel worker buckets dispatch independently.
+The deterministic per-UDID port means multiple physical devices on the same Wi-Fi network each get their own host port without collision. Run `tapsmith ios network configure` once per device; each installs a profile with a distinct port, and parallel worker buckets dispatch independently.
 
 ### When the host's Wi-Fi IP changes
 
 The mobileconfig embeds the host's LAN IP at generation time. If you move between Wi-Fi networks (or DHCP reassigns your IP), the installed profile goes stale and the device will hit connection-refused when it tries the proxy. Regenerate:
 
 ```sh
-tapsmith refresh-ios-network <UDID>
+tapsmith ios network configure <UDID> --refresh
 ```
 
-Then remove the old profile on the device (**Settings → General → VPN & Device Management → Tapsmith Network Capture → Remove Profile**) and install the new one.
+It prints the steps: remove the old profile on the device (**Settings → General → VPN & Device Management → Tapsmith Network Capture → Remove Profile**), install and trust the new one, and replace the proxy URL in the device's Wi-Fi settings with the new one it prints. The proxy URL carries the Mac's IP, so this last step is the one that actually fixes an IP change.
 
-Tapsmith also detects this at test time: if the daemon notices that the host's current Wi-Fi IP doesn't match the IP recorded in `~/.tapsmith/devices/<UDID>.meta.json`, it prints a warning in the trace with the `refresh-ios-network` command to run.
+Tapsmith also detects this at test time: if the daemon notices that the host's current Wi-Fi IP doesn't match the IP recorded in `~/.tapsmith/devices/<UDID>.meta.json`, it prints a warning in the trace with the `tapsmith ios network configure <UDID> --refresh` command to run.
 
 ### Troubleshooting (physical)
 
-**"No Tapsmith network profile found for device …"** — you haven't generated the mobileconfig yet. Run `tapsmith configure-ios-network <UDID>`.
+**"No Tapsmith network profile found for device …"** — you haven't generated the mobileconfig yet. Run `tapsmith ios network configure <UDID>`.
 
 **"Host Wi-Fi IP changed since mobileconfig was generated"** — see [When the host's Wi-Fi IP changes](#when-the-hosts-wi-fi-ip-changes).
 
@@ -304,7 +304,7 @@ Tapsmith also detects this at test time: if the daemon notices that the host's c
 
 **A VPN app is installed on the device** — VPN apps bypass Wi-Fi HTTP proxy. Disable the VPN for the duration of testing. This is a known limitation.
 
-**Device signing expired (free Apple Developer account)** — free accounts rotate profiles every 7 days. Rerun `tapsmith build-ios-agent` to refresh the signed runner.
+**Device signing expired (free Apple Developer account)** — free accounts rotate profiles every 7 days. Rerun `tapsmith ios build-agent` to refresh the signed runner.
 
 ## Security and privacy
 

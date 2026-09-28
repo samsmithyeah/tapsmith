@@ -259,13 +259,17 @@ describe('help', () => {
   });
 
   const commands = [
-    'test', 'show-trace', 'show-report', 'merge-reports', 'list-devices', 'setup-ios', 'setup-ios-device',
-    'build-ios-agent', 'create-avd', 'configure-ios-network', 'refresh-ios-network', 'verify-ios-network',
+    'test', 'show-trace', 'show-report', 'merge-reports', 'list-devices', 'create-avd',
     'init', 'verify', 'doctor', 'mcp-server', 'telemetry',
+    'ios', 'ios setup-device', 'ios build-agent',
+    'ios network', 'ios network setup-simulator', 'ios network configure', 'ios network verify',
   ];
 
   it.each(commands)('%s --help prints that command\'s help and never runs it (PILOT-252)', async (command) => {
-    for (const argv of [[command, '--help'], [command, '-h'], ['help', command]]) {
+    const words = command.split(' ');
+    // `help <command>` answers for the word after it, at any level: `tapsmith ios network help verify`.
+    const viaHelp = [...words.slice(0, -1), 'help', words[words.length - 1]!];
+    for (const argv of [[...words, '--help'], [...words, '-h'], viaHelp]) {
       const h = await run(argv);
       expect(h.code, argv.join(' ')).toBe(0);
       expect(h.calls, argv.join(' ')).toEqual([]);
@@ -275,7 +279,7 @@ describe('help', () => {
 
   it.each(commands)('--help before %s never runs it (PILOT-252)', async (command) => {
     for (const flag of ['--help', '-h']) {
-      const h = await run([flag, command]);
+      const h = await run([flag, ...command.split(' ')]);
       expect(h.code).toBe(0);
       expect(h.calls).toEqual([]);
       expect(h.out).toMatch(/Usage: tapsmith/);
@@ -368,16 +372,18 @@ describe('unknown commands', () => {
 
 describe('per-command options (PILOT-260)', () => {
   it.each([
-    [['show-trace', 'foo.zip', '--force-install'], '--force-install'],
-    [['show-report', '--workers', '2'], '--workers'],
-    [['doctor', '--bogus'], '--bogus'],
-    [['list-devices', '--bogus'], '--bogus'],
-    [['mcp-server', '--bogus'], '--bogus'],
-    [['setup-ios', '--json'], '--json'],
-  ])('%j rejects %s', async (argv, flag) => {
+    [['show-trace', 'foo.zip', '--force-install'], '--force-install', 'show-trace'],
+    [['show-report', '--workers', '2'], '--workers', 'show-report'],
+    [['doctor', '--bogus'], '--bogus', 'doctor'],
+    [['list-devices', '--bogus'], '--bogus', 'list-devices'],
+    [['mcp-server', '--bogus'], '--bogus', 'mcp-server'],
+    [['ios', 'network', 'setup-simulator', '--json'], '--json', 'ios network setup-simulator'],
+    [['ios', 'build-agent', '--team', 'X'], '--team', 'ios build-agent'],
+  ])('%j rejects %s', async (argv, flag, command) => {
     const h = await usageError(argv);
     expect(h.err).toContain(`unknown option '${flag}'`);
-    expect(h.err).toContain(`tapsmith ${argv[0]} --help`);
+    // The hint names the whole command, nested ones included.
+    expect(h.err).toContain(`tapsmith ${command} --help`);
   });
 
   it('rejects stray positional arguments', async () => {
@@ -440,8 +446,8 @@ describe('commands', () => {
     expect(args.workers).toBeUndefined();
   });
 
-  it.each(['configure-ios-network', 'refresh-ios-network', 'verify-ios-network'])('%s refuses an empty UDID', async (command) => {
-    expect((await usageError([command, ''])).err).toMatch(/UDID/);
+  it.each(['configure', 'verify'])('ios network %s refuses an empty UDID', async (command) => {
+    expect((await usageError(['ios', 'network', command, ''])).err).toMatch(/UDID.*tapsmith ios setup-device/);
   });
 
   it('verify and mcp-server take a config', async () => {
@@ -458,10 +464,10 @@ describe('commands', () => {
     await usageError(['telemetry', 'enable', 'disable']);
   });
 
-  it('build-ios-agent keeps -v as --verbose', async () => {
-    expect((await run(['build-ios-agent', '-v', '--team-id', 'ABC', '--cwd', '/r', '--derived-data-path=/d'])).calls)
-      .toEqual([['buildIosAgent', { verbose: true, teamId: 'ABC', cwd: '/r', derivedDataPath: '/d' }]]);
-    expect((await run(['build-ios-agent'])).calls).toEqual([['buildIosAgent', { verbose: false }]]);
+  it('ios build-agent keeps -v as --verbose', async () => {
+    expect((await run(['ios', 'build-agent', '-v', '--team-id', 'ABC', '--cwd', '/r', '--derived-data-path=/d'])).calls)
+      .toEqual([['iosBuildAgent', { verbose: true, teamId: 'ABC', cwd: '/r', derivedDataPath: '/d' }]]);
+    expect((await run(['ios', 'build-agent'])).calls).toEqual([['iosBuildAgent', { verbose: false }]]);
   });
 
   it('create-avd passes its raw options through', async () => {
@@ -470,21 +476,22 @@ describe('commands', () => {
     expect((await run(['create-avd'])).calls).toEqual([['createAvd', { force: false, installTools: false }]]);
   });
 
-  it.each(['configure-ios-network', 'refresh-ios-network'])('%s needs a UDID and takes its options', async (command) => {
-    expect((await usageError([command])).err).toMatch(/missing required argument 'udid'/);
-    const handler = command === 'configure-ios-network' ? 'configureIosNetwork' : 'refreshIosNetwork';
-    expect((await run([command, 'U1', '--ssid', 'Home', '--device-name=Phone', '--fix-firewall'])).calls)
-      .toEqual([[handler, { udid: 'U1', ssid: 'Home', deviceName: 'Phone', fixFirewall: true }]]);
+  it('ios network configure needs a UDID and takes its options, --refresh included (PILOT-271)', async () => {
+    expect((await usageError(['ios', 'network', 'configure'])).err).toMatch(/missing required argument 'udid'/);
+    expect((await run(['ios', 'network', 'configure', 'U1', '--ssid', 'Home', '--device-name=Phone', '--fix-firewall'])).calls)
+      .toEqual([['iosNetworkConfigure', { udid: 'U1', ssid: 'Home', deviceName: 'Phone', fixFirewall: true, refresh: false }]]);
+    expect((await run(['ios', 'network', 'configure', '--refresh', 'U1'])).calls)
+      .toEqual([['iosNetworkConfigure', { udid: 'U1', fixFirewall: false, refresh: true }]]);
   });
 
-  it('verify-ios-network needs a UDID', async () => {
-    await usageError(['verify-ios-network']);
-    expect((await run(['verify-ios-network', 'U1'])).calls).toEqual([['verifyIosNetwork', { udid: 'U1' }]]);
+  it('ios network verify needs a UDID', async () => {
+    await usageError(['ios', 'network', 'verify']);
+    expect((await run(['ios', 'network', 'verify', 'U1'])).calls).toEqual([['iosNetworkVerify', { udid: 'U1' }]]);
   });
 
-  it('setup-ios and setup-ios-device take no options', async () => {
-    expect((await run(['setup-ios'])).calls).toEqual([['setupIos', {}]]);
-    expect((await run(['setup-ios-device'])).calls).toEqual([['setupIosDevice', {}]]);
+  it('ios setup-device and ios network setup-simulator take no options', async () => {
+    expect((await run(['ios', 'setup-device'])).calls).toEqual([['iosSetupDevice', {}]]);
+    expect((await run(['ios', 'network', 'setup-simulator'])).calls).toEqual([['iosNetworkSetupSimulator', {}]]);
   });
 
   it('init passes every flag through', async () => {
@@ -542,6 +549,81 @@ describe('usage errors under --json', () => {
   });
 });
 
+// ─── Nested commands (PILOT-271) ───
+
+describe('tapsmith ios', () => {
+  it.each([['ios'], ['ios', 'network']])('%j alone prints its help on stdout and exits 0, like a bare tapsmith', async (...argv) => {
+    const h = await run(argv);
+    expect(h.code).toBe(0);
+    expect(h.calls).toEqual([]);
+    expect(h.err).toBe('');
+    expect(h.out).toContain(`Usage: tapsmith ${argv.join(' ')}`);
+    expect(h.out).toBe((await run([...argv, '--help'])).out);
+  });
+
+  it('lists the two tracks in its help', async () => {
+    const ios = (await run(['ios', '--help'])).out;
+    for (const sub of ['setup-device', 'build-agent', 'network']) expect(ios).toContain(sub);
+    const network = (await run(['ios', 'network', '--help'])).out;
+    for (const sub of ['setup-simulator', 'configure', 'verify']) expect(network).toContain(sub);
+    expect(network).toMatch(/setup-simulator\s+.*simulator/i);
+  });
+
+  it.each([
+    [['ios', 'nope'], 'nope', 'tapsmith ios --help'],
+    [['ios', 'nope', '--help'], 'nope', 'tapsmith ios --help'],
+    [['ios', 'network', 'refresh', 'U1'], 'refresh', 'tapsmith ios network --help'],
+    [['ios', 'network', 'nope', '-h'], 'nope', 'tapsmith ios network --help'],
+  ])('%j is an unknown-command error naming its group', async (argv, word, hint) => {
+    const h = await usageError(argv);
+    expect(h.err).toContain(`unknown command '${word}'`);
+    expect(h.err).toContain(hint);
+    expect(h.out).toBe('');
+  });
+
+  it('suggests the nearest subcommand', async () => {
+    expect((await usageError(['ios', 'netwrk'])).err).toMatch(/Did you mean network\?/);
+    expect((await usageError(['ios', 'network', 'verfy', 'U1'])).err).toMatch(/Did you mean verify\?/);
+  });
+
+  it.each([
+    ['setup-ios'], ['setup-ios-device'], ['build-ios-agent'],
+    ['configure-ios-network', 'U1'], ['refresh-ios-network', 'U1'], ['verify-ios-network', 'U1'],
+  ])('the removed name %s is a plain unknown command (hard cut, no alias)', async (...argv) => {
+    const h = await usageError(argv);
+    expect(h.err).toContain(`unknown command '${argv[0]}'`);
+  });
+
+  it('refuses a value flag given a flag at the leaf, as the docs guard does', async () => {
+    const h = await usageError(['ios', 'network', 'configure', 'U1', '--ssid', '--refresh']);
+    expect(h.err).toContain('If \'--refresh\' really is the value, write --ssid=--refresh');
+    expect(h.err).toContain('tapsmith ios network configure --help');
+    // The = form still takes it.
+    expect((await run(['ios', 'network', 'configure', 'U1', '--ssid=--refresh'])).calls)
+      .toEqual([['iosNetworkConfigure', { udid: 'U1', ssid: '--refresh', fixFirewall: false, refresh: false }]]);
+  });
+
+  it('refuses a single-dash long flag at the leaf', async () => {
+    expect((await usageError(['ios', 'network', 'configure', 'U1', '-refresh'])).err).toContain('Did you mean --refresh?');
+  });
+
+  it('lets --help win at the leaf, even over a value flag missing its value', async () => {
+    const h = await run(['ios', 'build-agent', '--team-id', '--help']);
+    expect(h.code).toBe(0);
+    expect(h.calls).toEqual([]);
+    expect(h.out).toContain('Usage: tapsmith ios build-agent');
+  });
+
+  it('a group-level --help after a subcommand shows the subcommand\'s help', async () => {
+    expect((await run(['ios', 'network', 'verify', '--help'])).out).toContain('Usage: tapsmith ios network verify');
+  });
+
+  it('an option before a nested command names the whole command', async () => {
+    const h = await usageError(['-c', 'x.mjs', 'ios', 'network', 'verify', 'U1']);
+    expect(h.err).toContain('\'-c\' goes after the command: tapsmith ios network verify -c');
+  });
+});
+
 // ─── Banner ───
 
 describe('printsBanner()', () => {
@@ -558,5 +640,23 @@ describe('printsBanner()', () => {
     for (const command of ['mcp-server', 'telemetry', 'init', 'test']) {
       expect(printsBanner(command, {}), command).toBe(false);
     }
+  });
+
+  it('prints for the iOS commands, by their full path', () => {
+    for (const command of ['ios setup-device', 'ios build-agent', 'ios network setup-simulator', 'ios network configure', 'ios network verify']) {
+      expect(printsBanner(command, {}), command).toBe(true);
+    }
+    for (const command of ['ios', 'ios network', 'setup-ios', 'configure-ios-network']) {
+      expect(printsBanner(command, {}), command).toBe(false);
+    }
+  });
+
+  it('hands the banner hook the full command path', async () => {
+    const seen: string[] = [];
+    const handlers = new Proxy({} as CliHandlers, { get: () => async () => {} });
+    await runCli(['ios', 'network', 'configure', 'U1'], {
+      handlers, version: '1', io: { out: () => {}, err: () => {} }, beforeAction: (command) => { seen.push(command); },
+    });
+    expect(seen).toEqual(['ios network configure']);
   });
 });
