@@ -627,6 +627,36 @@ function resolveCommandPath(top: Command, argv: string[], start: number): Comman
   return { leaf, name: names.join(' '), end, unknown: false };
 }
 
+/** Whether `cmd` has `flag` (`--x`, or a short form known by its letter) as an option taking a value. */
+function takesValue(cmd: Command, flag: string): boolean {
+  const name = flag.startsWith('--') ? flag.split('=', 1)[0]! : flag.slice(0, 2);
+  return cmd.options.some((o) => (o.long === name || o.short === name) && (o.required || o.optional));
+}
+
+/**
+ * For `tapsmith -c ci.mjs test`, where options come before the command: the
+ * index of the word that is the command, or -1. A command word is read as the
+ * value of the flag before it only when a later command, outside that word's
+ * own path, takes that flag with a value (`--platform ios init` is init,
+ * whose --platform takes `ios`; `--force-install test verify` is test, with
+ * `verify` a file). A bare group after a flag is not a target: groups take no
+ * options, so `--platform ios` has no command.
+ */
+function misplacedFlagTarget(program: Command, argv: string[]): number {
+  const commandAts = argv.map((_t, i) => i).filter((i) => !argv[i]!.startsWith('-') && !!findCommand(program, argv[i]!));
+  for (const i of commandAts) {
+    const prev = argv[i - 1];
+    const afterFlag = prev !== undefined && prev.startsWith('-') && prev !== '--' && !prev.includes('=');
+    const path = resolveCommandPath(findCommand(program, argv[i]!)!, argv, i);
+    if (!afterFlag) return i;
+    const valueOfLater = commandAts.some((j) => j >= path.end
+      && takesValue(resolveCommandPath(findCommand(program, argv[j]!)!, argv, j).leaf, prev));
+    if (valueOfLater) continue;
+    return path.leaf.commands.length > 0 ? -1 : i;
+  }
+  return -1;
+}
+
 /** The first token that names a command, if everything before it is a root flag. */
 function commandIndex(argv: string[]): number {
   for (let i = 0; i < argv.length; i++) {
@@ -827,22 +857,7 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
     } else {
       // `tapsmith -c ci.mjs test`: the old parser took options anywhere.
       const misplaced = argv.find((t) => t.startsWith('-') && !ROOT_FLAGS.has(t));
-      // The command is the first command word, unless it may be the value
-      // of the flag before it and either another command word follows
-      // outside its own path, or it names no more than a bare group:
-      // `--platform ios init` is init, `--platform ios` has no command, and
-      // `--json ios network verify` is ios network verify, not the top-level
-      // verify.
-      const isCommandAt = (i: number): boolean => !argv[i]!.startsWith('-') && !!findCommand(program, argv[i]!);
-      const commandAts = argv.map((_t, i) => i).filter(isCommandAt);
-      const laterAt = commandAts.find((i) => {
-        const prev = argv[i - 1];
-        const mayBeValue = prev !== undefined && prev.startsWith('-') && !prev.includes('=');
-        if (!mayBeValue) return true;
-        const path = resolveCommandPath(findCommand(program, argv[i]!)!, argv, i);
-        if (path.leaf.commands.length > 0) return false;
-        return !commandAts.some((j) => j >= path.end);
-      }) ?? -1;
+      const laterAt = misplacedFlagTarget(program, argv);
       if (misplaced && laterAt >= 0) {
         const later = resolveCommandPath(findCommand(program, argv[laterAt]!)!, argv, laterAt);
         state.command = later.name;

@@ -686,6 +686,21 @@ describe('tapsmith ios', () => {
     expect(h.err).not.toContain('tapsmith ios');
   });
 
+  it.each([
+    [['--force-install', 'test', 'verify'], 'test'],
+    [['--force-install', 'test', 'ios'], 'test'],
+    [['-w', 'test', 'doctor'], 'test'],
+  ])('%j: a positional that names a command is not the command', async (argv, command) => {
+    const h = await usageError(argv);
+    expect(h.err).toContain(`'${argv[0]}' goes after the command: tapsmith ${command} ${argv[0]}`);
+  });
+
+  it('--json before test with a positional named doctor is not doctor\'s JSON error', async () => {
+    const h = await usageError(['--json', 'test', 'doctor']);
+    expect(h.out).toBe('');
+    expect(h.err).toContain('tapsmith test does not take it either');
+  });
+
   it('a boolean misplaced flag before a nested command names that command, not a top-level namesake', async () => {
     let h = await usageError(['--json', 'ios', 'network', 'verify', 'U1']);
     expect(h.out).toBe('');

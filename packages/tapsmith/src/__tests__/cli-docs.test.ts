@@ -544,6 +544,9 @@ function resolveInvocation(root: Command, written: string[], mode: { strict: boo
       continue;
     }
     // A word: a subcommand, `help`, or an argument.
+    // After a help flag, commander (and runCli) show the current command's
+    // page: `tapsmith ios --help network` is the ios page.
+    if (sawHelp && cmd.commands.length > 0) return { command: cmd, flags, errors };
     if (cmd.commands.length > 0 && positionals === 0) {
       if (isPlaceholder(token)) return { flags, errors }; // `tapsmith <command> --help`
       if (token === 'help') {
@@ -847,6 +850,16 @@ describe('CLI docs guard: resolution', () => {
     expect(errorsFor('tapsmith ios network help verify')).toEqual([]);
     expect(errorsFor('tapsmith help ios')).toEqual([]);
     expect(errorsFor('tapsmith ios network --help')).toEqual([]);
+  });
+
+  it('stops at a help flag, as commander does: the page is the current command\'s', () => {
+    const root = syntheticTree();
+    const at = (line: string): string | undefined => {
+      const { command } = resolveInvocation(root, line.split(' ').slice(1), { strict: true, complete: false });
+      return command ? commandPath(command).join(' ') : undefined;
+    };
+    expect(at('tapsmith ios --help network')).toBe('ios');
+    expect(at('tapsmith ios network --help')).toBe('ios network');
   });
 
   it('reports unknown commands and subcommands', () => {
