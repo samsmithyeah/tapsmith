@@ -618,6 +618,50 @@ describe('tapsmith ios', () => {
     expect((await run(['ios', 'network', 'verify', '--help'])).out).toContain('Usage: tapsmith ios network verify');
   });
 
+  it.each([['-v'], ['--version']])('%s before a bare group prints the version, as before any other command', async (flag) => {
+    for (const argv of [[flag, 'ios'], [flag, 'ios', 'network']]) {
+      const h = await run(argv);
+      expect(h.code, argv.join(' ')).toBe(0);
+      expect(h.out, argv.join(' ')).toBe('1.2.3\n');
+    }
+  });
+
+  it('-h before a bare group never runs anything', async () => {
+    const h = await run(['-h', 'ios', 'network']);
+    expect(h.code).toBe(0);
+    expect(h.calls).toEqual([]);
+    expect(h.out).toMatch(/Usage: tapsmith/);
+  });
+
+  it('a bare group followed by -- is still a help request', async () => {
+    const h = await run(['ios', '--']);
+    expect(h.code).toBe(0);
+    expect(h.err).toBe('');
+    expect(h.out).toContain('Usage: tapsmith ios');
+  });
+
+  it.each([
+    [['help', 'ios', 'network'], 'tapsmith ios network'],
+    [['help', 'ios', 'network', 'configure'], 'tapsmith ios network configure'],
+    [['ios', 'help', 'network', 'verify'], 'tapsmith ios network verify'],
+    [['help', 'ios'], 'tapsmith ios'],
+  ])('%j resolves the whole command path, git-style', async (argv, usage) => {
+    const h = await run(argv);
+    expect(h.code).toBe(0);
+    expect(h.calls).toEqual([]);
+    expect(h.out).toContain(`Usage: ${usage} `);
+  });
+
+  it.each([
+    [['help', 'ios', 'netwrk'], 'netwrk', 'tapsmith ios --help'],
+    [['help', 'ios', 'network', 'nope'], 'nope', 'tapsmith ios network --help'],
+    [['ios', 'help', 'nope'], 'nope', 'tapsmith ios --help'],
+  ])('%j is an unknown-command error, not a help page', async (argv, word, hint) => {
+    const h = await usageError(argv);
+    expect(h.err).toContain(`unknown command '${word}'`);
+    expect(h.err).toContain(hint);
+  });
+
   it('an option before a nested command names the whole command', async () => {
     const h = await usageError(['-c', 'x.mjs', 'ios', 'network', 'verify', 'U1']);
     expect(h.err).toContain('\'-c\' goes after the command: tapsmith ios network verify -c');

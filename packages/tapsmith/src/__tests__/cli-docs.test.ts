@@ -402,8 +402,8 @@ interface Resolution {
 /**
  * Walk an invocation's words down the tree: each level's flags, then a
  * subcommand while the current command has them, then the leaf's flags and
- * arguments. `help <command>` resolves the one command it asks about, as
- * commander does. The leaf's words also go through `prepareCommandArgs`, the
+ * arguments. `help <command…>` resolves the command path it asks about, as
+ * runCli does. The leaf's words also go through `prepareCommandArgs`, the
  * rules `runCli` adds on top of commander (a value flag given a flag, `-grep`).
  */
 function resolveInvocation(root: Command, written: string[], mode: { strict: boolean; complete: boolean }): Resolution {
@@ -520,15 +520,17 @@ function resolveInvocation(root: Command, written: string[], mode: { strict: boo
       continue;
     }
     if (helpAt) {
-      // `help <command>`: commander shows help for one word only.
-      if (helpTarget) {
-        errors.push(`\`${where()} help\` shows help for one command only (got '${token}'): write \`tapsmith ${[...commandPath(helpTarget), token].join(' ')} --help\``);
+      // `help <command…>`: runCli resolves the whole path, git-style
+      // (`tapsmith help ios network configure`), and ignores words after a leaf.
+      const group = helpTarget ?? cmd;
+      if (helpTarget && helpTarget.commands.length === 0) {
+        errors.push(`\`tapsmith ${commandPath(helpTarget).join(' ')}\` has no subcommands (got '${token}' after \`help\`)`);
         return { flags, errors };
       }
       if (isPlaceholder(token)) return { flags, errors };
-      const sub = findSubcommand(cmd, token);
+      const sub = findSubcommand(group, token);
       if (!sub) {
-        errors.push(`${where()} has no command '${token}'`);
+        errors.push(`${group === root ? 'tapsmith' : `tapsmith ${commandPath(group).join(' ')}`} has no command '${token}'`);
         return { flags, errors };
       }
       helpTarget = sub;
@@ -842,10 +844,10 @@ describe('CLI docs guard: resolution', () => {
     expect(errorsFor('tapsmith tset')).toEqual(['tapsmith has no command \'tset\'']);
     expect(errorsFor('tapsmith ios network refresh <udid>')).toEqual(['tapsmith ios network has no command \'refresh\'']);
     expect(errorsFor('tapsmith help nope')).toEqual(['tapsmith has no command \'nope\'']);
-    // commander's help command reads one word: this prints `ios` help.
-    expect(errorsFor('tapsmith help ios network verify')).toEqual([
-      '`tapsmith help` shows help for one command only (got \'network\'): write `tapsmith ios network --help`',
-    ]);
+    // runCli resolves the whole path after `help`, git-style.
+    expect(errorsFor('tapsmith help ios network verify')).toEqual([]);
+    expect(errorsFor('tapsmith help ios netwrk')).toEqual(['tapsmith ios has no command \'netwrk\'']);
+    expect(errorsFor('tapsmith help doctor extra')).toEqual(['`tapsmith doctor` has no subcommands (got \'extra\' after `help`)']);
   });
 
   it('reports unknown flags, and flags given to the wrong command', () => {

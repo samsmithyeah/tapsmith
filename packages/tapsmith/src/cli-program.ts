@@ -745,6 +745,31 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
     return 0;
   }
 
+  /**
+   * `help <command…>` below `prefix` (the group the `help` word belongs to),
+   * with its first word at argv[at]. Commander's help command reads one word,
+   * so `tapsmith help ios network` would show the `ios` page and
+   * `tapsmith help ios nope` would exit 0; resolve the whole path instead.
+   * Returns the argv to hand commander, or undefined to leave it to commander.
+   */
+  const helpArgs = (prefix: string[], group: Command, at: number): string[] | undefined => {
+    const word = argv[at];
+    if (word === undefined || word.startsWith('-')) return undefined;
+    const top = findCommand(group, word);
+    if (!top) {
+      if (prefix.length > 0) state.command = prefix.join(' ');
+      return [...prefix, word];
+    }
+    const path = resolveCommandPath(top, argv, at);
+    const words = [...prefix, ...path.name.split(' ')];
+    if (path.unknown) {
+      // Commander reports the unknown word, with its suggestion, in its group.
+      state.command = words.join(' ');
+      return [...words, argv[path.end]!];
+    }
+    return [...words, '--help'];
+  };
+
   try {
     let args = argv;
     const index = commandIndex(argv);
@@ -756,7 +781,9 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
         // Unknown command: let commander report it, with its suggestion,
         // instead of answering a --help that came with it.
         args = [target];
-      } else if (cmd && name !== 'help') {
+      } else if (name === 'help') {
+        args = helpArgs([], program, index + 1) ?? argv;
+      } else if (cmd) {
         // Everything below applies at the leaf of a nested command
         // (`ios network configure`), where the docs guard applies it too.
         const path = resolveCommandPath(cmd, argv, index);
@@ -769,12 +796,15 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
           // Unknown subcommand: as at the top level, let commander report it
           // with its suggestion instead of answering a --help after it.
           args = argv.slice(index, path.end + 1);
-        } else if (group && rest.length === 0) {
-          // A bare group (`tapsmith ios`) is a request for its help, like a bare `tapsmith`.
+        } else if (group && index === 0 && (rest.length === 0 || (rest.length === 1 && rest[0] === '--'))) {
+          // A bare group (`tapsmith ios`) is a request for its help, like a
+          // bare `tapsmith`. Not when a root flag comes first: `tapsmith -v ios`
+          // is the version, as `tapsmith -v list-devices` is.
           path.leaf.outputHelp();
           return 0;
         } else if (group && rest[0] === 'help') {
-          // `tapsmith ios network help verify`: commander's own help command.
+          // `tapsmith ios network help verify`.
+          args = helpArgs(path.name.split(' '), path.leaf, path.end + 1) ?? argv;
         } else if (flags.some((t) => HELP_FLAGS.has(t))) {
           // Help wins over everything else on the command line, including a
           // value flag left without its value (`init --platform --help`).

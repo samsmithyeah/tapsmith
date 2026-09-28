@@ -209,10 +209,12 @@ export function walkthroughLines(opts: { udid: string; refresh: boolean }, resul
   log(`     and enable the toggle next to ${bold('Tapsmith MITM CA')}.`);
   log();
   if (opts.refresh) {
-    log(`  ${bold('4)')} ${bold('Update the proxy URL')} — it carries the Mac's IP, so it changes when that does.`);
+    log(`  ${bold('4)')} ${bold('Set the new proxy URL')} — it carries the Mac's IP, so it changes when that does.`);
     log(`     Open ${bold('Settings → Wi-Fi')} → tap ${bold('(i)')} next to ${bold(result.ssid)} →`);
-    log(`     ${bold('Configure Proxy')} → ${bold('Automatic')} → replace the URL with this one → ${bold('Save')}:`);
+    log(`     ${bold('Configure Proxy')} → ${bold('Automatic')} → enter this URL (replacing any old one) → ${bold('Save')}:`);
     log(`     ${green(pacUrl)}`);
+    log(`     ${dim('The proxy URL is set per Wi-Fi network: on a network the device has')}`);
+    log(`     ${dim('not used with Tapsmith before, there is no old URL to replace.')}`);
   } else {
     log(`  ${bold('4)')} ${bold('Set the proxy URL.')} Open ${bold('Settings → Wi-Fi')} → tap ${bold('(i)')}`);
     log(`     next to ${bold(result.ssid)} → ${bold('Configure Proxy')} → ${bold('Automatic')} →`);

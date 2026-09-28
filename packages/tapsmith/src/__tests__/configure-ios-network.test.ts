@@ -29,6 +29,12 @@ describe('tapsmith ios network configure walkthrough (PILOT-271)', () => {
     expect(text.indexOf('remove the existing')).toBeLessThan(text.indexOf('tapsmith.pac'));
   });
 
+  it('--refresh says the URL may be new, for a refresh after switching Wi-Fi networks', () => {
+    const text = plain(walkthroughLines({ udid: 'U1', refresh: true }, result));
+    expect(text).toContain('enter this URL (replacing any old one)');
+    expect(text).toMatch(/set per Wi-Fi network/);
+  });
+
   it('never names the removed commands', () => {
     for (const refresh of [false, true]) {
       const text = plain(walkthroughLines({ udid: 'U1', refresh }, result));

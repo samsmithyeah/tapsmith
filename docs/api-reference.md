@@ -2882,7 +2882,7 @@ Print the Tapsmith version.
 
 ### `tapsmith --help` / `tapsmith -h` / `tapsmith help [command]`
 
-Show the available commands, or one command's options (`tapsmith help test`, same as `tapsmith test --help`).
+Show the available commands, or one command's options (`tapsmith help test`, same as `tapsmith test --help`). Nested commands work the same way: `tapsmith help ios network configure` is `tapsmith ios network configure --help`.
 Help never runs the command: `tapsmith --help init` prints the command list rather than starting the wizard.
 
 ---
