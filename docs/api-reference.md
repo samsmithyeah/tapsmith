@@ -2234,12 +2234,13 @@ another's blob. Playwright behaves the same way.
 Implement the `TapsmithReporter` interface:
 
 ```typescript
-import type { TapsmithReporter, FullResult } from "tapsmith";
+import type { TapsmithReporter, FullResult, RunStartInfo } from "tapsmith";
 import type { TestResult } from "tapsmith";
 
 class MyReporter implements TapsmithReporter {
-  onRunStart(config, fileCount) {
-    console.log(`Running ${fileCount} test files`);
+  onRunStart(config, fileCount, info?: RunStartInfo) {
+    // `tapsmith merge-reports` runs no tests, so it has no file count.
+    if (!info?.merge) console.log(`Running ${fileCount} test files`);
   }
 
   onTestEnd(test: TestResult) {
@@ -2273,6 +2274,7 @@ import type {
   TapsmithConfig,
   TestResult,
   SuiteResult,
+  RunStartInfo,
 } from "tapsmith";
 ```
 

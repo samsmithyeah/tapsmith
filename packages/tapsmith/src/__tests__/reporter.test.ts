@@ -597,6 +597,12 @@ describe('LineReporter', () => {
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   });
 
+  it('announces the file count at run start', () => {
+    reporter.onRunStart!(makeConfig(), 3);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('Running tests from 3 file(s)');
+  });
+
   it('keeps parallel progress counters monotonic after file retry notifications', () => {
     reporter.onRunStart!(makeConfig({ workers: 2 }), 2);
     reporter.onTestEnd!(makeTestResult({ fullName: 'worker 1 test A', status: 'passed' }));
