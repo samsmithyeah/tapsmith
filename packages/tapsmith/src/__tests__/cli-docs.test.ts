@@ -521,8 +521,14 @@ function resolveInvocation(root: Command, written: string[], mode: { strict: boo
     }
     if (helpAt) {
       // `help <command…>`: runCli resolves the whole path, git-style
-      // (`tapsmith help ios network configure`), and ignores words after a leaf.
+      // (`tapsmith help ios network configure`). runCli ignores words after a
+      // leaf; the guard deliberately refuses them in docs, as it refuses
+      // stray arguments elsewhere.
       const group = helpTarget ?? cmd;
+      if (token === 'help' && group.commands.length > 0) {
+        i++; // `help ios network help verify`: redundant, as runCli reads it
+        continue;
+      }
       if (helpTarget && helpTarget.commands.length === 0) {
         errors.push(`\`tapsmith ${commandPath(helpTarget).join(' ')}\` has no subcommands (got '${token}' after \`help\`)`);
         return { flags, errors };
@@ -846,6 +852,7 @@ describe('CLI docs guard: resolution', () => {
     expect(errorsFor('tapsmith help nope')).toEqual(['tapsmith has no command \'nope\'']);
     // runCli resolves the whole path after `help`, git-style.
     expect(errorsFor('tapsmith help ios network verify')).toEqual([]);
+    expect(errorsFor('tapsmith help ios network help verify')).toEqual([]);
     expect(errorsFor('tapsmith help ios netwrk')).toEqual(['tapsmith ios has no command \'netwrk\'']);
     expect(errorsFor('tapsmith help doctor extra')).toEqual(['`tapsmith doctor` has no subcommands (got \'extra\' after `help`)']);
   });

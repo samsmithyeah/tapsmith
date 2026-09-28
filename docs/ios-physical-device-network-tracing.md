@@ -90,7 +90,7 @@ On iOS **simulators** the filtering is handled per-PID at the kernel level by th
 
 The mobileconfig profile bakes in the Mac's LAN IP at the time you ran `ios network configure`. If your Mac switches Wi-Fi networks (coffee shop → office), the baked-in IP goes stale and iOS silently fails to route traffic.
 
-Tapsmith handles this for you: on every `tapsmith test` run with tracing enabled, the host-IP sidecar (`~/.tapsmith/devices/<udid>.meta.json`) is compared against the current Wi-Fi IP. If they differ, the profile is auto-regenerated and you're warned to reinstall it on the device. Profile regeneration is instant; the reinstall is a quick AirDrop-and-tap.
+Tapsmith handles this for you: on every `tapsmith test` run with tracing enabled, the host-IP sidecar (`~/.tapsmith/devices/<udid>.meta.json`) is compared against the current Wi-Fi IP. If they differ, you're warned to run `tapsmith ios network configure <udid> --refresh`, which regenerates the profile and walks you through reinstalling it and entering the new proxy URL on the device. Regeneration is instant; the reinstall is a quick AirDrop-and-tap.
 
 ## Changing `trace.networkHosts`
 

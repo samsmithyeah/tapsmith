@@ -662,9 +662,26 @@ describe('tapsmith ios', () => {
     expect(h.err).toContain(hint);
   });
 
-  it('an option before a nested command names the whole command', async () => {
-    const h = await usageError(['-c', 'x.mjs', 'ios', 'network', 'verify', 'U1']);
-    expect(h.err).toContain('\'-c\' goes after the command: tapsmith ios network verify -c');
+  it('an option before a nested command is refused, and never moved to a command that lacks it', async () => {
+    let h = await usageError(['-c', 'x.mjs', 'ios', 'network', 'verify', 'U1']);
+    expect(h.err).toContain('unknown option \'-c\' (tapsmith ios network verify does not take it either)');
+    expect(h.err).not.toContain('goes after the command');
+    h = await usageError(['-c', 'x.mjs', 'ios']);
+    expect(h.err).toContain('tapsmith ios does not take it either');
+    h = await usageError(['--refresh', 'ios', 'network', 'configure', 'U1']);
+    expect(h.err).toContain('\'--refresh\' goes after the command: tapsmith ios network configure --refresh');
+  });
+
+  it.each([
+    [['ios', 'help', '--help'], 'tapsmith ios'],
+    [['ios', 'network', 'help', '-h'], 'tapsmith ios network'],
+    [['help', '--help'], 'tapsmith'],
+    [['help', 'ios', 'network', 'help', 'verify'], 'tapsmith ios network verify'],
+  ])('%j shows help and exits 0', async (argv, usage) => {
+    const h = await run(argv);
+    expect(h.code).toBe(0);
+    expect(h.calls).toEqual([]);
+    expect(h.out).toContain(`Usage: ${usage} `);
   });
 });
 

@@ -304,7 +304,7 @@ function reportOutcome(outcome: VerificationOutcome): boolean {
     console.log(`     ${bold('Trust Settings')}. ${dim('(This row only appears AFTER you install')}`);
     console.log(`     ${dim('a profile that contains a custom CA, which the mobileconfig does.)')}`);
     console.log(`  ${dim('2)')} Toggle on full trust for ${bold('Tapsmith MITM CA')}.`);
-    console.log(`  ${dim('3)')} Re-run ${bold('tapsmith ios network verify')}.`);
+    console.log(`  ${dim('3)')} Re-run ${bold('tapsmith ios network verify <udid>')}.`);
     console.log();
     return false;
   }

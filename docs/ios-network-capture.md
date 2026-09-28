@@ -25,13 +25,15 @@ brew install mitmproxy
 npx tapsmith ios network setup-simulator
 ```
 
-`tapsmith ios network setup-simulator` reports each step with a ✓ / ✗ status, opens System Settings directly to the correct pane if approval is still needed, and polls until the Network Extension flips to `[activated enabled]`. On a fresh machine you'll see:
+`tapsmith ios network setup-simulator` reports each step with a ✓ / ✗ status, opens System Settings directly to the correct pane if approval is still needed, and polls until the Network Extension flips to `[activated enabled]`. On a machine where the extension has registered (after a first simulator run with capture) you'll see:
 
 1. `✓ mitmproxy is installed`
-2. `⚠ Network Extension is registered but not yet approved` (or `○ Network Extension has not been registered yet` on a brand-new install)
+2. `⚠ Network Extension is registered but not yet approved`
 3. Tapsmith opens **System Settings → General → Login Items & Extensions → Network Extensions**
 4. Click **(i)** next to the `Network Extensions` row, toggle **Mitmproxy Redirector** on, enter your password
 5. Tapsmith detects the state change and prints `✓ iOS simulator network capture is ready.`
+
+On a brand-new install it instead reports `○ Network Extension has not been registered yet`, explains what happens on the first run, and exits 0 — see below.
 
 From this point on, `npx tapsmith test` with iOS network capture enabled (the default when tracing is on) silently spawns the redirector and routes traffic through Tapsmith's MITM proxy.
 

@@ -754,7 +754,9 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
    */
   const helpArgs = (prefix: string[], group: Command, at: number): string[] | undefined => {
     const word = argv[at];
-    if (word === undefined || word.startsWith('-')) return undefined;
+    // `help` alone, or `help --help`: the group's own page.
+    if (word === undefined || HELP_FLAGS.has(word)) return [...prefix, '--help'];
+    if (word.startsWith('-')) return undefined;
     const top = findCommand(group, word);
     if (!top) {
       if (prefix.length > 0) state.command = prefix.join(' ');
@@ -767,6 +769,8 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
       state.command = words.join(' ');
       return [...words, argv[path.end]!];
     }
+    // `help ios network help verify`: a redundant `help` inside the path.
+    if (argv[path.end] === 'help' && path.leaf.commands.length > 0) return helpArgs(words, path.leaf, path.end + 1);
     return [...words, '--help'];
   };
 
@@ -822,11 +826,16 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
       const misplaced = argv.find((t) => t.startsWith('-') && !ROOT_FLAGS.has(t));
       const laterAt = argv.findIndex((t) => !t.startsWith('-') && findCommand(program, t));
       if (misplaced && laterAt >= 0) {
-        const later = resolveCommandPath(findCommand(program, argv[laterAt]!)!, argv, laterAt).name;
-        state.command = later;
-        state.json = JSON_ERROR_COMMANDS.has(later) && argv.includes('--json');
+        const later = resolveCommandPath(findCommand(program, argv[laterAt]!)!, argv, laterAt);
+        state.command = later.name;
+        state.json = JSON_ERROR_COMMANDS.has(later.name) && argv.includes('--json');
+        // Suggest moving the flag only to a command that takes it.
+        const flag = misplaced.split('=', 1)[0]!;
+        const takesIt = later.leaf.options.some((o) => o.long === flag || o.short === flag);
         program.error(
-          `error: unknown option '${misplaced}'. '${misplaced}' goes after the command: tapsmith ${later} ${misplaced} …`,
+          takesIt
+            ? `error: unknown option '${misplaced}'. '${misplaced}' goes after the command: tapsmith ${later.name} ${misplaced} …`
+            : `error: unknown option '${misplaced}' (tapsmith ${later.name} does not take it either)`,
           { code: 'commander.unknownOption', exitCode: 1 },
         );
       }
