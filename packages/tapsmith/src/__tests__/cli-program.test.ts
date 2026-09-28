@@ -680,6 +680,23 @@ describe('tapsmith ios', () => {
     expect(JSON.parse(h.out).error.code).toBe('UNKNOWN_FLAG');
   });
 
+  it('a boolean misplaced flag before a nested command names that command, not a top-level namesake', async () => {
+    let h = await usageError(['--json', 'ios', 'network', 'verify', 'U1']);
+    expect(h.out).toBe('');
+    expect(h.err).toContain('tapsmith ios network verify does not take it either');
+    h = await usageError(['--refresh', 'ios', 'network', 'verify', 'U1']);
+    expect(h.err).toContain('tapsmith ios network verify does not take it either');
+    expect(h.err).toContain('tapsmith ios network verify --help');
+  });
+
+  it.each([
+    [['-v', 'help', 'test']], [['-v', 'help']], [['-v', 'ios', 'help', 'network']], [['--version', 'help', 'ios', 'network']],
+  ])('%j: a root flag before help still applies', async (argv) => {
+    const h = await run(argv);
+    expect(h.code).toBe(0);
+    expect(h.out).toBe('1.2.3\n');
+  });
+
   it.each([['-j4'], ['-wd'], ['-j=4']])('%s before test is recognised as a test flag', async (flag) => {
     const h = await usageError([flag, 'test']);
     expect(h.err).toContain(`'${flag}' goes after the command: tapsmith test ${flag}`);

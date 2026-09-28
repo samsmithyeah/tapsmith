@@ -786,7 +786,9 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
         // instead of answering a --help that came with it.
         args = [target];
       } else if (name === 'help') {
-        args = helpArgs([], program, index + 1) ?? argv;
+        // Root flags before `help` still apply: `tapsmith -v help test` is the version.
+        const help = helpArgs([], program, index + 1);
+        args = help ? [...argv.slice(0, index), ...help] : argv;
       } else if (cmd) {
         // Everything below applies at the leaf of a nested command
         // (`ios network configure`), where the docs guard applies it too.
@@ -808,7 +810,8 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
           return 0;
         } else if (group && rest[0] === 'help') {
           // `tapsmith ios network help verify`.
-          args = helpArgs(path.name.split(' '), path.leaf, path.end + 1) ?? argv;
+          const help = helpArgs(path.name.split(' '), path.leaf, path.end + 1);
+          args = help ? [...argv.slice(0, index), ...help] : argv;
         } else if (flags.some((t) => HELP_FLAGS.has(t))) {
           // Help wins over everything else on the command line, including a
           // value flag left without its value (`init --platform --help`).
@@ -824,13 +827,19 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
     } else {
       // `tapsmith -c ci.mjs test`: the old parser took options anywhere.
       const misplaced = argv.find((t) => t.startsWith('-') && !ROOT_FLAGS.has(t));
-      // The command is the first command word that is not the value of the
-      // flag before it (`--platform ios init` is init, not ios); failing
-      // that, the first command word at all.
+      // The command is the first command word, unless it may be the value
+      // of the flag before it and another command word follows outside its
+      // own path: `--platform ios init` is init, but `--json ios network
+      // verify` is ios network verify, not the top-level verify.
       const isCommandAt = (i: number): boolean => !argv[i]!.startsWith('-') && !!findCommand(program, argv[i]!);
       const commandAts = argv.map((_t, i) => i).filter(isCommandAt);
-      const laterAt = commandAts.find((i) => i === 0 || !argv[i - 1]!.startsWith('-') || argv[i - 1]!.includes('='))
-        ?? commandAts[0] ?? -1;
+      const laterAt = commandAts.find((i) => {
+        const prev = argv[i - 1];
+        const mayBeValue = prev !== undefined && prev.startsWith('-') && !prev.includes('=');
+        if (!mayBeValue) return true;
+        const end = resolveCommandPath(findCommand(program, argv[i]!)!, argv, i).end;
+        return !commandAts.some((j) => j >= end);
+      }) ?? commandAts[0] ?? -1;
       if (misplaced && laterAt >= 0) {
         const later = resolveCommandPath(findCommand(program, argv[laterAt]!)!, argv, laterAt);
         state.command = later.name;

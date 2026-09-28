@@ -485,7 +485,7 @@ function checkNetworkExtension(report: Reporter): void {
     if (output.includes(bundleId) && output.includes('[activated enabled]')) {
       pass(report, 'network-extension', 'Network Extension enabled');
     } else if (output.includes(bundleId)) {
-      warn(report, 'network-extension', 'Network Extension found but not fully enabled — check System Settings > Privacy & Security', 'Run: npx tapsmith ios network setup-simulator, then enable in System Settings > Privacy & Security');
+      warn(report, 'network-extension', 'Network Extension found but not fully enabled — check System Settings → General → Login Items & Extensions → Network Extensions', 'Run: npx tapsmith ios network setup-simulator, then enable it in System Settings → General → Login Items & Extensions → Network Extensions');
     } else {
       warn(report, 'network-extension', 'Network Extension not installed — required for iOS network capture', 'It registers on your first iOS simulator test run with network capture; approve it then. Run: npx tapsmith ios network setup-simulator for the steps');
     }
