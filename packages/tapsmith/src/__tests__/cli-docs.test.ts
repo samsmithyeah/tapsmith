@@ -78,6 +78,8 @@ function markdownSnippets(file: string, source: string): Snippet[] {
         const line = base + i;
         let joined = lines[i]!;
         while (/\\\s*$/.test(joined) && i + 1 < lines.length) joined = `${joined.replace(/\\\s*$/, '')} ${lines[++i]!.trim()}`;
+        // A shell `#` or `//` comment in a code block is prose, not a command.
+        if (token.type === 'code') joined = joined.replace(/(^|\s)(?:#|\/\/).*$/, '$1');
         out.push({ file, line, text: joined, strict: true, complete: token.type === 'code' });
       }
       return;
@@ -313,15 +315,16 @@ function helpFlags(cmd: Command): Set<string> {
   return new Set([help?.long, help?.short].filter((f): f is string => !!f));
 }
 
+/** Values the docs write as placeholders: `N`, `x/y`, `enable|disable`, `${{ matrix.shard }}`. */
+const isValuePlaceholder = (value: string): boolean =>
+  isPlaceholder(value) || /\{\{|\||^[A-Z_]+$|^[a-z]\/[a-z]$/.test(value);
+
 /**
- * Run a value through the tree's own parser (choices, positive ints, modes);
- * the message if it refuses. Values the docs write as placeholders are
- * skipped: `N`, `x/y`, `enable|disable`, `${{ matrix.shard }}`. Without a
- * choices list, only a value with a digit in it reads as literal.
+ * Run a value through the tree's own parser (choices, positive ints, trace
+ * modes, regexes); the message if it refuses.
  */
-function refusedValue(target: { parseArg?: (value: string, previous: unknown) => unknown; argChoices?: string[] }, value: string): string | undefined {
-  if (!target.parseArg || isPlaceholder(value) || value.includes(SUBSTITUTION) || /\{\{|\||^[A-Z_]+$/.test(value)) return undefined;
-  if (!target.argChoices && !/\d/.test(value)) return undefined;
+function refusedValue(target: { parseArg?: (value: string, previous: unknown) => unknown }, value: string): string | undefined {
+  if (!target.parseArg || isValuePlaceholder(value)) return undefined;
   try {
     target.parseArg(value, undefined);
     return undefined;
@@ -590,10 +593,17 @@ const SOURCE_SETS = {
 } as const;
 
 /** Files git tracks, plus new ones not yet added — never ignored ones (venvs, build output, local skills). */
-const REPO_FILES = new Set(
-  execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
-    .split('\n').filter(Boolean),
-);
+function repoFiles(): Set<string> | undefined {
+  try {
+    return new Set(
+      execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+        .split('\n').filter(Boolean),
+    );
+  } catch {
+    return undefined; // not a git checkout: scan what the globs find
+  }
+}
+const REPO_FILES = repoFiles();
 
 function filesOf(patterns: readonly string[]): string[] {
   return glob.sync([...patterns], {
@@ -601,7 +611,7 @@ function filesOf(patterns: readonly string[]): string[] {
     nodir: true,
     dot: true,
     ignore: ['**/node_modules/**', '**/__tests__/**'],
-  }).filter((rel) => REPO_FILES.has(rel) && fs.existsSync(path.join(REPO, rel))).sort();
+  }).filter((rel) => (REPO_FILES ? REPO_FILES.has(rel) : !/(^|\/)(dist|target|venv)\//.test(rel)) && fs.existsSync(path.join(REPO, rel))).sort();
 }
 
 function collectInvocations(): Invocation[] {
@@ -745,7 +755,11 @@ function syntheticTree(): Command {
     })
     .option('-w, --watch')
     .option('-g, --grep <pattern>')
-    .addOption(new Option('--trace [mode]').choices(['on', 'off', 'retain-on-failure']))
+    // Like the real --trace: a custom parser, not .choices().
+    .addOption(new Option('--trace [mode]').argParser((v: string) => {
+      if (!['on', 'off', 'retain-on-failure'].includes(v)) throw new InvalidArgumentError('--trace must be one of: on, off, retain-on-failure.');
+      return v;
+    }))
     .addOption(new Option('--secret').hideHelp());
   program.command('doctor').option('--json');
   program.command('telemetry').addArgument(new Argument('[action]').choices(['status', 'enable', 'disable']));
@@ -862,8 +876,11 @@ describe('CLI docs guard: resolution', () => {
 
   it('checks values with the tree\'s own parsers and choices', () => {
     expect(errorsFor('tapsmith test --trace retain-on-falure')).toEqual([
-      'tapsmith test --trace \'retain-on-falure\': Allowed choices are on, off, retain-on-failure.',
+      'tapsmith test --trace \'retain-on-falure\': --trace must be one of: on, off, retain-on-failure.',
     ]);
+    // A bare --trace takes the next word as its mode, as commander does.
+    expect(errorsFor('tapsmith test --trace login.test.ts')[0]).toMatch(/--trace must be one of/);
+    expect(errorsFor('tapsmith test --trace on login.test.ts')).toEqual([]);
     expect(errorsFor('tapsmith test -j2x')[0]).toMatch(/--workers must be a positive integer/);
     expect(errorsFor('tapsmith test --workers=1.5')[0]).toMatch(/--workers must be a positive integer/);
     expect(errorsFor('tapsmith test -j <n> --workers 4 -j=2 --workers N')).toEqual([]);
@@ -977,6 +994,11 @@ describe('CLI docs guard: extraction', () => {
       [3, `tapsmith ${SUBSTITUTION} --help or`],
       [3, 'tapsmith init --yes'],
     ]);
+  });
+
+  it('skips comments in code blocks', () => {
+    const md = ['```bash', 'npm ci   # installs tapsmith deps', 'npx tapsmith test  # tapsmith picks the device', '```', '```ts', '// tapsmith picks one', '```'].join('\n');
+    expect(markdownSnippets('x.md', md).flatMap(invocationsIn).map((inv) => inv.text)).toEqual(['tapsmith test']);
   });
 
   it('gives nested code blocks their line, and joins continuation lines', () => {

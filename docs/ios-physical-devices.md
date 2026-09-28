@@ -35,7 +35,7 @@ tapsmith setup-ios-device
    tapsmith build-ios-agent
    ```
 
-   This auto-detects the Apple Developer team from Xcode's Accounts preferences, runs `xcodebuild build-for-testing` with automatic signing, and writes the resulting `.xctestrun` under `ios-agent/.build-device/` in the agent source directory (your checkout's `ios-agent/`, or `~/.tapsmith/ios-agent/` when Tapsmith is installed from npm). It prints the `iosXctestrun:` line to add to your config. First run takes 60–120s; incremental rebuilds are <10s. If you have multiple teams, pass `--team-id XXXXXXXXXX` to skip the prompt.
+   This auto-detects the Apple Developer team from Xcode's Accounts preferences, runs `xcodebuild build-for-testing` with automatic signing, and writes the resulting `.xctestrun` under `.build-device/` in the agent source directory: `ios-agent/.build-device/` in your checkout, or `~/.tapsmith/ios-agent/.build-device/` when Tapsmith is installed from npm. It prints the `iosXctestrun:` line to add to your config. First run takes 60–120s; incremental rebuilds are <10s. If you have multiple teams, pass `--team-id XXXXXXXXXX` to skip the prompt.
 
    Rebuild when you upgrade Tapsmith, switch teams/devices, or your profile expires. **Free Apple Developer accounts expire provisioning profiles every 7 days** — Tapsmith will warn you when you're within three days of expiry.
 
@@ -179,6 +179,6 @@ echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/true" | sudo tee /etc/sudoers.d/zz-taps
 sudo chmod 440 /etc/sudoers.d/zz-tapsmith-xcode-ddi
 ```
 
-`/usr/bin/true` is a literal no-op (exit 0, no side effects), so scoping NOPASSWD to it is safe. The `zz-` prefix is important: sudoers uses last-match-wins rule resolution, so without it a user-specific file like `/etc/sudoers.d/<username>` can silently override the Tapsmith grant. `tapsmith setup-ios-device` detects this exact failure mode and tells you so directly.
+`/usr/bin/true` is a literal no-op (exit 0, no side effects), so scoping NOPASSWD to it is safe. The `zz-` prefix is important: sudoers uses last-match-wins rule resolution, so without it a user-specific file like `/etc/sudoers.d/<username>` can silently override the Tapsmith grant. `tapsmith setup-ios-device` checks whether `sudo -n /usr/bin/true` succeeds, so an overriding file shows up as the passwordless-sudo check still failing after you add the rule.
 
-**"Device unpaired" in `tapsmith setup-ios-device`** — Xcode → Window → Devices and Simulators → "Use for Development".
+**"not paired" in `tapsmith setup-ios-device`** — Xcode → Window → Devices and Simulators → "Use for Development".

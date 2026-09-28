@@ -2557,8 +2557,9 @@ Without this flag, Tapsmith checks if the package is already installed and skips
 
 ### `tapsmith test --reporter <name>`
 
-Use one built-in reporter for this run instead of the config's `reporter`:
-`list`, `line`, `dot`, `json`, `junit`, `html`, `github` or `blob`. For several reporters or reporter
+Use one reporter for this run instead of the config's `reporter`: a built-in one
+(`list`, `line`, `dot`, `json`, `junit`, `html`, `github` or `blob`), or the path or package name of a
+custom reporter module (see Custom reporters, under Reporters). For several reporters or reporter
 options, set [`reporter`](configuration.md#reporterconfig) in the config.
 
 ```bash
@@ -2800,8 +2801,8 @@ Xcode's preferences (or keychain) if `--team-id` is omitted. `-v` /
 
 The agent source comes from `<cwd>/ios-agent/` in a Tapsmith checkout (`--cwd`
 points at one), or else from the copy the npm package extracts to
-`~/.tapsmith/ios-agent/`. Build products go to `ios-agent/.build-device` inside
-that source directory unless `--derived-data-path` says otherwise. When the
+`~/.tapsmith/ios-agent/`. Build products go to `.build-device` inside that
+source directory (`ios-agent/.build-device`, or `~/.tapsmith/ios-agent/.build-device`) unless `--derived-data-path` says otherwise. When the
 build finishes, the command prints the `iosXctestrun:` line to add to your
 config, as a path relative to the directory it ran in (or to `--cwd`).
 `tapsmith test` resolves `iosXctestrun` against `rootDir` (by default the
