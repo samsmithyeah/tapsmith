@@ -179,6 +179,6 @@ echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/true" | sudo tee /etc/sudoers.d/zz-taps
 sudo chmod 440 /etc/sudoers.d/zz-tapsmith-xcode-ddi
 ```
 
-`/usr/bin/true` is a literal no-op (exit 0, no side effects), so scoping NOPASSWD to it is safe. The `zz-` prefix is important: sudoers uses last-match-wins rule resolution, so without it a user-specific file like `/etc/sudoers.d/<username>` can silently override the Tapsmith grant. `tapsmith setup-ios-device` checks whether `sudo -n /usr/bin/true` succeeds, so an overriding file shows up as the passwordless-sudo check still failing after you add the rule.
+`/usr/bin/true` is a literal no-op (exit 0, no side effects), so scoping NOPASSWD to it is safe. The `zz-` prefix is important: sudoers uses last-match-wins rule resolution, so without it a user-specific file like `/etc/sudoers.d/<username>` can silently override the Tapsmith grant. `tapsmith setup-ios-device` checks whether `sudo -n /usr/bin/true` succeeds. Run `sudo -k` first so a cached sudo password (from the `sudo tee` above) cannot make it pass; then an overriding file shows up as the passwordless-sudo check still failing after you add the rule.
 
 **"not paired" in `tapsmith setup-ios-device`** — Xcode → Window → Devices and Simulators → "Use for Development".

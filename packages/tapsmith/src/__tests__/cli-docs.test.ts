@@ -79,7 +79,7 @@ function markdownSnippets(file: string, source: string): Snippet[] {
         let joined = lines[i]!;
         while (/\\\s*$/.test(joined) && i + 1 < lines.length) joined = `${joined.replace(/\\\s*$/, '')} ${lines[++i]!.trim()}`;
         // A shell `#` or `//` comment in a code block is prose, not a command.
-        if (token.type === 'code') joined = joined.replace(/(^|\s)(?:#|\/\/).*$/, '$1');
+        if (token.type === 'code') joined = stripShellComment(joined);
         out.push({ file, line, text: joined, strict: true, complete: token.type === 'code' });
       }
       return;
@@ -105,6 +105,25 @@ function markdownSnippets(file: string, source: string): Snippet[] {
   // Raw HTML in markdown: `<code>…</code>`.
   out.push(...codeTagSnippets(file, source));
   return out;
+}
+
+/** Drop an unquoted `#` or `//` comment that starts a word; quoted text (`--grep "a #b"`) stays. */
+function stripShellComment(line: string): string {
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (quote) {
+      if (ch === quote) quote = undefined;
+      continue;
+    }
+    if (ch === '"' || ch === '\'') {
+      quote = ch;
+      continue;
+    }
+    const wordStart = i === 0 || /\s/.test(line[i - 1]!);
+    if (wordStart && (ch === '#' || line.startsWith('//', i))) return line.slice(0, i);
+  }
+  return line;
 }
 
 /** `<code>…</code>` contents: inline code in HTML. */
@@ -999,6 +1018,8 @@ describe('CLI docs guard: extraction', () => {
   it('skips comments in code blocks', () => {
     const md = ['```bash', 'npm ci   # installs tapsmith deps', 'npx tapsmith test  # tapsmith picks the device', '```', '```ts', '// tapsmith picks one', '```'].join('\n');
     expect(markdownSnippets('x.md', md).flatMap(invocationsIn).map((inv) => inv.text)).toEqual(['tapsmith test']);
+    const quoted = ['```bash', 'npx tapsmith test --grep "a #b" --nope', '```'].join('\n');
+    expect(markdownSnippets('x.md', quoted).flatMap(invocationsIn).map((inv) => inv.tokens)).toEqual([['test', '--grep', 'a #b', '--nope']]);
   });
 
   it('gives nested code blocks their line, and joins continuation lines', () => {
