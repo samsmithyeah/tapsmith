@@ -109,8 +109,15 @@ describe('ReporterDispatcher', () => {
     const config = makeConfig();
     dispatcher.onRunStart(config, 3);
 
-    expect(r1.onRunStart).toHaveBeenCalledWith(config, 3);
-    expect(r2.onRunStart).toHaveBeenCalledWith(config, 3);
+    expect(r1.onRunStart).toHaveBeenCalledWith(config, 3, undefined);
+    expect(r2.onRunStart).toHaveBeenCalledWith(config, 3, undefined);
+  });
+
+  it('forwards the onRunStart merge flag', () => {
+    const r1: TapsmithReporter = { onRunStart: vi.fn() };
+    const config = makeConfig();
+    new ReporterDispatcher([r1]).onRunStart(config, 0, { merge: true });
+    expect(r1.onRunStart).toHaveBeenCalledWith(config, 0, { merge: true });
   });
 
   it('fans out onTestEnd to all reporters', () => {
@@ -326,6 +333,12 @@ describe('ListReporter', () => {
   it('onTestFileStart is a no-op (file names are shown inline)', () => {
     reporter.onTestFileStart!('/path/to/test.ts');
     expect(stdoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('announces the file count at run start', () => {
+    reporter.onRunStart!(makeConfig(), 3);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('Running tests from 3 file(s)');
   });
 
   it('prints test result with status icon', () => {

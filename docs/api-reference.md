@@ -2278,7 +2278,7 @@ import type {
 
 ```typescript
 interface TapsmithReporter {
-  onRunStart?(config: TapsmithConfig, fileCount: number): void;
+  onRunStart?(config: TapsmithConfig, fileCount: number, info?: RunStartInfo): void;
   onTestFileStart?(filePath: string): void;
   onTestStart?(fullName: string, filePath?: string): void;
   onTestEnd?(test: TestResult): void;
@@ -2286,6 +2286,12 @@ interface TapsmithReporter {
   onTestFileRetry?(filePath: string, discardedCount: number): void;
   onRunEnd?(result: FullResult): Promise<void> | void;
   onError?(error: Error): void;
+}
+
+interface RunStartInfo {
+  // True when `tapsmith merge-reports` is replaying shards' blob reports:
+  // no tests run, and `fileCount` is 0.
+  merge?: boolean;
 }
 ```
 
