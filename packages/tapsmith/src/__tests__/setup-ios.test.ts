@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { setupSimulatorNetworkCapture, type SetupSimulatorDeps } from '../setup-ios.js';
+import { describe, expect, it, vi } from 'vitest';
+import { runSetupIos, setupSimulatorNetworkCapture, type SetupSimulatorDeps } from '../setup-ios.js';
 
 type SeStatus = ReturnType<SetupSimulatorDeps['checkSeStatus']>;
 
@@ -86,6 +86,27 @@ describe('tapsmith ios network setup-simulator (PILOT-271)', () => {
     expect((await setup({ mitmproxy: false })).out).toContain('tapsmith ios network setup-simulator');
     expect((await setup({ platform: 'linux' })).out).toContain('tapsmith ios network setup-simulator');
   });
+});
+
+describe('runSetupIos exit codes (PILOT-271)', () => {
+  const deps = (status: SeStatus): SetupSimulatorDeps => ({
+    platform: 'darwin', isMitmproxyInstalled: () => true, checkSeStatus: () => status, openSettings: () => true,
+    sleep: async () => {}, now: () => Number.MAX_SAFE_INTEGER, log: () => {}, error: () => {}, write: () => {},
+  });
+
+  it.each<[SeStatus, number | undefined]>([['enabled', undefined], ['not-registered', undefined], ['unknown', 1]])(
+    '%s → process.exit(%s)',
+    async (status, expected) => {
+      const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+      try {
+        await runSetupIos(deps(status));
+        if (expected === undefined) expect(exit).not.toHaveBeenCalled();
+        else expect(exit).toHaveBeenCalledWith(expected);
+      } finally {
+        exit.mockRestore();
+      }
+    },
+  );
 });
 
 describe('tapsmith ios setup-device cross-reference (PILOT-271)', () => {

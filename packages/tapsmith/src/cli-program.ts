@@ -828,18 +828,21 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
       // `tapsmith -c ci.mjs test`: the old parser took options anywhere.
       const misplaced = argv.find((t) => t.startsWith('-') && !ROOT_FLAGS.has(t));
       // The command is the first command word, unless it may be the value
-      // of the flag before it and another command word follows outside its
-      // own path: `--platform ios init` is init, but `--json ios network
-      // verify` is ios network verify, not the top-level verify.
+      // of the flag before it and either another command word follows
+      // outside its own path, or it names no more than a bare group:
+      // `--platform ios init` is init, `--platform ios` has no command, and
+      // `--json ios network verify` is ios network verify, not the top-level
+      // verify.
       const isCommandAt = (i: number): boolean => !argv[i]!.startsWith('-') && !!findCommand(program, argv[i]!);
       const commandAts = argv.map((_t, i) => i).filter(isCommandAt);
       const laterAt = commandAts.find((i) => {
         const prev = argv[i - 1];
         const mayBeValue = prev !== undefined && prev.startsWith('-') && !prev.includes('=');
         if (!mayBeValue) return true;
-        const end = resolveCommandPath(findCommand(program, argv[i]!)!, argv, i).end;
-        return !commandAts.some((j) => j >= end);
-      }) ?? commandAts[0] ?? -1;
+        const path = resolveCommandPath(findCommand(program, argv[i]!)!, argv, i);
+        if (path.leaf.commands.length > 0) return false;
+        return !commandAts.some((j) => j >= path.end);
+      }) ?? -1;
       if (misplaced && laterAt >= 0) {
         const later = resolveCommandPath(findCommand(program, argv[laterAt]!)!, argv, laterAt);
         state.command = later.name;

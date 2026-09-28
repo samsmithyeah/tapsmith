@@ -142,7 +142,7 @@ Tapsmith now **auto-cleans orphaned redirectors at startup** (looks for redirect
    ```sh
    npx tapsmith ios network setup-simulator
    ```
-   This re-registers the SE and can recover from registration glitches.
+   It re-checks the extension's state and, if approval is pending, opens System Settings and waits for it. It does not register the extension itself: that happens on the next simulator test run with network capture.
 
 Verify success on the next run by looking for `System Extension control channel connected` in the daemon debug logs (`RUST_LOG=tapsmith_core=debug`).
 

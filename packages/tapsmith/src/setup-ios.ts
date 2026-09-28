@@ -271,7 +271,7 @@ export async function setupSimulatorNetworkCapture(deps: SetupSimulatorDeps = de
 }
 
 /** CLI entry: exits non-zero when the user must act. */
-export async function runSetupIos(): Promise<void> {
-  const code = await setupSimulatorNetworkCapture();
+export async function runSetupIos(deps: SetupSimulatorDeps = defaultDeps): Promise<void> {
+  const code = await setupSimulatorNetworkCapture(deps);
   if (code !== 0) process.exit(code);
 }

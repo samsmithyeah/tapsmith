@@ -680,6 +680,12 @@ describe('tapsmith ios', () => {
     expect(JSON.parse(h.out).error.code).toBe('UNKNOWN_FLAG');
   });
 
+  it.each([[['--platform', 'ios']], [['--project', 'ios', 'network']]])('%j: a flag value that names only a group is not the command', async (argv) => {
+    const h = await usageError(argv);
+    expect(h.err).toContain(`unknown option '${argv[0]}'`);
+    expect(h.err).not.toContain('tapsmith ios');
+  });
+
   it('a boolean misplaced flag before a nested command names that command, not a top-level namesake', async () => {
     let h = await usageError(['--json', 'ios', 'network', 'verify', 'U1']);
     expect(h.out).toBe('');
