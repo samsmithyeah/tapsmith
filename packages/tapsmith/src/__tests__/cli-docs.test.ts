@@ -1,0 +1,732 @@
+/**
+ * Docs guard (PILOT-259): every `tapsmith …` invocation the docs or the CLI's
+ * own output show must be one the CLI accepts, and every command and flag the
+ * CLI has must be documented in the api-reference.md CLI section.
+ *
+ * The command table is never written down here. It is `cliCommandTree()`, the
+ * commander tree `runCli` parses with, walked recursively — so nested
+ * subcommands (`tapsmith ios network verify`) and renames need doc edits, not
+ * test edits.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { Command, Option } from 'commander';
+import { glob } from 'glob';
+import { marked, type Token } from 'marked';
+import ts from 'typescript';
+import { describe, expect, it } from 'vitest';
+import { cliCommandTree } from '../cli-program.js';
+
+// ─── Extraction ───
+
+/** A piece of text that may hold invocations, and where it came from. */
+interface Snippet {
+  file: string;
+  line: number;
+  text: string;
+  /**
+   * Exact command lines (markdown code, astro code): a positional the command
+   * does not take is an error. Source strings embed commands in prose, so
+   * there only commands and flags are checked.
+   */
+  strict: boolean;
+}
+
+interface Invocation {
+  file: string;
+  line: number;
+  /** From `tapsmith` to the end of the invocation, as written. */
+  text: string;
+  tokens: string[];
+  strict: boolean;
+}
+
+/** Stand-in for a `${…}` substitution in a template literal. */
+const SUBSTITUTION = '${…}';
+
+const lineAt = (source: string, offset: number): number => source.slice(0, Math.max(0, offset)).split('\n').length;
+
+/** Code blocks and inline code spans of a markdown file. */
+function markdownSnippets(file: string, source: string): Snippet[] {
+  const out: Snippet[] = [];
+  const visit = (token: Token, searchFrom: number): void => {
+    if (token.type === 'code' || token.type === 'codespan') {
+      const at = source.indexOf(token.raw, searchFrom);
+      // A fenced block's text starts on the line after its fence.
+      const base = at >= 0 ? lineAt(source, at) + (token.type === 'code' && /^\s*(```|~~~)/.test(token.raw) ? 1 : 0) : 0;
+      (token.text as string).split('\n').forEach((lineText: string, i: number) => {
+        out.push({ file, line: base + i, text: lineText, strict: true });
+      });
+      return;
+    }
+    const record = token as unknown as Record<string, unknown>;
+    const children: Token[] = [];
+    for (const key of ['tokens', 'items']) {
+      const value = record[key];
+      if (Array.isArray(value)) children.push(...(value as Token[]));
+    }
+    if (token.type === 'table') {
+      const table = token as unknown as { header: Array<{ tokens: Token[] }>; rows: Array<Array<{ tokens: Token[] }>> };
+      for (const cell of table.header) children.push(...cell.tokens);
+      for (const row of table.rows) for (const cell of row) children.push(...cell.tokens);
+    }
+    for (const child of children) visit(child, searchFrom);
+  };
+  let offset = 0;
+  for (const token of marked.lexer(source)) {
+    visit(token, offset);
+    offset += token.raw.length;
+  }
+  return out;
+}
+
+/** `<code>…</code>` contents and `code="…"` attributes of an astro page. */
+function astroSnippets(file: string, source: string): Snippet[] {
+  const out: Snippet[] = [];
+  for (const match of source.matchAll(/<code[^>]*>([\s\S]*?)<\/code>|\bcode=(["'])([\s\S]*?)\2/g)) {
+    const text = match[1] ?? match[3] ?? '';
+    out.push({ file, line: lineAt(source, match.index), text, strict: true });
+  }
+  return out;
+}
+
+/** String and template literals of a TypeScript file (comments are not output). */
+function sourceSnippets(file: string, source: string): Snippet[] {
+  const out: Snippet[] = [];
+  const kind = file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, kind);
+  const push = (node: ts.Node, text: string): void => {
+    const base = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+    text.split('\n').forEach((lineText, i) => out.push({ file, line: base + i, text: lineText, strict: false }));
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      if (!ts.isImportDeclaration(node.parent) && !ts.isExportDeclaration(node.parent)) push(node, node.text);
+      return;
+    }
+    if (ts.isTemplateExpression(node)) {
+      push(node, node.head.text + node.templateSpans.map((s) => ` ${SUBSTITUTION} ${s.literal.text}`).join(''));
+      for (const span of node.templateSpans) visit(span.expression);
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return out;
+}
+
+/**
+ * Split a command line into words, keeping quoted values whole. A quote that
+ * does not open a word (or a value, after `=`) closes the text the command sat
+ * in — "Run 'tapsmith doctor' first" — so the words stop there.
+ */
+function shellWords(text: string): string[] {
+  const words: string[] = [];
+  let current = '';
+  let quote: string | undefined;
+  let started = false;
+  for (const ch of text) {
+    if (quote) {
+      if (ch === quote) quote = undefined;
+      else current += ch;
+    } else if (ch === '"' || ch === '\'') {
+      if (current && !current.endsWith('=')) {
+        words.push(current);
+        return words;
+      }
+      quote = ch;
+      started = true;
+    } else if (/\s/.test(ch)) {
+      if (started || current) words.push(current);
+      current = '';
+      started = false;
+    } else {
+      current += ch;
+    }
+  }
+  if (started || current) words.push(current);
+  return words;
+}
+
+/** Words that end a command: shell operators and comments. */
+const SHELL_STOP = /^(?:&&|\|\||\||;|>|>>|2>&1|2>|#.*)$/;
+
+/** `npm install … tapsmith …` and `<agent> mcp add tapsmith …` name the package or the server, not the CLI. */
+const NOT_THE_CLI = [
+  /\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|remove|uninstall|ci|view|info|ls|link)\b.*$/,
+  /\bmcp\s+add\s+(?:-\S+\s+)*$/,
+];
+
+function invocationsIn(snippet: Snippet): Invocation[] {
+  const found: Invocation[] = [];
+  const pattern = /(?<![\w@/.$-])tapsmith(?:@[\w.^~-]+)?(?=\s|$)/g;
+  for (const match of snippet.text.matchAll(pattern)) {
+    const before = snippet.text.slice(0, match.index);
+    if (NOT_THE_CLI.some((re) => re.test(before))) continue;
+    const rest = snippet.text.slice(match.index + match[0].length);
+    const tokens: string[] = [];
+    for (const raw of shellWords(rest)) {
+      if (SHELL_STOP.test(raw) || raw.startsWith('(') || raw === '—' || raw === '--->') break;
+      // Prose after a command ("run tapsmith doctor, then …") or the end of
+      // inline code inside a string ("`tapsmith test`").
+      const trimmed = raw.replace(/[.,;:!?)`]+$/, '');
+      if (trimmed !== raw && !/^[.]+$/.test(raw)) {
+        if (trimmed) tokens.push(trimmed);
+        break;
+      }
+      tokens.push(raw);
+    }
+    // The next invocation on the same line starts its own match.
+    const next = tokens.findIndex((t) => t === 'tapsmith' || t === 'npx');
+    const own = next >= 0 ? tokens.slice(0, next) : tokens;
+    found.push({
+      file: snippet.file,
+      line: snippet.line,
+      text: ['tapsmith', ...own].join(' '),
+      tokens: own,
+      strict: snippet.strict,
+    });
+  }
+  return found;
+}
+
+// ─── Resolution against the command tree ───
+
+const HELP_FLAGS = new Set(['-h', '--help']);
+
+/** `<udid>`, `[options]`, `…`, `${…}`: stands for a value, not a literal word. */
+const isPlaceholder = (token: string): boolean =>
+  /^[<[{]/.test(token) || token.includes('…') || token === '...' || token.includes(SUBSTITUTION);
+
+/** `[options]`-style placeholders that stand for flags, not arguments. */
+const isFlagsPlaceholder = (token: string): boolean => /^\[(?:options|flags|opts|\.\.\.|…)\]$/i.test(token);
+
+/**
+ * Unwrap synopsis notation so its flags are checked like any other:
+ * `[--api <level>]` → `--api <level>`, `[--json]` → `--json`, and each side of
+ * `[--device|--simulator]`. `[status|enable|disable]` stays a placeholder.
+ */
+function unwrapSynopsis(tokens: string[]): string[] {
+  return tokens.flatMap((token) => {
+    const flags = /^\[(-[^\]]*?)\]?$/.exec(token);
+    if (flags) return flags[1]!.split('|');
+    const value = /^(<[^>]*>)\]$/.exec(token);
+    if (value) return [value[1]!];
+    return [token];
+  });
+}
+
+const takesValue = (option: Option): boolean => option.required || option.optional;
+
+function findOption(cmd: Command, flag: string): Option | undefined {
+  return cmd.options.find((o) => o.long === flag || o.short === flag);
+}
+
+function findSubcommand(cmd: Command, name: string): Command | undefined {
+  return cmd.commands.find((c) => c.name() === name || c.aliases().includes(name));
+}
+
+const commandPath = (cmd: Command): string[] => {
+  const names: string[] = [];
+  for (let c: Command | null = cmd; c?.parent; c = c.parent) names.unshift(c.name());
+  return names;
+};
+
+interface Resolution {
+  /** The command the invocation lands on; undefined when it cannot be known (a placeholder command). */
+  command?: Command;
+  /** Every flag it uses, as written up to any `=`. */
+  flags: string[];
+  errors: string[];
+}
+
+/**
+ * Walk an invocation's words down the tree: each level's flags, then a
+ * subcommand while the current command has them, then the leaf's flags and
+ * arguments. `help <path…>` resolves the path it asks about.
+ */
+function resolveInvocation(root: Command, written: string[], strict: boolean): Resolution {
+  const tokens = unwrapSynopsis(written);
+  const flags: string[] = [];
+  const errors: string[] = [];
+  let cmd = root;
+  let i = 0;
+  let positionals = 0;
+  let flagsEnded = false;
+  let helpFor: Command | undefined;
+
+  const where = (): string => (cmd === root ? 'tapsmith' : `tapsmith ${commandPath(cmd).join(' ')}`);
+
+  /** Check the flag at tokens[i]; returns how many words it used. */
+  const readFlag = (token: string): number => {
+    if (token.startsWith('--')) {
+      const [name] = token.split('=', 1) as [string];
+      flags.push(name);
+      if (HELP_FLAGS.has(name)) return 1;
+      const option = findOption(cmd, name);
+      if (!option) {
+        errors.push(`${where()} has no flag ${name}`);
+        // `--team <id>`: the placeholder is that unknown flag's value.
+        return !token.includes('=') && /^<.*>$/.test(tokens[i + 1] ?? '') ? 2 : 1;
+      }
+      if (option.required && !token.includes('=') && tokens[i + 1] !== undefined) return 2;
+      if (option.optional && !token.includes('=') && tokens[i + 1] !== undefined && !tokens[i + 1]!.startsWith('-')) return 2;
+      return 1;
+    }
+    // Short flags: -j 2, -j2, -j=4, bundles like -wd <serial>.
+    const letters = token.slice(1).split('=', 1)[0]!;
+    const hasEquals = token.includes('=');
+    for (let k = 0; k < letters.length; k++) {
+      const flag = `-${letters[k]}`;
+      flags.push(flag);
+      if (HELP_FLAGS.has(flag)) continue;
+      const option = findOption(cmd, flag);
+      if (!option) {
+        errors.push(`${where()} has no flag ${flag}`);
+        return 1;
+      }
+      if (takesValue(option)) {
+        const attached = k < letters.length - 1 || hasEquals;
+        if (!attached && option.required && tokens[i + 1] !== undefined) return 2;
+        return 1;
+      }
+    }
+    return 1;
+  };
+
+  while (i < tokens.length) {
+    const token = tokens[i]!;
+    if (!flagsEnded && token === '--') {
+      flagsEnded = true;
+      i++;
+      continue;
+    }
+    if (!flagsEnded && token.startsWith('-') && token !== '-' && !isPlaceholder(token)) {
+      i += readFlag(token);
+      continue;
+    }
+    if (isFlagsPlaceholder(token)) {
+      i++;
+      continue;
+    }
+    // A word: a subcommand, `help`, or an argument.
+    const hasSubcommands = cmd.commands.length > 0;
+    if (hasSubcommands && positionals === 0 && !helpFor) {
+      if (isPlaceholder(token)) return { flags, errors }; // `tapsmith <command> --help`
+      if (token === 'help') {
+        helpFor = cmd;
+        i++;
+        continue;
+      }
+      const sub = findSubcommand(cmd, token);
+      if (sub) {
+        cmd = sub;
+        i++;
+        continue;
+      }
+      if (cmd.registeredArguments.length === 0) {
+        errors.push(`${where()} has no command '${token}'`);
+        return { command: undefined, flags, errors };
+      }
+    }
+    if (helpFor) {
+      // `help <command…>`: the rest names a command path.
+      if (isPlaceholder(token)) return { flags, errors };
+      const sub = findSubcommand(cmd, token);
+      if (!sub) {
+        errors.push(`${where()} has no command '${token}'`);
+        return { flags, errors };
+      }
+      cmd = sub;
+      i++;
+      continue;
+    }
+    positionals++;
+    const args = cmd.registeredArguments;
+    const variadic = args.some((a) => a.variadic);
+    if (strict && !variadic && positionals > args.length) {
+      errors.push(args.length === 0
+        ? `${where()} takes no arguments (got '${token}')`
+        : `${where()} takes at most ${args.length} argument${args.length === 1 ? '' : 's'} (got '${token}')`);
+    }
+    i++;
+  }
+  return { command: cmd, flags, errors };
+}
+
+// ─── Allowed non-invocations ───
+
+/**
+ * Text that reads like `tapsmith <word>` but is not a command line. Each entry
+ * is a prefix of an invocation's text and needs a reason; an entry nothing
+ * matches fails the guard, so the list cannot rot.
+ */
+const NOT_COMMANDS: Record<string, string> = {
+  'tapsmith run': 'telemetry event name (docs/telemetry.md, telemetry.ts)',
+  'tapsmith install': 'telemetry event name (docs/telemetry.md, telemetry.ts)',
+  'tapsmith show-trace t.zip --force-install': 'api-reference.md shows it as the example of a refused flag',
+};
+
+// ─── Sources ───
+
+const REPO = path.resolve(import.meta.dirname, '../../../..');
+
+const SOURCE_SETS = {
+  markdown: ['docs/**/*.md', '*.md', 'packages/*/README.md'],
+  astro: ['website/src/pages/**/*.astro'],
+  source: ['packages/tapsmith/src/**/*.{ts,tsx}'],
+} as const;
+
+function filesOf(patterns: readonly string[]): string[] {
+  return glob.sync([...patterns], {
+    cwd: REPO,
+    nodir: true,
+    ignore: ['**/node_modules/**', '**/__tests__/**', '**/dist/**'],
+  }).sort();
+}
+
+function collectInvocations(): Invocation[] {
+  const all: Invocation[] = [];
+  const read = (rel: string): string => fs.readFileSync(path.join(REPO, rel), 'utf8');
+  for (const rel of filesOf(SOURCE_SETS.markdown)) all.push(...markdownSnippets(rel, read(rel)).flatMap(invocationsIn));
+  for (const rel of filesOf(SOURCE_SETS.astro)) all.push(...astroSnippets(rel, read(rel)).flatMap(invocationsIn));
+  for (const rel of filesOf(SOURCE_SETS.source)) all.push(...sourceSnippets(rel, read(rel)).flatMap(invocationsIn));
+  return all;
+}
+
+function allowedBy(invocation: Invocation): string | undefined {
+  return Object.keys(NOT_COMMANDS).find((phrase) => invocation.text === phrase || invocation.text.startsWith(`${phrase} `));
+}
+
+function drift(root: Command, invocations: Invocation[]): string[] {
+  const problems: string[] = [];
+  for (const invocation of invocations) {
+    if (allowedBy(invocation)) continue;
+    const { errors } = resolveInvocation(root, invocation.tokens, invocation.strict);
+    for (const error of errors) problems.push(`${invocation.file}:${invocation.line}  \`${invocation.text}\`  → ${error}`);
+  }
+  return problems;
+}
+
+// ─── Reverse coverage: the api-reference CLI section ───
+
+interface DocBlock {
+  heading: string;
+  text: string;
+  line: number;
+}
+
+/** The `## CLI` section of api-reference.md, one block per `###`/`####` heading. */
+function cliSectionBlocks(source: string): DocBlock[] {
+  const lines = source.split('\n');
+  const start = lines.findIndex((l) => /^## CLI\s*$/.test(l));
+  if (start < 0) throw new Error('docs/api-reference.md has no "## CLI" section');
+  let end = lines.findIndex((l, i) => i > start && /^## /.test(l));
+  if (end < 0) end = lines.length;
+  const blocks: DocBlock[] = [];
+  let inFence = false;
+  for (let i = start + 1; i < end; i++) {
+    const line = lines[i]!;
+    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+    if (!inFence && /^#{3,4} /.test(line)) blocks.push({ heading: line, text: line, line: i + 1 });
+    else if (blocks.length > 0) blocks[blocks.length - 1]!.text += `\n${line}`;
+  }
+  return blocks;
+}
+
+function visibleCommands(cmd: Command): Command[] {
+  const help = cmd.createHelp();
+  const children = help.visibleCommands(cmd).filter((c) => c.name() !== 'help' || findSubcommand(cmd, 'help') === c);
+  return children.flatMap((c) => [c, ...visibleCommands(c)]);
+}
+
+function visibleOptions(cmd: Command): Option[] {
+  return cmd.createHelp().visibleOptions(cmd).filter((o) => !HELP_FLAGS.has(o.long ?? '') && !HELP_FLAGS.has(o.short ?? ''));
+}
+
+const mentions = (text: string, flag: string): boolean =>
+  new RegExp(`(?<![\\w-])${flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(text);
+
+/**
+ * Every visible command needs a block whose heading resolves to it, and every
+ * visible flag of it (long or short form) must be mentioned in those blocks.
+ */
+function undocumented(root: Command, blocks: DocBlock[], file: string): string[] {
+  const byCommand = new Map<Command, DocBlock[]>();
+  for (const block of blocks) {
+    const snippets = markdownSnippets(file, block.heading).flatMap(invocationsIn);
+    for (const invocation of snippets) {
+      const { command } = resolveInvocation(root, invocation.tokens, false);
+      if (!command) continue;
+      byCommand.set(command, [...(byCommand.get(command) ?? []), block]);
+    }
+  }
+  const problems: string[] = [];
+  for (const cmd of [root, ...visibleCommands(root)]) {
+    const name = cmd === root ? 'tapsmith' : `tapsmith ${commandPath(cmd).join(' ')}`;
+    const docs = byCommand.get(cmd) ?? [];
+    if (docs.length === 0) {
+      // The root needs a block only for flags of its own (--version).
+      if (cmd !== root || visibleOptions(cmd).length > 0) problems.push(`${name}: no heading in the CLI section names it`);
+      continue;
+    }
+    const text = docs.map((b) => b.text).join('\n');
+    for (const option of visibleOptions(cmd)) {
+      const forms = [option.long, option.short].filter((f): f is string => !!f);
+      if (!forms.some((f) => mentions(text, f))) {
+        problems.push(`${name}: flag ${option.flags} is not documented under ${docs.map((b) => `line ${b.line}`).join(', ')}`);
+      }
+    }
+  }
+  return problems;
+}
+
+// ─── The guard ───
+
+describe('CLI docs guard', () => {
+  const root = cliCommandTree();
+  const invocations = collectInvocations();
+
+  it('finds invocations in every source set', () => {
+    for (const [set, patterns] of Object.entries(SOURCE_SETS)) {
+      const files = new Set(filesOf(patterns));
+      expect(invocations.filter((inv) => files.has(inv.file)).length, `no invocations found in ${set} sources`).toBeGreaterThan(0);
+    }
+  });
+
+  it('every documented or printed `tapsmith …` invocation is one the CLI accepts', () => {
+    expect(drift(root, invocations)).toEqual([]);
+  });
+
+  it('every allowlisted non-command phrase still occurs', () => {
+    const used = new Set(invocations.map(allowedBy).filter(Boolean));
+    expect(Object.keys(NOT_COMMANDS).filter((phrase) => !used.has(phrase))).toEqual([]);
+  });
+
+  it('every command and flag is documented in the api-reference CLI section', () => {
+    const file = 'docs/api-reference.md';
+    const blocks = cliSectionBlocks(fs.readFileSync(path.join(REPO, file), 'utf8'));
+    expect(undocumented(root, blocks, file)).toEqual([]);
+  });
+});
+
+// ─── The guard's own behaviour, on a synthetic tree ───
+
+/** A tree shaped like the one PILOT-271 plans: nested subcommands beside flat ones. */
+function syntheticTree(): Command {
+  const program = new Command('tapsmith').version('1.0.0', '-v, --version').helpCommand('help [command]').enablePositionalOptions();
+  program.command('test')
+    .argument('[files...]')
+    .option('-d, --device <serial>')
+    .option('-j, --workers <n>')
+    .option('-w, --watch')
+    .option('-g, --grep <pattern>')
+    .addOption(new Option('--trace [mode]'))
+    .addOption(new Option('--secret').hideHelp());
+  program.command('doctor').option('--json');
+  program.command('init').option('--no-example-test').option('-y, --yes');
+  const ios = program.command('ios');
+  const network = ios.command('network');
+  network.command('verify').argument('<udid>').option('--timeout <s>');
+  network.command('configure').argument('<udid>').option('--refresh');
+  ios.command('build-agent').option('--team-id <id>');
+  return program;
+}
+
+const errorsFor = (line: string, strict = true): string[] => {
+  const invocations = invocationsIn({ file: 'x.md', line: 1, text: line, strict });
+  return invocations.flatMap((inv) => resolveInvocation(syntheticTree(), inv.tokens, inv.strict).errors);
+};
+
+describe('CLI docs guard: resolution', () => {
+  it('accepts every flag form commander does', () => {
+    for (const line of [
+      'npx tapsmith test',
+      'tapsmith test a.test.ts b.test.ts --device emulator-5554',
+      'tapsmith test --device=emulator-5554 -j 2',
+      'tapsmith test -j2',
+      'tapsmith test -j=4',
+      'tapsmith test -wd emulator-5554',
+      'tapsmith test --trace',
+      'tapsmith test --trace retain-on-failure',
+      'tapsmith test -- --not-a-flag.test.ts',
+      'tapsmith test --secret',
+      'tapsmith init --no-example-test -y',
+      'npx tapsmith@latest init --yes',
+      'tapsmith --version',
+      'tapsmith -v',
+      'tapsmith --help',
+      'tapsmith',
+      'tapsmith help test',
+      'tapsmith doctor --help',
+      'tapsmith test -h',
+    ]) {
+      expect(errorsFor(line), line).toEqual([]);
+    }
+  });
+
+  it('resolves nested subcommands and their flags', () => {
+    expect(errorsFor('tapsmith ios network verify <udid> --timeout 30')).toEqual([]);
+    expect(errorsFor('tapsmith ios network configure 0000-ABC --refresh')).toEqual([]);
+    expect(errorsFor('tapsmith ios build-agent --team-id ABC')).toEqual([]);
+    expect(errorsFor('tapsmith help ios network verify')).toEqual([]);
+    expect(errorsFor('tapsmith ios network --help')).toEqual([]);
+  });
+
+  it('reports unknown commands and subcommands', () => {
+    expect(errorsFor('tapsmith tset')).toEqual(['tapsmith has no command \'tset\'']);
+    expect(errorsFor('tapsmith ios network refresh <udid>')).toEqual(['tapsmith ios network has no command \'refresh\'']);
+    expect(errorsFor('tapsmith help nope')).toEqual(['tapsmith has no command \'nope\'']);
+  });
+
+  it('reports unknown flags, and flags given to the wrong command', () => {
+    expect(errorsFor('tapsmith test --network')).toEqual(['tapsmith test has no flag --network']);
+    expect(errorsFor('tapsmith doctor --device')).toEqual(['tapsmith doctor has no flag --device']);
+    expect(errorsFor('tapsmith test -x')).toEqual(['tapsmith test has no flag -x']);
+    expect(errorsFor('tapsmith ios network verify <udid> --refresh')).toEqual(['tapsmith ios network verify has no flag --refresh']);
+    expect(errorsFor('tapsmith init --example-test')).toEqual(['tapsmith init has no flag --example-test']);
+    // Root flags go before the command.
+    expect(errorsFor('tapsmith doctor --version')).toEqual(['tapsmith doctor has no flag --version']);
+  });
+
+  it('reports arguments a command does not take, in exact command lines only', () => {
+    expect(errorsFor('tapsmith doctor [udid]')).toEqual(['tapsmith doctor takes no arguments (got \'[udid]\')']);
+    expect(errorsFor('tapsmith ios network verify a b')).toEqual(['tapsmith ios network verify takes at most 1 argument (got \'b\')']);
+    expect(errorsFor('tapsmith doctor [options]')).toEqual([]);
+    expect(errorsFor('tapsmith doctor for the details', false)).toEqual([]);
+  });
+
+  it('checks the flags inside synopsis brackets', () => {
+    expect(errorsFor('tapsmith test [--device <serial>] [-w] [files...]')).toEqual([]);
+    expect(errorsFor('tapsmith init [--yes|--no-example-test]')).toEqual([]);
+    // The drift PILOT-259 found in api-reference.md.
+    expect(errorsFor('tapsmith ios build-agent [--team <id>] [--device|--simulator]')).toEqual([
+      'tapsmith ios build-agent has no flag --team',
+      'tapsmith ios build-agent has no flag --device',
+      'tapsmith ios build-agent has no flag --simulator',
+    ]);
+    expect(errorsFor('tapsmith doctor [udid]')).toEqual(['tapsmith doctor takes no arguments (got \'[udid]\')']);
+  });
+
+  it('ends a command at the quote that closes the text around it', () => {
+    expect(errorsFor('Run \'tapsmith doctor --help\' for usage.', false)).toEqual([]);
+    expect(errorsFor('tapsmith test --grep "a b" --nope')).toEqual(['tapsmith test has no flag --nope']);
+    expect(errorsFor('tapsmith test --device=\'x y\' --nope')).toEqual(['tapsmith test has no flag --nope']);
+  });
+
+  it('does not read a value as a flag', () => {
+    expect(errorsFor('tapsmith test --device <serial>')).toEqual([]);
+    expect(errorsFor('tapsmith test -d -weird-serial')).toEqual([]);
+    expect(errorsFor('tapsmith test --grep=-slow')).toEqual([]);
+    expect(errorsFor('tapsmith test -g -slow --nope')).toEqual(['tapsmith test has no flag --nope']);
+  });
+
+  it('skips placeholders it cannot resolve', () => {
+    expect(errorsFor('tapsmith <command> --help')).toEqual([]);
+    expect(errorsFor(`tapsmith ${SUBSTITUTION} --help`, false)).toEqual([]);
+  });
+
+  it('stops at shell operators, comments and prose', () => {
+    expect(errorsFor('npx tapsmith init && npx tapsmith doctor --json')).toEqual([]);
+    expect(errorsFor('npx tapsmith doctor | tee log --nope')).toEqual([]);
+    expect(errorsFor('npx tapsmith test   # --nope')).toEqual([]);
+    expect(errorsFor('Run: npx tapsmith init --yes (or npx tapsmith init for the wizard)', false)).toEqual([]);
+    expect(errorsFor('run tapsmith doctor, then --nope', false)).toEqual([]);
+    expect(errorsFor('npx tapsmith init && npx tapsmith dcotor')).toEqual(['tapsmith has no command \'dcotor\'']);
+  });
+
+  it('ignores the package name and MCP server names', () => {
+    expect(errorsFor('npm install -D tapsmith @tapsmith/react-native')).toEqual([]);
+    expect(errorsFor('claude mcp add tapsmith -- npx tapsmith mcp-server')).toEqual(['tapsmith has no command \'mcp-server\'']);
+    expect(errorsFor('codex mcp add tapsmith http://localhost:9274/mcp')).toEqual([]);
+    expect(errorsFor('import { test } from "tapsmith"')).toEqual([]);
+    expect(errorsFor('@tapsmith/core tapsmith.config.ts tapsmith-results')).toEqual([]);
+  });
+});
+
+describe('CLI docs guard: extraction', () => {
+  it('reads code blocks, inline code and tables from markdown, not prose', () => {
+    const md = [
+      'Use your tapsmith config here.',
+      '',
+      '```bash',
+      'npx tapsmith test --nope',
+      '```',
+      '',
+      '| a | b |',
+      '|---|---|',
+      '| `tapsmith doctor --nope` | x |',
+      '',
+      '- item with `tapsmith verify --nope`',
+    ].join('\n');
+    const found = markdownSnippets('x.md', md).flatMap(invocationsIn).map((inv) => [inv.line, inv.text]);
+    expect(found).toEqual([
+      [4, 'tapsmith test --nope'],
+      [9, 'tapsmith doctor --nope'],
+      [11, 'tapsmith verify --nope'],
+    ]);
+  });
+
+  it('reads string and template literals from source, not comments', () => {
+    const src = [
+      '// tapsmith test --comment',
+      'const a = \'Run: npx tapsmith doctor --json\';',
+      'const b = `Run tapsmith ${cmd} --help or tapsmith init --yes`;',
+    ].join('\n');
+    const found = sourceSnippets('x.ts', src).flatMap(invocationsIn).map((inv) => [inv.line, inv.text]);
+    expect(found).toEqual([
+      [2, 'tapsmith doctor --json'],
+      [3, `tapsmith ${SUBSTITUTION} --help or`],
+      [3, 'tapsmith init --yes'],
+    ]);
+  });
+
+  it('reads <code> and code= attributes from astro pages', () => {
+    const astro = 'body: \'<code>tapsmith init</code> writes it\'\n<Code code="npx tapsmith test --ui" />';
+    expect(astroSnippets('x.astro', astro).flatMap(invocationsIn).map((inv) => inv.text)).toEqual([
+      'tapsmith init',
+      'tapsmith test --ui',
+    ]);
+  });
+});
+
+describe('CLI docs guard: reverse coverage', () => {
+  const doc = (body: string): DocBlock[] => cliSectionBlocks(`# API\n\n## CLI\n\n${body}\n\n## Next\n\n### \`tapsmith doctor --json\`\n`);
+
+  it('requires a heading per visible command, nested ones included', () => {
+    const problems = undocumented(syntheticTree(), doc('### `tapsmith test`\n--device -j --watch --trace'), 'x.md');
+    expect(problems).toEqual(expect.arrayContaining([
+      'tapsmith: no heading in the CLI section names it',
+      'tapsmith doctor: no heading in the CLI section names it',
+      'tapsmith ios network verify: no heading in the CLI section names it',
+    ]));
+    // Blocks after the CLI section do not count.
+    expect(problems.some((p) => p.startsWith('tapsmith doctor:'))).toBe(true);
+  });
+
+  it('requires every visible flag, long or short form, and exempts hidden ones', () => {
+    const body = [
+      '### `tapsmith --version`',
+      '### `tapsmith test [files...]`',
+      '`-d` and `--workers` and `-w` and `-g`',
+      '### `tapsmith test --trace [mode]`',
+      '### `tapsmith doctor --json`',
+      '### `tapsmith init`',
+      '`--no-example-test`, `--yes`',
+      '### `tapsmith ios`',
+      '#### `tapsmith ios network`',
+      '#### `tapsmith ios network verify <udid>`',
+      '#### `tapsmith ios network configure <udid> --refresh`',
+      '#### `tapsmith ios build-agent`',
+    ].join('\n');
+    expect(undocumented(syntheticTree(), doc(body), 'x.md')).toEqual([
+      'tapsmith ios network verify: flag --timeout <s> is not documented under line 14',
+      'tapsmith ios build-agent: flag --team-id <id> is not documented under line 16',
+    ]);
+  });
+
+  it('fails loudly when the CLI section is missing', () => {
+    expect(() => cliSectionBlocks('# API\n\n## Commands\n')).toThrow('no "## CLI" section');
+  });
+});

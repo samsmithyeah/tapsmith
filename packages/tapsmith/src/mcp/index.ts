@@ -321,7 +321,7 @@ export async function runMcpServer(
   } catch { /* version not available */ }
   process.stderr.write(`\n  ${DIM}MCP server running on stdio transport. Waiting for an MCP client on stdin...${RESET}\n`);
   process.stderr.write(`  ${DIM}Stdio clients start this command as a subprocess; another terminal cannot attach to this process.${RESET}\n`);
-  process.stderr.write(`  ${DIM}This terminal is also watching MCP activity from client-owned tapsmith subprocesses.${RESET}\n`);
+  process.stderr.write(`  ${DIM}This terminal is also watching MCP activity from client-owned Tapsmith subprocesses.${RESET}\n`);
   process.stderr.write(`\n  ${BOLD}Connect your AI agent${RESET}\n`);
   process.stderr.write(`  ${DIM}${CYAN}›${RESET}${DIM} Codex CLI:${RESET}\n`);
   process.stderr.write(`    codex mcp add tapsmith -- npx tapsmith mcp-server\n`);

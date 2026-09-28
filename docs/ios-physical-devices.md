@@ -35,7 +35,7 @@ tapsmith setup-ios-device
    tapsmith build-ios-agent
    ```
 
-   This auto-detects the Apple Developer team from Xcode's Accounts preferences, runs `xcodebuild build-for-testing` with automatic signing, and caches the resulting `.xctestrun` under `ios-agent/.build-device/`. First run takes 60–120s; incremental rebuilds are <10s. If you have multiple teams, pass `--team-id XXXXXXXXXX` to skip the prompt.
+   This auto-detects the Apple Developer team from Xcode's Accounts preferences, runs `xcodebuild build-for-testing` with automatic signing, and writes the resulting `.xctestrun` under `ios-agent/.build-device/` in the agent source directory (your checkout's `ios-agent/`, or `~/.tapsmith/ios-agent/` when Tapsmith is installed from npm). It prints the `iosXctestrun:` line to add to your config. First run takes 60–120s; incremental rebuilds are <10s. If you have multiple teams, pass `--team-id XXXXXXXXXX` to skip the prompt.
 
    Rebuild when you upgrade Tapsmith, switch teams/devices, or your profile expires. **Free Apple Developer accounts expire provisioning profiles every 7 days** — Tapsmith will warn you when you're within three days of expiry.
 
@@ -70,7 +70,7 @@ export default defineConfig({
 What Tapsmith fills in for you:
 
 - **Device UDID** — when `device` is omitted, Tapsmith picks the single paired USB iOS device. Zero or more than one → actionable error.
-- **`iosXctestrun`** — when omitted, Tapsmith looks under `ios-agent/.build-device/Build/Products/` for the newest `*iphoneos*.xctestrun` (populated by `tapsmith build-ios-agent`).
+- **`iosXctestrun`** — when omitted, Tapsmith looks for the newest `*iphoneos*.xctestrun` under `ios-agent/.build-device/Build/Products/` in the project directory or a parent of it (populated by `tapsmith build-ios-agent` in a Tapsmith checkout). With Tapsmith installed from npm the build lands under `~/.tapsmith/ios-agent/`, which is not searched: set `iosXctestrun` to the path `build-ios-agent` prints.
 
 Both can be overridden:
 

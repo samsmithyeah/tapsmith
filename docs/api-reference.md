@@ -2555,22 +2555,68 @@ npx tapsmith test --force-install
 
 Without this flag, Tapsmith checks if the package is already installed and skips the install step to save time.
 
-### `tapsmith init`
+### `tapsmith test --reporter <name>`
 
-Run the interactive setup wizard. Detects your environment (ADB, Xcode, simulators, emulators), walks you through platform and app configuration, and generates a `tapsmith.config.ts` file and an example test.
+Use one built-in reporter for this run instead of the config's `reporter`:
+`list`, `line`, `dot`, `json`, `junit`, `html`, `github` or `blob`. For several reporters or reporter
+options, set [`reporter`](configuration.md#reporterconfig) in the config.
 
 ```bash
-npx tapsmith init
-npx tapsmith init --yes --platform android   # non-interactive; see init --help for every flag
+npx tapsmith test --reporter dot
+npx tapsmith test --reporter json     # writes tapsmith-results/results.json
 ```
 
-### `tapsmith doctor`
+### `tapsmith init [options]`
 
-Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, ADB (Android), agent APKs, AVD system image compatibility, Xcode (iOS), simulators, and network capture dependencies. Exits with code 0 if all checks pass, 1 if any hard errors.
+Set up a project. With no options, in a terminal, it runs the interactive wizard: it detects your environment (ADB, Xcode, simulators, emulators), walks you through platform and app configuration, and generates a `tapsmith.config.ts`, an example test and an `AGENTS.md` section.
+
+Pass `--yes` or any setup flag below to run non-interactively instead (for scripts and AI agents): anything not given is auto-detected, and a choice that cannot be made (two APKs, say) exits 1 naming the candidates and the flag that picks one. Without a terminal and without flags, `init` exits 1 rather than waiting for input. iOS physical devices need the interactive wizard, for its code-signing preflight.
+
+| Flag | Meaning |
+| --- | --- |
+| `-y`, `--yes` | Accept auto-detected defaults for anything not specified |
+| `--platform <list>` | `android`, `ios`, or `android,ios` (default: inferred from `android/` and `ios/`) |
+| `--apk <path>` | Android APK (default: auto-detected under `android/**/build/outputs/apk/`) |
+| `--package <id>` | Android package name (default: read from the APK) |
+| `--app <path>` | iOS simulator `.app` bundle (default: auto-detected under `ios/`) |
+| `--bundle-id <id>` | iOS bundle identifier (default: read from `Info.plist`) |
+| `--avd <name>` | Android AVD to auto-launch (default: first available) |
+| `--simulator <name>` | iOS simulator name (default: newest available iPhone) |
+| `--device-type <type>` | `emulator`, `physical` or `both` (default: `emulator`) |
+| `--network-capture` | Enable HTTP(S) capture in traces |
+| `--no-example-test` | Skip scaffolding `tests/example.test.ts` |
+| `--no-agents-md` | Skip scaffolding the `AGENTS.md` section |
+| `--force` | Overwrite an existing `tapsmith.config.*` |
+| `--json` | Machine-readable output, on success and on errors (`{ "error": { "code", "message", "fix", "candidates" } }`) |
+
+```bash
+npx tapsmith init                                  # interactive wizard
+npx tapsmith init --yes                            # accept every detected default
+npx tapsmith init --yes --platform android --apk ./app-debug.apk --json
+```
+
+See [Using Tapsmith with AI coding agents](agents.md) for the non-interactive setup loop.
+
+### `tapsmith doctor [--json] [-c <path>]`
+
+Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, config file, ADB (Android), connected devices, agent APKs, AVD system image compatibility, Xcode (iOS), simulators, and network capture dependencies. Each check prints `✓`, `⚠` (warning) or `✗` (error); a warning or error is followed by a `↳` line with the fix, often the exact command to run. Exits with code 0 unless a check is an error.
+
+`--json` prints the checks (each with its `fix`) and the device inventory (AVDs, simulators, connected devices) as JSON. `-c` / `--config` checks a specific config file.
 
 ```bash
 npx tapsmith doctor
 npx tapsmith doctor --json -c tapsmith.config.ci.mjs   # machine-readable, against a specific config
+```
+
+### `tapsmith verify [--json] [-c <path>]`
+
+Prove the setup works end to end: runs one test file through the real `tapsmith test` path (daemon, device or emulator launch, app install) and reports whether it passed. It picks `example.test.ts` if the project has one, otherwise the first test file; a project with no tests yet gets a throwaway smoke test, removed afterwards. Exits 1 when the run fails, when there is no `tapsmith.config.*` (unless `-c` names one), or when the config cannot be loaded.
+
+`--json` prints `{ ok, passed, failed, skipped, duration, failures, testFile }`, or an `{ "error": { "code", "message", "fix" } }` object. `-c` / `--config` uses a specific config file.
+
+```bash
+npx tapsmith verify
+npx tapsmith verify --json
 ```
 
 ### `tapsmith telemetry [status|enable|disable] [--json]`
@@ -2582,6 +2628,15 @@ npx tapsmith telemetry            # status
 npx tapsmith telemetry disable
 npx tapsmith telemetry enable
 npx tapsmith telemetry status --json
+```
+
+### `tapsmith mcp-server [-c <path>]`
+
+Run the MCP server on stdio, for an AI coding agent to launch as a subprocess. It runs its own headless test session, with its own daemon and device. `-c` / `--config` uses a specific config file. Stdout carries the MCP protocol, so messages and usage errors go to stderr. See the [MCP Server Guide](mcp-server.md) for setup.
+
+```bash
+claude mcp add tapsmith -- npx tapsmith mcp-server
+codex mcp add tapsmith -- npx tapsmith mcp-server --config tapsmith.config.ios.mjs
 ```
 
 ### `tapsmith create-avd [--api <level>] [--name <name>] [--device <profile>] [--abi <abi>] [--force] [--install-tools]`
@@ -2609,10 +2664,11 @@ npx tapsmith list-devices --json
 
 ### `tapsmith show-trace <file.zip>`
 
-Open the trace viewer in the default browser to inspect a recorded trace.
+Open the trace viewer in the default browser to inspect a recorded trace. Traces are written to
+`<outputDir>/traces/` (`tapsmith-results/traces/` by default), named `trace-<test name>-<timestamp>.zip`.
 
 ```bash
-npx tapsmith show-trace test-results/traces/trace-my_test.zip
+npx tapsmith show-trace tapsmith-results/traces/trace-my_test-1767225600000.zip
 ```
 
 The trace viewer shows:
@@ -2651,6 +2707,137 @@ means `on`; an unknown mode, here or in the config, is an error). See
 npx tapsmith test --video on                    # Record every test
 npx tapsmith test --video retain-on-failure     # Only keep videos for failed tests
 ```
+
+### `tapsmith merge-reports [dir]`
+
+Merge blob reports from sharded CI runs into a single HTML report.
+
+```bash
+# After collecting all shard blob-report/ directories:
+npx tapsmith merge-reports           # reads from blob-report/
+npx tapsmith merge-reports ./blobs   # custom directory
+npx tapsmith merge-reports -c tapsmith.config.ci.ts   # reporters from a specific config
+```
+
+The merged results go to the reporters in the config (`-c` / `--config` picks the file).
+
+It checks the blobs before merging. It refuses to merge, printing a one-line error and exiting
+with status 1, when:
+
+- the directory holds no blob reports (`*.jsonl`), for example after a failed artifact download;
+- a file is not a valid blob report (`Invalid blob file <name>: …`);
+- a blob was written by a newer Tapsmith (its blob format is newer than this version reads);
+- the sharded blobs aren't one split: a shard appears twice, the blobs come from different
+  splits (say `1/3` and `2/4`), or an unsharded blob sits among sharded ones. Merge each run,
+  such as Android and iOS, from its own directory. A set of unsharded blobs is merged without
+  these checks.
+
+When a shard is **missing**, the shards that are present are still merged and reported, so CI
+keeps a report to triage from. The merged status is `failed`, the missing shards are named, and
+the command exits 1.
+
+Once a complete set is merged, the command exits 0 even if the merged run has failed tests.
+Playwright's `merge-reports` does the same, since the shard jobs already carry the failure. The
+last line gives the merged status, e.g.
+`Merged 3 blob reports (shards 1–3 of 3): failed — 41 passed, 2 failed`.
+A `blob` reporter in the config is skipped here, because merging reads blobs and never writes one. If
+`blob` is the only reporter configured, the merge falls back to `list`.
+
+### `tapsmith show-report [dir]`
+
+Open the HTML test report in the default browser.
+
+```bash
+npx tapsmith show-report               # opens tapsmith-report/index.html
+npx tapsmith show-report ./my-report   # custom directory
+```
+
+### `tapsmith setup-ios`
+
+First-run setup for iOS **simulator** network capture (macOS only). Checks, one step at a time, that
+mitmproxy is installed with Homebrew and that its Mitmproxy Redirector Network Extension is registered and
+approved; for the approval step it opens System Settings on the right pane and waits for you to allow it.
+Each step prints what to do next. See [iOS network capture](ios-network-capture.md).
+
+```bash
+npx tapsmith setup-ios
+```
+
+### iOS physical-device commands
+
+These commands support running tests on USB-attached iPhones/iPads. See
+[docs/ios-physical-devices.md](./ios-physical-devices.md) for the full
+setup walkthrough. `tapsmith list-devices` (above) lists
+physical devices too, with their UDIDs.
+
+#### `tapsmith setup-ios-device`
+
+Run the host-side preflight for physical iOS devices (macOS only). Takes no
+arguments: it checks the Mac, then every attached device. Host checks: Xcode
+command-line tools, `xcrun devicectl`, libimobiledevice (`iproxy`), a code
+signing identity and an Apple Developer team registered with Xcode; and, as
+advisory checks, passwordless `sudo` for the Developer Disk Image mount (so a
+test run does not stop at a password prompt), a signed agent runner under
+`ios-agent/.build-device`, and the provisioning profile's expiry. Device
+check: each attached device is paired. It does not
+check the Developer Disk Image (Tapsmith mounts it when a test run starts) or
+the macOS firewall (`configure-ios-network --fix-firewall` handles that).
+Each check prints `✓`, `⚠` (advisory, not blocking) or `✗` with the fix; the
+command exits 1 if a required check fails or no device is paired, and ends
+with the steps it cannot check from the Mac (trusting the developer
+certificate, turning off Auto-Lock).
+
+#### `tapsmith build-ios-agent [--team-id <id>] [--cwd <path>] [--derived-data-path <path>] [-v]`
+
+Build the signed `TapsmithAgent` XCUITest runner for physical devices with
+your provisioning profile. Auto-detects the Apple Developer team ID from
+Xcode's preferences (or keychain) if `--team-id` is omitted. `-v` /
+`--verbose` streams the raw `xcodebuild` output.
+
+The agent source comes from `<cwd>/ios-agent/` in a Tapsmith checkout (`--cwd`
+points at one), or else from the copy the npm package extracts to
+`~/.tapsmith/ios-agent/`. Build products go to `ios-agent/.build-device` inside
+that source directory unless `--derived-data-path` says otherwise. When the
+build finishes, the command prints the `iosXctestrun:` line to add to your
+config. `tapsmith test` finds the runner without that line only when it is
+under an `ios-agent/.build-device` in or above the project directory, the
+checkout layout; with the npm package, set `iosXctestrun` in the config.
+
+#### `tapsmith configure-ios-network <udid> [--ssid <name>] [--device-name <name>] [--fix-firewall]`
+
+Generate a `.mobileconfig` profile that routes the physical device's Wi-Fi
+traffic through Tapsmith's MITM proxy, and reveal it in Finder so you can
+AirDrop it to the device. Decrypted capture is available for clients that trust
+the Tapsmith CA; pinned or embedded-root clients may need passthrough.
+`--ssid` targets a specific Wi-Fi network (defaults to the host's current SSID);
+`--device-name` sets the profile's `PayloadDisplayName`; `--fix-firewall`
+turns off macOS Application Firewall stealth mode (via sudo), which otherwise
+drops the device's connections to the proxy.
+
+#### `tapsmith refresh-ios-network <udid> [--ssid <name>] [--device-name <name>] [--fix-firewall]`
+
+Regenerate the profile for a device whose host IP or Wi-Fi SSID has
+changed since the last run. Same shape as `configure-ios-network` — the
+difference is only wording in the output.
+
+#### `tapsmith verify-ios-network <udid>`
+
+End-to-end sanity check that the installed profile plus the trusted CA
+actually produce decrypted HTTPS capture for a normal system-trust client.
+Starts the proxy, asks you to load an HTTPS page in Safari on the device, then
+reports whether Tapsmith saw the request and could decrypt the body. Exits
+non-zero on failure with fix-it hints for each failure mode.
+
+### `tapsmith --version` / `tapsmith -v`
+
+Print the Tapsmith version.
+
+### `tapsmith --help` / `tapsmith -h` / `tapsmith help [command]`
+
+Show the available commands, or one command's options (`tapsmith help test`, same as `tapsmith test --help`).
+Help never runs the command: `tapsmith --help init` prints the command list rather than starting the wizard.
+
+---
 
 ## Video recording
 
@@ -2721,111 +2908,6 @@ to be recorded. See [ios-physical-devices.md](./ios-physical-devices.md).
 **`size` option**: honoured on Android only (passed through as
 `screenrecord --size WxH`). On iOS the daemon emits a one-time warning and
 records at native resolution.
-
-### `tapsmith merge-reports [dir]`
-
-Merge blob reports from sharded CI runs into a single HTML report.
-
-```bash
-# After collecting all shard blob-report/ directories:
-npx tapsmith merge-reports           # reads from blob-report/
-npx tapsmith merge-reports ./blobs   # custom directory
-```
-
-It checks the blobs before merging. It refuses to merge, printing a one-line error and exiting
-with status 1, when:
-
-- the directory holds no blob reports (`*.jsonl`), for example after a failed artifact download;
-- a file is not a valid blob report (`Invalid blob file <name>: …`);
-- a blob was written by a newer Tapsmith (its blob format is newer than this version reads);
-- the sharded blobs aren't one split: a shard appears twice, the blobs come from different
-  splits (say `1/3` and `2/4`), or an unsharded blob sits among sharded ones. Merge each run,
-  such as Android and iOS, from its own directory. A set of unsharded blobs is merged without
-  these checks.
-
-When a shard is **missing**, the shards that are present are still merged and reported, so CI
-keeps a report to triage from. The merged status is `failed`, the missing shards are named, and
-the command exits 1.
-
-Once a complete set is merged, the command exits 0 even if the merged run has failed tests.
-Playwright's `merge-reports` does the same, since the shard jobs already carry the failure. The
-last line gives the merged status, e.g.
-`Merged 3 blob reports (shards 1–3 of 3): failed — 41 passed, 2 failed`.
-A `blob` reporter in the config is skipped here, because merging reads blobs and never writes one. If
-`blob` is the only reporter configured, the merge falls back to `list`.
-
-### `tapsmith show-report [dir]`
-
-Open the HTML test report in the default browser.
-
-```bash
-npx tapsmith show-report               # opens tapsmith-report/index.html
-npx tapsmith show-report ./my-report   # custom directory
-```
-
-### iOS physical-device commands
-
-These commands support running tests on USB-attached iPhones/iPads. See
-[docs/ios-physical-devices.md](./ios-physical-devices.md) for the full
-setup walkthrough.
-
-#### `tapsmith list-devices [--json]`
-
-Print a table of every device Tapsmith can target right now — Android (ADB),
-iOS simulators (simctl), and iOS physical (devicectl) — with a one-line
-status (`Ready` or an imperative fix). `--json` emits the row model for
-scripting.
-
-#### `tapsmith setup-ios-device`
-
-Run the preflight checklist for physical iOS devices: pairing,
-Developer Mode, Developer Disk Image, USB transport, built agent cache,
-firewall stealth mode, and the Xcode 26 CoreDevice sudo prompt probe.
-Checks every attached device, prints per-check `ok`/`fix` output and exits
-non-zero if anything blocks `tapsmith test`.
-
-#### `tapsmith build-ios-agent [--team-id <id>] [--cwd <path>] [--derived-data-path <path>] [-v]`
-
-Build the signed `TapsmithAgent` XCUITest bundle for the current device /
-provisioning profile. Auto-detects the Apple Developer team ID from Xcode's
-preferences (or keychain) if `--team-id` is omitted. `-v` / `--verbose`
-streams the raw `xcodebuild` output. The resulting
-`.xctestrun` is cached under `~/.tapsmith/` and picked up automatically by
-`tapsmith test`.
-
-#### `tapsmith configure-ios-network <udid> [--ssid <name>] [--device-name <name>] [--fix-firewall]`
-
-Generate a `.mobileconfig` profile that routes the physical device's Wi-Fi
-traffic through Tapsmith's MITM proxy, and reveal it in Finder so you can
-AirDrop it to the device. Decrypted capture is available for clients that trust
-the Tapsmith CA; pinned or embedded-root clients may need passthrough.
-`--ssid` targets a specific Wi-Fi network (defaults to the host's current SSID);
-`--device-name` sets the profile's `PayloadDisplayName`; `--fix-firewall`
-turns off macOS Application Firewall stealth mode (via sudo), which otherwise
-drops the device's connections to the proxy.
-
-#### `tapsmith refresh-ios-network <udid> [--ssid <name>] [--device-name <name>] [--fix-firewall]`
-
-Regenerate the profile for a device whose host IP or Wi-Fi SSID has
-changed since the last run. Same shape as `configure-ios-network` — the
-difference is only wording in the output.
-
-#### `tapsmith verify-ios-network <udid>`
-
-End-to-end sanity check that the installed profile plus the trusted CA
-actually produce decrypted HTTPS capture for a normal system-trust client.
-Starts the proxy, asks you to load an HTTPS page in Safari on the device, then
-reports whether Tapsmith saw the request and could decrypt the body. Exits
-non-zero on failure with fix-it hints for each failure mode.
-
-### `tapsmith --version` / `tapsmith -v`
-
-Print the Tapsmith version.
-
-### `tapsmith --help` / `tapsmith -h` / `tapsmith help [command]`
-
-Show the available commands, or one command's options (`tapsmith help test`, same as `tapsmith test --help`).
-Help never runs the command: `tapsmith --help init` prints the command list rather than starting the wizard.
 
 ---
 

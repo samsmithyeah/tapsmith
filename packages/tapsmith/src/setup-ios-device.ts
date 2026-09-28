@@ -503,7 +503,7 @@ export async function runSetupIosDevice(): Promise<void> {
   console.log(`    ${dim('Restore your normal setting after the test session.')}`);
   console.log();
   console.log(bold('To run a test:'));
-  console.log(`  ${dim('1.')} Point your tapsmith config at the device UDID above and the signed`);
+  console.log(`  ${dim('1.')} Point your Tapsmith config at the device UDID above and the signed`);
   console.log(`     ${bold('iosXctestrun')} under ${bold('ios-agent/.build-device')}. Example:`);
   console.log(dim('       { platform: \'ios\', device: \'<UDID>\', iosXctestrun: \'<path>\', app: \'<signed .app>\' }'));
   console.log(`  ${dim('2.')} ${bold('tapsmith test --config <your-config>')}`);

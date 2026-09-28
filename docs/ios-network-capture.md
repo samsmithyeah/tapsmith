@@ -224,7 +224,7 @@ Physical iPhones/iPads have their own network stack — the macOS Network Extens
 
 ### First-run setup (physical)
 
-Prerequisites — run `tapsmith setup-ios-device` to check these automatically:
+Prerequisites — `tapsmith setup-ios-device` checks the host tools, the agent build and device pairing for you (Developer Mode you check on the device):
 
 - Xcode 15+ with command-line tools
 - `libimobiledevice` installed (`brew install libimobiledevice`)
