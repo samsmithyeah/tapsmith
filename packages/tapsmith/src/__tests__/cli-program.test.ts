@@ -672,6 +672,19 @@ describe('tapsmith ios', () => {
     expect(h.err).toContain('\'--refresh\' goes after the command: tapsmith ios network configure --refresh');
   });
 
+  it('a misplaced flag whose value names a command still finds the real command', async () => {
+    let h = await usageError(['--platform', 'ios', 'init']);
+    expect(h.err).toContain('\'--platform\' goes after the command: tapsmith init --platform');
+    h = await run(['--json', '--platform', 'ios', 'init']);
+    expect(h.code).toBe(1);
+    expect(JSON.parse(h.out).error.code).toBe('UNKNOWN_FLAG');
+  });
+
+  it.each([['-j4'], ['-wd'], ['-j=4']])('%s before test is recognised as a test flag', async (flag) => {
+    const h = await usageError([flag, 'test']);
+    expect(h.err).toContain(`'${flag}' goes after the command: tapsmith test ${flag}`);
+  });
+
   it.each([
     [['ios', 'help', '--help'], 'tapsmith ios'],
     [['ios', 'network', 'help', '-h'], 'tapsmith ios network'],

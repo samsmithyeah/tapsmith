@@ -824,13 +824,20 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
     } else {
       // `tapsmith -c ci.mjs test`: the old parser took options anywhere.
       const misplaced = argv.find((t) => t.startsWith('-') && !ROOT_FLAGS.has(t));
-      const laterAt = argv.findIndex((t) => !t.startsWith('-') && findCommand(program, t));
+      // The command is the first command word that is not the value of the
+      // flag before it (`--platform ios init` is init, not ios); failing
+      // that, the first command word at all.
+      const isCommandAt = (i: number): boolean => !argv[i]!.startsWith('-') && !!findCommand(program, argv[i]!);
+      const commandAts = argv.map((_t, i) => i).filter(isCommandAt);
+      const laterAt = commandAts.find((i) => i === 0 || !argv[i - 1]!.startsWith('-') || argv[i - 1]!.includes('='))
+        ?? commandAts[0] ?? -1;
       if (misplaced && laterAt >= 0) {
         const later = resolveCommandPath(findCommand(program, argv[laterAt]!)!, argv, laterAt);
         state.command = later.name;
         state.json = JSON_ERROR_COMMANDS.has(later.name) && argv.includes('--json');
-        // Suggest moving the flag only to a command that takes it.
-        const flag = misplaced.split('=', 1)[0]!;
+        // Suggest moving the flag only to a command that takes it. A short
+        // form is known by its first letter (`-j4`, a bundle like `-wd`).
+        const flag = misplaced.startsWith('--') ? misplaced.split('=', 1)[0]! : misplaced.slice(0, 2);
         const takesIt = later.leaf.options.some((o) => o.long === flag || o.short === flag);
         program.error(
           takesIt

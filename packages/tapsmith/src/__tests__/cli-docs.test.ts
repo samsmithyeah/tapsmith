@@ -598,17 +598,17 @@ function resolveInvocation(root: Command, written: string[], mode: { strict: boo
  * invocation text, the files it may appear in, and why. An entry nothing
  * matches fails the guard, so the list cannot rot.
  */
-const NOT_COMMANDS: Array<{ text: string; files: string[]; reason: string }> = [
+const NOT_COMMANDS: Array<{ text: string; files: string[]; reason: string; lineIncludes?: string }> = [
   { text: 'tapsmith run', files: ['docs/telemetry.md', 'packages/tapsmith/src/telemetry.ts'], reason: 'telemetry event name' },
   { text: 'tapsmith install', files: ['docs/telemetry.md', 'packages/tapsmith/src/telemetry.ts'], reason: 'telemetry event name' },
   { text: 'tapsmith show-trace t.zip --force-install', files: ['docs/api-reference.md'], reason: 'the documented example of a refused flag' },
   { text: 'tapsmith test --device --workers 2', files: ['docs/api-reference.md'], reason: 'the documented example of a value flag given a flag' },
-  { text: 'tapsmith setup-ios-device', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)' },
-  { text: 'tapsmith build-ios-agent', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)' },
-  { text: 'tapsmith setup-ios', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)' },
-  { text: 'tapsmith configure-ios-network <udid>', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)' },
-  { text: 'tapsmith refresh-ios-network <udid>', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)' },
-  { text: 'tapsmith verify-ios-network <udid>', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)' },
+  { text: 'tapsmith setup-ios-device', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)', lineIncludes: '| `tapsmith ios ' },
+  { text: 'tapsmith build-ios-agent', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)', lineIncludes: '| `tapsmith ios ' },
+  { text: 'tapsmith setup-ios', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)', lineIncludes: '| `tapsmith ios ' },
+  { text: 'tapsmith configure-ios-network <udid>', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)', lineIncludes: '| `tapsmith ios ' },
+  { text: 'tapsmith refresh-ios-network <udid>', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)', lineIncludes: '| `tapsmith ios ' },
+  { text: 'tapsmith verify-ios-network <udid>', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)', lineIncludes: '| `tapsmith ios ' },
 ];
 
 // ─── Sources ───
@@ -657,8 +657,11 @@ function collectInvocations(): Invocation[] {
   return all;
 }
 
-function allowedBy(invocation: Invocation): (typeof NOT_COMMANDS)[number] | undefined {
-  return NOT_COMMANDS.find((entry) => entry.text === invocation.text && entry.files.includes(invocation.file));
+const sourceLine = (file: string, line: number): string => fs.readFileSync(path.join(REPO, file), 'utf8').split('\n')[line - 1] ?? '';
+
+function allowedBy(invocation: Invocation, lineOf: (file: string, line: number) => string = sourceLine): (typeof NOT_COMMANDS)[number] | undefined {
+  return NOT_COMMANDS.find((entry) => entry.text === invocation.text && entry.files.includes(invocation.file)
+    && (entry.lineIncludes === undefined || lineOf(invocation.file, invocation.line).includes(entry.lineIncludes)));
 }
 
 function drift(root: Command, invocations: Invocation[]): string[] {
@@ -762,7 +765,7 @@ describe('CLI docs guard', () => {
   });
 
   it('every allowlisted non-command phrase still occurs', () => {
-    const used = new Set(invocations.map(allowedBy));
+    const used = new Set(invocations.map((inv) => allowedBy(inv)));
     expect(NOT_COMMANDS.filter((entry) => !used.has(entry)).map((entry) => entry.text)).toEqual([]);
   });
 
@@ -1073,6 +1076,10 @@ describe('CLI docs guard: extraction', () => {
     expect(allowedBy(inv('tapsmith run', 'docs/telemetry.md'))).toBeDefined();
     expect(allowedBy(inv('tapsmith run', 'docs/getting-started.md'))).toBeUndefined();
     expect(allowedBy(inv('tapsmith run --nope', 'docs/telemetry.md'))).toBeUndefined();
+    // A rename-table entry excuses the old name in its table row only, not in prose.
+    const renamed = inv('tapsmith setup-ios', 'docs/api-reference.md');
+    expect(allowedBy(renamed, () => '| `tapsmith setup-ios` | `tapsmith ios network setup-simulator` |')).toBeDefined();
+    expect(allowedBy(renamed, () => 'Run `tapsmith setup-ios` first.')).toBeUndefined();
   });
 
   it('reads <code> and code= attributes from astro pages', () => {
