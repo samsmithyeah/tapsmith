@@ -525,7 +525,7 @@ function resolveInvocation(root: Command, written: string[], mode: { strict: boo
       // leaf; the guard deliberately refuses them in docs, as it refuses
       // stray arguments elsewhere.
       const group = helpTarget ?? cmd;
-      if (token === 'help' && group.commands.length > 0) {
+      if (token === 'help' && helpTarget && helpTarget.commands.length > 0) {
         i++; // `help ios network help verify`: redundant, as runCli reads it
         continue;
       }
@@ -869,6 +869,8 @@ describe('CLI docs guard: resolution', () => {
     // runCli resolves the whole path after `help`, git-style.
     expect(errorsFor('tapsmith help ios network verify')).toEqual([]);
     expect(errorsFor('tapsmith help ios network help verify')).toEqual([]);
+    // runCli reads a second `help` only after a resolved group, never straight after `help`.
+    expect(errorsFor('tapsmith help help test')).toEqual(['tapsmith has no command \'help\'']);
     expect(errorsFor('tapsmith help ios netwrk')).toEqual(['tapsmith ios has no command \'netwrk\'']);
     expect(errorsFor('tapsmith help doctor extra')).toEqual(['`tapsmith doctor` has no subcommands (got \'extra\' after `help`)']);
   });
