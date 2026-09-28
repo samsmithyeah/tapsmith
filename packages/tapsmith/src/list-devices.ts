@@ -14,7 +14,7 @@
  * cable"). Ready devices sort first. A `--json` flag emits the row model
  * for scripting.
  *
- * For per-device iOS preflight with richer hints, `tapsmith setup-ios-device`
+ * For per-device iOS preflight with richer hints, `tapsmith ios setup-device`
  * does the heavy lifting.
  */
 
@@ -246,12 +246,12 @@ function formatTable(rows: DeviceRow[]): string {
 
   // Footer hint: if any blocked row is a physical iOS device, point at
   // the guided fix command. We intentionally skip the hint for Android-
-  // only blockers because `setup-ios-device` wouldn't help there.
+  // only blockers because `ios setup-device` wouldn't help there.
   const hasIosPhysicalBlocker = rows.some(
     (r) => !r.ready && r.platform === 'ios-device',
   );
   if (hasIosPhysicalBlocker) {
-    lines.push(dim('Run `tapsmith setup-ios-device` for guided fixes.'));
+    lines.push(dim('Run `tapsmith ios setup-device` for guided fixes.'));
   }
 
   return lines.join('\n') + '\n';
@@ -273,7 +273,7 @@ function statusStringColored(r: DeviceRow): string {
 
 /**
  * Spin up an ephemeral `tapsmith-core` daemon, issue `ListDevices`, and tear
- * down. Same shape as `configure-ios-network`'s helper — this command is
+ * down. Same shape as `ios network configure`'s helper — this command is
  * short-lived and doesn't need to reuse a long-running daemon.
  */
 async function listDevicesFromDaemon(): Promise<DeviceInfoProto[]> {

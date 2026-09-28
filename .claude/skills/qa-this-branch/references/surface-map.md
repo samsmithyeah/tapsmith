@@ -13,7 +13,7 @@ change is not QA'd on one platform.
 | **Daemon** | `packages/tapsmith-core/**` | platform × modes that reach the changed RPC | release build + `TAPSMITH_DAEMON_BIN`; device run |
 | **Agent** | `agent/**`, `ios-agent/**` | that platform (both if shared behaviour) × the actions it serves | rebuild + reinstall, prove the running binary is new, device run |
 | **Protocol** | `proto/tapsmith.proto` | every consumer: SDK, daemon, both agents | device run on both platforms |
-| **Environment CLI** | `init*`, `doctor`, `verify*`, `setup-*`, `create-avd`, `build-ios-agent`, `env-scan` | subcommand × machine state (fresh project, missing SDK, no device, `--json`) | run into a scratch dir / fake PATH |
+| **Environment CLI** | `init*`, `doctor`, `verify*`, `setup-*`, `create-avd`, `ios …` (`setup-device`, `build-agent`, `network …`), `env-scan` | subcommand × machine state (fresh project, missing SDK, no device, `--json`) | run into a scratch dir / fake PATH |
 | **RN hooks** | `packages/tapsmith-react-native/**` | hooks build vs hook-less build × platform; the reset rung | rebuild test-app with hooks, read the trace's reset row |
 | **Docs** | `docs/**`, `README.md`, JSDoc on public API | each changed claim | run each changed example verbatim; check it matches behaviour |
 | **Website** | `website/**` | pages changed; light/dark; phone width | `npm run build` then preview + browser (CI checks only that it builds) |

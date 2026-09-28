@@ -1,5 +1,5 @@
 /**
- * `tapsmith verify-ios-network <udid>` — sanity-check that a physical iOS
+ * `tapsmith ios network verify <udid>` — sanity-check that a physical iOS
  * device is correctly routed through Tapsmith's MITM proxy.
  *
  * Runs the smallest possible end-to-end check:
@@ -138,7 +138,7 @@ async function fetchLivePac(udid: string): Promise<PacFetchResult> {
     return {
       ok: false,
       sidecarPresent: false,
-      error: 'No sidecar metadata found — run `tapsmith configure-ios-network <udid>` first.',
+      error: 'No sidecar metadata found — run `tapsmith ios network configure <udid>` first.',
     };
   }
   const url = `http://${sidecar.host_ip}:${sidecar.port}/tapsmith.pac`;
@@ -267,8 +267,8 @@ function reportOutcome(outcome: VerificationOutcome): boolean {
       console.log();
       console.log('  If iOS can\'t fetch the PAC, it has nothing to route through.');
       console.log('  Check:');
-      console.log(`  ${dim('•')} Firewall / stealth mode — run ${bold('tapsmith configure-ios-network <udid> --fix-firewall')}`);
-      console.log(`  ${dim('•')} Host IP drift — rerun ${bold('tapsmith refresh-ios-network <udid>')} and reinstall the profile`);
+      console.log(`  ${dim('•')} Firewall / stealth mode — run ${bold('tapsmith ios network configure <udid> --fix-firewall')}`);
+      console.log(`  ${dim('•')} Host IP drift — rerun ${bold('tapsmith ios network configure <udid> --refresh')} and reinstall the profile`);
       console.log();
       return false;
     }
@@ -276,9 +276,9 @@ function reportOutcome(outcome: VerificationOutcome): boolean {
     console.log(`  ${dim('•')} The mobileconfig profile isn't installed.`);
     console.log(`  ${dim('•')} The device is on a different Wi-Fi network than when the`);
     console.log(`     profile was generated. Check ${bold('Settings → Wi-Fi')} on the device`);
-    console.log(`     and rerun ${bold('tapsmith refresh-ios-network <udid>')} if it changed.`);
+    console.log(`     and rerun ${bold('tapsmith ios network configure <udid> --refresh')} if it changed.`);
     console.log(`  ${dim('•')} The host Mac's Wi-Fi IP changed since the profile was generated.`);
-    console.log(`     Rerun ${bold('tapsmith refresh-ios-network <udid>')}.`);
+    console.log(`     Rerun ${bold('tapsmith ios network configure <udid> --refresh')}.`);
     console.log(`  ${dim('•')} iOS is serving a stale cached PAC. Toggle Wi-Fi off/on on the`);
     console.log(`     device to force re-fetch, then re-run this command.`);
     console.log();
@@ -304,7 +304,7 @@ function reportOutcome(outcome: VerificationOutcome): boolean {
     console.log(`     ${bold('Trust Settings')}. ${dim('(This row only appears AFTER you install')}`);
     console.log(`     ${dim('a profile that contains a custom CA, which the mobileconfig does.)')}`);
     console.log(`  ${dim('2)')} Toggle on full trust for ${bold('Tapsmith MITM CA')}.`);
-    console.log(`  ${dim('3)')} Re-run ${bold('tapsmith verify-ios-network')}.`);
+    console.log(`  ${dim('3)')} Re-run ${bold('tapsmith ios network verify <udid>')}.`);
     console.log();
     return false;
   }

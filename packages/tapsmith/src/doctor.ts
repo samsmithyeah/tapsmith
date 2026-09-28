@@ -456,7 +456,7 @@ function checkMitmCa(report: Reporter): void {
     if (fs.existsSync(caPath)) {
       pass(report, 'mitm-ca', `MITM CA exists ${dim(`(~/.tapsmith/ca.pem)`)}`);
     } else {
-      warn(report, 'mitm-ca', 'MITM CA not found at ~/.tapsmith/ca.pem — run `tapsmith setup-ios` to generate', 'Run: npx tapsmith setup-ios');
+      warn(report, 'mitm-ca', 'MITM CA not found at ~/.tapsmith/ca.pem — run `tapsmith ios network setup-simulator` to generate', 'Run: npx tapsmith ios network setup-simulator');
     }
   } catch {
     warn(report, 'mitm-ca', 'Could not check for MITM CA');
@@ -485,9 +485,9 @@ function checkNetworkExtension(report: Reporter): void {
     if (output.includes(bundleId) && output.includes('[activated enabled]')) {
       pass(report, 'network-extension', 'Network Extension enabled');
     } else if (output.includes(bundleId)) {
-      warn(report, 'network-extension', 'Network Extension found but not fully enabled — check System Settings > Privacy & Security', 'Run: npx tapsmith setup-ios, then enable in System Settings > Privacy & Security');
+      warn(report, 'network-extension', 'Network Extension found but not fully enabled — check System Settings → General → Login Items & Extensions → Network Extensions', 'Run: npx tapsmith ios network setup-simulator, then enable it in System Settings → General → Login Items & Extensions → Network Extensions');
     } else {
-      warn(report, 'network-extension', 'Network Extension not installed — required for iOS network capture', 'Run: npx tapsmith setup-ios, then enable in System Settings > Privacy & Security');
+      warn(report, 'network-extension', 'Network Extension not installed — required for iOS network capture', 'It registers on your first iOS simulator test run with network capture; approve it then. Run: npx tapsmith ios network setup-simulator for the steps');
     }
   } catch {
     warn(report, 'network-extension', 'Could not check Network Extension status');

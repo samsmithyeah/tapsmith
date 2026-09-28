@@ -426,7 +426,7 @@ pub fn mobileconfig_path(udid: &str) -> Result<PathBuf> {
 /// Metadata sidecar that records the host Wi-Fi IP / SSID / port at the time
 /// the mobileconfig was generated. At daemon startup (before `start_network_capture`)
 /// we compare the current host Wi-Fi state against this snapshot — if the
-/// IP or SSID has drifted the user is asked to `refresh-ios-network`.
+/// IP or SSID has drifted the user is asked to `ios network configure --refresh`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MobileconfigMeta {
     pub udid: String,
@@ -449,7 +449,7 @@ pub fn mobileconfig_meta_path(udid: &str) -> Result<PathBuf> {
 ///
 /// Creates `~/.tapsmith/devices/` on demand. Overwrites any existing profile
 /// for the same UDID (intentional — regeneration is the core of the
-/// `refresh-ios-network` UX).
+/// `ios network configure --refresh` UX).
 pub async fn write_mobileconfig(inputs: &MobileconfigInputs, bytes: &[u8]) -> Result<PathBuf> {
     let path = mobileconfig_path(&inputs.udid)?;
     if let Some(parent) = path.parent() {

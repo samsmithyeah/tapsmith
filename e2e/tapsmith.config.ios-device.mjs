@@ -5,11 +5,11 @@
  *   - `device` is omitted → Tapsmith picks the single paired USB iOS device.
  *     Set TAPSMITH_IOS_DEVICE when multiple are connected.
  *   - `iosXctestrun` is omitted → Tapsmith picks the newest iphoneos xctestrun
- *     under `ios-agent/.build-device/`. Run `tapsmith build-ios-agent` once
+ *     under `ios-agent/.build-device/`. Run `tapsmith ios build-agent` once
  *     per Tapsmith upgrade to populate it.
  *
  * Requires:
- *   1. `tapsmith build-ios-agent` run once to produce the signed xctestrun
+ *   1. `tapsmith ios build-agent` run once to produce the signed xctestrun
  *      (see docs/ios-physical-devices.md).
  *   2. A device-signed build of the test-app accessible as
  *      test-app/ios/build/Build/Products/Release-iphoneos/TapsmithTestApp.app

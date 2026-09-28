@@ -2754,25 +2754,34 @@ npx tapsmith show-report               # opens tapsmith-report/index.html
 npx tapsmith show-report ./my-report   # custom directory
 ```
 
-### `tapsmith setup-ios`
+### `tapsmith ios`
 
-First-run setup for iOS **simulator** network capture (macOS only). Checks, one step at a time, that
-mitmproxy is installed with Homebrew and that its Mitmproxy Redirector Network Extension is registered and
-approved; for the approval step it opens System Settings on the right pane and waits for you to allow it.
-Each step prints what to do next. See [iOS network capture](ios-network-capture.md).
+iOS setup commands (macOS only), in two tracks:
 
-```bash
-npx tapsmith setup-ios
-```
+- **Physical iPhone/iPad**: `tapsmith ios setup-device` (preflight), then
+  `tapsmith ios build-agent` (the signed runner). See
+  [docs/ios-physical-devices.md](./ios-physical-devices.md) for the full
+  walkthrough; `tapsmith list-devices` (above) lists physical devices too, with
+  their UDIDs.
+- **Network capture**, under `tapsmith ios network`: one setup for
+  simulators, and a per-device profile for physical devices.
 
-### iOS physical-device commands
+iOS simulators need no setup to run tests. `tapsmith ios` or
+`tapsmith ios network` on its own prints that group's help and exits 0.
 
-These commands support running tests on USB-attached iPhones/iPads. See
-[docs/ios-physical-devices.md](./ios-physical-devices.md) for the full
-setup walkthrough. `tapsmith list-devices` (above) lists
-physical devices too, with their UDIDs.
+**Renamed after 0.5.0.** These commands used to be top-level. The old names
+were removed without aliases; they now fail as unknown commands.
 
-#### `tapsmith setup-ios-device`
+| 0.5.0 and earlier | Now |
+|---|---|
+| `tapsmith setup-ios-device` | `tapsmith ios setup-device` |
+| `tapsmith build-ios-agent` | `tapsmith ios build-agent` |
+| `tapsmith setup-ios` | `tapsmith ios network setup-simulator` |
+| `tapsmith configure-ios-network <udid>` | `tapsmith ios network configure <udid>` |
+| `tapsmith refresh-ios-network <udid>` | `tapsmith ios network configure <udid> --refresh` |
+| `tapsmith verify-ios-network <udid>` | `tapsmith ios network verify <udid>` |
+
+#### `tapsmith ios setup-device`
 
 Run the host-side preflight for physical iOS devices (macOS only). Takes no
 arguments: it checks the Mac, then every device `xcrun devicectl` lists. Host checks: Xcode
@@ -2785,14 +2794,16 @@ test run does not stop at a password prompt), a signed agent runner under
 provisioning profile's expiry. Device check: each listed device is paired.
 devicectl also lists devices it remembers that are not plugged in. It does not
 check the Developer Disk Image (Tapsmith mounts it when a test run starts) or
-the macOS firewall (`configure-ios-network --fix-firewall` handles that).
+the macOS firewall (`ios network configure --fix-firewall` handles that).
 Each check prints `✓`, `⚠` (advisory, not blocking) or `✗` with the fix; the
 command exits 1 if a required check fails, no device is listed, or any listed
 device is unpaired. When the
 required checks pass, it ends with the steps it cannot check from the Mac
-(trusting the developer certificate, turning off Auto-Lock).
+(trusting the developer certificate, turning off Auto-Lock). Either way it
+ends by pointing at network capture: `tapsmith ios network configure <udid>`
+for the device, `tapsmith ios network setup-simulator` for a simulator.
 
-#### `tapsmith build-ios-agent [--team-id <id>] [--cwd <path>] [--derived-data-path <path>] [-v]`
+#### `tapsmith ios build-agent [--team-id <id>] [--cwd <path>] [--derived-data-path <path>] [-v]`
 
 Build the signed `TapsmithAgent` XCUITest runner for physical devices with
 your provisioning profile. Auto-detects the Apple Developer team ID from
@@ -2812,24 +2823,52 @@ absolute path. Without `iosXctestrun` (or the
 runner only under an `ios-agent/.build-device` in or above the project
 directory, the checkout layout; with the npm package, set one of them.
 
-#### `tapsmith configure-ios-network <udid> [--ssid <name>] [--device-name <name>] [--fix-firewall]`
+#### `tapsmith ios network`
+
+Network capture setup. Simulators capture through mitmproxy and a macOS
+Network Extension (`setup-simulator`, once per Mac). Physical devices capture
+through a Wi-Fi proxy profile (`configure`, then `verify`, once per device and
+Wi-Fi network). See [iOS network capture](ios-network-capture.md) and
+[physical-device network tracing](ios-physical-device-network-tracing.md).
+
+#### `tapsmith ios network setup-simulator`
+
+First-run setup for iOS **simulator** network capture. Checks, one step at a
+time, that mitmproxy is installed with Homebrew and that its Mitmproxy
+Redirector Network Extension is registered and approved; for the approval step
+it opens System Settings on the right pane and waits for you to allow it. Each
+step prints what to do next, and every run ends by pointing physical-device
+users at `tapsmith ios setup-device`.
+
+Exits 0 when capture is ready, and also on a fresh Mac where the extension is
+not registered yet: that is expected, since the first simulator test run with
+network capture registers it and macOS then asks you to allow it. Exits 1 when
+mitmproxy is missing, the approval wait times out, or the extension's state
+cannot be read.
+
+```bash
+npx tapsmith ios network setup-simulator
+```
+
+#### `tapsmith ios network configure <udid> [--refresh] [--ssid <name>] [--device-name <name>] [--fix-firewall]`
 
 Generate a `.mobileconfig` profile that routes the physical device's Wi-Fi
 traffic through Tapsmith's MITM proxy, and reveal it in Finder so you can
-AirDrop it to the device. Decrypted capture is available for clients that trust
-the Tapsmith CA; pinned or embedded-root clients may need passthrough.
-`--ssid` targets a specific Wi-Fi network (defaults to the host's current SSID);
-`--device-name` sets the profile's `PayloadDisplayName`; `--fix-firewall`
-turns off macOS Application Firewall stealth mode (via sudo), which otherwise
-drops the device's connections to the proxy.
+AirDrop it to the device. The command then prints the install walkthrough:
+send and install the profile, trust the Tapsmith CA, enter the proxy (PAC) URL
+in the device's Wi-Fi settings, and verify. Decrypted capture is available for
+clients that trust the Tapsmith CA; pinned or embedded-root clients may need
+passthrough. `--ssid` targets a specific Wi-Fi network (defaults to the host's
+current SSID); `--device-name` sets the profile's `PayloadDisplayName`;
+`--fix-firewall` turns off macOS Application Firewall stealth mode (via sudo),
+which otherwise drops the device's connections to the proxy.
 
-#### `tapsmith refresh-ios-network <udid> [--ssid <name>] [--device-name <name>] [--fix-firewall]`
+`--refresh` regenerates the profile after the Mac's IP address or Wi-Fi network
+changed. Its walkthrough starts with removing the old profile from the device,
+and prints the new proxy URL to enter, since that URL carries the Mac's IP.
+`tapsmith test` warns with this command when it detects the drift.
 
-Regenerate the profile for a device whose host IP or Wi-Fi SSID has
-changed since the last run. Same shape as `configure-ios-network` — the
-difference is only wording in the output.
-
-#### `tapsmith verify-ios-network <udid>`
+#### `tapsmith ios network verify <udid>`
 
 End-to-end sanity check that the installed profile plus the trusted CA
 actually produce decrypted HTTPS capture for a normal system-trust client.
@@ -2843,7 +2882,7 @@ Print the Tapsmith version.
 
 ### `tapsmith --help` / `tapsmith -h` / `tapsmith help [command]`
 
-Show the available commands, or one command's options (`tapsmith help test`, same as `tapsmith test --help`).
+Show the available commands, or one command's options (`tapsmith help test`, same as `tapsmith test --help`). Nested commands work the same way: `tapsmith help ios network configure` is `tapsmith ios network configure --help`.
 Help never runs the command: `tapsmith --help init` prints the command list rather than starting the wizard.
 
 ---

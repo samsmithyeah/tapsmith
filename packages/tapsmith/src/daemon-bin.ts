@@ -1,6 +1,6 @@
 /**
  * Locate the `tapsmith-core` daemon binary for ephemeral-daemon CLI commands
- * (`list-devices`, `configure-ios-network`, etc.).
+ * (`list-devices`, `ios network configure`, etc.).
  *
  * The daemon ships alongside the monorepo at `packages/tapsmith-core/target/release/tapsmith-core`
  * but isn't published to the user's PATH by default. The resolution order

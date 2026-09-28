@@ -5654,7 +5654,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             proxy_port: 0,
                             error_message: format!(
                                 "No Tapsmith network profile found for device {serial}. \
-                                 Run `tapsmith configure-ios-network {serial}` first, then \
+                                 Run `tapsmith ios network configure {serial}` first, then \
                                  install the generated .mobileconfig on the device."
                             ),
                             ..Default::default()
@@ -5673,7 +5673,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             {
                                 let msg = format!(
                                     "Host Wi-Fi IP changed since mobileconfig was generated ({} → {}). \
-                                     Run `tapsmith refresh-ios-network {serial}` and reinstall the profile.",
+                                     Run `tapsmith ios network configure {serial} --refresh` and reinstall the profile.",
                                     meta.host_ip, current_ip
                                 );
                                 warn!("{msg}");
@@ -5901,7 +5901,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                                 let msg = format!(
                                     "iOS network capture unavailable for {serial}: the Network \
                                      Extension redirector failed ({e}). Run `npx tapsmith \
-                                     doctor` and `npx tapsmith setup-ios` to fix it. The \
+                                     doctor` and `npx tapsmith ios network setup-simulator` to fix it. The \
                                      macOS system-proxy fallback would record all traffic on \
                                      this Mac, so it is only used on CI; set {}=1 to allow it \
                                      here anyway. See docs/ios-network-capture.md",
@@ -6401,7 +6401,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                                  and `networksetup -getairportnetwork` has been broken since \
                                  Apple removed the `airport` private framework.\n\n\
                                  Fix: pass the SSID explicitly. Example:\n  \
-                                 tapsmith configure-ios-network <udid> --ssid \"MyWiFiNetwork\""
+                                 tapsmith ios network configure <udid> --ssid \"MyWiFiNetwork\""
                                     .to_string(),
                             profile_path: String::new(),
                             host_ip: String::new(),

@@ -20,7 +20,7 @@
  *
  * First-run caveat: the probe only helps when the runner is already
  * installed on the device. On a fresh setup the flow is still
- * build-ios-agent → first `tapsmith test` (which installs the runner via
+ * ios build-agent → first `tapsmith test` (which installs the runner via
  * xcodebuild) → iOS trust prompt → user trusts → second `tapsmith test`.
  * The probe's value is on that second-and-subsequent runs — the common
  * steady-state case with free Apple accounts rolling profiles weekly.

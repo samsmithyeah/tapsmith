@@ -34,7 +34,7 @@ export function resolvePhysicalIosDevice(): string {
   if (paired.length === 0) {
     throw new Error(
       'No paired physical iOS device detected. Connect one via USB and run ' +
-        '`tapsmith setup-ios-device`, or set `device` / TAPSMITH_IOS_DEVICE explicitly.',
+        '`tapsmith ios setup-device`, or set `device` / TAPSMITH_IOS_DEVICE explicitly.',
     );
   }
 
@@ -56,7 +56,7 @@ export function resolvePhysicalIosDevice(): string {
  * walking up from `startDir` to the repo root. Returns absolute path, or
  * `undefined` when no build exists (caller decides whether to error — the
  * CLI does, after giving a clear fix-it message pointing at
- * `tapsmith build-ios-agent`).
+ * `tapsmith ios build-agent`).
  *
  * `.patched.xctestrun` files are excluded because the daemon rewrites
  * xctestrun files at runtime; selecting one as the source would cause
@@ -65,7 +65,7 @@ export function resolvePhysicalIosDevice(): string {
  */
 export function findDeviceXctestrun(startDir: string): string | undefined {
   // Walk up from startDir looking for `ios-agent/.build-device/Build/Products`.
-  // Same "try a few levels up" approach setup-ios-device uses — we don't
+  // Same "try a few levels up" approach ios setup-device uses — we don't
   // know whether the user runs from the monorepo root, an e2e subdir, or
   // a nested package.
   let dir = path.resolve(startDir);

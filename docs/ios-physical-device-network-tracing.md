@@ -34,7 +34,7 @@ With `trace.mode` off, Tapsmith's daemon skips every network-capture code path �
 Run this command. It handles stealth mode, SSID detection, profile generation, and drops a walkthrough for the on-device steps:
 
 ```sh
-tapsmith configure-ios-network <udid> --fix-firewall
+tapsmith ios network configure <udid> --fix-firewall
 ```
 
 What it does:
@@ -54,7 +54,7 @@ Walk through the on-device steps once:
 Then verify end-to-end:
 
 ```sh
-tapsmith verify-ios-network <udid>
+tapsmith ios network verify <udid>
 ```
 
 This starts the proxy, asks you to load an HTTPS page in Safari, then reports whether Tapsmith saw the traffic and decrypted it. Catches the three common failure modes (profile not installed, CA not trusted, firewall blocking) with specific fix-it hints.
@@ -88,9 +88,9 @@ On iOS **simulators** the filtering is handled per-PID at the kernel level by th
 
 ## Host IP drift
 
-The mobileconfig profile bakes in the Mac's LAN IP at the time you ran `configure-ios-network`. If your Mac switches Wi-Fi networks (coffee shop → office), the baked-in IP goes stale and iOS silently fails to route traffic.
+The mobileconfig profile bakes in the Mac's LAN IP at the time you ran `ios network configure`. If your Mac switches Wi-Fi networks (coffee shop → office), the baked-in IP goes stale and iOS silently fails to route traffic.
 
-Tapsmith handles this for you: on every `tapsmith test` run with tracing enabled, the host-IP sidecar (`~/.tapsmith/devices/<udid>.meta.json`) is compared against the current Wi-Fi IP. If they differ, the profile is auto-regenerated and you're warned to reinstall it on the device. Profile regeneration is instant; the reinstall is a quick AirDrop-and-tap.
+Tapsmith handles this for you: on every `tapsmith test` run with tracing enabled, the host-IP sidecar (`~/.tapsmith/devices/<udid>.meta.json`) is compared against the current Wi-Fi IP. If they differ, you're warned to run `tapsmith ios network configure <udid> --refresh`, which regenerates the profile and walks you through reinstalling it and entering the new proxy URL on the device. Regeneration is instant; the reinstall is a quick AirDrop-and-tap.
 
 ## Changing `trace.networkHosts`
 
@@ -101,14 +101,14 @@ If you ever need to confirm iOS picked up a change, run the daemon with `RUST_LO
 You can also refresh manually:
 
 ```sh
-tapsmith refresh-ios-network <udid>
+tapsmith ios network configure <udid> --refresh
 ```
 
 ## Security note
 
 When network tracing is enabled, Tapsmith's MITM proxy binds on `0.0.0.0:<port>` (all network interfaces) so the iPhone can reach it over Wi-Fi. This means **any device on the same local network** could potentially route HTTP/HTTPS traffic through the proxy and have it decrypted by the Tapsmith CA. The proxy has no authentication.
 
-In practice this is only a concern on untrusted networks (coffee shops, shared offices). On a private home/lab Wi-Fi it's a non-issue. If you're on a shared network, either restrict to simulator-only tracing (which binds on `127.0.0.1`) or ensure your Mac's firewall allows only the specific iPhone's IP. The proxy is only bound while `tapsmith test` (with tracing) or `tapsmith verify-ios-network` is running — it's not a persistent listener.
+In practice this is only a concern on untrusted networks (coffee shops, shared offices). On a private home/lab Wi-Fi it's a non-issue. If you're on a shared network, either restrict to simulator-only tracing (which binds on `127.0.0.1`) or ensure your Mac's firewall allows only the specific iPhone's IP. The proxy is only bound while `tapsmith test` (with tracing) or `tapsmith ios network verify` is running — it's not a persistent listener.
 
 ## Known limitations
 
@@ -118,10 +118,10 @@ In practice this is only a concern on untrusted networks (coffee shops, shared o
 
 ## Troubleshooting
 
-**Traces show zero network entries.** Run `tapsmith verify-ios-network <udid>` — it walks through the three most common causes (stealth mode on, profile not installed, device not on the profile's Wi-Fi) and prints the specific fix.
+**Traces show zero network entries.** Run `tapsmith ios network verify <udid>` — it walks through the three most common causes (stealth mode on, profile not installed, device not on the profile's Wi-Fi) and prints the specific fix.
 
 **Traces show HTTPS entries with empty bodies.** For normal system-trust clients, the CA isn't trusted. Settings → General → About → Certificate Trust Settings → toggle Tapsmith MITM CA. Remember the row only appears after the mobileconfig profile is installed. For pinned or embedded-root clients, configure passthrough; HTTP/2-capable cert rejects may also appear as `CONNECT passthrough`.
 
-**"Device not routing through proxy"** after switching Wi-Fi networks. Run `tapsmith refresh-ios-network <udid>` and reinstall the new profile on the device. Tapsmith will flag this automatically on the next `tapsmith test` run.
+**"Device not routing through proxy"** after switching Wi-Fi networks. Run `tapsmith ios network configure <udid> --refresh` and reinstall the new profile on the device. Tapsmith will flag this automatically on the next `tapsmith test` run.
 
 **SSID detection bails with a redacted placeholder.** macOS 14+ redacts Wi-Fi SSIDs unless the process has Location Services permission. Pass `--ssid "YourWiFiName"` explicitly, or answer Tapsmith's interactive prompt.

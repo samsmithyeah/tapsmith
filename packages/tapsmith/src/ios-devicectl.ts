@@ -162,7 +162,7 @@ export function isPhysicalDevice(udid: string): boolean {
  * reports `localNetwork` even for cabled devices once Wi-Fi pairing exists.
  *
  * Returns an empty set if libimobiledevice isn't installed, which matches
- * how the preflight handles missing-dependency scenarios (`setup-ios-device`
+ * how the preflight handles missing-dependency scenarios (`ios setup-device`
  * will surface the missing tool with a fix-it hint).
  */
 export function listUsbAttachedIosDevices(): Set<string> {

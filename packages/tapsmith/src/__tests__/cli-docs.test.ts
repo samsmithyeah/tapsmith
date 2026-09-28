@@ -402,8 +402,8 @@ interface Resolution {
 /**
  * Walk an invocation's words down the tree: each level's flags, then a
  * subcommand while the current command has them, then the leaf's flags and
- * arguments. `help <command>` resolves the one command it asks about, as
- * commander does. The leaf's words also go through `prepareCommandArgs`, the
+ * arguments. `help <command…>` resolves the command path it asks about, as
+ * runCli does. The leaf's words also go through `prepareCommandArgs`, the
  * rules `runCli` adds on top of commander (a value flag given a flag, `-grep`).
  */
 function resolveInvocation(root: Command, written: string[], mode: { strict: boolean; complete: boolean }): Resolution {
@@ -520,15 +520,23 @@ function resolveInvocation(root: Command, written: string[], mode: { strict: boo
       continue;
     }
     if (helpAt) {
-      // `help <command>`: commander shows help for one word only.
-      if (helpTarget) {
-        errors.push(`\`${where()} help\` shows help for one command only (got '${token}'): write \`tapsmith ${[...commandPath(helpTarget), token].join(' ')} --help\``);
+      // `help <command…>`: runCli resolves the whole path, git-style
+      // (`tapsmith help ios network configure`). runCli ignores words after a
+      // leaf; the guard deliberately refuses them in docs, as it refuses
+      // stray arguments elsewhere.
+      const group = helpTarget ?? cmd;
+      if (token === 'help' && helpTarget && helpTarget.commands.length > 0) {
+        i++; // `help ios network help verify`: redundant, as runCli reads it
+        continue;
+      }
+      if (helpTarget && helpTarget.commands.length === 0) {
+        errors.push(`\`tapsmith ${commandPath(helpTarget).join(' ')}\` has no subcommands (got '${token}' after \`help\`)`);
         return { flags, errors };
       }
       if (isPlaceholder(token)) return { flags, errors };
-      const sub = findSubcommand(cmd, token);
+      const sub = findSubcommand(group, token);
       if (!sub) {
-        errors.push(`${where()} has no command '${token}'`);
+        errors.push(`${group === root ? 'tapsmith' : `tapsmith ${commandPath(group).join(' ')}`} has no command '${token}'`);
         return { flags, errors };
       }
       helpTarget = sub;
@@ -536,6 +544,9 @@ function resolveInvocation(root: Command, written: string[], mode: { strict: boo
       continue;
     }
     // A word: a subcommand, `help`, or an argument.
+    // After a help flag, commander (and runCli) show the current command's
+    // page: `tapsmith ios --help network` is the ios page.
+    if (sawHelp && cmd.commands.length > 0) return { command: cmd, flags, errors };
     if (cmd.commands.length > 0 && positionals === 0) {
       if (isPlaceholder(token)) return { flags, errors }; // `tapsmith <command> --help`
       if (token === 'help') {
@@ -590,11 +601,17 @@ function resolveInvocation(root: Command, written: string[], mode: { strict: boo
  * invocation text, the files it may appear in, and why. An entry nothing
  * matches fails the guard, so the list cannot rot.
  */
-const NOT_COMMANDS: Array<{ text: string; files: string[]; reason: string }> = [
+const NOT_COMMANDS: Array<{ text: string; files: string[]; reason: string; lineIncludes?: string }> = [
   { text: 'tapsmith run', files: ['docs/telemetry.md', 'packages/tapsmith/src/telemetry.ts'], reason: 'telemetry event name' },
   { text: 'tapsmith install', files: ['docs/telemetry.md', 'packages/tapsmith/src/telemetry.ts'], reason: 'telemetry event name' },
   { text: 'tapsmith show-trace t.zip --force-install', files: ['docs/api-reference.md'], reason: 'the documented example of a refused flag' },
   { text: 'tapsmith test --device --workers 2', files: ['docs/api-reference.md'], reason: 'the documented example of a value flag given a flag' },
+  { text: 'tapsmith setup-ios-device', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)', lineIncludes: '| `tapsmith ios ' },
+  { text: 'tapsmith build-ios-agent', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)', lineIncludes: '| `tapsmith ios ' },
+  { text: 'tapsmith setup-ios', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)', lineIncludes: '| `tapsmith ios ' },
+  { text: 'tapsmith configure-ios-network <udid>', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)', lineIncludes: '| `tapsmith ios ' },
+  { text: 'tapsmith refresh-ios-network <udid>', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)', lineIncludes: '| `tapsmith ios ' },
+  { text: 'tapsmith verify-ios-network <udid>', files: ['docs/api-reference.md'], reason: 'the 0.5.0 name in the iOS rename table (PILOT-271)', lineIncludes: '| `tapsmith ios ' },
 ];
 
 // ─── Sources ───
@@ -643,8 +660,11 @@ function collectInvocations(): Invocation[] {
   return all;
 }
 
-function allowedBy(invocation: Invocation): (typeof NOT_COMMANDS)[number] | undefined {
-  return NOT_COMMANDS.find((entry) => entry.text === invocation.text && entry.files.includes(invocation.file));
+const sourceLine = (file: string, line: number): string => fs.readFileSync(path.join(REPO, file), 'utf8').split('\n')[line - 1] ?? '';
+
+function allowedBy(invocation: Invocation, lineOf: (file: string, line: number) => string = sourceLine): (typeof NOT_COMMANDS)[number] | undefined {
+  return NOT_COMMANDS.find((entry) => entry.text === invocation.text && entry.files.includes(invocation.file)
+    && (entry.lineIncludes === undefined || lineOf(invocation.file, invocation.line).includes(entry.lineIncludes)));
 }
 
 function drift(root: Command, invocations: Invocation[]): string[] {
@@ -748,7 +768,7 @@ describe('CLI docs guard', () => {
   });
 
   it('every allowlisted non-command phrase still occurs', () => {
-    const used = new Set(invocations.map(allowedBy));
+    const used = new Set(invocations.map((inv) => allowedBy(inv)));
     expect(NOT_COMMANDS.filter((entry) => !used.has(entry)).map((entry) => entry.text)).toEqual([]);
   });
 
@@ -832,14 +852,27 @@ describe('CLI docs guard: resolution', () => {
     expect(errorsFor('tapsmith ios network --help')).toEqual([]);
   });
 
+  it('stops at a help flag, as commander does: the page is the current command\'s', () => {
+    const root = syntheticTree();
+    const at = (line: string): string | undefined => {
+      const { command } = resolveInvocation(root, line.split(' ').slice(1), { strict: true, complete: false });
+      return command ? commandPath(command).join(' ') : undefined;
+    };
+    expect(at('tapsmith ios --help network')).toBe('ios');
+    expect(at('tapsmith ios network --help')).toBe('ios network');
+  });
+
   it('reports unknown commands and subcommands', () => {
     expect(errorsFor('tapsmith tset')).toEqual(['tapsmith has no command \'tset\'']);
     expect(errorsFor('tapsmith ios network refresh <udid>')).toEqual(['tapsmith ios network has no command \'refresh\'']);
     expect(errorsFor('tapsmith help nope')).toEqual(['tapsmith has no command \'nope\'']);
-    // commander's help command reads one word: this prints `ios` help.
-    expect(errorsFor('tapsmith help ios network verify')).toEqual([
-      '`tapsmith help` shows help for one command only (got \'network\'): write `tapsmith ios network --help`',
-    ]);
+    // runCli resolves the whole path after `help`, git-style.
+    expect(errorsFor('tapsmith help ios network verify')).toEqual([]);
+    expect(errorsFor('tapsmith help ios network help verify')).toEqual([]);
+    // runCli reads a second `help` only after a resolved group, never straight after `help`.
+    expect(errorsFor('tapsmith help help test')).toEqual(['tapsmith has no command \'help\'']);
+    expect(errorsFor('tapsmith help ios netwrk')).toEqual(['tapsmith ios has no command \'netwrk\'']);
+    expect(errorsFor('tapsmith help doctor extra')).toEqual(['`tapsmith doctor` has no subcommands (got \'extra\' after `help`)']);
   });
 
   it('reports unknown flags, and flags given to the wrong command', () => {
@@ -1058,6 +1091,10 @@ describe('CLI docs guard: extraction', () => {
     expect(allowedBy(inv('tapsmith run', 'docs/telemetry.md'))).toBeDefined();
     expect(allowedBy(inv('tapsmith run', 'docs/getting-started.md'))).toBeUndefined();
     expect(allowedBy(inv('tapsmith run --nope', 'docs/telemetry.md'))).toBeUndefined();
+    // A rename-table entry excuses the old name in its table row only, not in prose.
+    const renamed = inv('tapsmith setup-ios', 'docs/api-reference.md');
+    expect(allowedBy(renamed, () => '| `tapsmith setup-ios` | `tapsmith ios network setup-simulator` |')).toBeDefined();
+    expect(allowedBy(renamed, () => 'Run `tapsmith setup-ios` first.')).toBeUndefined();
   });
 
   it('reads <code> and code= attributes from astro pages', () => {

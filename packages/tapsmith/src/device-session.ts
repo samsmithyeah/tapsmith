@@ -297,7 +297,7 @@ export async function resolveAgentArtifacts(
       if (!iosXctestrunPath && options.requireXctestrun) {
         throw new Error(
           'No device xctestrun found under ios-agent/.build-device. '
-          + 'Run `tapsmith build-ios-agent` first, or set `iosXctestrun` explicitly.',
+          + 'Run `tapsmith ios build-agent` first, or set `iosXctestrun` explicitly.',
         );
       }
     } else {
@@ -683,7 +683,7 @@ export async function openDeviceGroup(
     }
   }
   // Same fast-fail as a single session: a physical iOS group with no
-  // device xctestrun stops here with the `build-ios-agent` hint, not in
+  // device xctestrun stops here with the `ios build-agent` hint, not in
   // xcodebuild. Adopting members have a running agent and need none.
   const artifacts = await resolveAgentArtifacts(
     { ...config, device: specs[0].serial },

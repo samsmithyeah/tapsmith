@@ -17,6 +17,10 @@
  *   read the value as `=4`.
  * - An unknown command is an error even when `--help` is also on the command
  *   line; commander would print the top-level help and exit 0.
+ *
+ * All three apply at the leaf of a nested command (`tapsmith ios network
+ * configure`), as the docs guard applies them, and a bare group
+ * (`tapsmith ios`) prints its help and exits 0 instead of commander's exit 1.
  */
 
 import { Argument, Command, CommanderError, InvalidArgumentError, Option } from 'commander';
@@ -82,6 +86,8 @@ export interface IosNetworkCommandOptions {
   ssid?: string;
   deviceName?: string;
   fixFirewall: boolean;
+  /** Regenerate an existing profile (the host's IP or Wi-Fi changed). */
+  refresh: boolean;
 }
 
 export type TelemetryAction = 'status' | 'enable' | 'disable';
@@ -96,13 +102,12 @@ export interface CliHandlers {
   showReport(opts: { dir?: string }): Promise<number | void>;
   mergeReports(opts: { dir?: string; config?: string }): Promise<number | void>;
   listDevices(opts: { json: boolean }): Promise<number | void>;
-  setupIos(opts: Record<string, never>): Promise<number | void>;
-  setupIosDevice(opts: Record<string, never>): Promise<number | void>;
-  buildIosAgent(opts: { teamId?: string; cwd?: string; derivedDataPath?: string; verbose: boolean }): Promise<number | void>;
   createAvd(opts: CreateAvdCommandOptions): Promise<number | void>;
-  configureIosNetwork(opts: IosNetworkCommandOptions): Promise<number | void>;
-  refreshIosNetwork(opts: IosNetworkCommandOptions): Promise<number | void>;
-  verifyIosNetwork(opts: { udid: string }): Promise<number | void>;
+  iosSetupDevice(opts: Record<string, never>): Promise<number | void>;
+  iosBuildAgent(opts: { teamId?: string; cwd?: string; derivedDataPath?: string; verbose: boolean }): Promise<number | void>;
+  iosNetworkSetupSimulator(opts: Record<string, never>): Promise<number | void>;
+  iosNetworkConfigure(opts: IosNetworkCommandOptions): Promise<number | void>;
+  iosNetworkVerify(opts: { udid: string }): Promise<number | void>;
   init(opts: InitCommandOptions): Promise<number | void>;
   verify(opts: { json: boolean; config?: string }): Promise<number | void>;
   doctor(opts: { json: boolean; config?: string }): Promise<number | void>;
@@ -120,7 +125,10 @@ export interface RunCliDeps {
   version: string;
   /** Defaults to process.stdout / process.stderr. */
   io?: CliIo;
-  /** Called once a command's arguments parsed, before its handler (the banner hook). */
+  /**
+   * Called once a command's arguments parsed, before its handler (the banner
+   * hook). `command` is the full path, space-separated: `ios network configure`.
+   */
   beforeAction?(command: string, opts: Record<string, unknown>): void;
 }
 
@@ -191,7 +199,7 @@ function recordingMode(flag: string, modes: readonly string[]) {
 }
 
 function udid(value: string): string {
-  if (!value) throw new InvalidArgumentError('A device UDID is required (tapsmith setup-ios-device lists them).');
+  if (!value) throw new InvalidArgumentError('A device UDID is required (tapsmith ios setup-device lists them).');
   return value;
 }
 
@@ -255,10 +263,27 @@ Actions:
 
 Details: ${TELEMETRY_DOCS_URL}`;
 
-const VERIFY_IOS_NETWORK_HELP = `
+const IOS_HELP = `
+Two tracks, both macOS only:
+  Physical iPhone/iPad   setup-device, then build-agent; for network capture,
+                         network configure <udid>, then network verify <udid>
+  Simulator              nothing to set up to run tests; for network capture,
+                         network setup-simulator`;
+
+const IOS_NETWORK_HELP = `
+Simulators capture through mitmproxy and a macOS Network Extension
+(setup-simulator, once per Mac). Physical devices capture through a Wi-Fi
+proxy profile (configure, then verify, once per device and Wi-Fi network).`;
+
+const IOS_NETWORK_CONFIGURE_HELP = `
+Run it again with --refresh when the Mac's IP address or Wi-Fi network
+changes: it regenerates the profile and prints the new proxy URL to enter on
+the device.`;
+
+const IOS_NETWORK_VERIFY_HELP = `
 Starts the Tapsmith proxy, asks you to load an HTTPS page in Safari on the
 device, then reports whether Tapsmith saw the request and could decrypt it.
-Run it after configure-ios-network, before running tests.`;
+Run it after tapsmith ios network configure, before running tests.`;
 
 /** Commands whose `--json` output also carries usage errors. */
 const JSON_ERROR_COMMANDS = new Set(['init', 'verify', 'doctor', 'list-devices', 'telemetry']);
@@ -284,7 +309,7 @@ function buildProgram(deps: RunCliDeps, io: CliIo, state: ParseState): Command {
     .version(deps.version, '-v, --version', 'Print the version')
     .helpOption('-h, --help', 'Show help')
     .helpCommand('help [command]', 'Show help for a command')
-    // Root flags only before the command, so `build-ios-agent -v` is its
+    // Root flags only before the command, so `ios build-agent -v` is its
     // --verbose and `test -v` is an unknown option, not the version.
     .enablePositionalOptions()
     .exitOverride()
@@ -462,47 +487,59 @@ function buildProgram(deps: RunCliDeps, io: CliIo, state: ParseState): Command {
     .addHelpText('after', '\nDownloads a Google APIs system image (rootable, unlike the Google Play images\nAndroid Studio preselects) with sdkmanager and creates the AVD with avdmanager.\nIf the Android SDK command-line tools are missing, offers to install them into\nANDROID_HOME first.')
     .action((opts: CreateAvdCommandOptions) => act('create-avd', handlers.createAvd)({ ...opts }));
 
-  // ── iOS setup ──
-  program
-    .command('setup-ios')
-    .description('First-run setup for iOS network capture (macOS only)')
-    .action(() => act('setup-ios', handlers.setupIos)({}));
+  // ── iOS (PILOT-271): two tracks, physical device and network capture ──
+  // Groups have no action: commander routes to a subcommand, and runCli
+  // answers a bare group with its help.
+  const ios = program
+    .command('ios')
+    .description('iOS setup: physical devices and network capture (macOS only)')
+    .usage('<command> [options]')
+    .addHelpText('after', IOS_HELP);
 
-  program
-    .command('setup-ios-device')
+  ios
+    .command('setup-device')
     .description('Preflight checklist for physical iOS device testing')
-    .action(() => act('setup-ios-device', handlers.setupIosDevice)({}));
+    .action(() => act('ios setup-device', handlers.iosSetupDevice)({}));
 
-  program
-    .command('build-ios-agent')
+  ios
+    .command('build-agent')
     .description('Build the signed TapsmithAgent runner for physical iOS devices')
     .option('--team-id <id>', 'Apple Developer team ID (default: auto-detected)')
     .option('--cwd <path>', 'Path to the Tapsmith repo root (default: the working directory)')
     .option('--derived-data-path <path>', 'Where to write build products (default: ios-agent/.build-device)')
     .option('-v, --verbose', 'Stream raw xcodebuild output', false)
     .action((opts: { teamId?: string; cwd?: string; derivedDataPath?: string; verbose: boolean }) =>
-      act('build-ios-agent', handlers.buildIosAgent)({ ...opts }));
+      act('ios build-agent', handlers.iosBuildAgent)({ ...opts }));
 
-  for (const [name, verb, handler] of [
-    ['configure-ios-network', 'Generate', handlers.configureIosNetwork],
-    ['refresh-ios-network', 'Regenerate', handlers.refreshIosNetwork],
-  ] as const) {
-    program
-      .command(name)
-      .description(`${verb} a network capture profile (.mobileconfig) for a physical iOS device`)
-      .argument('<udid>', 'Device UDID (see tapsmith setup-ios-device)', udid)
-      .option('--ssid <name>', 'Wi-Fi SSID the profile targets (default: the host\'s current network)')
-      .option('--device-name <name>', 'Friendly name for the profile (default: the device\'s name)')
-      .option('--fix-firewall', 'Disable macOS Application Firewall stealth mode via sudo (prompts once)', false)
-      .action((udid: string, opts: Omit<IosNetworkCommandOptions, 'udid'>) => act(name, handler)({ udid, ...opts }));
-  }
+  const network = ios
+    .command('network')
+    .description('Set up HTTP(S) network capture for simulators or physical devices')
+    .usage('<command> [options]')
+    .addHelpText('after', IOS_NETWORK_HELP);
 
-  program
-    .command('verify-ios-network')
+  network
+    .command('setup-simulator')
+    .description('Set up network capture for iOS simulators (mitmproxy + Network Extension)')
+    .action(() => act('ios network setup-simulator', handlers.iosNetworkSetupSimulator)({}));
+
+  network
+    .command('configure')
+    .description('Generate a network capture profile (.mobileconfig) for a physical iOS device')
+    .argument('<udid>', 'Device UDID (see tapsmith ios setup-device)', udid)
+    .option('--refresh', 'Regenerate an existing profile after the Mac\'s IP or Wi-Fi changed', false)
+    .option('--ssid <name>', 'Wi-Fi SSID the profile targets (default: the host\'s current network)')
+    .option('--device-name <name>', 'Friendly name for the profile (default: the device\'s name)')
+    .option('--fix-firewall', 'Disable macOS Application Firewall stealth mode via sudo (prompts once)', false)
+    .addHelpText('after', IOS_NETWORK_CONFIGURE_HELP)
+    .action((udid: string, opts: Omit<IosNetworkCommandOptions, 'udid'>) =>
+      act('ios network configure', handlers.iosNetworkConfigure)({ udid, ...opts }));
+
+  network
+    .command('verify')
     .description('Verify HTTPS capture for a normal system-trust client on a physical iOS device')
     .argument('<udid>', 'Device UDID', udid)
-    .addHelpText('after', VERIFY_IOS_NETWORK_HELP)
-    .action((udid: string) => act('verify-ios-network', handlers.verifyIosNetwork)({ udid }));
+    .addHelpText('after', IOS_NETWORK_VERIFY_HELP)
+    .action((udid: string) => act('ios network verify', handlers.iosNetworkVerify)({ udid }));
 
   return program;
 }
@@ -526,13 +563,12 @@ const BANNER_COMMANDS = new Set([
   'show-report',
   'merge-reports',
   'list-devices',
-  'setup-ios',
-  'setup-ios-device',
-  'build-ios-agent',
   'create-avd',
-  'configure-ios-network',
-  'refresh-ios-network',
-  'verify-ios-network',
+  'ios setup-device',
+  'ios build-agent',
+  'ios network setup-simulator',
+  'ios network configure',
+  'ios network verify',
   'verify',
   'doctor',
 ]);
@@ -556,6 +592,69 @@ const HELP_FLAGS = new Set(['-h', '--help']);
 
 function findCommand(program: Command, name: string): Command | undefined {
   return program.commands.find((c) => c.name() === name || c.aliases().includes(name));
+}
+
+interface CommandPath {
+  /** The deepest command the words name. */
+  leaf: Command;
+  /** Its path from the root, space-separated: `ios network configure`. */
+  name: string;
+  /** Index in argv of the first word after the path: the leaf's own arguments. */
+  end: number;
+  /** The word at `end` is not a subcommand of the group `leaf`. */
+  unknown: boolean;
+}
+
+/**
+ * From the command named at argv[start], descend through groups
+ * (`ios network configure`) while the next word names a subcommand. Stops at a
+ * flag, at `help` (commander answers `ios network help verify` itself), and at
+ * a word the group does not know, which is reported as `unknown`.
+ */
+function resolveCommandPath(top: Command, argv: string[], start: number): CommandPath {
+  let leaf = top;
+  const names = [argv[start]!];
+  let end = start + 1;
+  while (leaf.commands.length > 0) {
+    const word = argv[end];
+    if (word === undefined || word.startsWith('-') || word === 'help') break;
+    const sub = findCommand(leaf, word);
+    if (!sub) return { leaf, name: names.join(' '), end, unknown: true };
+    leaf = sub;
+    names.push(word);
+    end++;
+  }
+  return { leaf, name: names.join(' '), end, unknown: false };
+}
+
+/** Whether `cmd` has `flag` (`--x`, or a short form known by its letter) as an option taking a value. */
+function takesValue(cmd: Command, flag: string): boolean {
+  const name = flag.startsWith('--') ? flag.split('=', 1)[0]! : flag.slice(0, 2);
+  return cmd.options.some((o) => (o.long === name || o.short === name) && (o.required || o.optional));
+}
+
+/**
+ * For `tapsmith -c ci.mjs test`, where options come before the command: the
+ * index of the word that is the command, or -1. A command word is read as the
+ * value of the flag before it only when a later command, outside that word's
+ * own path, takes that flag with a value (`--platform ios init` is init,
+ * whose --platform takes `ios`; `--force-install test verify` is test, with
+ * `verify` a file). A bare group after a flag is not a target: groups take no
+ * options, so `--platform ios` has no command.
+ */
+function misplacedFlagTarget(program: Command, argv: string[]): number {
+  const commandAts = argv.map((_t, i) => i).filter((i) => !argv[i]!.startsWith('-') && !!findCommand(program, argv[i]!));
+  for (const i of commandAts) {
+    const prev = argv[i - 1];
+    const afterFlag = prev !== undefined && prev.startsWith('-') && prev !== '--' && !prev.includes('=');
+    const path = resolveCommandPath(findCommand(program, argv[i]!)!, argv, i);
+    if (!afterFlag) return i;
+    const valueOfLater = commandAts.some((j) => j >= path.end
+      && takesValue(resolveCommandPath(findCommand(program, argv[j]!)!, argv, j).leaf, prev));
+    if (valueOfLater) continue;
+    return path.leaf.commands.length > 0 ? -1 : i;
+  }
+  return -1;
 }
 
 /** The first token that names a command, if everything before it is a root flag. */
@@ -676,6 +775,35 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
     return 0;
   }
 
+  /**
+   * `help <command…>` below `prefix` (the group the `help` word belongs to),
+   * with its first word at argv[at]. Commander's help command reads one word,
+   * so `tapsmith help ios network` would show the `ios` page and
+   * `tapsmith help ios nope` would exit 0; resolve the whole path instead.
+   * Returns the argv to hand commander, or undefined to leave it to commander.
+   */
+  const helpArgs = (prefix: string[], group: Command, at: number): string[] | undefined => {
+    const word = argv[at];
+    // `help` alone, or `help --help`: the group's own page.
+    if (word === undefined || HELP_FLAGS.has(word)) return [...prefix, '--help'];
+    if (word.startsWith('-')) return undefined;
+    const top = findCommand(group, word);
+    if (!top) {
+      if (prefix.length > 0) state.command = prefix.join(' ');
+      return [...prefix, word];
+    }
+    const path = resolveCommandPath(top, argv, at);
+    const words = [...prefix, ...path.name.split(' ')];
+    if (path.unknown) {
+      // Commander reports the unknown word, with its suggestion, in its group.
+      state.command = words.join(' ');
+      return [...words, argv[path.end]!];
+    }
+    // `help ios network help verify`: a redundant `help` inside the path.
+    if (argv[path.end] === 'help' && path.leaf.commands.length > 0) return helpArgs(words, path.leaf, path.end + 1);
+    return [...words, '--help'];
+  };
+
   try {
     let args = argv;
     const index = commandIndex(argv);
@@ -687,18 +815,40 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
         // Unknown command: let commander report it, with its suggestion,
         // instead of answering a --help that came with it.
         args = [target];
-      } else if (cmd && name !== 'help') {
-        state.command = name;
-        const rest = argv.slice(index + 1);
-        const end = rest.indexOf('--');
-        const flags = end >= 0 ? rest.slice(0, end) : rest;
-        if (flags.some((t) => HELP_FLAGS.has(t))) {
+      } else if (name === 'help') {
+        // Root flags before `help` still apply: `tapsmith -v help test` is the version.
+        const help = helpArgs([], program, index + 1);
+        args = help ? [...argv.slice(0, index), ...help] : argv;
+      } else if (cmd) {
+        // Everything below applies at the leaf of a nested command
+        // (`ios network configure`), where the docs guard applies it too.
+        const path = resolveCommandPath(cmd, argv, index);
+        state.command = path.name;
+        const rest = argv.slice(path.end);
+        const stop = rest.indexOf('--');
+        const flags = stop >= 0 ? rest.slice(0, stop) : rest;
+        const group = path.leaf.commands.length > 0;
+        if (path.unknown) {
+          // Unknown subcommand: as at the top level, let commander report it
+          // with its suggestion instead of answering a --help after it.
+          args = argv.slice(index, path.end + 1);
+        } else if (group && index === 0 && (rest.length === 0 || (rest.length === 1 && rest[0] === '--'))) {
+          // A bare group (`tapsmith ios`) is a request for its help, like a
+          // bare `tapsmith`. Not when a root flag comes first: `tapsmith -v ios`
+          // is the version, as `tapsmith -v list-devices` is.
+          path.leaf.outputHelp();
+          return 0;
+        } else if (group && rest[0] === 'help') {
+          // `tapsmith ios network help verify`.
+          const help = helpArgs(path.name.split(' '), path.leaf, path.end + 1);
+          args = help ? [...argv.slice(0, index), ...help] : argv;
+        } else if (flags.some((t) => HELP_FLAGS.has(t))) {
           // Help wins over everything else on the command line, including a
           // value flag left without its value (`init --platform --help`).
-          args = [...argv.slice(0, index + 1), '--help'];
+          args = [...argv.slice(0, path.end), '--help'];
         } else {
-          state.json = JSON_ERROR_COMMANDS.has(name) && flags.includes('--json');
-          args = [...argv.slice(0, index + 1), ...prepareCommandArgs(cmd, rest)];
+          state.json = JSON_ERROR_COMMANDS.has(path.name) && flags.includes('--json');
+          args = [...argv.slice(0, path.end), ...prepareCommandArgs(path.leaf, rest)];
         }
       }
     } else if ((argv.includes('--') ? argv.slice(0, argv.indexOf('--')) : argv).some((t) => HELP_FLAGS.has(t))) {
@@ -707,12 +857,19 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
     } else {
       // `tapsmith -c ci.mjs test`: the old parser took options anywhere.
       const misplaced = argv.find((t) => t.startsWith('-') && !ROOT_FLAGS.has(t));
-      const later = argv.find((t) => !t.startsWith('-') && findCommand(program, t));
-      if (misplaced && later) {
-        state.command = later;
-        state.json = JSON_ERROR_COMMANDS.has(later) && argv.includes('--json');
+      const laterAt = misplacedFlagTarget(program, argv);
+      if (misplaced && laterAt >= 0) {
+        const later = resolveCommandPath(findCommand(program, argv[laterAt]!)!, argv, laterAt);
+        state.command = later.name;
+        state.json = JSON_ERROR_COMMANDS.has(later.name) && argv.includes('--json');
+        // Suggest moving the flag only to a command that takes it. A short
+        // form is known by its first letter (`-j4`, a bundle like `-wd`).
+        const flag = misplaced.startsWith('--') ? misplaced.split('=', 1)[0]! : misplaced.slice(0, 2);
+        const takesIt = later.leaf.options.some((o) => o.long === flag || o.short === flag);
         program.error(
-          `error: unknown option '${misplaced}'. '${misplaced}' goes after the command: tapsmith ${later} ${misplaced} …`,
+          takesIt
+            ? `error: unknown option '${misplaced}'. '${misplaced}' goes after the command: tapsmith ${later.name} ${misplaced} …`
+            : `error: unknown option '${misplaced}' (tapsmith ${later.name} does not take it either)`,
           { code: 'commander.unknownOption', exitCode: 1 },
         );
       }

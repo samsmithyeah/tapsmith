@@ -5,10 +5,10 @@
  * Why: free Apple Developer accounts roll provisioning profiles every 7
  * days. Without a warning, users hit cryptic signing errors mid-test and
  * have to trace it back to the expiry. By reading ExpirationDate from the
- * embedded .mobileprovision at three strategic points — `build-ios-agent`
- * tail output, `setup-ios-device` preflight, and `tapsmith test` startup —
+ * embedded .mobileprovision at three strategic points — `ios build-agent`
+ * tail output, `ios setup-device` preflight, and `tapsmith test` startup —
  * we pre-empt that entire failure mode with a simple "profile expires in
- * 2 days, re-run `tapsmith build-ios-agent`" nudge.
+ * 2 days, re-run `tapsmith ios build-agent`" nudge.
  *
  * Parsing path: `security cms -D -i <profile>` dumps the CMS-wrapped
  * plist to stdout. We pipe that into `plutil -convert json -o -` to get
@@ -135,10 +135,10 @@ export function formatExpiryWarning(info: ProfileExpiryInfo): string | undefined
   const { daysUntilExpiry } = info;
   if (daysUntilExpiry > EXPIRY_WARNING_DAYS) return undefined;
   if (daysUntilExpiry < 0) {
-    return `Provisioning profile expired ${Math.abs(daysUntilExpiry)} day(s) ago — re-run \`tapsmith build-ios-agent\` before your next test.`;
+    return `Provisioning profile expired ${Math.abs(daysUntilExpiry)} day(s) ago — re-run \`tapsmith ios build-agent\` before your next test.`;
   }
   if (daysUntilExpiry === 0) {
-    return 'Provisioning profile expires TODAY — re-run `tapsmith build-ios-agent` to refresh.';
+    return 'Provisioning profile expires TODAY — re-run `tapsmith ios build-agent` to refresh.';
   }
-  return `Provisioning profile expires in ${daysUntilExpiry} day(s) — re-run \`tapsmith build-ios-agent\` before it rolls.`;
+  return `Provisioning profile expires in ${daysUntilExpiry} day(s) — re-run \`tapsmith ios build-agent\` before it rolls.`;
 }
