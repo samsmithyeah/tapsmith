@@ -2601,7 +2601,7 @@ See [Using Tapsmith with AI coding agents](agents.md) for the non-interactive se
 
 Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, config file, ADB (Android), connected devices, agent APKs, AVD system image compatibility, Xcode (iOS), simulators, and network capture dependencies. Each check prints `✓`, `⚠` (warning) or `✗` (error); most warnings and errors are followed by a `↳` line with the fix, often the exact command to run. Exits with code 0 unless a check is an error.
 
-`--json` prints the checks (with a `fix` wherever the text output has one) and the device inventory (AVDs, simulators, connected devices) as JSON. `-c` / `--config` checks a specific config file.
+`--json` prints the checks (with a `fix` wherever the text output has one) and the device inventory (AVDs, simulators, connected devices) as JSON. `-c` / `--config` loads a specific config file for the checks that read the config (AVDs, app paths); the "Config file found" line itself only looks for `tapsmith.config.ts` or `.mjs` in the current directory.
 
 ```bash
 npx tapsmith doctor
@@ -2774,17 +2774,20 @@ physical devices too, with their UDIDs.
 #### `tapsmith setup-ios-device`
 
 Run the host-side preflight for physical iOS devices (macOS only). Takes no
-arguments: it checks the Mac, then every attached device. Host checks: Xcode
+arguments: it checks the Mac, then every device `xcrun devicectl` lists. Host checks: Xcode
 command-line tools, `xcrun devicectl`, libimobiledevice (`iproxy`), a code
 signing identity and an Apple Developer team registered with Xcode; and, as
 advisory checks, passwordless `sudo` for the Developer Disk Image mount (so a
 test run does not stop at a password prompt), a signed agent runner under
-`ios-agent/.build-device`, and the provisioning profile's expiry. Device
-check: each attached device is paired. It does not
+`ios-agent/.build-device` in or up to two levels above the current directory
+(a checkout build, not the npm install's `~/.tapsmith/ios-agent/`), and the
+provisioning profile's expiry. Device check: each listed device is paired.
+devicectl also lists devices it remembers that are not plugged in. It does not
 check the Developer Disk Image (Tapsmith mounts it when a test run starts) or
 the macOS firewall (`configure-ios-network --fix-firewall` handles that).
 Each check prints `✓`, `⚠` (advisory, not blocking) or `✗` with the fix; the
-command exits 1 if a required check fails or no device is paired. When the
+command exits 1 if a required check fails, no device is listed, or any listed
+device is unpaired. When the
 required checks pass, it ends with the steps it cannot check from the Mac
 (trusting the developer certificate, turning off Auto-Lock).
 
@@ -2803,10 +2806,10 @@ build finishes, the command prints the `iosXctestrun:` line to add to your
 config, as a path relative to the directory it ran in (or to `--cwd`).
 `tapsmith test` resolves `iosXctestrun` against `rootDir` (by default the
 directory you run `tapsmith test` from), so run the build from there or use an
-absolute path. `tapsmith test` finds the runner without that
-line only when it is under an `ios-agent/.build-device` in or above the
-project directory, the checkout layout; with the npm package, set
-`iosXctestrun` in the config.
+absolute path. Without `iosXctestrun` (or the
+`TAPSMITH_IOS_XCTESTRUN` environment variable), `tapsmith test` finds the
+runner only under an `ios-agent/.build-device` in or above the project
+directory, the checkout layout; with the npm package, set one of them.
 
 #### `tapsmith configure-ios-network <udid> [--ssid <name>] [--device-name <name>] [--fix-firewall]`
 
