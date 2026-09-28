@@ -70,7 +70,7 @@ export default defineConfig({
 What Tapsmith fills in for you:
 
 - **Device UDID** — when `device` is omitted, Tapsmith picks the single paired USB iOS device. Zero or more than one → actionable error.
-- **`iosXctestrun`** — when omitted, Tapsmith looks for the newest `*iphoneos*.xctestrun` under `ios-agent/.build-device/Build/Products/` in the project directory or a parent of it (populated by `tapsmith build-ios-agent` in a Tapsmith checkout). With Tapsmith installed from npm the build lands under `~/.tapsmith/ios-agent/`, which is not searched: set `iosXctestrun` to the path `build-ios-agent` prints.
+- **`iosXctestrun`** — when omitted, Tapsmith looks for the newest `*iphoneos*.xctestrun` under `ios-agent/.build-device/Build/Products/` in the project directory or a parent of it (populated by `tapsmith build-ios-agent` in a Tapsmith checkout). With Tapsmith installed from npm the build lands under `~/.tapsmith/ios-agent/`, which is not searched: set `iosXctestrun` to the path `build-ios-agent` prints (relative to the directory you ran it in; `iosXctestrun` is resolved against `rootDir`, by default the directory you run `tapsmith test` from), or to an absolute path.
 
 Both can be overridden:
 

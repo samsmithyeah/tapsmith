@@ -585,9 +585,10 @@ function bundleEndingInValueFlag(token: string, byFlag: Map<string, Option>): Op
 /**
  * Rewrite `-j=4` to `--workers=4`, and refuse a flag where a value flag
  * expects its value. Returns the argv commander should parse; reports a
- * refused value through `cmd.error`, which throws.
+ * refused value through `cmd.error`, which throws. Exported for the docs
+ * guard, which applies the same rules to documented invocations.
  */
-function prepareCommandArgs(cmd: Command, args: string[]): string[] {
+export function prepareCommandArgs(cmd: Command, args: string[]): string[] {
   const valueOptions = cmd.options.filter((o) => o.required);
   const byFlag = new Map<string, Option>();
   for (const option of valueOptions) {

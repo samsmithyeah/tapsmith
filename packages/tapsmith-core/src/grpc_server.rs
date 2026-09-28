@@ -3587,7 +3587,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 success: false,
                 error_type: "AGENT_NOT_CONFIGURED".to_string(),
                 error_message: "iOS agent not configured. \
-                    Set iosXctestrun in your tapsmith config."
+                    Set iosXctestrun in your Tapsmith config."
                     .to_string(),
                 screenshot: Vec::new(),
             }));
@@ -3725,7 +3725,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         success: false,
                         error_type: "AGENT_NOT_INSTALLED".to_string(),
                         error_message: "Tapsmith agent is not installed on the device. \
-                            Set agentApk and agentTestApk in your tapsmith config, \
+                            Set agentApk and agentTestApk in your Tapsmith config, \
                             or install manually with: adb install <path-to-agent.apk>"
                             .to_string(),
                         screenshot: Vec::new(),

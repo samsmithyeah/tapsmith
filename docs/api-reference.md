@@ -2570,7 +2570,7 @@ npx tapsmith test --reporter json     # writes tapsmith-results/results.json
 
 Set up a project. With no options, in a terminal, it runs the interactive wizard: it detects your environment (ADB, Xcode, simulators, emulators), walks you through platform and app configuration, and generates a `tapsmith.config.ts`, an example test and an `AGENTS.md` section.
 
-Pass `--yes` or any setup flag below to run non-interactively instead (for scripts and AI agents): anything not given is auto-detected, and a choice that cannot be made (two APKs, say) exits 1 naming the candidates and the flag that picks one. Without a terminal and without flags, `init` exits 1 rather than waiting for input. iOS physical devices need the interactive wizard, for its code-signing preflight.
+Pass `--yes` or any setup flag below (every flag but `--json`) to run non-interactively instead, for scripts and AI agents: anything not given is auto-detected, and a choice that cannot be made (two APKs, say) exits 1 naming the candidates and the flag that picks one. `--json` only changes the output, so an agent passes `--yes --json`. Without a terminal and without `--yes` or a setup flag, `init` exits 1 rather than waiting for input. iOS physical devices need the interactive wizard, for its code-signing preflight.
 
 | Flag | Meaning |
 | --- | --- |
@@ -2599,9 +2599,9 @@ See [Using Tapsmith with AI coding agents](agents.md) for the non-interactive se
 
 ### `tapsmith doctor [--json] [-c <path>]`
 
-Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, config file, ADB (Android), connected devices, agent APKs, AVD system image compatibility, Xcode (iOS), simulators, and network capture dependencies. Each check prints `✓`, `⚠` (warning) or `✗` (error); a warning or error is followed by a `↳` line with the fix, often the exact command to run. Exits with code 0 unless a check is an error.
+Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, config file, ADB (Android), connected devices, agent APKs, AVD system image compatibility, Xcode (iOS), simulators, and network capture dependencies. Each check prints `✓`, `⚠` (warning) or `✗` (error); most warnings and errors are followed by a `↳` line with the fix, often the exact command to run. Exits with code 0 unless a check is an error.
 
-`--json` prints the checks (each with its `fix`) and the device inventory (AVDs, simulators, connected devices) as JSON. `-c` / `--config` checks a specific config file.
+`--json` prints the checks (with a `fix` wherever the text output has one) and the device inventory (AVDs, simulators, connected devices) as JSON. `-c` / `--config` checks a specific config file.
 
 ```bash
 npx tapsmith doctor
@@ -2665,7 +2665,8 @@ npx tapsmith list-devices --json
 ### `tapsmith show-trace <file.zip>`
 
 Open the trace viewer in the default browser to inspect a recorded trace. Traces are written to
-`<outputDir>/traces/` (`tapsmith-results/traces/` by default), named `trace-<test name>-<timestamp>.zip`.
+`<outputDir>/traces/` (`tapsmith-results/traces/` by default), named
+`trace-[<project>-]<test name>[-retry<n>]-<timestamp>.zip`.
 
 ```bash
 npx tapsmith show-trace tapsmith-results/traces/trace-my_test-1767225600000.zip
@@ -2783,9 +2784,9 @@ check: each attached device is paired. It does not
 check the Developer Disk Image (Tapsmith mounts it when a test run starts) or
 the macOS firewall (`configure-ios-network --fix-firewall` handles that).
 Each check prints `✓`, `⚠` (advisory, not blocking) or `✗` with the fix; the
-command exits 1 if a required check fails or no device is paired, and ends
-with the steps it cannot check from the Mac (trusting the developer
-certificate, turning off Auto-Lock).
+command exits 1 if a required check fails or no device is paired. When the
+required checks pass, it ends with the steps it cannot check from the Mac
+(trusting the developer certificate, turning off Auto-Lock).
 
 #### `tapsmith build-ios-agent [--team-id <id>] [--cwd <path>] [--derived-data-path <path>] [-v]`
 
@@ -2799,9 +2800,13 @@ points at one), or else from the copy the npm package extracts to
 `~/.tapsmith/ios-agent/`. Build products go to `ios-agent/.build-device` inside
 that source directory unless `--derived-data-path` says otherwise. When the
 build finishes, the command prints the `iosXctestrun:` line to add to your
-config. `tapsmith test` finds the runner without that line only when it is
-under an `ios-agent/.build-device` in or above the project directory, the
-checkout layout; with the npm package, set `iosXctestrun` in the config.
+config, as a path relative to the directory it ran in (or to `--cwd`).
+`tapsmith test` resolves `iosXctestrun` against `rootDir` (by default the
+directory you run `tapsmith test` from), so run the build from there or use an
+absolute path. `tapsmith test` finds the runner without that
+line only when it is under an `ios-agent/.build-device` in or above the
+project directory, the checkout layout; with the npm package, set
+`iosXctestrun` in the config.
 
 #### `tapsmith configure-ios-network <udid> [--ssid <name>] [--device-name <name>] [--fix-firewall]`
 

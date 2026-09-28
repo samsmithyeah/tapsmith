@@ -98,7 +98,7 @@ Tapsmith Doctor
 14 checks passed, 1 warning
 ```
 
-Every warning (`⚠`) or error (`✗`) is followed by a `↳` line saying how to fix it, often the exact command to run. `tapsmith doctor --json` prints the same checks, each with its `fix`, for scripts and AI agents. The command exits 1 if any check is an error. Run it whenever tests fail in unexpected ways to rule out setup issues.
+A warning (`⚠`) or error (`✗`) that Tapsmith knows how to fix is followed by a `↳` line saying how, often the exact command to run. `tapsmith doctor --json` prints the same checks for scripts and AI agents, with a `fix` field wherever there is one. The command exits 1 if any check is an error. Run it whenever tests fail in unexpected ways to rule out setup issues.
 
 ## Make runs faster (optional, one line)
 
