@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -728,6 +731,23 @@ describe('the device tools the server advertises', () => {
       expect(filesArg, 'tapsmith_run_tests advertises no array argument').toBeDefined();
       expect(formatToolArgs('tapsmith_run_tests', { [filesArg!]: ['/proj/e2e/login.test.ts'] }))
         .toBe('Running login.test.ts');
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('reports the installed package version to the client, not a placeholder', async () => {
+    // Both transports build their server here, so this covers UI mode too.
+    const pkgPath = path.resolve(fileURLToPath(import.meta.url), '../../../package.json');
+    const { version } = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as { version: string };
+    const server = createMcpServer({ dispatcher: makeDispatcher() });
+    const client = new Client({ name: 'probe', version: '1.0.0' }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    try {
+      await client.connect(clientTransport);
+      expect(client.getServerVersion()?.version).toBe(version);
     } finally {
       await client.close();
       await server.close();

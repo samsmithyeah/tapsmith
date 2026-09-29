@@ -19,6 +19,7 @@ import { registerStopTestsTool } from './tools/stop-tests.js';
 import { registerSessionInfoTool } from './tools/session-info.js';
 import { registerWatchTool } from './tools/watch.js';
 import { closeAllClients, configureMcpConnection } from './connection.js';
+import { readSdkVersion } from '../telemetry.js';
 import { mcpActivityFilePath, uiPortFilePath } from './port-file.js';
 import {
   McpEventEmitter,
@@ -69,7 +70,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
 
   const server = new McpServer({
     name,
-    version: '0.1.0',
+    version: readSdkVersion(),
   });
 
   if (events) {
@@ -315,10 +316,7 @@ export async function runMcpServer(
 
   const banner = figlet.textSync('Tapsmith', { font: 'Three Point' });
   process.stderr.write('\n' + banner.split('\n').map((line) => `${GREEN}${line}${RESET}`).join('\n') + '\n');
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '../../package.json'), 'utf-8'));
-    process.stderr.write(`${DIM}v${pkg.version}${RESET}\n`);
-  } catch { /* version not available */ }
+  process.stderr.write(`${DIM}v${readSdkVersion()}${RESET}\n`);
   process.stderr.write(`\n  ${DIM}MCP server running on stdio transport. Waiting for an MCP client on stdin...${RESET}\n`);
   process.stderr.write(`  ${DIM}Stdio clients start this command as a subprocess; another terminal cannot attach to this process.${RESET}\n`);
   process.stderr.write(`  ${DIM}This terminal is also watching MCP activity from client-owned Tapsmith subprocesses.${RESET}\n`);
