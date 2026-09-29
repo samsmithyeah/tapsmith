@@ -213,7 +213,7 @@ export default defineConfig({
 
 A single `npx tapsmith test` invocation runs both platforms. Test files are shared across projects by default (controlled by `testMatch`), or you can use per-project `testMatch` to run different files on each platform.
 
-If one platform's device can't start (no device found, or its workers fail at startup), `tapsmith test` still runs the other platform. Each test file of the broken platform's projects is reported as one failed result, giving the reason (for example `Device target "android Pixel_6" could not start: …`), and the run exits non-zero. The run fails to start only when no platform can start. UI and watch mode currently need every platform's device to start; pass `--project` to leave one out.
+If one platform's device can't start (no device found, or its workers fail at startup), `tapsmith test` still runs the other platform. Each test file of the broken platform's projects is reported as one failed result, giving the reason (for example `Device target "android Pixel_6" could not start: …`), and the run exits non-zero. UI and watch mode currently need every platform's device to start; pass `--project` to leave one out.
 
 Projects also work with `--ui` and `--watch` modes. UI mode groups tests by project name, and watch mode re-runs only the affected project when you edit a test file.
 

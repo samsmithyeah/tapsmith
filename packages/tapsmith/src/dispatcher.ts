@@ -764,7 +764,9 @@ export async function coordinateBuckets(
     for (const [i, err] of startFailures) {
       for (const result of targetStartFailureResults(buckets[i].label, buckets[i].projects, err)) {
         startFailureResults.push(result);
+        c.reporter.onTestFileStart?.(result.filePath!);
         c.reporter.onTestEnd?.(result);
+        c.reporter.onTestFileEnd?.(result.filePath!, [result]);
       }
     }
   };
@@ -797,13 +799,22 @@ export async function coordinateBuckets(
   const midRunFailure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (midRunFailure) throw midRunFailure.reason;
 
-  if (startFailures.size === buckets.length) {
+  if (buckets.length > 0 && startFailures.size === buckets.length) {
     const errors = [...startFailures.values()];
+    // One bucket (the others planned no workers) is a single-target run:
+    // its error, hints and all, as runParallel would have thrown it.
+    if (errors.length === 1) throw errors[0];
     const nonLaunch = errors.find((err) => !isLaunchSetupError(err));
     if (nonLaunch !== undefined) throw nonLaunch;
+    // Each target's whole message: its later lines carry the hints (the
+    // per-worker failures, a port squatter's kill command, the advice).
     throw new LaunchSetupError(
       'No device target could start\n'
-      + [...startFailures].map(([i, err]) => `${buckets[i].label}: ${failureSummary(err)}`).join('\n'),
+      + [...startFailures].map(([i, err]) => {
+        const [first, ...rest] = messageFromUnknown(err).split('\n');
+        return [`${buckets[i].label}: ${first}`, ...rest.map((line) => `  ${line}`)].join('\n');
+      }).join('\n'),
+      { cause: errors[0] },
     );
   }
 
@@ -813,6 +824,8 @@ export async function coordinateBuckets(
     ...merged,
     status: startFailures.size > 0 ? 'failed' : merged.status,
     tests: [...startFailureResults, ...merged.tests],
+    // Suite-driven reporters (JUnit, JSON) would otherwise leave them out.
+    suites: [...startFailureResults.map(startFailureSuite), ...merged.suites],
   };
 }
 
@@ -837,6 +850,11 @@ export function targetProvisionFailure(
     + 'or run `tapsmith test`, which runs the other targets and reports this one\'s tests as failed.',
     { cause: failures[0].err },
   );
+}
+
+/** The one-test suite a start-failure result is reported under. */
+export function startFailureSuite(result: TestResult): SuiteResult {
+  return { name: result.name, tests: [result], suites: [], durationMs: 0 };
 }
 
 /**

@@ -562,10 +562,10 @@ describe('coordinateBuckets()', () => {
     const ended: TestResult[] = [];
     const reporter = {
       onRunStart: () => { events.push('run-start'); },
-      onTestFileStart: () => {},
+      onTestFileStart: (f: string) => { events.push(`file-start:${f}`); },
       onTestStart: () => {},
       onTestEnd: (t: TestResult) => { events.push(`end:${t.project}:${t.name}`); ended.push(t); },
-      onTestFileEnd: () => {},
+      onTestFileEnd: (f: string) => { events.push(`file-end:${f}`); },
       onRunEnd: async () => {},
     } as unknown as DispatcherOptions['reporter'];
     return { reporter, events, ended };
@@ -672,7 +672,12 @@ describe('coordinateBuckets()', () => {
       failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('boom')),
       readyBucket('ios iPhone 17', [iosProject], passing('ios test', 'ios'), () => { rec.events.push('ios-dispatch'); }),
     ], coordination(rec));
-    expect(rec.events).toEqual(['run-start', 'end:android:a.test.ts', 'end:android:b.test.ts', 'ios-dispatch']);
+    expect(rec.events).toEqual([
+      'run-start',
+      'file-start:/t/a.test.ts', 'end:android:a.test.ts', 'file-end:/t/a.test.ts',
+      'file-start:/t/b.test.ts', 'end:android:b.test.ts', 'file-end:/t/b.test.ts',
+      'ios-dispatch',
+    ]);
   });
 
   it('waits for a bucket that fails after the ready one reached the barrier', async () => {
@@ -734,6 +739,44 @@ describe('coordinateBuckets()', () => {
         && details.includes('ios iPhone 17: No booted iOS simulators found.');
     });
     expect(rec.events).not.toContain('run-start');
+  });
+
+  it('puts the failed files in suites too, so suite-driven reporters (JUnit, JSON) list them', async () => {
+    const rec = recordingReporter();
+    const iosResult = { ...passing('ios test', 'ios'), suites: [{ name: '', tests: [], suites: [], durationMs: 5 }] };
+    const result = await coordinateBuckets([
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('x')),
+      readyBucket('ios iPhone 17', [iosProject], iosResult),
+    ], coordination(rec));
+    expect(result.suites).toHaveLength(3);
+    expect(result.suites.slice(0, 2).map((s) => s.tests.map((t) => `${t.project}:${t.name}:${t.status}`))).toEqual([
+      ['android:a.test.ts:failed'],
+      ['android:b.test.ts:failed'],
+    ]);
+  });
+
+  it('keeps each target\'s hint lines when every bucket fails', async () => {
+    const rec = recordingReporter();
+    const run = coordinateBuckets([
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('Failed to start worker daemon.\nRun: lsof -ti tcp:50052 | xargs kill')),
+      failingBucket('ios iPhone 17', [iosProject], new LaunchSetupError('No booted iOS simulators found.')),
+    ], coordination(rec));
+    await expect(run).rejects.toThrow(/android Pixel_6: Failed to start worker daemon\.\n {2}Run: lsof -ti tcp:50052 \| xargs kill\nios iPhone 17: No booted/);
+  });
+
+  it('throws a lone bucket\'s own error unchanged, as a single-target run would', async () => {
+    const rec = recordingReporter();
+    const err = new LaunchSetupError('No worker could start: ANR\nWorker 0 (emulator-5554): ANR\nFix the worker failure above');
+    await expect(coordinateBuckets([
+      failingBucket('android Pixel_6', [androidProject], err),
+    ], coordination(rec))).rejects.toBe(err);
+  });
+
+  it('returns an empty passing result for no buckets', async () => {
+    const rec = recordingReporter();
+    const result = await coordinateBuckets([], coordination(rec));
+    expect(result.status).toBe('passed');
+    expect(result.tests).toEqual([]);
   });
 
   it('rethrows a non-launch error as-is when every bucket fails, so its stack survives', async () => {

@@ -705,6 +705,9 @@ async function setupSequentialDevice(
     );
   } catch (err) {
     if (!primaryCompleted) progress?.fail('primary-device', `failed to set up ${deviceSerial}`);
+    // A multi-target run goes on without this target (PILOT-400); don't
+    // leave a channel reconnecting to a daemon that is about to be killed.
+    try { client.close(); } catch { /* already closed */ }
     throw err;
   }
   completePrimary(`${deviceSerial} selected`);
@@ -2375,10 +2378,12 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     const failedProjects = new Set<string>();
     /** Report a project on a target that could not start: each file failed. */
     const reportTargetStartFailure = async (project: import('./project.js').ResolvedProject, err: unknown) => {
-      const { deviceTargetLabel, targetStartFailureResults } = await import('./dispatcher.js');
+      const { deviceTargetLabel, startFailureSuite, targetStartFailureResults } = await import('./dispatcher.js');
       for (const result of targetStartFailureResults(deviceTargetLabel(project.deviceSignature), [project], err)) {
         reporter.onTestFileStart(result.filePath!);
+        reporter.onTestEnd(result);
         allResults.push(result);
+        allSuites.push(startFailureSuite(result));
         reporter.onTestFileEnd(result.filePath!, [result]);
       }
       failedProjects.add(project.name);
@@ -2388,6 +2393,14 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
 
     for (const wave of projectWaves) {
       for (const project of wave) {
+        // A target that could not start: its files fail with the reason —
+        // before the dependency check, so a dependent on the same target
+        // fails too, as in the parallel path, rather than being skipped.
+        if (project.testFiles.length > 0 && failedTargets.has(project.deviceSignature)) {
+          await reportTargetStartFailure(project, failedTargets.get(project.deviceSignature));
+          continue;
+        }
+
         // Skip projects whose dependencies failed
         const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
         if (blockedBy) {
@@ -2410,14 +2423,6 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
         }
 
         let projectFailed = false;
-
-        // A target that could not start: its files fail with the reason,
-        // and its dependents are skipped like any failed project's.
-        if (project.testFiles.length > 0 && failedTargets.has(project.deviceSignature)) {
-          const targetFailure = failedTargets.get(project.deviceSignature);
-          await reportTargetStartFailure(project, targetFailure);
-          continue;
-        }
 
         // ─── Per-project device switching ───
         // When this project's device signature differs from the currently
