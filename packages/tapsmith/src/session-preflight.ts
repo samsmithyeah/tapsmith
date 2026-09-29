@@ -1075,14 +1075,16 @@ async function clearBlockingDialog(
 
   // The dialog's nodes all say package="android"; only the window title names
   // the owner, and only adb can read it.
+  // No system-drawn node with the phrase: the app under test is showing
+  // "… isn't responding" text of its own. Not ours to tap.
+  if (!isSystemDrawnDialog(hierarchyXml)) return false;
   const owners = ctx.deviceSerial ? blockingDialogOwnersViaAdb(ctx.deviceSerial) : [];
-  // No error window and no system-drawn node with the phrase: the app under
-  // test is showing "… isn't responding" text of its own. Not ours to tap.
-  if (owners.length === 0 && !isSystemDrawnDialog(hierarchyXml)) return false;
 
   const pkg = ctx.config.package;
   const appOwnsIt = !!pkg && owners.includes(pkg);
-  const owner = appOwnsIt ? pkg : owners[0];
+  // Named only when unambiguous: with several error windows listed, the
+  // window list cannot say which one the title belongs to.
+  const owner = appOwnsIt ? pkg : owners.length === 1 ? owners[0] : undefined;
   const dialog = formatBlockingDialog(title, owner);
   if (process.env.TAPSMITH_DEBUG) {
     process.stderr.write(`[tapsmith] Blocking system dialog ${dialog}; hierarchy:\n${hierarchyXml}\n`);
@@ -1119,7 +1121,7 @@ async function clearBlockingDialog(
   // system restarts it clean, where "Wait" leaves it hung to re-ANR within
   // seconds. With no owner it might be the app under test's, so "Wait" first
   // and "Close app" only once the same dialog has survived it.
-  const closeFirst = owner !== undefined || repeats > 0;
+  const closeFirst = owners.length > 0 || repeats > 0;
   process.stderr.write(
     `[tapsmith] Dismissing system dialog ${dialog} `
     + `(${dialogs.dismissals}/${MAX_BLOCKING_DIALOG_DISMISSALS})\n`,
@@ -1129,8 +1131,7 @@ async function clearBlockingDialog(
   return true;
 }
 
-/** Resource ids of the ANR / crash dialog's buttons (AOSP `aerr_*`). Tapping
- *  by id cannot hit a same-labelled control of the app underneath. */
+/** Resource ids of the ANR / crash dialog's buttons (AOSP `aerr_*`). */
 const SYSTEM_DIALOG_BUTTON_IDS: Partial<Record<string, string>> = {
   'Close app': 'android:id/aerr_close',
   'Wait': 'android:id/aerr_wait',
@@ -1145,14 +1146,18 @@ async function dismissDialogOnce(
   const order = closeFirst
     ? ['Close app', ...SYSTEM_DIALOG_DISMISS_LABELS.filter((l) => l !== 'Close app')]
     : SYSTEM_DIALOG_DISMISS_LABELS;
-  // Only the dialog's own buttons: the app's nodes are in the dump underneath.
+  // Only the dialog's own buttons: the app's nodes are in the dump underneath,
+  // so both the lookup and the tap are scoped to system-drawn nodes. `first()`
+  // because a thrashing emulator can stack two dialogs with the same buttons;
+  // closing either one is progress.
   const label = order.find((l) => androidSystemNodeHasText(hierarchyXml, l));
   try {
-    const id = label ? SYSTEM_DIALOG_BUTTON_IDS[label] : undefined;
-    if (id && hierarchyXml.includes(`resource-id="${id}"`)) {
-      await ctx.device.locator({ id }).tap();
-    } else if (label) {
-      await ctx.device.getByText(label, { exact: true }).tap();
+    if (label) {
+      const id = SYSTEM_DIALOG_BUTTON_IDS[label];
+      const match = id && hierarchyXml.includes(`resource-id="${id}"`)
+        ? `@resource-id='${id}'`
+        : `@text='${label}'`;
+      await ctx.device.locator({ xpath: `//node[@package='android'][${match}]` }).first().tap();
     } else {
       await ctx.device.pressBack();
     }

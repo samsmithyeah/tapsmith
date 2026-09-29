@@ -26,7 +26,10 @@ function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]
     waitForIdle: vi.fn(async () => undefined),
     currentPackage: vi.fn(async () => 'com.example.app'),
     getByText: vi.fn(() => ({ tap: vi.fn(async () => undefined) }) as never),
-    locator: vi.fn(() => ({ tap: vi.fn(async () => undefined) }) as never),
+    locator: vi.fn(() => {
+      const handle = { tap: vi.fn(async () => undefined), first: vi.fn(() => handle) };
+      return handle as never;
+    }),
     pressBack: vi.fn(async () => undefined),
     clearAppData: vi.fn(async () => undefined),
     restoreAppState: vi.fn(async () => undefined),
@@ -1096,16 +1099,14 @@ describe('session-preflight', () => {
     );
     const home = hierarchy(`<hierarchy><node package="${PKG}" text="Home" /></hierarchy>`);
     const BUTTON_IDS: Record<string, string> = { 'android:id/aerr_close': 'Close app', 'android:id/aerr_wait': 'Wait' };
-    /** Every dismissal tap in call order: by text, or by the dialog button's
-     *  resource id (reported as its label). */
-    const tapped = (ctx: ReturnType<typeof makeContext>) => {
-      const byText = vi.mocked(ctx.device.getByText).mock;
-      const byId = vi.mocked(ctx.device.locator).mock;
-      return [
-        ...byText.calls.map(([label], i) => [byText.invocationCallOrder[i], label] as const),
-        ...byId.calls.map(([opts], i) => [byId.invocationCallOrder[i], `id:${BUTTON_IDS[opts.id ?? ''] ?? opts.id}`] as const),
-      ].sort((a, b) => a[0] - b[0]).map(([, label]) => label);
-    };
+    /** Every dismissal tap, in order: `id:<label>` when tapped by the dialog
+     *  button's resource id, `<label>` when by its text. */
+    const tapped = (ctx: ReturnType<typeof makeContext>) =>
+      vi.mocked(ctx.device.locator).mock.calls.map(([opts]) => {
+        const xpath = opts.xpath ?? '';
+        const id = xpath.match(/@resource-id='([^']+)'/)?.[1];
+        return id ? `id:${BUTTON_IDS[id] ?? id}` : xpath.match(/@text='([^']+)'/)?.[1] ?? xpath;
+      });
 
     function withOwner(...owners: string[]) {
       vi.mocked(blockingDialogOwnersViaAdb).mockReturnValue(owners);
@@ -1278,6 +1279,52 @@ describe('session-preflight', () => {
 
       expect(err?.message).toContain('"Maps isn\'t responding"');
       expect(err?.message).toContain('Tapsmith dismissed 4 system dialogs in a row and they kept appearing.');
+    });
+
+    it('scopes every dismissal tap to the dialog\'s own nodes and takes the first of stacked dialogs', async () => {
+      // An app "OK" under a system dialog's "OK" must not make the tap
+      // ambiguous (a swallowed strict-mode error dismisses nothing), and two
+      // stacked ANR dialogs share their aerr_* ids.
+      const ctx = withOwner(LAUNCHER);
+      const okDialog = hierarchy(
+        `<hierarchy><node package="${PKG}" text="OK" /><node package="android" resource-id="android:id/alertTitle" text="Maps keeps stopping" />`
+        + '<node package="android" text="OK" /></hierarchy>',
+      );
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValueOnce(okDialog).mockResolvedValue(home);
+
+      await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
+
+      const [[opts]] = vi.mocked(ctx.device.locator).mock.calls;
+      expect(opts).toEqual({ xpath: "//node[@package='android'][@text='OK']" });
+      const handle = vi.mocked(ctx.device.locator).mock.results[0].value as { first: ReturnType<typeof vi.fn> };
+      expect(handle.first).toHaveBeenCalled();
+      expect(ctx.device.getByText).not.toHaveBeenCalled();
+    });
+
+    it('names no owner when several foreign dialog windows are listed, but still closes', async () => {
+      const ctx = withOwner(LAUNCHER, 'com.google.android.gms');
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        vi.mocked(ctx.client.getUiHierarchy).mockResolvedValueOnce(launcherAnr).mockResolvedValue(home);
+        await ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] });
+        const written = stderr.mock.calls.map(([chunk]) => String(chunk)).join('');
+        expect(written).toContain('Dismissing system dialog "Pixel Launcher isn\'t responding" (1/4)');
+      } finally {
+        stderr.mockRestore();
+      }
+      expect(tapped(ctx)).toEqual(['id:Close app']);
+    });
+
+    it('ignores app text even while dumpsys lists an error window', async () => {
+      const ctx = withOwner(LAUNCHER);
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue(
+        hierarchy(`<hierarchy><node package="${PKG}" text="The server isn&apos;t responding" /></hierarchy>`),
+      );
+
+      await expect(ensureSessionReady(ctx, 'before test', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
+
+      expect(tapped(ctx)).toEqual([]);
+      expect(ctx.device.pressBack).not.toHaveBeenCalled();
     });
 
     it('still dismisses a dialog found during a recovery round, tapping only labels it shows', async () => {
