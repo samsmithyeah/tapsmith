@@ -6,6 +6,7 @@
  * doesn't prevent subsequent checks from running.
  *
  * Exit code 0 when all checks pass (warnings are OK), 1 when any hard error.
+ * The --json schema is documented in docs/api-reference.md (CLI → JSON output).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -14,6 +15,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { findDaemonBin } from './daemon-bin.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
+import { formatJson, jsonError, stripAnsi, type JsonCheck } from './cli-json.js';
 
 // ─── ANSI helpers ───
 
@@ -32,15 +34,8 @@ const red = (s: string): string => `${RED}${s}${RESET}`;
 
 // ─── Check result tracking ───
 
-type CheckStatus = 'pass' | 'warn' | 'fail';
-
-export interface CheckEntry {
-  id: string;
-  status: CheckStatus;
-  label: string;
-  detail?: string;
-  fix?: string;
-}
+/** One check. Match on `id`: `label` may hold values (a version, a count) and its wording may change. */
+export type CheckEntry = JsonCheck;
 
 export type CheckList = CheckEntry[];
 
@@ -54,12 +49,6 @@ export interface DoctorJson {
   ok: boolean;
   checks: CheckEntry[];
   inventory: DoctorInventory;
-}
-
-const ANSI_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
-
-export function stripAnsi(value: string): string {
-  return value.replace(ANSI_RE, '');
 }
 
 function plainCheck(check: CheckEntry): CheckEntry {
@@ -89,21 +78,36 @@ interface Reporter {
   print: boolean;
 }
 
-function pass(report: Reporter, id: string, label: string): void {
-  report.checks.push({ status: 'pass', id, label });
-  if (report.print) console.log(`  ${green('✓')} ${label}`);
+/** A check's line in the text output: the label, then its detail dimmed in parentheses. */
+export function checkLine(label: string, detail: string | undefined): string {
+  return detail ? `${label} ${dim(`(${detail})`)}` : label;
 }
 
-function warn(report: Reporter, id: string, label: string, fix?: string): void {
-  report.checks.push({ status: 'warn', id, label, fix });
+function record(report: Reporter, entry: CheckEntry): void {
+  // Always the documented key order, and optional keys left out of the JSON
+  // rather than printed as null.
+  const ordered: CheckEntry = { id: entry.id, status: entry.status, label: entry.label };
+  // An empty detail or fix is no detail or fix, in the JSON as in checkLine.
+  if (entry.detail) ordered.detail = entry.detail;
+  if (entry.fix) ordered.fix = entry.fix;
+  report.checks.push(ordered);
+}
+
+function pass(report: Reporter, id: string, label: string, detail?: string): void {
+  record(report, { status: 'pass', id, label, detail });
+  if (report.print) console.log(`  ${green('✓')} ${checkLine(label, detail)}`);
+}
+
+function warn(report: Reporter, id: string, label: string, fix?: string, detail?: string): void {
+  record(report, { status: 'warn', id, label, detail, fix });
   if (report.print) {
-    console.log(`  ${yellow('⚠')} ${label}`);
+    console.log(`  ${yellow('⚠')} ${checkLine(label, detail)}`);
     if (fix) console.log(dim(`    ↳ ${fix}`));
   }
 }
 
 function fail(report: Reporter, id: string, label: string, fix?: string): void {
-  report.checks.push({ status: 'fail', id, label, fix });
+  record(report, { status: 'fail', id, label, fix });
   if (report.print) {
     console.log(`  ${red('✗')} ${label}`);
     if (fix) console.log(dim(`    ↳ ${fix}`));
@@ -133,7 +137,7 @@ function checkNodeVersion(report: Reporter): void {
 function checkDaemonBin(report: Reporter): void {
   try {
     const bin = findDaemonBin();
-    pass(report, 'daemon', `Tapsmith daemon found ${dim(`(${bin})`)}`);
+    pass(report, 'daemon', 'Tapsmith daemon found', bin);
   } catch {
     fail(report, 'daemon', 'Tapsmith daemon not found — try reinstalling: npm install tapsmith', 'Reinstall tapsmith: npm install tapsmith (or set TAPSMITH_DAEMON_BIN)');
   }
@@ -145,9 +149,9 @@ function checkConfigFile(report: Reporter): void {
     const tsConfig = path.join(cwd, 'tapsmith.config.ts');
     const mjsConfig = path.join(cwd, 'tapsmith.config.mjs');
     if (fs.existsSync(tsConfig)) {
-      pass(report, 'config', `Config file found ${dim(`(tapsmith.config.ts)`)}`);
+      pass(report, 'config', 'Config file found', 'tapsmith.config.ts');
     } else if (fs.existsSync(mjsConfig)) {
-      pass(report, 'config', `Config file found ${dim(`(tapsmith.config.mjs)`)}`);
+      pass(report, 'config', 'Config file found', 'tapsmith.config.mjs');
     } else {
       warn(report, 'config', 'No tapsmith.config.ts found in current directory', 'Run: npx tapsmith init --yes (or npx tapsmith init for the wizard)');
     }
@@ -174,11 +178,18 @@ function checkAdb(report: Reporter): boolean {
   }
 }
 
+/** The Android SDK variable doctor reports: ANDROID_HOME, else the older ANDROID_SDK_ROOT. */
+export function androidSdkVariable(env: NodeJS.ProcessEnv): { name: string; path: string } | undefined {
+  if (env.ANDROID_HOME) return { name: 'ANDROID_HOME', path: env.ANDROID_HOME };
+  if (env.ANDROID_SDK_ROOT) return { name: 'ANDROID_SDK_ROOT', path: env.ANDROID_SDK_ROOT };
+  return undefined;
+}
+
 function checkAndroidHome(report: Reporter): void {
   try {
-    const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
-    if (androidHome) {
-      pass(report, 'android-home', `ANDROID_HOME ${dim(androidHome)}`);
+    const sdk = androidSdkVariable(process.env);
+    if (sdk) {
+      pass(report, 'android-home', sdk.name, sdk.path);
     } else {
       warn(report, 'android-home', 'ANDROID_HOME not set', 'Set ANDROID_HOME to your Android SDK location');
     }
@@ -199,7 +210,7 @@ function checkConnectedDevices(report: Reporter): void {
       .filter((line) => line.length > 0 && line.includes('\tdevice'));
     if (devices.length > 0) {
       const serials = devices.map((d) => d.split('\t')[0]).join(', ');
-      pass(report, 'android-devices', `${devices.length} device${devices.length === 1 ? '' : 's'} connected ${dim(`(${serials})`)}`);
+      pass(report, 'android-devices', `${devices.length} device${devices.length === 1 ? '' : 's'} connected`, serials);
     } else {
       warn(report, 'android-devices', 'No Android devices connected', 'Start an emulator or connect a device with USB debugging enabled');
     }
@@ -213,7 +224,7 @@ function checkAgentApks(report: Reporter): void {
     const apk = findAgentApk();
     const testApk = findAgentTestApk();
     if (apk && testApk) {
-      pass(report, 'android-agent', `Android agent ${dim(`(${apk.includes(path.join('@tapsmith', 'agent-android')) ? '@tapsmith/agent-android' : 'monorepo build'})`)}`);
+      pass(report, 'android-agent', 'Android agent', apk.includes(path.join('@tapsmith', 'agent-android')) ? '@tapsmith/agent-android' : 'monorepo build');
     } else if (apk || testApk) {
       warn(report, 'android-agent', 'Android agent incomplete — one APK found but not both', 'npm install @tapsmith/agent-android');
     } else {
@@ -229,7 +240,7 @@ function checkAppApk(report: Reporter, config: { apk?: string; rootDir?: string 
   try {
     const resolvedApk = path.resolve(config.rootDir ?? process.cwd(), config.apk);
     if (fs.existsSync(resolvedApk)) {
-      pass(report, 'app-apk', `App APK exists ${dim(`(${path.basename(resolvedApk)})`)}`);
+      pass(report, 'app-apk', 'App APK exists', path.basename(resolvedApk));
     } else {
       fail(report, 'app-apk', `App APK not found at ${resolvedApk}`, 'Build your app APK or fix the apk path in tapsmith.config.ts');
     }
@@ -298,6 +309,7 @@ export function scanAvdImageTags(avdHome?: string): AvdImageInfo[] {
 export interface AvdImageSummary {
   status: 'pass' | 'warn';
   label: string;
+  detail?: string;
   fix?: string;
 }
 
@@ -357,7 +369,8 @@ export function summarizeAvdImages(avds: AvdImageInfo[], configuredAvd?: string 
     const tags = configured.map((a) => a.tagId).filter((t, i, arr) => arr.indexOf(t) === i).join(', ');
     return {
       status: 'pass',
-      label: `Configured AVD${configuredNames.length === 1 ? '' : 's'} ${configuredNames.join(', ')} support${configuredNames.length === 1 ? 's' : ''} HTTPS capture ${dim(`(${tags}${context})`)}`,
+      label: `Configured AVD${configuredNames.length === 1 ? '' : 's'} ${configuredNames.join(', ')} support${configuredNames.length === 1 ? 's' : ''} HTTPS capture`,
+      detail: `${tags}${context}`,
     };
   }
 
@@ -366,7 +379,8 @@ export function summarizeAvdImages(avds: AvdImageInfo[], configuredAvd?: string 
     const context = capable > 0 ? `; ${capable} other AVD${capable === 1 ? ' is' : 's are'} capture-capable` : '';
     return {
       status: 'warn',
-      label: `${playStore.length} of ${avds.length} AVD${avds.length === 1 ? '' : 's'} use${playStore.length === 1 ? 's' : ''} a Google Play system image — no adb root, so HTTPS traffic will not be captured ${dim(`(${playStore.map((a) => a.name).join(', ')}${context})`)}`,
+      label: `${playStore.length} of ${avds.length} AVD${avds.length === 1 ? '' : 's'} use${playStore.length === 1 ? 's' : ''} a Google Play system image — no adb root, so HTTPS traffic will not be captured`,
+      detail: `${playStore.map((a) => a.name).join(', ')}${context}`,
       fix: `Recreate with a Google APIs image — run: ${playStore.map(recreateCommand).join(' && ')}`,
     };
   }
@@ -375,7 +389,7 @@ export function summarizeAvdImages(avds: AvdImageInfo[], configuredAvd?: string 
   const detail = unreadable.length > 0
     ? `${avds.length - unreadable.length} of ${avds.length} AVDs verified — could not read: ${unreadable.map((a) => a.name).join(', ')}`
     : `${avds.length} AVD${avds.length === 1 ? '' : 's'} checked`;
-  return { status: 'pass', label: `AVD system images support HTTPS capture ${dim(`(${detail})`)}` };
+  return { status: 'pass', label: 'AVD system images support HTTPS capture', detail };
 }
 
 function checkAvdImages(report: Reporter, configuredAvd?: string | string[]): void {
@@ -383,9 +397,9 @@ function checkAvdImages(report: Reporter, configuredAvd?: string | string[]): vo
     const summary = summarizeAvdImages(scanAvdImageTags(), configuredAvd);
     if (!summary) return;
     if (summary.status === 'pass') {
-      pass(report, 'avd-images', summary.label);
+      pass(report, 'avd-images', summary.label, summary.detail);
     } else {
-      warn(report, 'avd-images', summary.label, summary.fix);
+      warn(report, 'avd-images', summary.label, summary.fix, summary.detail);
     }
   } catch {
     warn(report, 'avd-images', 'Could not check AVD system images');
@@ -441,7 +455,7 @@ async function checkSimulatorXctestrun(report: Reporter): Promise<void> {
     if (installedSdk && xctestrunSdk && xctestrunSdk !== installedSdk) {
       warn(report, 'ios-sim-agent', `Simulator xctestrun built for iOS ${xctestrunSdk} but installed SDK is ${installedSdk} — will auto-build on first test run`);
     } else {
-      pass(report, 'ios-sim-agent', `Simulator xctestrun found ${dim(`(${source}${sdkLabel})`)}`);
+      pass(report, 'ios-sim-agent', 'Simulator xctestrun found', `${source}${sdkLabel}`);
     }
   } catch {
     warn(report, 'ios-sim-agent', 'Could not check for simulator xctestrun');
@@ -454,7 +468,7 @@ function checkMitmCa(report: Reporter): void {
   try {
     const caPath = path.join(os.homedir(), '.tapsmith', 'ca.pem');
     if (fs.existsSync(caPath)) {
-      pass(report, 'mitm-ca', `MITM CA exists ${dim(`(~/.tapsmith/ca.pem)`)}`);
+      pass(report, 'mitm-ca', 'MITM CA exists', '~/.tapsmith/ca.pem');
     } else {
       warn(report, 'mitm-ca', 'MITM CA not found at ~/.tapsmith/ca.pem — run `tapsmith ios network setup-simulator` to generate', 'Run: npx tapsmith ios network setup-simulator');
     }
@@ -525,7 +539,7 @@ export function parseNetworksetupProxy(stdout: string): { enabled: boolean; serv
 }
 
 export type SystemProxyAssessment =
-  | { status: 'pass'; label: string }
+  | { status: 'pass'; label: string; detail?: string }
   | { status: 'warn'; label: string; fix: string };
 
 /**
@@ -543,7 +557,7 @@ export function assessSystemProxy(
   if (loopback.length === 0) {
     if (enabled.length > 0) {
       const s = enabled[0];
-      return { status: 'pass', label: `macOS system proxy is ${s.server}:${s.port} on ${s.service} ${dim('(not set by Tapsmith; the iOS fallback will not overwrite it)')}` };
+      return { status: 'pass', label: `macOS system proxy is ${s.server}:${s.port} on ${s.service}`, detail: 'not set by Tapsmith; the iOS fallback will not overwrite it' };
     }
     return { status: 'pass', label: 'macOS system proxy not set by Tapsmith' };
   }
@@ -551,7 +565,7 @@ export function assessSystemProxy(
   const ours = (s: ServiceProxySetting): boolean =>
     !!record && s.server === '127.0.0.1' && record.service === s.service && record.port === s.port;
   if (record && ownerAlive && loopback.every(ours)) {
-    return { status: 'pass', label: `macOS system proxy in use by a running Tapsmith daemon ${dim(`(pid ${record.pid}, iOS fallback)`)}` };
+    return { status: 'pass', label: 'macOS system proxy in use by a running Tapsmith daemon', detail: `pid ${record.pid}, iOS fallback` };
   }
   // A live daemon's own entries are never reported or offered for switching
   // off — only the others, even when both kinds are present.
@@ -664,7 +678,7 @@ function checkSystemProxy(report: Reporter): void {
     }
     const record = readOwnerRecord();
     const result = assessSystemProxy(settings, record, record ? isLiveOwner(record) : false);
-    if (result.status === 'pass') pass(report, 'system-proxy', result.label);
+    if (result.status === 'pass') pass(report, 'system-proxy', result.label, result.detail);
     else warn(report, 'system-proxy', result.label, result.fix);
   } catch {
     warn(report, 'system-proxy', 'Could not check the macOS system proxy');
@@ -693,9 +707,43 @@ export function configLoadFailure(message: string): { message: string; hint: str
   };
 }
 
-export async function runDoctor(opts: { json: boolean; config?: string }): Promise<void> {
-  const jsonMode = opts.json;
-  const printing = !jsonMode;
+export interface DoctorDeps {
+  /** Runs every check, printing them unless `json`; swapped out by tests. */
+  report: (opts: { json: boolean; config?: string }) => Promise<DoctorJson>;
+  stdout: (text: string) => void;
+}
+
+/**
+ * Runs the command and returns the process exit code: 1 when a check fails.
+ * Under --json, stdout is the report, or — when doctor itself breaks — the
+ * shared error envelope, never nothing.
+ */
+export async function runDoctor(opts: { json: boolean; config?: string }, overrides: Partial<DoctorDeps> = {}): Promise<number> {
+  const deps: DoctorDeps = {
+    report: doctorReport,
+    stdout: (text) => { process.stdout.write(text); },
+    ...overrides,
+  };
+  // Text mode lets an unexpected error reach the CLI's fatal-error handler,
+  // stack and all.
+  if (!opts.json) return (await deps.report(opts)).ok ? 0 : 1;
+  let result: DoctorJson;
+  try {
+    result = await deps.report(opts);
+  } catch (err) {
+    deps.stdout(formatJson(jsonError(
+      'UNEXPECTED_ERROR',
+      `doctor could not finish: ${err instanceof Error ? err.message : String(err)}`,
+      { fix: 'To see the full error, run the same command again without --json' },
+    )));
+    return 1;
+  }
+  deps.stdout(formatJson(result));
+  return result.ok ? 0 : 1;
+}
+
+async function doctorReport(opts: { json: boolean; config?: string }): Promise<DoctorJson> {
+  const printing = !opts.json;
   const configFile = opts.config;
 
   const checks: CheckList = [];
@@ -810,11 +858,5 @@ export async function runDoctor(opts: { json: boolean; config?: string }): Promi
     connectedDevices: listConnectedAndroidDevices(),
   };
 
-  if (jsonMode) {
-    console.log(JSON.stringify(buildDoctorJson(checks, inventory), null, 2));
-  }
-
-  if (checks.some((c) => c.status === 'fail')) {
-    process.exitCode = 1;
-  }
+  return buildDoctorJson(checks, inventory);
 }

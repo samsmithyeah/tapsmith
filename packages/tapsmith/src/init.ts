@@ -6,6 +6,7 @@ import figlet from 'figlet';
 import { tryExec, scanEnvironment, type EnvScan, type SimulatorInfo } from './env-scan.js';
 import { detectAndroidPackage, detectIosBundleId } from './init-detect.js';
 import type { InitCommandOptions } from './cli-program.js';
+import { formatJson, jsonError } from './cli-json.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -447,6 +448,8 @@ test('app launches successfully', async ({ device }) => {
 
 // ─── Main wizard ───
 
+const UNEXPECTED_FIX = 'Run: npx tapsmith doctor --json to check the environment';
+
 export async function runInit(opts: InitCommandOptions): Promise<void> {
   const { initArgsFromOptions, resolveInitPlan, executeInitPlan, InitError } = await import('./init-noninteractive.js');
 
@@ -456,13 +459,24 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
   } catch (err) {
     const initErr = err instanceof InitError
       ? err
-      : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err));
+      : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), { fix: UNEXPECTED_FIX });
     emitInitError(initErr, opts.json);
     process.exit(1);
     return;
   }
 
   const nonInteractive = parsed.yes || parsed.anySetupFlag;
+
+  if (!nonInteractive && parsed.json && process.stdin.isTTY) {
+    // The wizard's prompts cannot be JSON, and --json promises nothing else on stdout.
+    const err = new InitError(
+      'JSON_REQUIRES_YES',
+      '--json needs a non-interactive run: the interactive wizard has no JSON output',
+      { fix: 'Run: npx tapsmith init --yes --json (or pass a setup flag such as --platform)' },
+    );
+    emitInitError(err, true);
+    process.exit(1);
+  }
 
   if (!nonInteractive && !process.stdin.isTTY) {
     const err = new InitError(
@@ -494,7 +508,7 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
       const result = executeInitPlan(plan, parsed);
 
       if (parsed.json) {
-        console.log(JSON.stringify(result, null, 2));
+        process.stdout.write(formatJson(result));
       } else {
         for (const f of result.filesCreated) console.log(`  ${green('✓')} ${f}`);
         for (const w of result.warnings) console.log(`  ${YELLOW}⚠${RESET} ${w}`);
@@ -506,7 +520,7 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
     } catch (err) {
       const initErr = err instanceof InitError
         ? err
-        : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err));
+        : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), { fix: UNEXPECTED_FIX });
       emitInitError(initErr, parsed.json);
       process.exit(1);
     }
@@ -529,7 +543,7 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
 
 function emitInitError(err: { code: string; message: string; fix?: string; candidates?: string[] }, json: boolean): void {
   if (json) {
-    console.log(JSON.stringify({ error: { code: err.code, message: err.message, fix: err.fix, candidates: err.candidates } }, null, 2));
+    process.stdout.write(formatJson(jsonError(err.code, err.message, { fix: err.fix, candidates: err.candidates })));
   } else {
     console.error(`  ${RED}✗${RESET} ${err.message}`);
     if (err.candidates) for (const c of err.candidates) console.error(`      - ${c}`);

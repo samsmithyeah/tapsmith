@@ -1589,7 +1589,7 @@ const cliHandlers: CliHandlers = {
   },
 
   listDevices: async (opts) => (await import('./list-devices.js')).runListDevices(opts),
-  iosSetupDevice: async () => (await import('./setup-ios-device.js')).runSetupIosDevice(),
+  iosSetupDevice: async (opts) => (await import('./setup-ios-device.js')).runSetupIosDevice(opts),
   iosBuildAgent: async (opts) => (await import('./build-ios-agent.js')).runBuildIosAgent(opts),
   iosNetworkSetupSimulator: async () => (await import('./setup-ios.js')).runSetupIos(),
   iosNetworkConfigure: async (opts) => (await import('./configure-ios-network.js')).runConfigureIosNetwork(opts),

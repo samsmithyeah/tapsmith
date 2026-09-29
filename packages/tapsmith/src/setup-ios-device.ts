@@ -24,6 +24,7 @@ import * as path from 'node:path';
 import { listPhysicalDevices, type PhysicalDeviceInfo } from './ios-devicectl.js';
 import { parseCodesignIdentities, readXcodeRegisteredTeams } from './build-ios-agent.js';
 import { getProfileExpiryInfo, formatExpiryWarning, EXPIRY_WARNING_DAYS } from './ios-profile-expiry.js';
+import { formatJson, jsonError, type JsonCheck } from './cli-json.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -433,32 +434,179 @@ export function networkCaptureNextSteps(): string[] {
   ];
 }
 
+// ─── JSON output ────────────────────────────────────────────────────────
+
+type DeviceConnectionCheck = ReturnType<typeof checkDeviceConnection>;
+
+/** One device in `ios setup-device --json`. */
+export interface SetupDeviceJsonDevice {
+  udid: string;
+  name: string;
+  /** Empty when devicectl does not report it. */
+  osVersion: string;
+  paired: boolean;
+  /** `enabled`, `disabled` or `unknown` (only iOS 16+ reports it). */
+  developerMode: string;
+  /** How CoreDevice reaches it: `wired` (USB), `localNetwork` (Wi-Fi), or `unknown` (not connected now). */
+  transport: string;
+  fix?: string;
+}
+
+export interface SetupDeviceJson {
+  ok: boolean;
+  checks: JsonCheck[];
+  devices: SetupDeviceJsonDevice[];
+}
+
+const UNPAIRED_FIX = 'Open Xcode → Window → Devices and Simulators, wait for the device to appear, then click "Use for Development".';
+
+function jsonCheck(id: string, result: { label: string; ok: boolean; detail?: string; fix?: string[]; advisory?: boolean }): JsonCheck {
+  const check: JsonCheck = {
+    id,
+    status: result.ok ? 'pass' : result.advisory === true ? 'warn' : 'fail',
+    label: result.label,
+  };
+  // An empty detail or fix is no detail or fix, as in doctor.
+  if (result.detail) check.detail = result.detail;
+  if (!result.ok && result.fix && result.fix.length > 0) check.fix = result.fix.join('\n');
+  return check;
+}
+
+/**
+ * The device row of the checklist. It fails when no device is listed and when
+ * a listed device is unpaired, so a failing `ok` always has a failing check
+ * to explain it.
+ */
+function deviceConnectedCheck(deviceCheck: DeviceConnectionCheck): JsonCheck {
+  const unpaired = deviceCheck.devices.filter((d) => !d.isPaired);
+  if (!deviceCheck.ok || unpaired.length === 0) return jsonCheck('device-connected', deviceCheck);
+  return {
+    id: 'device-connected',
+    status: 'fail',
+    label: deviceCheck.label,
+    detail: `not paired: ${unpaired.map((d) => `${d.name} (${d.udid})`).join(', ')}`,
+    fix: UNPAIRED_FIX,
+  };
+}
+
+/**
+ * Hard-fail criteria, shared by the text and JSON output: any non-advisory
+ * check failed, or no device listed, or a listed device is unpaired.
+ * Advisory checks (agent not yet built, profile near expiry, no passwordless
+ * sudo) print a ⚠ hint but don't block. We intentionally don't require
+ * `ddiServicesAvailable` either; it's an unreliable "is Xcode currently
+ * holding a DDI lease?" signal that false-alarms on healthy idle devices
+ * (Tapsmith's `startAgent` flow mounts the DDI on demand).
+ */
+function requiredChecksPass(results: CheckResult[], deviceCheck: DeviceConnectionCheck): boolean {
+  return results.every((r) => r.ok || r.advisory === true)
+    && deviceCheck.ok && deviceCheck.devices.every((d) => d.isPaired);
+}
+
+/** The `--json` report. Exported for the schema tests. */
+export function buildSetupDeviceJson(
+  results: Array<{ id: string; result: CheckResult }>,
+  deviceCheck: DeviceConnectionCheck,
+): SetupDeviceJson {
+  return {
+    ok: requiredChecksPass(results.map((r) => r.result), deviceCheck),
+    checks: [
+      ...results.map(({ id, result }) => jsonCheck(id, result)),
+      deviceConnectedCheck(deviceCheck),
+    ],
+    devices: deviceCheck.devices.map((d) => {
+      const entry: SetupDeviceJsonDevice = {
+        udid: d.udid,
+        name: d.name,
+        osVersion: d.osVersion,
+        paired: d.isPaired,
+        developerMode: d.developerModeStatus,
+        transport: d.transportType,
+      };
+      if (!d.isPaired) entry.fix = UNPAIRED_FIX;
+      return entry;
+    }),
+  };
+}
+
 // ─── Main entry point ───────────────────────────────────────────────────
 
-export async function runSetupIosDevice(): Promise<void> {
-  if (process.platform !== 'darwin') {
-    console.error(red('tapsmith ios setup-device is only supported on macOS.'));
-    process.exit(1);
+export interface SetupDeviceDeps {
+  platform: NodeJS.Platform;
+  /** The host checks, each with its stable JSON id, in display order. */
+  hostChecks: () => Array<{ id: string; result: CheckResult }>;
+  deviceCheck: () => DeviceConnectionCheck;
+  stdout: (text: string) => void;
+  stderr: (text: string) => void;
+}
+
+function runHostChecks(): Array<{ id: string; result: CheckResult }> {
+  return [
+    { id: 'xcode-clt', result: checkXcodeCommandLineTools() },
+    { id: 'devicectl', result: checkDevicectl() },
+    { id: 'iproxy', result: checkIproxy() },
+    { id: 'signing', result: checkSigningIdentities() },
+    { id: 'sudo-ddi-mount', result: checkSudoTruePasswordless() },
+    { id: 'ios-agent-runner', result: checkIosAgentBuilt() },
+    { id: 'profile-expiry', result: checkProfileExpiry() },
+  ];
+}
+
+const MACOS_ONLY = 'tapsmith ios setup-device is only supported on macOS.';
+
+/** Runs the command and returns the process exit code. */
+export async function runSetupIosDevice(opts: { json: boolean }, overrides: Partial<SetupDeviceDeps> = {}): Promise<number> {
+  const deps: SetupDeviceDeps = {
+    platform: process.platform,
+    hostChecks: runHostChecks,
+    deviceCheck: checkDeviceConnection,
+    stdout: (text) => { process.stdout.write(text); },
+    stderr: (text) => { process.stderr.write(text); },
+    ...overrides,
+  };
+
+  if (deps.platform !== 'darwin') {
+    if (opts.json) {
+      deps.stdout(formatJson(jsonError('UNSUPPORTED_PLATFORM', MACOS_ONLY, {
+        fix: 'Run it on the Mac the iPhone or iPad is plugged into',
+      })));
+    } else {
+      deps.stderr(red(MACOS_ONLY) + '\n');
+    }
+    return 1;
   }
 
+  if (opts.json) {
+    let report: SetupDeviceJson;
+    try {
+      report = buildSetupDeviceJson(deps.hostChecks(), deps.deviceCheck());
+    } catch (err) {
+      deps.stdout(formatJson(jsonError(
+        'UNEXPECTED_ERROR',
+        `ios setup-device could not finish: ${err instanceof Error ? err.message : String(err)}`,
+        { fix: 'To see the full error, run the same command again without --json' },
+      )));
+      return 1;
+    }
+    deps.stdout(formatJson(report));
+    return report.ok ? 0 : 1;
+  }
+
+  return printSetupIosDevice(deps);
+}
+
+function printSetupIosDevice(deps: SetupDeviceDeps): number {
   console.log(bold('Tapsmith physical iOS device setup'));
   console.log(dim('Verifying prerequisites for running tests against a real iPhone/iPad…'));
   console.log();
 
   console.log(bold('Prerequisites'));
-  const results: CheckResult[] = [];
-  results.push(checkXcodeCommandLineTools());
-  results.push(checkDevicectl());
-  results.push(checkIproxy());
-  results.push(checkSigningIdentities());
-  results.push(checkSudoTruePasswordless());
-  results.push(checkIosAgentBuilt());
-  results.push(checkProfileExpiry());
+  const results = deps.hostChecks().map((c) => c.result);
   for (const r of results) printCheck(r);
   console.log();
 
   console.log(bold('Devices'));
-  const deviceCheck = checkDeviceConnection();
+  const deviceCheck = deps.deviceCheck();
   if (!deviceCheck.ok) {
     console.log(`  ${red('✗')} ${deviceCheck.label}`);
     if (deviceCheck.fix) {
@@ -469,22 +617,11 @@ export async function runSetupIosDevice(): Promise<void> {
   }
   console.log();
 
-  // Hard-fail criteria: any non-advisory check failed, or no device paired.
-  // Advisory checks (firewall stealth mode, agent not yet built) print a
-  // ⚠ hint but don't block — the user can address them at their own pace.
-  // We intentionally don't require `ddiServicesAvailable` either; it's an
-  // unreliable "is Xcode currently holding a DDI lease?" signal that
-  // false-alarms on healthy idle devices (Tapsmith's `startAgent` flow mounts
-  // the DDI on demand).
-  const hardFailures = results.filter((r) => !r.ok && r.advisory !== true);
-  const hardOk = hardFailures.length === 0 && deviceCheck.ok
-    && deviceCheck.devices.every((d) => d.isPaired);
-
-  if (!hardOk) {
+  if (!requiredChecksPass(results, deviceCheck)) {
     console.log(red('✗ Some checks failed. Address the issues above and re-run.'));
     console.log();
     for (const line of networkCaptureNextSteps()) console.log(line);
-    process.exit(1);
+    return 1;
   }
 
   // Happy path — summarise what's verified vs. what the user still has to
@@ -524,4 +661,5 @@ export async function runSetupIosDevice(): Promise<void> {
   console.log(`  ${dim('2.')} ${bold('tapsmith test --config <your-config>')}`);
   console.log();
   for (const line of networkCaptureNextSteps()) console.log(line);
+  return 0;
 }

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport, runVerify } from '../verify.js';
+import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport, runVerify, stderrTail } from '../verify.js';
 
 describe('pickVerifyTarget()', () => {
   it('prefers example.test.ts', () => {
@@ -37,6 +37,13 @@ describe('summarizeVerifyReport()', () => {
     const summary = summarizeVerifyReport(report);
     expect(summary).toMatchObject({ ok: false, passed: 1, failed: 1, skipped: 0, duration: 4200 });
     expect(summary.failures).toEqual([{ fullName: 'b', error: 'boom', screenshotPath: '/s.png' }]);
+  });
+
+  it('has exactly the documented --json keys (PILOT-270)', () => {
+    // A public contract (docs/api-reference.md, CLI → JSON output); runVerify adds testFile.
+    const summary = summarizeVerifyReport(report);
+    expect(Object.keys(summary)).toEqual(['ok', 'passed', 'failed', 'skipped', 'duration', 'failures']);
+    expect(Object.keys(JSON.parse(JSON.stringify(summary.failures[0])))).toEqual(['fullName', 'error', 'screenshotPath']);
   });
 
   it('reports ok on all-pass', () => {
@@ -86,7 +93,7 @@ describe('runVerify() with a config that fails to load', () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-verify-cfg-')));
     const cwd = process.cwd();
     const exitCode = process.exitCode;
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const log = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {
       const file = path.join(dir, 'tapsmith.config.mjs');
       fs.writeFileSync(file, 'throw new Error("boom")\n');
@@ -96,11 +103,22 @@ describe('runVerify() with a config that fails to load', () => {
       expect(out.error.code).toBe('CONFIG_ERROR');
       expect(out.error.message).toContain(`Failed to load config file ${file}: boom`);
       expect(out.error.fix).not.toMatch(/init/);
+      expect(Object.keys(out.error)).toEqual(['code', 'message', 'fix']);
     } finally {
       log.mockRestore();
       process.chdir(cwd);
       process.exitCode = exitCode;
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe('stderrTail()', () => {
+  it('strips ANSI codes before cutting, so no half escape sequence is left', () => {
+    const stderr = '\x1b[31mFatal';
+    // Cutting the raw text to 7 characters would leave "1mFatal".
+    expect(stderr.slice(-7)).toBe('1mFatal');
+    expect(stderrTail(stderr, 7)).toBe('Fatal');
   });
 });

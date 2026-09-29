@@ -2387,11 +2387,82 @@ could run a different config than the one meant.
 A usage error (unknown command or flag, missing or invalid value) prints one line naming the problem and the
 command's `--help`, and exits with code 1. An unknown command suggests the nearest one
 (`unknown command 'tset'` / `Did you mean test?`), even when `--help` is also given. Commands with a `--json`
-mode (`init`, `verify`, `doctor`, `list-devices`, `telemetry`) report usage errors under `--json` as JSON on
-stdout — `{ "error": { "code", "message", "fix" } }`, with `code` `BAD_ARGS`, or for `init` `UNKNOWN_FLAG` /
-`MISSING_FLAG_VALUE` like its other errors. `list-devices` keeps the shape of its other errors,
-`{ "error": "<message>" }`. `mcp-server` keeps stdout for the protocol and reports usage errors
-on stderr.
+mode (`init`, `verify`, `doctor`, `list-devices`, `telemetry`, `ios setup-device`) report usage errors under
+`--json` as the [JSON error envelope](#json-output---json) on stdout, with `code` `BAD_ARGS`, or for `init`
+`UNKNOWN_FLAG` / `MISSING_FLAG_VALUE` like its other errors. `mcp-server` keeps stdout for the protocol and
+reports usage errors on stderr.
+
+### JSON output (`--json`)
+
+`init`, `verify`, `doctor`, `list-devices`, `telemetry` and `ios setup-device` take `--json`, for scripts and
+AI agents. The shapes below are a contract for scripts to rely on: new keys may be added, but renaming or
+removing one, or changing what it means, is a breaking change.
+
+- **stdout holds exactly one JSON document**, and nothing else from Tapsmith: no banner, no progress, no
+  ANSI codes. Two things are outside that promise: `--help` still prints help, and code in your config file
+  that writes to stdout (a top-level `console.log`) still lands there, since `doctor`, `verify` and `telemetry`
+  load the config. A command killed by a signal (Ctrl-C, a CI cancel) may print nothing. `verify` does not
+  handle interrupts reliably yet: depending on which processes the signal reaches and when, an interrupted
+  run reports `RUN_FAILED` (exit 1), exits 130 with no output, or runs to completion.
+- **When the command could not do its job**, the document is the error envelope and the exit code is 1:
+
+  ```json
+  { "error": { "code": "DAEMON_NOT_FOUND", "message": "…", "fix": "…" } }
+  ```
+
+  `code` is a stable `SCREAMING_SNAKE` identifier (table below), `message` a description for a person (it can
+  span lines: `verify`'s `RUN_FAILED` includes the end of the run's stderr), `fix` what to do about it, and
+  `candidates` (init only) the choices that made it undecidable.
+- **Otherwise** the document is the command's result, which never has a top-level `error` key — so
+  `"error" in result` tells the two apart. A result can still mean failure: `doctor` with a failing check and
+  `verify` with a failing test exit 1 and print their result with `"ok": false`.
+- **Optional keys are left out** when they have no value, never set to `null` (except `telemetry`'s
+  `configPath`, which is `null` when no config was loaded: none was found, or it failed to load, which
+  `configConsulted: false` tells apart).
+
+| Command | Error codes |
+|---|---|
+| every command above | `BAD_ARGS` (a usage error), `UNEXPECTED_ERROR` (a bug or an environment failure the command did not anticipate; `init` and `verify` included) |
+| `init` | `UNKNOWN_FLAG`, `MISSING_FLAG_VALUE`, `INVALID_PLATFORM`, `INVALID_DEVICE_TYPE`, `NO_PLATFORM`, `NO_APK`, `AMBIGUOUS_APK`, `NO_PACKAGE`, `NO_IOS_APP`, `AMBIGUOUS_IOS_APP`, `NO_BUNDLE_ID`, `IOS_REQUIRES_MACOS`, `IOS_PHYSICAL_INTERACTIVE_ONLY`, `CONFIG_EXISTS`, `NON_INTERACTIVE_TTY` (no terminal and no `--yes`), `JSON_REQUIRES_YES` (`--json` in a terminal without `--yes` or a setup flag: the wizard has no JSON output) |
+| `verify` | `NO_CONFIG`, `CONFIG_ERROR`, `RUN_FAILED`, `PARSE_FAILED` |
+| `doctor` | none of its own: a check that cannot run is reported in the result, usually as a `warn` (`Could not check …`) |
+| `list-devices` | `DAEMON_NOT_FOUND`, `DAEMON_START_FAILED`, `LIST_DEVICES_FAILED` |
+| `telemetry` | `TELEMETRY_WRITE_FAILED` (`enable` / `disable` could not write `~/.tapsmith/telemetry.json`) |
+| `ios setup-device` | `UNSUPPORTED_PLATFORM` (not macOS) |
+
+The results:
+
+- **`init --yes --json`**: `{ configPath, filesCreated, warnings, nextSteps }` — the config file written, every
+  file created, warnings (strings) and next steps (strings).
+- **`verify --json`**: `{ ok, passed, failed, skipped, duration, failures, testFile }` — counts, `duration` in
+  milliseconds, `failures` as `{ fullName, error, screenshotPath? }`, and the test file run, relative to the
+  config's `rootDir`.
+- **`doctor --json`**: `{ ok, checks, inventory }` — `ok` is false when any check has `status` `fail`;
+  `checks` are health checks (below); `inventory` is `{ avds, simulators, connectedDevices }`: AVD names,
+  simulators as `{ name, udid, state, runtime }`, and connected Android devices as `{ serial, state }`.
+- **`ios setup-device --json`**: `{ ok, checks, devices }` — `ok` is the same verdict as the exit code;
+  `checks` are health checks (below), ending with `device-connected`, which fails when no device is listed or
+  a listed device is unpaired, so `ok` is false exactly when some check fails; `devices` are the devices `xcrun
+  devicectl` lists, as `{ udid, name, osVersion, paired, developerMode, transport, fix? }`, where `osVersion`
+  is empty when devicectl does not report it, `developerMode` is `enabled`, `disabled` or `unknown`,
+  `transport` is `wired`, `localNetwork` or `unknown` (not connected now), and `fix` is set on an unpaired
+  device. `developerMode` and `transport` pass through what devicectl reports, so treat a value not listed
+  here as unknown.
+- **`list-devices --json`**: `{ devices }`, each `{ ready, platform, serial, name, osLabel, blockers }` —
+  `platform` is `android`, `android-emu`, `ios-sim` or `ios-device`; `osLabel` is like `iOS 18.1` or empty
+  when unknown; `blockers` are the fixes that would make it ready, empty when `ready`.
+- **`telemetry --json`** (every action): `{ enabled, reason?, debug, stateFile, anonymousId?, endpoint,
+  configPath, configConsulted, docs }` — `reason` is `env`, `config` or `machine` when disabled; see
+  [Telemetry](telemetry.md).
+
+A health check is `{ id, status, label, detail?, fix? }`. `id` is stable — match on it, not on `label`, which
+can hold values (`Node.js 22.1.0`) and whose wording may change. `status` is `pass`, `warn` (not blocking) or
+`fail`. `detail` is extra context (a path, where something was found, device names), which `doctor`'s text
+output prints dimmed after the label; `fix` says how to resolve a `warn` or `fail` and may span several lines. `doctor`'s ids include `node`, `daemon`, `config`, `config-load`, `adb`, `android-home`,
+`android-devices`, `android-agent`, `app-apk`, `avd-images`, `xcode`, `simctl`, `ios-sim-agent`, `mitm-ca`,
+`mitmproxy`, `network-extension` and `system-proxy`, each only where it applies; `ios setup-device`'s are
+`xcode-clt`, `devicectl`, `iproxy`, `signing`, `sudo-ddi-mount`, `ios-agent-runner`, `profile-expiry` and
+`device-connected`.
 
 ### `tapsmith test [files...]`
 
@@ -2596,7 +2667,7 @@ Pass `--yes` or any setup flag below (every flag but `--json`) to run non-intera
 | `--no-example-test` | Skip scaffolding `tests/example.test.ts` |
 | `--no-agents-md` | Skip scaffolding the `AGENTS.md` section |
 | `--force` | Overwrite an existing `tapsmith.config.*` |
-| `--json` | Machine-readable output, on success and on errors (`{ "error": { "code", "message", "fix", "candidates" } }`) |
+| `--json` | Machine-readable output, on success and on errors (see [JSON output](#json-output---json)); needs `--yes` or a setup flag |
 
 ```bash
 npx tapsmith init                                  # interactive wizard
@@ -2610,7 +2681,7 @@ See [Using Tapsmith with AI coding agents](agents.md) for the non-interactive se
 
 Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, config file, ADB (Android), connected devices, agent APKs, AVD system image compatibility, Xcode (iOS), simulators, and network capture dependencies. Each check prints `✓`, `⚠` (warning) or `✗` (error); most warnings and errors are followed by a `↳` line with the fix, often the exact command to run. Exits with code 0 unless a check is an error.
 
-`--json` prints the checks (with a `fix` wherever the text output has one) and the device inventory (AVDs, simulators, connected devices) as JSON. `-c` / `--config` loads a specific config file for the checks that read the config (AVDs, app paths); the "Config file found" line itself only looks for `tapsmith.config.ts` or `.mjs` in the current directory.
+`--json` prints `{ ok, checks, inventory }`: the checks (with a `fix` wherever the text output has one) and the device inventory (AVDs, simulators, connected devices), described under [JSON output](#json-output---json). `-c` / `--config` loads a specific config file for the checks that read the config (AVDs, app paths); the "Config file found" line itself only looks for `tapsmith.config.ts` or `.mjs` in the current directory.
 
 ```bash
 npx tapsmith doctor
@@ -2621,7 +2692,7 @@ npx tapsmith doctor --json -c tapsmith.config.ci.mjs   # machine-readable, again
 
 Prove the setup works end to end: runs one test file through the real `tapsmith test` path (daemon, device or emulator launch, app install) and reports whether it passed. It picks `example.test.ts` if the project has one, otherwise the first test file; a project with no tests yet gets a throwaway smoke test, removed afterwards. Exits 1 when the run fails, when there is no `tapsmith.config.*` (unless `-c` names one), or when the config cannot be loaded.
 
-`--json` prints `{ ok, passed, failed, skipped, duration, failures, testFile }`, or an `{ "error": { "code", "message", "fix" } }` object. `-c` / `--config` uses a specific config file.
+`--json` prints `{ ok, passed, failed, skipped, duration, failures, testFile }`, or the [JSON error envelope](#json-output---json). `-c` / `--config` uses a specific config file.
 
 ```bash
 npx tapsmith verify
@@ -2630,7 +2701,7 @@ npx tapsmith verify --json
 
 ### `tapsmith telemetry [status|enable|disable] [--json]`
 
-Show or switch the anonymous usage telemetry described in [Telemetry](telemetry.md). `status` (the default) says whether this process would report and, if not, which switch decided it: the environment (`TAPSMITH_TELEMETRY`, `DO_NOT_TRACK`), the project config (`telemetry: false`), or the machine-wide switch. `disable` turns it off for every project on this machine by writing to `~/.tapsmith/telemetry.json`; `enable` turns it back on (it cannot override the environment or a config opt-out). `--json` emits the status object for scripting. Pass `-c <file>` to consult a specific config.
+Show or switch the anonymous usage telemetry described in [Telemetry](telemetry.md). `status` (the default) says whether this process would report and, if not, which switch decided it: the environment (`TAPSMITH_TELEMETRY`, `DO_NOT_TRACK`), the project config (`telemetry: false`), or the machine-wide switch. `disable` turns it off for every project on this machine by writing to `~/.tapsmith/telemetry.json`; `enable` turns it back on (it cannot override the environment or a config opt-out). `--json` emits the status object for scripting (see [JSON output](#json-output---json)). Pass `-c <file>` to consult a specific config.
 
 ```bash
 npx tapsmith telemetry            # status
@@ -2664,7 +2735,7 @@ npx tapsmith create-avd --install-tools         # non-interactive bootstrap (CI)
 
 ### `tapsmith list-devices [--json]`
 
-Print a table of every device Tapsmith can target: Android (ADB), iOS simulators (simctl), and iOS physical devices (devicectl). Each row shows a one-line status (`Ready` or an imperative fix). `--json` emits machine-readable JSON.
+Print a table of every device Tapsmith can target: Android (ADB), iOS simulators (simctl), and iOS physical devices (devicectl). Each row shows a one-line status (`Ready` or an imperative fix). `--json` prints `{ devices }`, or the [JSON error envelope](#json-output---json) when the daemon cannot be started or cannot list devices.
 
 ```bash
 npx tapsmith list-devices
@@ -2789,7 +2860,7 @@ were removed without aliases; they now fail as unknown commands.
 | `tapsmith refresh-ios-network <udid>` | `tapsmith ios network configure <udid> --refresh` |
 | `tapsmith verify-ios-network <udid>` | `tapsmith ios network verify <udid>` |
 
-#### `tapsmith ios setup-device`
+#### `tapsmith ios setup-device [--json]`
 
 Run the host-side preflight for physical iOS devices (macOS only). Takes no
 arguments: it checks the Mac, then every device `xcrun devicectl` lists. Host checks: Xcode
@@ -2810,6 +2881,8 @@ required checks pass, it ends with the steps it cannot check from the Mac
 (trusting the developer certificate, turning off Auto-Lock). Either way it
 ends by pointing at network capture: `tapsmith ios network configure <udid>`
 for the device, `tapsmith ios network setup-simulator` for a simulator.
+`--json` prints the same checks and the listed devices as `{ ok, checks, devices }`
+(see [JSON output](#json-output---json)), with the same exit code.
 
 #### `tapsmith ios build-agent [--team-id <id>] [--cwd <path>] [--derived-data-path <path>] [-v]`
 

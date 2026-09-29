@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { formatJson, jsonError, stripAnsi } from './cli-json.js';
 
 // ─── Pure helpers (unit-tested) ───
 
@@ -95,11 +96,19 @@ export function cleanupVerifySmokeTest(scaffolded: ScaffoldedVerifyTest | undefi
   }
 }
 
+/**
+ * The end of the test run's stderr, for RUN_FAILED. ANSI codes are stripped
+ * before cutting, so the cut never leaves half an escape sequence behind.
+ */
+export function stderrTail(stderr: string, max = 2000): string {
+  return stripAnsi(stderr).slice(-max);
+}
+
 // ─── Command entry ───
 
 function emitError(json: boolean, code: string, message: string, fix?: string): void {
   if (json) {
-    console.log(JSON.stringify({ error: { code, message, fix } }, null, 2));
+    process.stdout.write(formatJson(jsonError(code, message, { fix })));
   } else {
     console.error(`✗ ${message}`);
     if (fix) console.error(`→ ${fix}`);
@@ -188,7 +197,7 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
         const reason = child.error
           ? `Failed to execute test process: ${child.error.message}`
           : `Test run produced no results (exit code ${child.status ?? 'unknown'})`;
-        const stderr = child.stderr ? child.stderr.toString().slice(-2000) : undefined;
+        const stderr = child.stderr ? stderrTail(child.stderr.toString()) : undefined;
         emitError(args.json, 'RUN_FAILED',
           `${reason}${stderr ? `: ${stderr}` : ''}`,
           'Run: npx tapsmith doctor --json to diagnose the environment');
@@ -207,7 +216,7 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
       const summary = summarizeVerifyReport(report);
 
       if (args.json) {
-        console.log(JSON.stringify({ ...summary, testFile: path.relative(config.rootDir, target) }, null, 2));
+        process.stdout.write(formatJson({ ...summary, testFile: path.relative(config.rootDir, target) }));
       } else {
         console.log(summary.ok
           ? `✓ Setup verified: ${summary.passed} test(s) passed in ${(summary.duration / 1000).toFixed(1)}s`
@@ -217,11 +226,23 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
       if (!summary.ok) process.exitCode = 1;
     } finally {
       signals.forEach((sig) => process.off(sig, onSignal));
-      fs.rmSync(resultsFile, { force: true });
-      cleanupVerifySmokeTest(scaffolded, testDirCreated, testDir);
+      // Best effort, reported on stderr: the verdict is already on stdout, and a
+      // throw here would add a second document under --json.
+      // Each step on its own, so a results file that cannot be removed never
+      // leaves the scaffolded smoke test in the project.
+      const warnCleanup = (what: string, err: unknown): void => {
+        console.error(`⚠ Could not remove ${what}: ${err instanceof Error ? err.message : String(err)}`);
+      };
+      try { fs.rmSync(resultsFile, { force: true }); } catch (err) { warnCleanup(resultsFile, err); }
+      try {
+        cleanupVerifySmokeTest(scaffolded, testDirCreated, testDir);
+      } catch (err) {
+        warnCleanup(scaffolded ? `${scaffolded.tempDir} (the throwaway smoke test; remove it by hand)` : 'the smoke test', err);
+      }
     }
   } catch (err) {
     emitError(args.json, 'UNEXPECTED_ERROR',
-      `An unexpected error occurred during verification: ${err instanceof Error ? err.message : String(err)}`);
+      `An unexpected error occurred during verification: ${err instanceof Error ? err.message : String(err)}`,
+      'Run: npx tapsmith doctor --json to diagnose the environment');
   }
 }

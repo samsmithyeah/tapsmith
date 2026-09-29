@@ -11,6 +11,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadConfig, configPathOf, type TapsmithConfig } from './config.js';
 import type { TelemetryAction } from './cli-program.js';
+import { formatJson, jsonError } from './cli-json.js';
 import { telemetry as defaultTelemetry, TELEMETRY_DOCS_URL, type Telemetry, type TelemetryStatus } from './telemetry.js';
 
 export interface TelemetryCommandDeps {
@@ -103,8 +104,26 @@ function describe(view: ConfigView): string {
   return lines.join('\n') + '\n';
 }
 
-/** Runs the command and returns the process exit code. */
+/**
+ * Runs the command and returns the process exit code. Under --json an
+ * unexpected error is the shared error envelope on stdout, as for every
+ * other --json command; in text mode it reaches the CLI's fatal-error handler.
+ */
 export async function runTelemetryCommand(args: TelemetryCommandArgs, deps: TelemetryCommandDeps = {}): Promise<number> {
+  if (!args.json) return telemetryCommand(args, deps);
+  try {
+    return await telemetryCommand(args, deps);
+  } catch (err) {
+    (deps.stdout ?? ((text) => process.stdout.write(text)))(formatJson(jsonError(
+      'UNEXPECTED_ERROR',
+      `telemetry could not finish: ${err instanceof Error ? err.message : String(err)}`,
+      { fix: 'To see the full error, run the same command again without --json' },
+    )));
+    return 1;
+  }
+}
+
+async function telemetryCommand(args: TelemetryCommandArgs, deps: TelemetryCommandDeps): Promise<number> {
   const telemetry = deps.telemetry ?? defaultTelemetry;
   const stdout = deps.stdout ?? ((text) => process.stdout.write(text));
   const stderr = deps.stderr ?? ((text) => process.stderr.write(text));
@@ -114,15 +133,19 @@ export async function runTelemetryCommand(args: TelemetryCommandArgs, deps: Tele
     const enabling = args.action === 'enable';
     if (!telemetry.setMachineEnabled(enabling)) {
       const stateFile = telemetry.status(undefined).stateFile;
-      stderr(`Could not write ${tilde(stateFile)}. `
-        + (enabling ? 'Telemetry stays as it was.\n' : 'Set TAPSMITH_TELEMETRY=0 in your shell instead.\n'));
+      const message = `Could not write ${tilde(stateFile)}`;
+      const fix = enabling
+        ? 'Telemetry stays as it was; check that the file and its directory are writable'
+        : 'Set TAPSMITH_TELEMETRY=0 in your shell instead';
+      if (args.json) stdout(formatJson(jsonError('TELEMETRY_WRITE_FAILED', message, { fix })));
+      else stderr(`${message}. ${enabling ? 'Telemetry stays as it was.' : `${fix}.`}\n`);
       return 1;
     }
     // Fold the project config in, so `enable` under `telemetry: false` reports
     // the truth and the JSON shape matches `status` (PILOT-330 review).
     const view = await resolveConfigView(telemetry, load, args.config);
     if (args.json) {
-      stdout(JSON.stringify(jsonPayload(view), null, 2) + '\n');
+      stdout(formatJson(jsonPayload(view)));
       return 0;
     }
     if (enabling) {
@@ -141,7 +164,7 @@ export async function runTelemetryCommand(args: TelemetryCommandArgs, deps: Tele
   // status (the default)
   const view = await resolveConfigView(telemetry, load, args.config);
   if (args.json) {
-    stdout(JSON.stringify(jsonPayload(view), null, 2) + '\n');
+    stdout(formatJson(jsonPayload(view)));
   } else {
     stdout(describe(view));
   }

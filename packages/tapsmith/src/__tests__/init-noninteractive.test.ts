@@ -251,6 +251,8 @@ describe('executeInitPlan()', () => {
       expect(result.filesCreated).toEqual(expect.arrayContaining(['tapsmith.config.ts', 'tests/example.test.ts', 'AGENTS.md']));
       expect(result.configPath).toBe(path.join(tmp, 'tapsmith.config.ts'));
       expect(result.nextSteps.some((s) => s.includes('tapsmith verify'))).toBe(true);
+      // The init --yes --json result, a public contract (docs/api-reference.md, CLI → JSON output).
+      expect(Object.keys(result)).toEqual(['configPath', 'filesCreated', 'warnings', 'nextSteps']);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

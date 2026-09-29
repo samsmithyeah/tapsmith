@@ -25,6 +25,7 @@
 
 import { Argument, Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { DEFAULT_API_LEVEL, DEFAULT_DEVICE_PROFILE, defaultAbi } from './avd-defaults.js';
+import { formatJson, jsonError } from './cli-json.js';
 import { TELEMETRY_DOCS_URL } from './telemetry.js';
 import { TRACE_MODES, type TraceMode } from './trace/types.js';
 import { VIDEO_MODES, type VideoMode } from './video/types.js';
@@ -103,7 +104,7 @@ export interface CliHandlers {
   mergeReports(opts: { dir?: string; config?: string }): Promise<number | void>;
   listDevices(opts: { json: boolean }): Promise<number | void>;
   createAvd(opts: CreateAvdCommandOptions): Promise<number | void>;
-  iosSetupDevice(opts: Record<string, never>): Promise<number | void>;
+  iosSetupDevice(opts: { json: boolean }): Promise<number | void>;
   iosBuildAgent(opts: { teamId?: string; cwd?: string; derivedDataPath?: string; verbose: boolean }): Promise<number | void>;
   iosNetworkSetupSimulator(opts: Record<string, never>): Promise<number | void>;
   iosNetworkConfigure(opts: IosNetworkCommandOptions): Promise<number | void>;
@@ -286,7 +287,7 @@ device, then reports whether Tapsmith saw the request and could decrypt it.
 Run it after tapsmith ios network configure, before running tests.`;
 
 /** Commands whose `--json` output also carries usage errors. */
-const JSON_ERROR_COMMANDS = new Set(['init', 'verify', 'doctor', 'list-devices', 'telemetry']);
+const JSON_ERROR_COMMANDS = new Set(['init', 'verify', 'doctor', 'list-devices', 'telemetry', 'ios setup-device']);
 
 interface ParseState {
   /** The command being parsed, once known. */
@@ -499,7 +500,8 @@ function buildProgram(deps: RunCliDeps, io: CliIo, state: ParseState): Command {
   ios
     .command('setup-device')
     .description('Preflight checklist for physical iOS device testing')
-    .action(() => act('ios setup-device', handlers.iosSetupDevice)({}));
+    .addOption(jsonOption('Machine-readable report: the checks, with fixes, and the listed devices'))
+    .action((opts: { json: boolean }) => act('ios setup-device', handlers.iosSetupDevice)({ json: opts.json }));
 
   ios
     .command('build-agent')
@@ -760,7 +762,8 @@ function jsonErrorCode(command: string, commanderCode: string): string {
 /**
  * Parse `argv` (the arguments after `tapsmith`) and run the matching
  * handler. Resolves to the exit code: usage errors are reported and resolve
- * to 1; anything a handler throws propagates.
+ * to 1. Anything a handler throws propagates, except under --json, where it
+ * is printed as an UNEXPECTED_ERROR envelope and resolves to 1.
  */
 export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> {
   const io = deps.io ?? {
@@ -877,18 +880,20 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
     await program.parseAsync(args, { from: 'user' });
     return state.exitCode;
   } catch (err) {
-    if (!(err instanceof CommanderError)) throw err;
-    if (state.json && state.command === 'list-devices' && err.exitCode !== 0) {
-      // list-devices has always reported errors as { error: <message> }.
-      io.out(JSON.stringify({ error: state.jsonError ?? err.message }) + '\n');
-    } else if (state.json && state.command && err.exitCode !== 0) {
-      io.out(JSON.stringify({
-        error: {
-          code: jsonErrorCode(state.command, err.code),
-          message: state.jsonError ?? err.message,
-          fix: `Run: npx tapsmith ${state.command} --help`,
-        },
-      }, null, 2) + '\n');
+    if (!(err instanceof CommanderError)) {
+      // A handler that threw under --json (a module that failed to load, a
+      // bug past the command's own error handling) still owes stdout one JSON
+      // document. Text mode leaves it to the CLI's fatal-error handler.
+      if (!state.json || !state.command) throw err;
+      io.out(formatJson(jsonError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), {
+        fix: 'To see the full error, run the same command again without --json',
+      })));
+      return 1;
+    }
+    if (state.json && state.command && err.exitCode !== 0) {
+      io.out(formatJson(jsonError(jsonErrorCode(state.command, err.code), state.jsonError ?? err.message, {
+        fix: `Run: npx tapsmith ${state.command} --help`,
+      })));
     }
     return err.exitCode;
   }

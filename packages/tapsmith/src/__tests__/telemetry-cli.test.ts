@@ -195,6 +195,50 @@ describe('tapsmith telemetry enable / disable', () => {
     expect(h.errText()).toContain('Could not write');
     expect(h.errText()).toContain('TAPSMITH_TELEMETRY=0');
   });
+
+  it('--json reports a state file it cannot write as the shared error envelope on stdout (PILOT-270)', async () => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.writeFileSync(tempDir, 'a file where the directory should be');
+    const h = harness();
+    expect(await h.run(['disable', '--json'])).toBe(1);
+    expect(h.errText()).toBe('');
+    expect(JSON.parse(h.text())).toEqual({
+      error: { code: 'TELEMETRY_WRITE_FAILED', message: expect.stringContaining('Could not write'), fix: 'Set TAPSMITH_TELEMETRY=0 in your shell instead' },
+    });
+  });
+});
+
+describe('telemetry --json unexpected errors (PILOT-270)', () => {
+  it('prints UNEXPECTED_ERROR on stdout instead of nothing', async () => {
+    const h = harness();
+    h.telemetry.status = () => { throw new Error('state unreadable'); };
+    expect(await h.run(['status', '--json'])).toBe(1);
+    expect(JSON.parse(h.text())).toEqual({
+      error: { code: 'UNEXPECTED_ERROR', message: 'telemetry could not finish: state unreadable', fix: expect.stringContaining('without --json') },
+    });
+  });
+
+  it('text mode still throws, for the CLI\'s fatal-error handler', async () => {
+    const h = harness();
+    h.telemetry.status = () => { throw new Error('state unreadable'); };
+    await expect(h.run(['status'])).rejects.toThrow('state unreadable');
+  });
+});
+
+describe('telemetry --json schema (PILOT-270)', () => {
+  // A public contract (docs/api-reference.md, CLI → JSON output).
+  it('has exactly the documented keys; reason and anonymousId only when set', async () => {
+    let h = harness();
+    expect(await h.run(['status', '--json'])).toBe(0);
+    expect(Object.keys(JSON.parse(h.text())).sort()).toEqual(
+      ['configConsulted', 'configPath', 'debug', 'docs', 'enabled', 'endpoint', 'stateFile'],
+    );
+    h = harness({ env: { DO_NOT_TRACK: '1' } });
+    await h.run(['status', '--json']);
+    expect(Object.keys(JSON.parse(h.text())).sort()).toEqual(
+      ['configConsulted', 'configPath', 'debug', 'docs', 'enabled', 'endpoint', 'reason', 'stateFile'],
+    );
+  });
 });
 
 describe('argument handling', () => {

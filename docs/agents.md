@@ -24,8 +24,13 @@ npx tapsmith verify --json
 `init` also scaffolds an `AGENTS.md` section (fenced with `<!-- tapsmith:begin/end -->`)
 so the project's agent has durable instructions. Skip with `--no-agents-md`.
 
-All `--json` surfaces follow the same conventions: valid JSON on success and failure
-(`{"error":{"code","message","fix?","candidates?"}}`), exit code 0/1, no ANSI codes.
+All `--json` surfaces (`init`, `verify`, `doctor`, `list-devices`, `telemetry`,
+`ios setup-device`) follow the same conventions: one JSON document on stdout, on success
+and on failure (`{"error":{"code","message","fix?","candidates?"}}`), exit code 0/1, no
+ANSI codes. `init --json` needs `--yes` (or a setup flag): the wizard has no JSON output.
+The exceptions — a config file that itself prints to stdout, and interrupted runs (which
+may print nothing, and for `verify` may even finish normally) — and every schema and
+error code are in the [API reference](api-reference.md#json-output---json).
 
 ## init flags
 
