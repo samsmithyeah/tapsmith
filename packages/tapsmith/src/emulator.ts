@@ -649,14 +649,15 @@ function extractHierarchyXml(raw: string): string {
   return start >= 0 ? raw.slice(start) : '';
 }
 
+/** Patterns that strongly indicate a system ANR/crash dialog — no ambiguity. */
+const STRONG_DIALOG_PATTERNS = [
+  /isn(?:'|’|&apos;)t responding/,
+  /keeps stopping/,
+];
+
 export function detectBlockingSystemDialog(rawHierarchy: string): string | undefined {
   const hierarchy = rawHierarchy.toLowerCase();
-
-  // Patterns that strongly indicate a system ANR/crash dialog — no ambiguity
-  const strongPatterns = [
-    /isn(?:'|’|&apos;)t responding/,
-    /keeps stopping/,
-  ];
+  const strongPatterns = STRONG_DIALOG_PATTERNS;
 
   // Patterns that only indicate a system dialog when a strong pattern is also present.
   // "wait" and "close app" can appear in normal app UI, so we require them to
@@ -699,31 +700,52 @@ function blockingDialogTitle(rawHierarchy: string, patterns: RegExp[]): string |
 }
 
 /**
- * Package that owns the ANR / crash dialog on screen, via `dumpsys window`.
+ * True when a node drawn by the system (`package="android"`, which is how
+ * system_server's ANR and crash dialogs appear) carries the dialog phrase —
+ * as opposed to the app under test merely showing "… isn't responding" text.
+ */
+export function isSystemDrawnDialog(rawHierarchy: string): boolean {
+  for (const [node] of rawHierarchy.matchAll(/<node\b[^>]*>/g)) {
+    if (!node.includes('package="android"')) continue;
+    const text = node.match(/\btext="([^"]*)"/)?.[1];
+    if (text && STRONG_DIALOG_PATTERNS.some((p) => p.test(xmlUnescape(text).toLowerCase()))) return true;
+  }
+  return false;
+}
+
+/**
+ * Processes that own an ANR / crash dialog window, via `dumpsys window`.
  *
  * The dialog itself is drawn by system_server — every node in its hierarchy
  * says `package="android"` — so the dump cannot tell the launcher's ANR from
  * the app under test's. The framework titles the dialog's window
  * `Application Not Responding: <process>` / `Application Error: <process>`,
- * and that is the one place the owner is recorded. Undefined when adb fails or
- * no such window is listed.
+ * and that is the one place the owner is recorded. Every owner is returned, in
+ * the order listed: a thrashing emulator can show more than one such dialog,
+ * and the window list cannot say which one the hierarchy's title belongs to.
+ * Empty when adb fails or no such window is listed.
  */
-export function blockingDialogOwnerViaAdb(
+export function blockingDialogOwnersViaAdb(
   serial: string,
   exec: ExecFileSyncLike = execFileSync,
-): string | undefined {
+): string[] {
   try {
     const output = String(exec('adb', ['-s', serial, 'shell', 'dumpsys', 'window', 'windows'], {
       encoding: 'utf-8',
       timeout: 10_000,
+      // The full window dump can pass execFileSync's 1 MiB default.
+      maxBuffer: 32 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'],
     }));
-    const match = output.match(/Window\{[0-9a-f]+ u\d+ (?:Application Not Responding|Application Error): ([^\s}:]+)(?::[^\s}]*)?\}/);
+    const owners = new Set<string>();
     // The title names the process; a `:service` suffix is dropped so an app's
     // secondary process still reads as the app.
-    return match?.[1];
+    for (const match of output.matchAll(/Window\{[0-9a-f]+ u\d+ (?:Application Not Responding|Application Error): ([^\s}:]+)(?::[^\s}]*)?\}/g)) {
+      owners.add(match[1]);
+    }
+    return [...owners];
   } catch {
-    return undefined;
+    return [];
   }
 }
 
@@ -843,7 +865,7 @@ export function probeDeviceHealth(
       if (afterHierarchy) {
         const stillBlocked = detectBlockingSystemDialog(afterHierarchy);
         if (stillBlocked) {
-          const dialog = formatBlockingDialog(stillBlocked, blockingDialogOwnerViaAdb(serial, exec));
+          const dialog = formatBlockingDialog(stillBlocked, blockingDialogOwnersViaAdb(serial, exec)[0]);
           return { serial, healthy: false, reason: `blocking system dialog detected: ${dialog}` };
         }
       }

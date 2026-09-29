@@ -7,7 +7,8 @@ import {
   serialForPort,
   readUiHierarchyViaAdb,
   detectBlockingSystemDialog,
-  blockingDialogOwnerViaAdb,
+  blockingDialogOwnersViaAdb,
+  isSystemDrawnDialog,
   formatBlockingDialog,
   dismissSystemDialogsViaAdb,
   recordLaunchedEmulators,
@@ -198,7 +199,7 @@ describe('emulator utilities', () => {
     });
   });
 
-  describe('blockingDialogOwnerViaAdb', () => {
+  describe('blockingDialogOwnersViaAdb', () => {
     const windows = (title: string) =>
       `  Window #5 Window{4b77699 u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}:\n`
       + `  Window #6 Window{8667851 u0 ${title}}:\n`
@@ -208,27 +209,47 @@ describe('emulator utilities', () => {
       const exec = makeExec({
         'adb|-s|emulator-5554|shell|dumpsys|window|windows': windows('Application Not Responding: com.google.android.apps.nexuslauncher'),
       });
-      expect(blockingDialogOwnerViaAdb('emulator-5554', exec)).toBe('com.google.android.apps.nexuslauncher');
+      expect(blockingDialogOwnersViaAdb('emulator-5554', exec)).toEqual(['com.google.android.apps.nexuslauncher']);
     });
 
     it('reads the crash-dialog owner', () => {
       const exec = makeExec({
         'adb|-s|emulator-5554|shell|dumpsys|window|windows': windows('Application Error: com.example.app'),
       });
-      expect(blockingDialogOwnerViaAdb('emulator-5554', exec)).toBe('com.example.app');
+      expect(blockingDialogOwnersViaAdb('emulator-5554', exec)).toEqual(['com.example.app']);
       // A secondary process reads as its app.
-      expect(blockingDialogOwnerViaAdb('emulator-5554', makeExec({
+      expect(blockingDialogOwnersViaAdb('emulator-5554', makeExec({
         'adb|-s|emulator-5554|shell|dumpsys|window|windows': windows('Application Not Responding: com.example.app:remote'),
-      }))).toBe('com.example.app');
+      }))).toEqual(['com.example.app']);
     });
 
-    it('returns undefined when no dialog window is listed or adb fails', () => {
-      expect(blockingDialogOwnerViaAdb('emulator-5554', makeExec({
+    it('returns every owner when several dialogs are up', () => {
+      const exec = makeExec({
+        'adb|-s|emulator-5554|shell|dumpsys|window|windows':
+          windows('Application Not Responding: com.google.android.apps.nexuslauncher')
+          + windows('Application Error: com.example.app'),
+      });
+      expect(blockingDialogOwnersViaAdb('emulator-5554', exec))
+        .toEqual(['com.google.android.apps.nexuslauncher', 'com.example.app']);
+    });
+
+    it('returns nothing when no dialog window is listed or adb fails', () => {
+      expect(blockingDialogOwnersViaAdb('emulator-5554', makeExec({
         'adb|-s|emulator-5554|shell|dumpsys|window|windows': '  Window #1 Window{1 u0 StatusBar}:\n',
-      }))).toBeUndefined();
-      expect(blockingDialogOwnerViaAdb('emulator-5554', makeExec({
+      }))).toEqual([]);
+      expect(blockingDialogOwnersViaAdb('emulator-5554', makeExec({
         'adb|-s|emulator-5554|shell|dumpsys|window|windows': new Error('device offline'),
-      }))).toBeUndefined();
+      }))).toEqual([]);
+    });
+  });
+
+  describe('isSystemDrawnDialog', () => {
+    it('is true for the real system_server dialog', () => {
+      expect(isSystemDrawnDialog(LAUNCHER_ANR_FIXTURE)).toBe(true);
+    });
+
+    it('is false for the same phrase in the app\'s own UI', () => {
+      expect(isSystemDrawnDialog('<node package="com.example.app" text="The server isn&apos;t responding" />')).toBe(false);
     });
   });
 
