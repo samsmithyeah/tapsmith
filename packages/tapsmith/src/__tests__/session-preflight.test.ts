@@ -1396,6 +1396,34 @@ describe('session-preflight', () => {
       expect(ctx.device.pressBack).not.toHaveBeenCalled();
     });
 
+    it('never taps "Close app" on system_server\'s ANR, even when "Wait" is missing from the dump', async () => {
+      const ctx = withOwner('system');
+      const noWait = hierarchy(
+        '<hierarchy><node package="android" resource-id="android:id/alertTitle" text="Process system isn&apos;t responding" />'
+        + '<node package="android" resource-id="android:id/aerr_close" text="Close app" /></hierarchy>',
+      );
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValueOnce(noWait).mockResolvedValue(home);
+
+      await ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] });
+
+      expect(tapped(ctx)).toEqual([]);
+      expect(ctx.device.pressBack).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not take an empty or failed read after a tap as the dialog having left', async () => {
+      const ctx = withOwner(LAUNCHER);
+      vi.mocked(ctx.client.getUiHierarchy)
+        .mockResolvedValueOnce(launcherAnr)
+        .mockResolvedValueOnce(hierarchy('')) // agent could not read the screen
+        .mockRejectedValueOnce(new Error('Agent command timed out'))
+        .mockResolvedValueOnce(launcherAnr) // still leaving
+        .mockResolvedValue(home);
+
+      await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
+
+      expect(tapped(ctx)).toEqual(['id:Close app']);
+    });
+
     it('waits for a dismissed dialog to leave instead of counting it again', async () => {
       // On an overloaded emulator the dialog can linger past the tap; a
       // re-read must not count that as the dialog coming back.

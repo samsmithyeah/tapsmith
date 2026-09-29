@@ -1107,7 +1107,7 @@ async function clearBlockingDialog(
     const message = `The app under test is showing a system dialog: ${dialog}. `
       + 'It stopped responding or crashed. Check the app\'s logs (adb logcat) for the cause.';
     process.stderr.write(`[tapsmith] ${message} Closing it.\n`);
-    await dismissDialogOnce(ctx, hierarchyXml, true);
+    await dismissDialogOnce(ctx, hierarchyXml, CLOSE_FIRST_LABELS);
     throw new AppUnderTestDialogError(message);
   }
   if (owners.length === 0) {
@@ -1137,12 +1137,12 @@ async function clearBlockingDialog(
   // system restarts it clean, where "Wait" leaves it hung to re-ANR within
   // seconds. Never for system_server ("Process system isn't responding"):
   // killing it restarts the whole runtime, agent and app with it.
-  const closeFirst = !owners.includes(SYSTEM_SERVER_PROCESS);
+  const order = owners.includes(SYSTEM_SERVER_PROCESS) ? NEVER_CLOSE_LABELS : CLOSE_FIRST_LABELS;
   process.stderr.write(
     `[tapsmith] Dismissing system dialog ${dialog} `
     + `(${dialogs.dismissals}/${MAX_BLOCKING_DIALOG_DISMISSALS})\n`,
   );
-  await dismissDialogOnce(ctx, hierarchyXml, closeFirst);
+  await dismissDialogOnce(ctx, hierarchyXml, order);
   await waitForDialogGone(ctx, title);
   // No relaunch: another package's dialog leaves the app under test running
   // underneath, and a launch with the configured activity is `am start -S`,
@@ -1151,6 +1151,11 @@ async function clearBlockingDialog(
   // bring the app back to the front if it is not there.
   return true;
 }
+
+/** Dismissal order for a dialog whose process may be killed. */
+const CLOSE_FIRST_LABELS = ['Close app', ...SYSTEM_DIALOG_DISMISS_LABELS.filter((l) => l !== 'Close app')];
+/** Dismissal order that never kills the dialog's process (BACK when no other button). */
+const NEVER_CLOSE_LABELS = SYSTEM_DIALOG_DISMISS_LABELS.filter((l) => l !== 'Close app');
 
 /** system_server's process name in an ANR dialog's window title. */
 const SYSTEM_SERVER_PROCESS = 'system';
@@ -1165,11 +1170,8 @@ const SYSTEM_DIALOG_BUTTON_IDS: Partial<Record<string, string>> = {
 async function dismissDialogOnce(
   ctx: SessionPreflightContext,
   hierarchyXml: string,
-  closeFirst: boolean,
+  order: readonly string[],
 ): Promise<void> {
-  const order = closeFirst
-    ? ['Close app', ...SYSTEM_DIALOG_DISMISS_LABELS.filter((l) => l !== 'Close app')]
-    : SYSTEM_DIALOG_DISMISS_LABELS;
   // Only the dialog's own buttons: the app's nodes are in the dump underneath.
   // The ANR/crash buttons are tapped by their system resource id, which no app
   // control carries; `first()` because a thrashing emulator can stack two such
@@ -1224,9 +1226,10 @@ async function waitForDialogGone(ctx: SessionPreflightContext, title: string): P
   for (;;) {
     try {
       const { hierarchyXml } = await ctx.client.getUiHierarchy();
-      if (detectBlockingSystemDialog(hierarchyXml) !== title) return;
+      // An empty dump proves nothing: the agent failed to read the screen.
+      if (hierarchyXml.trim() && detectBlockingSystemDialog(hierarchyXml) !== title) return;
     } catch {
-      return;
+      // A failed read proves nothing either; keep polling to the deadline.
     }
     if (Date.now() >= deadline) return;
     await delay(HIERARCHY_POLL_INTERVAL_MS);
