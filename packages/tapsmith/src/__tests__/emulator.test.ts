@@ -494,6 +494,18 @@ describe('emulator utilities', () => {
       }
     });
 
+    it('falls back to ps when /proc is unavailable', async () => {
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', '--', ...emulatorLaunchArgs('Ps_AVD', 5584)], { stdio: 'ignore' });
+      try {
+        await new Promise((resolve) => child.once('spawn', resolve));
+        const argv = readProcessArgs(child.pid!, path.join(os.tmpdir(), 'no-such-proc'));
+        expect(argv).toBeDefined();
+        expect(isTapsmithLaunchedEmulator(argv!, { port: 5584, avd: 'Ps_AVD' })).toBe(true);
+      } finally {
+        child.kill();
+      }
+    });
+
     it('returns undefined for a process that does not exist', () => {
       expect(readProcessArgs(2 ** 22 + 12345)).toBeUndefined();
     });
@@ -521,6 +533,7 @@ describe('emulator utilities', () => {
       adb?: { serial: string, state: string }[]
       alive?: number[]
       argv?: Record<number, string[] | undefined>
+      listener?: Record<string, number | undefined>
       healthy?: boolean
     }) {
       const written: unknown[][] = [];
@@ -533,6 +546,7 @@ describe('emulator utilities', () => {
         listAdbDevices: () => opts.adb ?? [],
         isProcessAlive: (pid: number) => (opts.alive ?? []).includes(pid),
         readProcessArgs: (pid: number) => opts.argv?.[pid],
+        findEmulatorPid: (serial: string) => opts.listener?.[serial],
         probeDeviceHealth,
         killEmulator,
         killProcess,
@@ -555,7 +569,7 @@ describe('emulator utilities', () => {
         argv: { 7777: userArgv },
       });
       const result = reclaimOrphanedEmulators(h.deps);
-      expect(result).toEqual({ reusable: [], killed: [] });
+      expect(result).toEqual({ reusable: [], killed: [], undetermined: [] });
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.killProcess).not.toHaveBeenCalled();
       expect(h.written).toEqual([[]]);
@@ -563,7 +577,7 @@ describe('emulator utilities', () => {
 
     it('drops a dead entry whose serial is gone, killing nothing', () => {
       const h = harness({ entries: [entry({ pid: 999991 })] });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.written).toEqual([[]]);
     });
@@ -576,7 +590,7 @@ describe('emulator utilities', () => {
         argv: { 4242: ['/usr/bin/node', 'server.js'] },
         healthy: false,
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
       expect(h.killProcess).not.toHaveBeenCalled();
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.written).toEqual([[]]);
@@ -589,7 +603,7 @@ describe('emulator utilities', () => {
         alive: [4242],
         argv: { 4242: userArgv },
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
       expect(h.probeDeviceHealth).not.toHaveBeenCalled();
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.killProcess).not.toHaveBeenCalled();
@@ -604,7 +618,7 @@ describe('emulator utilities', () => {
         argv: {},
         healthy: false,
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: ['emulator-5554'] });
       expect(h.probeDeviceHealth).not.toHaveBeenCalled();
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.killProcess).not.toHaveBeenCalled();
@@ -618,7 +632,7 @@ describe('emulator utilities', () => {
         alive: [4242],
         argv: {},
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: ['emulator-5554'] });
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.killProcess).not.toHaveBeenCalled();
     });
@@ -631,7 +645,7 @@ describe('emulator utilities', () => {
         alive: [4242],
         argv: { 4242: tapsmithArgv() },
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: ['emulator-5554'], killed: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: ['emulator-5554'], killed: [], undetermined: [] });
       expect(h.written).toEqual([[e]]);
       expect(h.killEmulator).not.toHaveBeenCalled();
     });
@@ -642,12 +656,27 @@ describe('emulator utilities', () => {
         adb: [{ serial: 'emulator-5554', state: 'device' }],
         alive: [4242],
         argv: { 4242: tapsmithArgv() },
+        listener: { 'emulator-5554': 4242 },
         healthy: false,
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: ['emulator-5554'] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: ['emulator-5554'], undetermined: [] });
       expect(h.killEmulator).toHaveBeenCalledWith('emulator-5554');
       expect(h.killProcess).toHaveBeenCalledWith(4242);
       expect(h.written).toEqual([[]]);
+    });
+
+    it('signals only its own PID when another process holds the console port', () => {
+      const h = harness({
+        entries: [entry()],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+        listener: { 'emulator-5554': 7777 },
+        healthy: false,
+      });
+      expect(reclaimOrphanedEmulators(h.deps).killed).toEqual(['emulator-5554']);
+      expect(h.killProcess).toHaveBeenCalledWith(4242);
+      expect(h.killEmulator).not.toHaveBeenCalled();
     });
 
     it('kills an unresponsive emulator it launched by PID when adb has lost it', () => {
@@ -656,7 +685,7 @@ describe('emulator utilities', () => {
         alive: [4242],
         argv: { 4242: tapsmithArgv() },
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: ['emulator-5554'] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: ['emulator-5554'], undetermined: [] });
       expect(h.killProcess).toHaveBeenCalledWith(4242);
       expect(h.killEmulator).not.toHaveBeenCalled();
     });
@@ -668,7 +697,7 @@ describe('emulator utilities', () => {
         alive: [4242],
         argv: { 4242: tapsmithArgv() },
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
       expect(h.killEmulator).not.toHaveBeenCalled();
     });
   });
@@ -779,6 +808,24 @@ describe('emulator utilities', () => {
       });
       expect(cleanupStaleEmulators('Pixel', { ...user.deps, readManifest: () => deadRecord }).killed).toEqual([]);
       expect(user.killEmulator).not.toHaveBeenCalled();
+    });
+
+    it('leaves a serial whose ownership phase 1 could not determine to phase 1', () => {
+      const record = [{ serial: 'emulator-5556', pid: 8888, avd: 'Pixel', port: 5556, launchedAt: '2026-09-28T10:00:00.000Z' }];
+      let reads = 0;
+      const h = harness({
+        adb: [{ serial: 'emulator-5556', state: 'offline' }],
+        listener: { 'emulator-5556': 8888 },
+      });
+      const result = cleanupStaleEmulators('Pixel', {
+        ...h.deps,
+        readManifest: () => record,
+        isProcessAlive: () => true,
+        // Unreadable in phase 1, readable (and Tapsmith's) if asked again.
+        readProcessArgs: () => (reads++ === 0 ? undefined : ['/sdk/qemu', ...emulatorLaunchArgs('Pixel', 5556)]),
+      });
+      expect(result.killed).toEqual([]);
+      expect(h.killEmulator).not.toHaveBeenCalled();
     });
 
     it('does not kill an offline transport with no process behind it', () => {

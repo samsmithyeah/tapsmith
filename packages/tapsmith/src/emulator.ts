@@ -102,6 +102,11 @@ export interface ReclaimResult {
   reusable: string[]
   /** Serials of emulators that were killed (unhealthy or dead process). */
   killed: string[]
+  /**
+   * Serials whose recorded PID is alive but whose command line could not be
+   * read: kept in the manifest, and neither reused nor killed this run.
+   */
+  undetermined: string[]
 }
 
 interface ReclaimDeps {
@@ -110,6 +115,7 @@ interface ReclaimDeps {
   listAdbDevices: () => AdbDeviceEntry[]
   isProcessAlive: (pid: number) => boolean
   readProcessArgs: (pid: number) => string[] | undefined
+  findEmulatorPid: (serial: string) => number | undefined
   probeDeviceHealth: (serial: string) => DeviceHealthResult
   killEmulator: (serial: string) => void
   killProcess: (pid: number) => void
@@ -122,6 +128,7 @@ function resolveReclaimDeps(deps: Partial<ReclaimDeps>): ReclaimDeps {
     listAdbDevices: deps.listAdbDevices ?? listAdbDevices,
     isProcessAlive: deps.isProcessAlive ?? isProcessAlive,
     readProcessArgs: deps.readProcessArgs ?? readProcessArgs,
+    findEmulatorPid: deps.findEmulatorPid ?? findEmulatorPid,
     probeDeviceHealth: deps.probeDeviceHealth ?? probeDeviceHealth,
     killEmulator: deps.killEmulator ?? killEmulator,
     killProcess: deps.killProcess ?? killProcess,
@@ -134,9 +141,9 @@ function resolveReclaimDeps(deps: Partial<ReclaimDeps>): ReclaimDeps {
  * `/proc/<pid>/cmdline` (NUL-separated, no tool needed); elsewhere — and in
  * a sandbox without /proc — `ps` is used, with `-ww` so it is not truncated.
  */
-export function readProcessArgs(pid: number): string[] | undefined {
+export function readProcessArgs(pid: number, procRoot = '/proc'): string[] | undefined {
   try {
-    const argv = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8').split('\0').filter((arg) => arg.length > 0);
+    const argv = fs.readFileSync(path.join(procRoot, String(pid), 'cmdline'), 'utf-8').split('\0').filter((arg) => arg.length > 0);
     if (argv.length > 0) return argv;
   } catch {
     // No /proc (macOS) or the process is gone — fall back to ps
@@ -181,7 +188,7 @@ function killProcess(pid: number): void {
 export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): ReclaimResult {
   const d = resolveReclaimDeps(deps);
   const entries = d.readManifest();
-  if (entries.length === 0) return { reusable: [], killed: [] };
+  if (entries.length === 0) return { reusable: [], killed: [], undetermined: [] };
 
   // Deduplicate entries by serial — the manifest can accumulate duplicates
   // if previous runs crashed between record and unrecord.
@@ -192,6 +199,7 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
 
   const reusable: string[] = [];
   const killed: string[] = [];
+  const undetermined: string[] = [];
   const surviving: EmulatorManifestEntry[] = [];
   const adbDevices = d.listAdbDevices();
   const adbDeviceMap = new Map(adbDevices.map((device) => [device.serial, device]));
@@ -205,6 +213,7 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
     // Keep the record so the next run can decide, but neither reuse nor kill.
     if (alive && argv === undefined) {
       surviving.push(entry);
+      undetermined.push(entry.serial);
       continue;
     }
 
@@ -241,8 +250,10 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
       );
     }
 
-    // Our PID holds this console port, so the serial is ours to kill too.
-    if (inAdb) {
+    // The argv says our PID asked for this console port, not that it holds
+    // it: only go through the serial (adb emu kill, and the port listener)
+    // when the listener really is our PID. Otherwise signal only our PID.
+    if (inAdb && d.findEmulatorPid(entry.serial) === entry.pid) {
       d.killEmulator(entry.serial);
     }
     // Kill by PID as well — more reliable than ADB when the device is unresponsive
@@ -252,7 +263,7 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
 
   // Write back only the surviving healthy entries
   d.writeManifest(surviving);
-  return { reusable, killed };
+  return { reusable, killed, undetermined };
 }
 
 type ExecFileSyncLike = typeof execFileSync
@@ -380,7 +391,6 @@ export function clearOfflineEmulatorTransports(): string[] {
 }
 
 interface CleanupDeps extends ReclaimDeps {
-  findEmulatorPid: (serial: string) => number | undefined
   resolveAvdName: (serial: string) => string | undefined
   waitForAdbSettle: (killedSerials: string[]) => void
 }
@@ -411,12 +421,11 @@ export function cleanupStaleEmulators(
 ): CleanupStaleResult {
   const d = resolveReclaimDeps(deps);
   const resolveAvdName = deps.resolveAvdName ?? getRunningAvdName;
-  const findPid = deps.findEmulatorPid ?? findEmulatorPid;
   const settle = deps.waitForAdbSettle ?? waitForAdbSettle;
 
   // Phase 1: manifest-based reclaim/kill (precise)
   const reclaim = reclaimOrphanedEmulators(d);
-  const handled = new Set([...reclaim.reusable, ...reclaim.killed]);
+  const handled = new Set([...reclaim.reusable, ...reclaim.killed, ...reclaim.undetermined]);
 
   // Phase 2: heuristic cleanup for Tapsmith emulators the manifest missed
   // (the manifest is not written atomically, so concurrent runs can lose an
@@ -446,7 +455,7 @@ export function cleanupStaleEmulators(
     if (!problem) continue;
 
     const port = Number(device.serial.slice('emulator-'.length));
-    const pid = findPid(device.serial);
+    const pid = d.findEmulatorPid(device.serial);
     const argv = pid !== undefined ? d.readProcessArgs(pid) : undefined;
     if (argv === undefined || !isTapsmithLaunchedEmulator(argv, { port, avd: targetAvd })) {
       process.stderr.write(
