@@ -283,6 +283,18 @@ export class ListDevicesError extends Error {
 const DAEMON_BIN_FIX = 'Reinstall tapsmith (npm install tapsmith), or set TAPSMITH_DAEMON_BIN to the tapsmith-core binary';
 
 /**
+ * SIGTERM the ephemeral daemon, and SIGKILL it if it has not exited within
+ * `graceMs` (a ListDevices call stuck on a hung adb): the CLI is held open for
+ * at most that long, and no daemon is left behind.
+ */
+function stopDaemon(child: ReturnType<typeof spawn>, graceMs = 3_000): void {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill();
+  const force = setTimeout(() => { child.kill('SIGKILL'); }, graceMs);
+  child.once('exit', () => { clearTimeout(force); });
+}
+
+/**
  * Spin up an ephemeral `tapsmith-core` daemon, issue `ListDevices`, and tear
  * down. Same shape as `ios network configure`'s helper — this command is
  * short-lived and doesn't need to reuse a long-running daemon. Finding,
@@ -334,10 +346,7 @@ export async function listDevicesFromDaemon(
     }
   } finally {
     client?.close();
-    child.kill();
-    // Don't let a daemon slow to shut down (a ListDevices call stuck on a
-    // hung adb) hold the CLI open after the answer is out.
-    child.unref();
+    stopDaemon(child);
   }
 }
 

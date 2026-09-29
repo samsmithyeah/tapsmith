@@ -282,11 +282,14 @@ describe('listDevicesFromDaemon failure codes', () => {
     expect(err).toMatchObject({ code: 'DAEMON_NOT_FOUND', message: expect.stringContaining('not found anywhere') });
   });
 
-  it('kills the spawned daemon when the gRPC client cannot be built', async () => {
+  it.each([
+    ['exits on SIGTERM', ''],
+    ['ignores SIGTERM (SIGKILL after the grace period)', "trap '' TERM\n"],
+  ])('kills the spawned daemon when the gRPC client cannot be built: one that %s', async (_name, trap) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-list-devices-'));
     const pidFile = path.join(dir, 'pid');
     const bin = path.join(dir, 'fake-core');
-    fs.writeFileSync(bin, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 30\n`, { mode: 0o755 });
+    fs.writeFileSync(bin, `#!/bin/sh\n${trap}echo $$ > '${pidFile}'\nexec sleep 30\n`, { mode: 0o755 });
     try {
       const err = await listDevicesFromDaemon({
         findBin: () => bin,
@@ -299,7 +302,7 @@ describe('listDevicesFromDaemon failure codes', () => {
       }).catch((e: unknown) => e);
       expect(err).toMatchObject({ message: 'ENOENT: tapsmith.proto' });
       const pid = Number(fs.readFileSync(pidFile, 'utf8'));
-      const deadline = Date.now() + 2_000;
+      const deadline = Date.now() + 6_000;
       let alive = true;
       while (alive && Date.now() < deadline) {
         try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 20)); } catch { alive = false; }
@@ -308,7 +311,7 @@ describe('listDevicesFromDaemon failure codes', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it('DAEMON_START_FAILED when the daemon cannot be started, naming the spawn error', async () => {
     const started = Date.now();

@@ -10,6 +10,8 @@
  * changing one is a breaking change for scripts and agents.
  */
 
+import { stripVTControlCharacters } from 'node:util';
+
 // ─── Error envelope ───
 
 export interface CliJsonError {
@@ -27,11 +29,9 @@ export interface CliJsonErrorEnvelope {
   error: CliJsonError;
 }
 
-const ANSI_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
-
-/** Remove ANSI escape sequences: --json output carries none. */
+/** Remove ANSI escape sequences (colours, OSC-8 hyperlinks): --json output carries none. */
 export function stripAnsi(value: string): string {
-  return value.replace(ANSI_RE, '');
+  return stripVTControlCharacters(value);
 }
 
 /**
