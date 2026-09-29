@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -37,6 +37,13 @@ import {
 } from '../emulator.js';
 
 const manifestFile = path.join(os.tmpdir(), 'tapsmith-emulators.json');
+
+afterAll(() => {
+  // Only ever the private dir the os mock created — never the real tmpdir.
+  if (path.basename(os.tmpdir()).startsWith('tapsmith-emulator-test-')) {
+    fs.rmSync(os.tmpdir(), { recursive: true, force: true });
+  }
+});
 
 describe('emulator utilities', () => {
   // Clean the (redirected) PID manifest before/after every test so
@@ -710,6 +717,34 @@ describe('emulator utilities', () => {
       expect(h.killEmulator).not.toHaveBeenCalled();
     });
 
+    it('hands a serial whose record was dropped to the heuristic pass', () => {
+      const deadRecord = [{ serial: 'emulator-5556', pid: 999991, avd: 'Pixel', port: 5556, launchedAt: '2026-09-28T10:00:00.000Z' }];
+      const orphan = harness({
+        adb: [{ serial: 'emulator-5556', state: 'device' }],
+        listener: { 'emulator-5556': 8888 },
+        argv: { 8888: ['/sdk/qemu-system-aarch64-headless', ...emulatorLaunchArgs('Pixel', 5556)] },
+        avdNames: { 'emulator-5556': 'Pixel' },
+        healthy: { 'emulator-5556': false },
+      });
+      expect(cleanupStaleEmulators('Pixel', { ...orphan.deps, readManifest: () => deadRecord }).killed).toEqual(['emulator-5556']);
+
+      const user = harness({
+        adb: [{ serial: 'emulator-5556', state: 'device' }],
+        listener: { 'emulator-5556': 7777 },
+        argv: { 7777: ['/sdk/qemu-system-aarch64', '-avd', 'Pixel', '-port', '5556'] },
+        avdNames: { 'emulator-5556': 'Pixel' },
+        healthy: { 'emulator-5556': false },
+      });
+      expect(cleanupStaleEmulators('Pixel', { ...user.deps, readManifest: () => deadRecord }).killed).toEqual([]);
+      expect(user.killEmulator).not.toHaveBeenCalled();
+    });
+
+    it('does not kill an offline transport with no process behind it', () => {
+      const h = harness({ adb: [{ serial: 'emulator-5554', state: 'offline' }], listener: {} });
+      expect(cleanupStaleEmulators(undefined, h.deps).killed).toEqual([]);
+      expect(h.killEmulator).not.toHaveBeenCalled();
+    });
+
     it('leaves a healthy Tapsmith-launched orphan running', () => {
       const h = harness({
         adb: [{ serial: 'emulator-5556', state: 'device' }],
@@ -722,6 +757,27 @@ describe('emulator utilities', () => {
   });
 
   describe('provisionEmulators', () => {
+    it('never launches on the port of an offline emulator it left running', async () => {
+      const ports: number[] = [];
+      await provisionEmulators(
+        { existingSerials: [], workers: 1, avd: 'Pixel' },
+        {
+          listAdbDevices: () => [{ serial: 'emulator-5554', state: 'offline' }],
+          listAvds: () => ['Pixel'],
+          getRunningAvdName: () => undefined,
+          launchEmulator: (avd, port) => {
+            ports.push(port);
+            return makeLaunchedEmulator(avd, port);
+          },
+          waitForBoot: async () => undefined,
+          probeDeviceHealth: (serial) => ({ serial, healthy: true }),
+          waitForDeviceStability: async (serial) => ({ serial, healthy: true }),
+          killEmulator: vi.fn(),
+        },
+      );
+      expect(ports).toEqual([5556]);
+    });
+
     it('does not fall back to a different AVD when the requested one boots unhealthy', async () => {
       const killed: string[] = [];
       const launchedAvds: string[] = [];
@@ -733,6 +789,7 @@ describe('emulator utilities', () => {
           avd: 'Broken_API_35',
         },
         {
+          listAdbDevices: () => [],
           listAvds: () => ['Broken_API_35', 'Pixel_9_API_35'],
           getRunningAvdName: () => undefined,
           launchEmulator: (avd, port) => {
@@ -764,6 +821,7 @@ describe('emulator utilities', () => {
           avd: 'Broken_API_35',
         },
         {
+          listAdbDevices: () => [],
           listAvds: () => ['Broken_API_35'],
           getRunningAvdName: () => undefined,
           launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port),
@@ -790,6 +848,7 @@ describe('emulator utilities', () => {
           avd: 'Pixel_9_API_35',
         },
         {
+          listAdbDevices: () => [],
           listAvds: () => ['Pixel_9_API_35', 'Small_Phone_API_35'],
           getRunningAvdName: (serial) => serial === 'emulator-5554' ? 'Pixel_9_API_35' : undefined,
           launchEmulator: (avd, port) => {
@@ -819,6 +878,7 @@ describe('emulator utilities', () => {
           avd: 'Pixel_9_API_35',
         },
         {
+          listAdbDevices: () => [],
           listAvds: () => ['Pixel_9_API_35'],
           getRunningAvdName: () => 'Small_Phone_API_35',
           launchEmulator: (avd, port) => {

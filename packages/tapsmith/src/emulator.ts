@@ -198,7 +198,7 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
       if (inAdb) {
         process.stderr.write(
           `${DIM}Dropping stale record of ${entry.serial} (AVD ${entry.avd}, PID ${entry.pid}): ` +
-          `that emulator is gone. Leaving the emulator now on ${entry.serial} running — Tapsmith did not launch it.${RESET}\n`,
+          `that emulator is gone. Leaving whatever is now on ${entry.serial} alone — Tapsmith can't confirm it launched it.${RESET}\n`,
         );
       }
       continue;
@@ -433,7 +433,7 @@ export function cleanupStaleEmulators(
     const argv = pid !== undefined ? d.readProcessArgs(pid) : undefined;
     if (argv === undefined || !isTapsmithLaunchedEmulator(argv, { port, avd: targetAvd })) {
       process.stderr.write(
-        `${DIM}Leaving emulator ${device.serial} running (${problem}): Tapsmith did not launch it.${RESET}\n`,
+        `${DIM}Leaving emulator ${device.serial} alone (${problem}): Tapsmith can't confirm it launched it.${RESET}\n`,
       );
       continue;
     }
@@ -1256,6 +1256,7 @@ export interface ProvisionResult {
 
 interface ProvisionDeps {
   listAvds: () => string[]
+  listAdbDevices: () => AdbDeviceEntry[]
   getRunningAvdName: (serial: string) => string | undefined
   launchEmulator: (avd: string, port: number) => LaunchedEmulator
   waitForBoot: (serial: string, timeoutMs?: number) => Promise<void>
@@ -1294,6 +1295,7 @@ export async function provisionEmulators(opts: {
   };
   const resolvedDeps: ProvisionDeps = {
     listAvds: deps.listAvds ?? listAvds,
+    listAdbDevices: deps.listAdbDevices ?? listAdbDevices,
     getRunningAvdName: deps.getRunningAvdName ?? getRunningAvdName,
     launchEmulator: deps.launchEmulator ?? launchEmulator,
     waitForBoot: deps.waitForBoot ?? waitForBoot,
@@ -1329,9 +1331,13 @@ export async function provisionEmulators(opts: {
 
   const launchCandidates = resolveLaunchCandidates(avds, avd, runningAvds);
 
-  // Determine which ports are already in use
+  // Determine which ports are already in use. Besides the caller's online
+  // devices, reserve every emulator adb knows in any state: an offline or
+  // unauthorized emulator Tapsmith did not launch is left running by
+  // cleanupStaleEmulators and still holds its console port (PILOT-401).
   const usedPorts = new Set<number>();
-  for (const serial of occupiedSerials) {
+  const adbSerials = resolvedDeps.listAdbDevices().map((device) => device.serial);
+  for (const serial of [...occupiedSerials, ...adbSerials]) {
     const match = serial.match(/^emulator-(\d+)$/);
     if (match) {
       usedPorts.add(parseInt(match[1], 10));

@@ -387,8 +387,9 @@ same AVD for all workers.
 
 Emulators Tapsmith launches keep running after the run, so the next run can reuse
 them instead of booting again. At the start of a run, Tapsmith only stops an
-unhealthy emulator that it launched itself. It never stops an emulator you started
-yourself (from Android Studio or the command line), even one that is unhealthy or
+unhealthy emulator that it can tell it launched: one started with Tapsmith's own
+`-read-only` launch arguments. An emulator you start from Android Studio, or from
+the command line without `-read-only`, is left running, even if it is unhealthy or
 sits on a port an earlier Tapsmith emulator used. An unhealthy one is skipped, and
 Tapsmith launches its own emulator on a free port.
 
