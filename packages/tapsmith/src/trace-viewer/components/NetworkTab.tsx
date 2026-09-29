@@ -1,7 +1,8 @@
 import * as preact from 'preact';
-import { useState, useMemo } from 'preact/hooks';
+import { useState, useMemo, useEffect, useRef } from 'preact/hooks';
 import type { NetworkEntry } from '../../trace/types.js';
 import { decodeBodyForDisplay, isProtobufContentType } from '../../trace/grpc-protobuf.js';
+import { contentTypeCharset, headerValue, imagePlan, svgRasterSize, xmlEncoding, type ImageUnavailableReason } from './network-image.js';
 import { deviceHueAt } from './device-frames.js';
 
 // ─── Injected Styles ───
@@ -114,11 +115,18 @@ const NETWORK_STYLES = `
   .net-header-key { color: var(--color-attr); }
   .net-header-value { color: var(--color-string); word-break: break-all; }
   .net-body-block { background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 3px; padding: 8px 10px; font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; font-size: 11px; color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all; max-height: none; overflow: auto; margin: 0; }
+  .net-body-more { display: flex; align-items: center; gap: 8px; margin-top: 6px; color: var(--color-text-muted); font-size: 11px; }
   .net-body-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; gap: 8px; }
   .net-body-info { color: var(--color-text-faintest); font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; }
   .net-toggle { background: transparent; border: 1px solid var(--color-border); border-radius: 3px; color: var(--color-text-muted); font-size: 10px; padding: 2px 6px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.4px; }
   .net-toggle:hover { color: var(--color-text-secondary); border-color: var(--color-text-faintest); }
   .net-toggle.active { color: var(--color-text-primary); border-color: var(--color-accent); background: var(--color-highlight); }
+
+  /* Checkerboard so transparent pixels read as transparent, not as the pane
+   * background; the image is capped to the pane and never upscaled. */
+  .net-image-frame { display: inline-block; max-width: 100%; border: 1px solid var(--color-border); border-radius: 3px; line-height: 0; background-color: var(--color-bg); background-image: conic-gradient(var(--color-bg-hover) 25%, transparent 0 50%, var(--color-bg-hover) 0 75%, transparent 0); background-size: 16px 16px; }
+  .net-image { display: block; max-width: 100%; max-height: 60vh; height: auto; object-fit: contain; }
+  .net-image-note { color: var(--color-text-muted); font-size: 11px; margin-bottom: 6px; }
 
   .net-timing { display: flex; flex-direction: column; gap: 8px; font-size: 11px; }
   .net-timing-row { display: grid; grid-template-columns: 100px 1fr 70px; align-items: center; gap: 10px; }
@@ -716,12 +724,19 @@ function DetailPanel({ entry, bodies, tab, onTab, onClose, extent }: DetailPanel
           Streaming — still open at capture time. This snapshot shows the headers and body bytes captured so far.
         </div>}
         {tab === 'headers' && <HeadersTab entry={entry} />}
-        {tab === 'payload' && <PayloadTab entry={entry} body={requestBody} />}
-        {tab === 'response' && <ResponseTab entry={entry} body={responseBody} />}
+        {/* Keyed per request so a body's view toggles (Raw, Pretty, Decode)
+            start fresh rather than carrying over. `index` alone restarts in
+            every test, so the key also carries what identifies the request. */}
+        {tab === 'payload' && <PayloadTab key={entryKey(entry)} entry={entry} body={requestBody} />}
+        {tab === 'response' && <ResponseTab key={entryKey(entry)} entry={entry} body={responseBody} />}
         {tab === 'timing' && <TimingTab entry={entry} extent={extent} />}
       </div>
     </div>
   );
+}
+
+function entryKey(entry: NetworkEntry): string {
+  return `${entry.deviceId ?? ''}:${entry.index}:${entry.startTime}:${entry.method} ${entry.url}`;
 }
 
 function HeadersTab({ entry }: { entry: NetworkEntry }) {
@@ -791,6 +806,13 @@ function PayloadTab({ entry, body }: { entry: NetworkEntry; body: Uint8Array | u
       contentType={entry.contentType}
       url={entry.url}
       direction="request"
+      headers={entry.requestHeaders}
+      declaredBytes={entry.requestSize}
+      // `inFlight` covers the whole exchange. Once a response has started the
+      // request body has been sent in full, so only an exchange with no status
+      // yet can still be uploading.
+      inFlight={!!entry.inFlight && !entry.status}
+      status={entry.status}
     />
   );
 }
@@ -805,15 +827,313 @@ function ResponseTab({ entry, body }: { entry: NetworkEntry; body: Uint8Array | 
       contentType={entry.contentType}
       url={entry.url}
       direction="response"
+      headers={entry.responseHeaders}
+      declaredBytes={entry.responseSize}
+      inFlight={!!entry.inFlight}
+      status={entry.status}
     />
   );
 }
 
-function BodyViewer({ body, contentType, url, direction }: {
+function BodyViewer({ body, contentType, url, direction, headers, declaredBytes, inFlight, status }: {
   body: Uint8Array
   contentType: string
   url: string
   direction: 'request' | 'response'
+  /** This body's own headers — the request's for a payload, the response's
+   * for a response. */
+  headers: Record<string, string>
+  /** The byte count the capture recorded for this body. */
+  declaredBytes: number
+  /** This body may still have been arriving when the capture was taken. */
+  inFlight: boolean
+  status: number
+}) {
+  // `entry.contentType` is the response's, so a payload is typed by its own
+  // request headers. An image is never guessed from the response's type (the
+  // bytes are sniffed instead); text falls back to it only when the request
+  // declares nothing, which is what the payload view always showed.
+  const requestType = direction === 'request' ? headerValue(headers, 'content-type') : undefined;
+  const imageContentType = direction === 'response' ? contentType : requestType ?? '';
+  // `||`: a Content-Type header sent empty declares nothing either.
+  const textContentType = direction === 'response' ? contentType : requestType || contentType;
+  const image = useMemo(
+    () => imagePlan({ body, contentType: imageContentType, headers, declaredBytes, inFlight, direction, status }),
+    [body, imageContentType, headers, declaredBytes, inFlight, direction, status],
+  );
+
+  // An HTTP charset outranks an SVG's own declaration (RFC 7303).
+  const charset = contentTypeCharset(imageContentType);
+
+  if (image.kind === 'preview') {
+    return <ImageBodyViewer body={body} mimeType={image.mimeType} charset={charset} />;
+  }
+  if (image.kind === 'unavailable') {
+    return (
+      <TextBodyViewer
+        body={body}
+        contentType={image.mimeType}
+        charset={charset}
+        // An image is never protobuf, however binary its bytes look.
+        isImage
+        note={imageUnavailableText(image.mimeType, image.reason)}
+      />
+    );
+  }
+  return <TextBodyViewer body={body} contentType={textContentType} url={url} direction={direction} />;
+}
+
+function imageUnavailableText(mimeType: string, reason: ImageUnavailableReason): string {
+  switch (reason.code) {
+    case 'unsupported-type':
+      return `No preview: the viewer can't display ${mimeType} images. Showing the raw bytes.`;
+    case 'undecoded':
+      return `No preview: this image is still ${reason.encoding}-compressed — it couldn't be decompressed, usually because the capture is incomplete or the encoding isn't supported. Showing the raw bytes.`;
+    case 'truncated':
+      // "Available here", not "captured": in live UI mode an oversized body is
+      // replaced by a short marker while the trace archive still holds it all.
+      return `No preview: only ${formatSize(reason.captured)} of this ${formatSize(reason.declared)} image is available here. Showing the raw bytes.`;
+    case 'incomplete':
+      return `No preview: the ${shortenContentType(mimeType)} data stops before its end, so the capture holds only part of this image. Showing the raw bytes.`;
+    case 'not-live':
+      return 'No preview: this image is too large to show live. Open the trace archive to see it.';
+    case 'partial-content':
+      return 'No preview: this is a 206 Partial Content response holding one range of the image. Showing the raw bytes.';
+    case 'in-flight':
+      return reason.direction === 'request'
+        ? 'No preview: the image may still have been uploading at capture time. Showing the bytes captured so far.'
+        : 'No preview: the image was still downloading at capture time. Showing the bytes captured so far.';
+  }
+}
+
+/** An XML body as text, in the encoding its HTTP charset or its own
+ * declaration names (see `xmlEncoding`; a label the browser doesn't know
+ * falls back to UTF-8). */
+function decodeXml(body: Uint8Array, charset?: string): string {
+  try {
+    return new TextDecoder(xmlEncoding(body, charset)).decode(body);
+  } catch {
+    return new TextDecoder().decode(body);
+  }
+}
+
+/** Longest side, in device pixels, an SVG is rasterised to. */
+const SVG_MAX_RASTER_SIDE = 4096;
+
+type Size = { width: number; height: number };
+
+/** Draw an SVG to a PNG. An SVG object URL must never reach the page: opened
+ * as a top-level document ("Open image in new tab", a drag to the tab bar) a
+ * blob: URL takes this page's origin and runs the SVG's scripts in it. Loaded
+ * into an off-DOM image it is only ever an image, and the PNG it becomes is
+ * inert wherever it is opened.
+ *
+ * The SVG is decoded here (in its HTTP charset or declared encoding — see
+ * `xmlEncoding`), given an explicit size when it has none (see
+ * `svgRasterSize`: engines disagree about sizeless SVG, and Firefox and
+ * WebKit may refuse to draw one at all), and re-serialised as UTF-8, so the
+ * image loader never has to guess the encoding (it cannot be told the HTTP
+ * charset: Chromium refuses an SVG blob whose type carries one). DOMParser
+ * builds an inert document, so parsing and re-serialising runs and loads
+ * nothing. A document that doesn't parse as SVG keeps its original bytes and
+ * fails to load, as it would have anyway. */
+function rasteriseSvg(body: Uint8Array, charset: string | undefined): Promise<{ png: Blob; drawn: Size; size: Size | null }> {
+  let source: Uint8Array | string = body;
+  let raster: Size & { declared: boolean } | null = null;
+  const doc = new DOMParser().parseFromString(decodeXml(body, charset), 'image/svg+xml');
+  const root = doc.documentElement;
+  if (root.localName === 'svg') {
+    raster = svgRasterSize(root.getAttribute('width'), root.getAttribute('height'), root.getAttribute('viewBox'));
+    if (!raster.declared) {
+      root.setAttribute('width', String(raster.width));
+      root.setAttribute('height', String(raster.height));
+    }
+    // Each of the document's children (doctype, processing instructions such
+    // as xml-stylesheet, the root), not the document itself: serialising the
+    // document writes its XML declaration back, and an engine that honours a
+    // declared legacy encoding would misread the UTF-8 the Blob holds. The
+    // declaration is not a node.
+    const serializer = new XMLSerializer();
+    source = Array.from(doc.childNodes, node => serializer.serializeToString(node)).join('\n');
+  }
+  const url = URL.createObjectURL(new Blob([source as BlobPart], { type: 'image/svg+xml' }));
+  return new Promise<{ png: Blob; drawn: Size; size: Size | null }>((resolve, reject) => {
+    const img = new Image();
+    img.onerror = () => reject(new Error('svg failed to load'));
+    img.onload = () => {
+      const drawn = raster ?? (img.naturalWidth > 0 && img.naturalHeight > 0
+        ? { width: img.naturalWidth, height: img.naturalHeight }
+        : null);
+      if (!drawn) { reject(new Error('svg has no size')); return; }
+      const scale = Math.min(window.devicePixelRatio || 1, SVG_MAX_RASTER_SIDE / Math.max(drawn.width, drawn.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(drawn.width * scale));
+      canvas.height = Math.max(1, Math.round(drawn.height * scale));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('no 2d context')); return; }
+      try {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((png) => {
+          const own = raster?.declared ? { width: raster.width, height: raster.height } : null;
+          if (png) resolve({ png, drawn: { width: drawn.width, height: drawn.height }, size: own });
+          else reject(new Error('svg rasterisation failed'));
+        }, 'image/png');
+      } catch (err) {
+        // A tainted canvas (SVG pulling in foreign content) refuses export.
+        reject(err);
+      }
+    };
+    img.src = url;
+  }).finally(() => URL.revokeObjectURL(url));
+}
+
+/** An image body, drawn by the browser from an object URL. SVG is first
+ * rasterised to PNG (see `rasteriseSvg`); nothing in it ever runs. */
+function ImageBodyViewer({ body, mimeType, charset }: { body: Uint8Array; mimeType: string; charset: string | undefined }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
+  // CSS size an SVG raster is shown at (its raster is at device-pixel density).
+  const [drawnSize, setDrawnSize] = useState<{ width: number; height: number } | null>(null);
+  const [showRaw, setShowRaw] = useState(false);
+  // The URL currently meant to be on screen. A load or error event from any
+  // other (an earlier body's, revoked mid-load) is stale and ignored.
+  const currentSrc = useRef<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    // The URL this effect put on screen: the body's own, or the SVG's PNG.
+    let shownUrl: string | null = null;
+    currentSrc.current = null;
+    setSrc(null);
+    setFailed(false);
+    setSize(null);
+    setDrawnSize(null);
+    if (mimeType === 'image/svg+xml') {
+      rasteriseSvg(body, charset).then(({ png, drawn, size: svgSize }) => {
+        if (cancelled) return;
+        shownUrl = URL.createObjectURL(png);
+        currentSrc.current = shownUrl;
+        setSrc(shownUrl);
+        setSize(svgSize);
+        setDrawnSize(drawn);
+      }, () => {
+        if (!cancelled) setFailed(true);
+      });
+    } else {
+      shownUrl = URL.createObjectURL(new Blob([body as BlobPart], { type: mimeType }));
+      currentSrc.current = shownUrl;
+      setSrc(shownUrl);
+    }
+    return () => {
+      cancelled = true;
+      if (shownUrl) URL.revokeObjectURL(shownUrl);
+    };
+  }, [body, mimeType, charset]);
+
+  if (failed) {
+    return (
+      <TextBodyViewer
+        body={body}
+        contentType={mimeType}
+        charset={charset}
+        isImage
+        note={`No preview: the browser couldn't display this body as ${shortenContentType(mimeType)}. Showing the raw bytes.`}
+      />
+    );
+  }
+
+  // SVG sizes in mm or pt convert to fractional px.
+  const label = [shortenContentType(mimeType), formatSize(body.length), size && `${Math.round(size.width)} × ${Math.round(size.height)}`]
+    .filter(Boolean)
+    .join(' · ');
+  const isSvg = mimeType === 'image/svg+xml';
+
+  return (
+    <>
+      <div class="net-body-toolbar">
+        <span class="net-body-info" data-testid="net-body-info">{label}</span>
+        <button
+          class={`net-toggle${showRaw ? '' : ' active'}`}
+          data-testid="net-image-toggle"
+          onClick={() => setShowRaw(r => !r)}
+        >
+          {showRaw ? 'Image' : 'Raw'}
+        </button>
+      </div>
+      {showRaw
+        ? <RawText body={body} xml={isSvg} charset={charset} />
+        : src && (
+          <div class="net-image-frame">
+            <img
+              class="net-image"
+              src={src}
+              alt="Image body preview"
+              data-testid="net-image-preview"
+              // The raster is drawn at device-pixel density; show it at the
+              // SVG's own size.
+              width={drawnSize?.width}
+              height={drawnSize?.height}
+              onLoad={(e) => {
+                const img = e.currentTarget;
+                if (isSvg || img.src !== currentSrc.current) return;
+                setSize({ width: img.naturalWidth, height: img.naturalHeight });
+              }}
+              onError={(e) => {
+                if (e.currentTarget.src === currentSrc.current) setFailed(true);
+              }}
+            />
+          </div>
+        )}
+    </>
+  );
+}
+
+/** The body as text. An XML body (SVG) is read in the encoding it declares,
+ * as the preview itself is. */
+/** Characters of a body rendered before "Show all". Laying out a megabyte of
+ * wrapped text (an image's raw bytes, a big JSON dump) freezes the tab. */
+const BODY_TEXT_PREVIEW_CHARS = 64 * 1024;
+
+/** A body as text, clipped to BODY_TEXT_PREVIEW_CHARS until the user asks for
+ * the rest. */
+function BodyText({ text }: { text: string }) {
+  const [showAll, setShowAll] = useState(false);
+  const clipped = !showAll && text.length > BODY_TEXT_PREVIEW_CHARS;
+  return (
+    <>
+      <pre class="net-body-block" data-testid="net-body-text">{clipped ? text.slice(0, BODY_TEXT_PREVIEW_CHARS) : text}</pre>
+      {clipped && (
+        <div class="net-body-more">
+          <span data-testid="net-body-clipped">
+            Showing the first {formatCount(BODY_TEXT_PREVIEW_CHARS)} of {formatCount(text.length)} characters.
+          </span>
+          <button class="net-toggle" onClick={() => setShowAll(true)}>Show all</button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function formatCount(n: number): string {
+  return n < 1024 * 1024 ? `${Math.round(n / 1024)}K` : `${(n / (1024 * 1024)).toFixed(1)}M`;
+}
+
+function RawText({ body, xml = false, charset }: { body: Uint8Array; xml?: boolean; charset?: string }) {
+  const text = useMemo(() => (xml ? decodeXml(body, charset) : new TextDecoder().decode(body)), [body, xml, charset]);
+  return <BodyText text={text} />;
+}
+
+function TextBodyViewer({ body, contentType, url = '', direction = 'response', isImage = false, note, charset }: {
+  body: Uint8Array
+  contentType: string
+  url?: string
+  direction?: 'request' | 'response'
+  isImage?: boolean
+  /** The body's HTTP charset, for an SVG that isn't previewed. */
+  charset?: string
+  /** Shown above the body — why an image isn't being previewed. */
+  note?: string
 }) {
   // gRPC/protobuf bodies are binary, so decode them structurally rather than
   // rendering bytes as text. Attempted for any body that either declares a
@@ -822,14 +1142,18 @@ function BodyViewer({ body, contentType, url, direction }: {
   // on its own (see `decodeBodyForDisplay`).
   const decoded = useMemo(() => {
     if (body.length === 0) return null;
+    if (isImage) return null;
     if (isJsonContentType(contentType)) return null;
     if (!isProtobufContentType(contentType) && !looksBinary(body)) return null;
     return decodeBodyForDisplay(body, { url, direction });
-  }, [body, contentType, url, direction]);
+  }, [body, contentType, url, direction, isImage]);
 
   // Text view of the bytes, non-fatal so a partially-binary body still shows
   // whatever text it contains rather than failing outright.
-  const text = useMemo(() => new TextDecoder().decode(body), [body]);
+  // An SVG that isn't previewed reads in its declared encoding, as its
+  // preview and Raw toggle do.
+  const isSvg = isImage && contentType === 'image/svg+xml';
+  const text = useMemo(() => (isSvg ? decodeXml(body, charset) : new TextDecoder().decode(body)), [body, isSvg, charset]);
 
   const canPretty = isJsonContentType(contentType);
   const [pretty, setPretty] = useState(canPretty);
@@ -848,6 +1172,7 @@ function BodyViewer({ body, contentType, url, direction }: {
 
   return (
     <>
+      {note && <div class="net-image-note" data-testid="net-image-note" role="note">{note}</div>}
       <div class="net-body-toolbar">
         <span class="net-body-info" data-testid="net-body-info">{label} · {formatSize(body.length)}</span>
         {decoded && (
@@ -871,7 +1196,7 @@ function BodyViewer({ body, contentType, url, direction }: {
           </button>
         )}
       </div>
-      <pre class="net-body-block">{display}</pre>
+      <BodyText text={display} />
     </>
   );
 }

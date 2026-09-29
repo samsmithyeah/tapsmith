@@ -74,6 +74,31 @@ export class NetworkPane {
     return this.page.getByRole("button", { name: /^(Pretty|Raw)$/ })
   }
 
+  /** The rendered preview of an image body. */
+  get imagePreview() {
+    return this.detailBody.getByRole("img", { name: "Image body preview" })
+  }
+
+  /** Toggle between the image preview and its raw bytes. Addressed by testid
+   * for the same reason as {@link decodeToggle}: it also reads "Raw". */
+  get imageToggle() {
+    return this.page.getByTestId("net-image-toggle")
+  }
+
+  /** Why an image body is shown raw instead of previewed. */
+  get imageNote() {
+    return this.detailBody.getByRole("note")
+  }
+
+  /** Shown under a body too long to render at once. */
+  get bodyClipped() {
+    return this.page.getByTestId("net-body-clipped")
+  }
+
+  get showAllBody() {
+    return this.detailBody.getByRole("button", { name: "Show all" })
+  }
+
   get detailClose() {
     return this.page.getByRole("button", { name: "Close", exact: true })
   }
