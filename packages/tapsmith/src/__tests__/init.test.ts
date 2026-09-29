@@ -2,8 +2,10 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { generateConfig, generateExampleTest, runInit } from '../init.js';
+import { androidEmulatorCaptureLine, avdPickerChoices, generateConfig, generateExampleTest, runInit } from '../init.js';
 import type { InitCommandOptions } from '../cli-program.js';
+import type { AvdImageInfo } from '../avd-images.js';
+import { stripAnsi } from '../cli-json.js';
 
 describe('generateConfig()', () => {
   it('generates single-platform Android config', () => {
@@ -104,6 +106,60 @@ describe('generateConfig()', () => {
 
     expect(config).toContain("apk: './path with \\'quotes\\'/app.apk',");
     expect(config).not.toContain("apk: './path with 'quotes'/app.apk',");
+  });
+});
+
+// ─── Wizard AVD picker and capture line (PILOT-403) ───
+
+const studioAvds: AvdImageInfo[] = [
+  { name: 'Medium_Phone_API_36', tagId: 'google_apis_playstore', apiLevel: 36 },
+  { name: 'Tapsmith_Phone_API_36', tagId: 'google_apis', apiLevel: 36 },
+];
+
+describe('avdPickerChoices()', () => {
+  it('marks Play images and pre-selects the first capture-capable AVD, keeping list order', () => {
+    const { choices, initial } = avdPickerChoices(['Medium_Phone_API_36', 'Tapsmith_Phone_API_36'], studioAvds);
+    expect(choices.map((c) => c.name)).toEqual(['Medium_Phone_API_36', 'Tapsmith_Phone_API_36']);
+    expect(choices[0].hint).toBe('no HTTPS capture');
+    expect(choices[1].hint).toBeUndefined();
+    expect(initial).toBe(1);
+  });
+
+  it('falls back to the first AVD when none is capture-capable', () => {
+    const { choices, initial } = avdPickerChoices(['Medium_Phone_API_36'], studioAvds);
+    expect(choices[0].hint).toBe('no HTTPS capture');
+    expect(initial).toBe(0);
+  });
+
+  it('does not mark an AVD whose image could not be read as Play', () => {
+    const { choices, initial } = avdPickerChoices(['Mystery'], [{ name: 'Mystery' }]);
+    expect(choices[0].hint).toBeUndefined();
+    expect(initial).toBe(0);
+  });
+});
+
+describe('androidEmulatorCaptureLine()', () => {
+  it('says capture works automatically only for a capture-capable AVD', () => {
+    expect(stripAnsi(androidEmulatorCaptureLine('Tapsmith_Phone_API_36', studioAvds)))
+      .toBe('  ✓ Android emulator (Tapsmith_Phone_API_36) — works automatically');
+  });
+
+  it('warns for a Play image, with the non-destructive fix', () => {
+    const line = stripAnsi(androidEmulatorCaptureLine('Medium_Phone_API_36', studioAvds));
+    expect(line).toMatch(/^ {2}⚠ Android emulator — AVD Medium_Phone_API_36 uses a Google Play system image/);
+    expect(line).not.toContain('works automatically');
+    expect(line).toContain("set avd: 'Tapsmith_Phone_API_36'");
+    expect(line).not.toContain('--force');
+  });
+
+  it('warns when the AVD image could not be read', () => {
+    expect(stripAnsi(androidEmulatorCaptureLine('Mystery', [{ name: 'Mystery' }]))).toContain('Could not read the system image of AVD Mystery');
+  });
+
+  it('warns when no AVD was chosen', () => {
+    const line = stripAnsi(androidEmulatorCaptureLine(undefined, []));
+    expect(line).toContain('⚠ Android emulator — no AVD configured');
+    expect(line).toContain('npx tapsmith create-avd');
   });
 });
 
