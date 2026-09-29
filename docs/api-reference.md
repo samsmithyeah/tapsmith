@@ -2402,8 +2402,8 @@ removing one, or changing what it means, is a breaking change.
   ANSI codes. Two things are outside that promise: `--help` still prints help, and code in your config file
   that writes to stdout (a top-level `console.log`) still lands there, since `doctor`, `verify` and `telemetry`
   load the config. A command killed by a signal (Ctrl-C, a CI cancel) may print nothing. `verify` does not
-  handle interrupts specially yet: depending on which processes the signal reaches, an interrupted run
-  reports `RUN_FAILED` (exit 1), exits 130 with no output, or runs to completion.
+  handle interrupts reliably yet: depending on which processes the signal reaches and when, an interrupted
+  run reports `RUN_FAILED` (exit 1), exits 130 with no output, or runs to completion.
 - **When the command could not do its job**, the document is the error envelope and the exit code is 1:
 
   ```json

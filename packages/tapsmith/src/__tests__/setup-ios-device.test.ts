@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   buildSetupDeviceJson,
   runSetupIosDevice,
@@ -127,6 +127,25 @@ describe('runSetupIosDevice() --json', () => {
     const h = harness({ deviceCheck: () => { throw new Error('devicectl exploded'); } });
     expect(await runSetupIosDevice({ json: true }, h.deps)).toBe(1);
     expect(JSON.parse(h.out())).toMatchObject({ error: { code: 'UNEXPECTED_ERROR', message: expect.stringContaining('devicectl exploded') } });
+  });
+
+  it('text mode on macOS exits 0 when the required checks pass and 1 when one fails', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      expect(await runSetupIosDevice({ json: false }, harness({}).deps)).toBe(0);
+      expect(await runSetupIosDevice({ json: false }, harness({
+        hostChecks: () => [{ id: 'iproxy', result: { label: 'libimobiledevice (iproxy)', ok: false, fix: ['brew install libimobiledevice'] } }],
+      }).deps)).toBe(1);
+      expect(await runSetupIosDevice({ json: false }, harness({
+        deviceCheck: () => ({ ok: true, devices: [device({ isPaired: false })], label: 'Physical iOS device paired' }),
+      }).deps)).toBe(1);
+      // Advisory failures do not block.
+      expect(await runSetupIosDevice({ json: false }, harness({
+        hostChecks: () => [{ id: 'ios-agent-runner', result: { label: 'Signed iOS agent runner', ok: false, advisory: true } }],
+      }).deps)).toBe(0);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it('text mode is unchanged: off macOS the message goes to stderr', async () => {

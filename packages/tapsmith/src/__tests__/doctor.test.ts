@@ -162,7 +162,10 @@ describe('runDoctor() --json with the real checks', () => {
       expect(Object.values(check).every((v) => typeof v === 'string' && v.length > 0 && !v.includes('\x1b')), JSON.stringify(check)).toBe(true);
       // formatJson strips ANSI, so a call site that put a dimmed "(detail)"
       // back into its label would still pass the check above: look for it.
-      if (check.status === 'pass') expect(check.label, JSON.stringify(check)).not.toMatch(/\(/);
+      // Only the checks whose parenthetical moved to detail: other labels can
+      // hold host names with parentheses (a network service "Ethernet (en4)").
+      const split = ['daemon', 'config', 'android-home', 'android-devices', 'android-agent', 'app-apk', 'ios-sim-agent', 'mitm-ca', 'avd-images'];
+      if (check.status === 'pass' && split.includes(check.id as string)) expect(check.label, JSON.stringify(check)).not.toMatch(/\(/);
     }
   }, 120_000);
 });
