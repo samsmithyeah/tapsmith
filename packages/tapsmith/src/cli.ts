@@ -2125,9 +2125,12 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
   const toleratesTargetFailure = targetsWithFiles.size > 1 && !args.ui && !args.watch;
   /** Device targets (by signature) that could not start, with the error. */
   const failedTargets = new Map<string, unknown>();
-  const { deviceTargetLabel } = await import('./dispatcher.js');
+  const { deviceTargetLabel, isProgrammingError } = await import('./dispatcher.js');
   const noteFailedTarget = (signature: string, err: unknown) => {
     failedTargets.set(signature, err);
+    // A TypeError and the like is a Tapsmith bug, not a missing device:
+    // keep its stack, as the parallel path does.
+    if (isProgrammingError(err) && err.stack) process.stderr.write(dim(`${err.stack}\n`));
     // The failed setup may have spawned this target's daemon. Nothing will
     // use it, and the next target's setup would overwrite the handle the
     // final teardown kills, orphaning it.
@@ -2469,7 +2472,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
               bucketGroup(project.deviceSignature),
             );
           } catch (err) {
-            console.error(red(`Failed to set up device for project "${project.name}": ${(err as Error).message}`));
+            console.error(red(`Failed to set up device for project "${project.name}": ${err instanceof Error ? err.message : String(err)}`));
             // Only a multi-target run switches devices, so the run goes on
             // without this target (PILOT-400): its projects fail here, and
             // any later ones on it through failedTargets above.
