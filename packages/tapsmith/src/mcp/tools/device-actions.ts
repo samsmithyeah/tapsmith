@@ -4,9 +4,13 @@ import { deviceClientFor, DEVICE_ARG_DESCRIPTION, PROJECT_ARG_DESCRIPTION } from
 import type { TestDispatcher } from '../test-dispatcher.js';
 import { resolveActionTarget } from '../locator-helper.js';
 
-function actionResult(success: boolean, errorMessage?: string) {
-  if (!success && errorMessage) {
-    return { content: [{ type: 'text' as const, text: `Error: ${errorMessage}` }], isError: true };
+/** The tool result for a daemon action: its error, or "OK". */
+export function actionResult(success: boolean, errorMessage?: string) {
+  // A failure the daemon gave no reason for is still a failure: reporting it
+  // as "OK" is exactly the silent success an agent cannot detect.
+  if (!success) {
+    const reason = errorMessage || 'the device reported the action failed but gave no reason';
+    return { content: [{ type: 'text' as const, text: `Error: ${reason}` }], isError: true };
   }
   return { content: [{ type: 'text' as const, text: 'OK' }] };
 }
@@ -49,7 +53,12 @@ export function registerDeviceActionTools(server: McpServer, dispatcher?: TestDi
       if (target.error) return actionResult(false, target.error);
       const sel = target.elementId ? undefined : target.selector;
       if (clear) {
-        await client.clearText(sel, undefined, target.elementId);
+        // Typing after a failed clear appends to the old text, so stop here.
+        const cleared = await client.clearText(sel, undefined, target.elementId);
+        if (!cleared.success) {
+          const reason = cleared.errorMessage || 'the device gave no reason';
+          return actionResult(false, `could not clear the field before typing, so nothing was typed: ${reason}`);
+        }
       }
       const { success, errorMessage } = await client.typeText(sel, text, undefined, undefined, target.elementId);
       return actionResult(success, errorMessage);

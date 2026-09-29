@@ -336,6 +336,15 @@ describe('tapsmith_tap', () => {
     expect(text(res)).toBe('Error: element not clickable');
   });
 
+  it('reports a failure the daemon gave no message for, rather than OK', async () => {
+    const daemon = makeDaemon({ elements: [makeElement({ text: 'Login' })] });
+    daemon.tap.mockResolvedValueOnce({ requestId: '1', success: false, errorType: '', errorMessage: '' });
+    hoisted.client = daemon.client;
+    const res = await callTool('tapsmith_tap', { locator: 'device.getByText("Login")' });
+    expect(res.isError).toBe(true);
+    expect(text(res)).not.toBe('OK');
+  });
+
   it('requires a locator, and says which argument is missing', async () => {
     const res = await callTool('tapsmith_tap', {});
     expect(res.isError).toBe(true);
@@ -387,6 +396,25 @@ describe('tapsmith_type', () => {
     expect(daemon.clearText.mock.calls[0][0]).toBeUndefined();
     expect(daemon.clearText.mock.calls[0][2]).toBe('el-2');
     expect(daemon.typeText.mock.calls[0][4]).toBe('el-2');
+  });
+
+  it('reports a clear that failed, and types nothing into the stale text', async () => {
+    // Typing after a failed clear appends to the old value, and "OK" hid it:
+    // the agent believed the field held exactly the new text (PILOT-267).
+    const daemon = makeDaemon({ elements: [makeElement({ text: 'Email' })] });
+    daemon.clearText.mockResolvedValueOnce({
+      requestId: '1', success: false, errorType: 'ACTION_FAILED', errorMessage: 'field is read-only',
+    });
+    hoisted.client = daemon.client;
+    const res = await callTool('tapsmith_type', {
+      locator: 'device.getByText("Email")',
+      text: 'new',
+      clear: true,
+    });
+    expect(res.isError).toBe(true);
+    expect(text(res)).toContain('clear');
+    expect(text(res)).toContain('field is read-only');
+    expect(daemon.typeText).not.toHaveBeenCalled();
   });
 
   it('refuses an ambiguous locator and types nothing', async () => {
@@ -473,6 +501,15 @@ describe('tapsmith_launch_app', () => {
     const res = await callTool('tapsmith_launch_app', { package: 'com.missing' });
     expect(res.isError).toBe(true);
     expect(text(res)).toBe('Error: package not installed');
+  });
+
+  it('reports a launch failure the daemon gave no message for, rather than OK', async () => {
+    const daemon = makeDaemon();
+    daemon.launchApp.mockResolvedValueOnce({ requestId: '1', success: false, errorType: '', errorMessage: '' });
+    hoisted.client = daemon.client;
+    const res = await callTool('tapsmith_launch_app', { package: 'com.example.app' });
+    expect(res.isError).toBe(true);
+    expect(text(res)).not.toBe('OK');
   });
 
   it('requires a package name, and says which argument is missing', async () => {

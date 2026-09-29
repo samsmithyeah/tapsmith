@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { deviceClientFor, DEVICE_ARG_DESCRIPTION, PROJECT_ARG_DESCRIPTION } from './device-target.js';
 import type { TestDispatcher } from '../test-dispatcher.js';
+import { actionResult } from './device-actions.js';
 
 export function registerAppControlTools(server: McpServer, dispatcher?: TestDispatcher): void {
   server.tool(
@@ -18,10 +19,7 @@ export function registerAppControlTools(server: McpServer, dispatcher?: TestDisp
       const { success, errorMessage } = await client.launchApp(pkg, {
         clearData: clear_data ?? false,
       });
-      if (!success && errorMessage) {
-        return { content: [{ type: 'text' as const, text: `Error: ${errorMessage}` }], isError: true };
-      }
-      return { content: [{ type: 'text' as const, text: 'OK' }] };
+      return actionResult(success, errorMessage);
     },
   );
 }
