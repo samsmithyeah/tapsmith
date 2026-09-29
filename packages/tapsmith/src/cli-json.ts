@@ -69,7 +69,7 @@ export interface JsonCheck {
   id: string;
   status: JsonCheckStatus;
   label: string;
-  /** What the text output prints dimmed after the label: a path, a source, a list of names. */
+  /** Extra context (a path, a source, device names); doctor's text output prints it dimmed after the label. */
   detail?: string;
   /** How to fix a `warn` or `fail`; may span several lines. */
   fix?: string;

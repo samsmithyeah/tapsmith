@@ -87,8 +87,9 @@ function record(report: Reporter, entry: CheckEntry): void {
   // Always the documented key order, and optional keys left out of the JSON
   // rather than printed as null.
   const ordered: CheckEntry = { id: entry.id, status: entry.status, label: entry.label };
-  if (entry.detail !== undefined) ordered.detail = entry.detail;
-  if (entry.fix !== undefined) ordered.fix = entry.fix;
+  // An empty detail or fix is no detail or fix, in the JSON as in checkLine.
+  if (entry.detail) ordered.detail = entry.detail;
+  if (entry.fix) ordered.fix = entry.fix;
   report.checks.push(ordered);
 }
 
@@ -177,11 +178,18 @@ function checkAdb(report: Reporter): boolean {
   }
 }
 
+/** The Android SDK variable doctor reports: ANDROID_HOME, else the older ANDROID_SDK_ROOT. */
+export function androidSdkVariable(env: NodeJS.ProcessEnv): { name: string; path: string } | undefined {
+  if (env.ANDROID_HOME) return { name: 'ANDROID_HOME', path: env.ANDROID_HOME };
+  if (env.ANDROID_SDK_ROOT) return { name: 'ANDROID_SDK_ROOT', path: env.ANDROID_SDK_ROOT };
+  return undefined;
+}
+
 function checkAndroidHome(report: Reporter): void {
   try {
-    const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
-    if (androidHome) {
-      pass(report, 'android-home', process.env.ANDROID_HOME ? 'ANDROID_HOME' : 'ANDROID_SDK_ROOT', androidHome);
+    const sdk = androidSdkVariable(process.env);
+    if (sdk) {
+      pass(report, 'android-home', sdk.name, sdk.path);
     } else {
       warn(report, 'android-home', 'ANDROID_HOME not set', 'Set ANDROID_HOME to your Android SDK location');
     }

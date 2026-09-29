@@ -2416,7 +2416,8 @@ removing one, or changing what it means, is a breaking change.
   `"error" in result` tells the two apart. A result can still mean failure: `doctor` with a failing check and
   `verify` with a failing test exit 1 and print their result with `"ok": false`.
 - **Optional keys are left out** when they have no value, never set to `null` (except `telemetry`'s
-  `configPath`, which is `null` when no config file was found).
+  `configPath`, which is `null` when no config was loaded: none was found, or it failed to load, which
+  `configConsulted: false` tells apart).
 
 | Command | Error codes |
 |---|---|

@@ -312,12 +312,29 @@ export async function listDevicesFromDaemon(
   }
 
   const port = String(await pickFreePort());
-  const child = spawn(bin, ['--port', port], { stdio: ['ignore', 'ignore', 'ignore'] });
-  // A binary that cannot be executed emits 'error' instead of throwing; with
-  // no listener that would crash the process instead of reporting it.
-  let spawnError: Error | undefined;
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(bin, ['--port', port], { stdio: ['ignore', 'ignore', 'ignore'] });
+  } catch (err) {
+    // Some failures (ENOEXEC, EBADARCH: a corrupt or wrong-arch binary) throw
+    // here rather than emitting 'error'.
+    throw new ListDevicesError(
+      'DAEMON_START_FAILED',
+      `Failed to start the tapsmith-core daemon (${bin}): ${err instanceof Error ? err.message : String(err)}`,
+      DAEMON_BIN_FIX,
+    );
+  }
+  // The others (ENOENT, EACCES) emit 'error', which with no listener would
+  // crash the process instead of being reported; a daemon that starts and
+  // exits at once (a crash, a missing library) is as broken. Either is known
+  // at once, so neither waits out the ready timeout.
+  let spawnError: string | undefined;
   const spawnFailed = new Promise<false>((resolve) => {
-    child.on('error', (err) => { spawnError = err; resolve(false); });
+    child.on('error', (err) => { spawnError = err.message; resolve(false); });
+    child.on('exit', (code, signal) => {
+      spawnError ??= signal ? `it was killed by ${signal}` : `it exited with code ${code}`;
+      resolve(false);
+    });
   });
 
   let client: TapsmithGrpcClient | undefined;
@@ -325,13 +342,12 @@ export async function listDevicesFromDaemon(
     // Inside the try: a client that cannot be built (a missing proto file)
     // must not leave the daemon just spawned running.
     client = (opts.connect ?? ((address) => new TapsmithGrpcClient(address)))(`127.0.0.1:${port}`);
-    // A spawn that failed is known at once; don't wait out the ready timeout.
     const readyTimeoutMs = opts.readyTimeoutMs ?? 5_000;
     const ready = await Promise.race([client.waitForReady(readyTimeoutMs), spawnFailed]);
     if (!ready && spawnError) {
       throw new ListDevicesError(
         'DAEMON_START_FAILED',
-        `Failed to start the tapsmith-core daemon (${bin}): ${spawnError.message}`,
+        `Failed to start the tapsmith-core daemon (${bin}): ${spawnError}`,
         DAEMON_BIN_FIX,
       );
     }

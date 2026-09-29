@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import {
   assessSystemProxy,
   buildDoctorJson,
+  androidSdkVariable,
   checkLine,
   runDoctor,
   configLoadFailure,
@@ -87,6 +88,14 @@ describe('doctor --json schema (PILOT-270)', () => {
     expect(Object.keys(json.inventory)).toEqual(['avds', 'simulators', 'connectedDevices']);
     expect(Object.keys(json.inventory.simulators[0]!)).toEqual(['name', 'udid', 'state', 'runtime']);
     expect(Object.keys(json.inventory.connectedDevices[0]!)).toEqual(['serial', 'state']);
+  });
+});
+
+describe('androidSdkVariable()', () => {
+  it('names the variable it read: ANDROID_HOME first, then ANDROID_SDK_ROOT', () => {
+    expect(androidSdkVariable({ ANDROID_HOME: '/a', ANDROID_SDK_ROOT: '/b' })).toEqual({ name: 'ANDROID_HOME', path: '/a' });
+    expect(androidSdkVariable({ ANDROID_SDK_ROOT: '/b' })).toEqual({ name: 'ANDROID_SDK_ROOT', path: '/b' });
+    expect(androidSdkVariable({})).toBeUndefined();
   });
 });
 

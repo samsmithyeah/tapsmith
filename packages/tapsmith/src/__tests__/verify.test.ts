@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport, runVerify } from '../verify.js';
+import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport, runVerify, stderrTail } from '../verify.js';
 
 describe('pickVerifyTarget()', () => {
   it('prefers example.test.ts', () => {
@@ -113,3 +113,12 @@ describe('runVerify() with a config that fails to load', () => {
   });
 });
 
+
+describe('stderrTail()', () => {
+  it('strips ANSI codes before cutting, so no half escape sequence is left', () => {
+    const stderr = '\x1b[31mFatal';
+    // Cutting the raw text to 7 characters would leave "1mFatal".
+    expect(stderr.slice(-7)).toBe('1mFatal');
+    expect(stderrTail(stderr, 7)).toBe('Fatal');
+  });
+});

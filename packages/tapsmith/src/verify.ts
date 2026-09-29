@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { formatJson, jsonError } from './cli-json.js';
+import { formatJson, jsonError, stripAnsi } from './cli-json.js';
 
 // ─── Pure helpers (unit-tested) ───
 
@@ -94,6 +94,14 @@ export function cleanupVerifySmokeTest(scaffolded: ScaffoldedVerifyTest | undefi
   if (testDirCreated && testDir) {
     try { fs.rmdirSync(testDir); } catch { /* non-empty or already gone */ }
   }
+}
+
+/**
+ * The end of the test run's stderr, for RUN_FAILED. ANSI codes are stripped
+ * before cutting, so the cut never leaves half an escape sequence behind.
+ */
+export function stderrTail(stderr: string, max = 2000): string {
+  return stripAnsi(stderr).slice(-max);
 }
 
 // ─── Command entry ───
@@ -189,7 +197,7 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
         const reason = child.error
           ? `Failed to execute test process: ${child.error.message}`
           : `Test run produced no results (exit code ${child.status ?? 'unknown'})`;
-        const stderr = child.stderr ? child.stderr.toString().slice(-2000) : undefined;
+        const stderr = child.stderr ? stderrTail(child.stderr.toString()) : undefined;
         emitError(args.json, 'RUN_FAILED',
           `${reason}${stderr ? `: ${stderr}` : ''}`,
           'Run: npx tapsmith doctor --json to diagnose the environment');

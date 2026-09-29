@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { buildDeviceRows, listDevicesFromDaemon, ListDevicesError, runListDevices, type ListDevicesDeps } from '../list-devices.js';
-import type { DeviceInfoProto } from '../grpc-client.js';
+import type { DeviceInfoProto, TapsmithGrpcClient } from '../grpc-client.js';
 import type { PhysicalDeviceInfo } from '../ios-devicectl.js';
 
 const daemonDevice = (overrides: Partial<DeviceInfoProto>): DeviceInfoProto => ({
@@ -312,6 +312,50 @@ describe('listDevicesFromDaemon failure codes', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, 15_000);
+
+  it('DAEMON_START_FAILED with the reinstall fix for a binary spawn() throws on (ENOEXEC)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-list-devices-'));
+    const bin = path.join(dir, 'fake-core');
+    fs.writeFileSync(bin, Buffer.from([0xde, 0xad, 0xbe, 0xef, 0x00, 0x01]), { mode: 0o755 });
+    try {
+      const err = await listDevicesFromDaemon({ findBin: () => bin }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ListDevicesError);
+      expect(err).toMatchObject({ code: 'DAEMON_START_FAILED', fix: expect.stringContaining('TAPSMITH_DAEMON_BIN') });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('DAEMON_START_FAILED at once, with the reinstall fix, for a daemon that exits right after starting', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-list-devices-'));
+    const bin = path.join(dir, 'fake-core');
+    fs.writeFileSync(bin, '#!/bin/sh\nexit 3\n', { mode: 0o755 });
+    try {
+      const started = Date.now();
+      const err = await listDevicesFromDaemon({ findBin: () => bin, readyTimeoutMs: 10_000 }).catch((e: unknown) => e);
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(err).toMatchObject({ code: 'DAEMON_START_FAILED', message: expect.stringContaining('exited with code 3'), fix: expect.stringContaining('TAPSMITH_DAEMON_BIN') });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('LIST_DEVICES_FAILED when the daemon answers but ListDevices rejects', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-list-devices-'));
+    const bin = path.join(dir, 'fake-core');
+    fs.writeFileSync(bin, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
+    const stub = {
+      waitForReady: async () => true,
+      listDevices: async () => { throw new Error('14 UNAVAILABLE: adb hung'); },
+      close: () => {},
+    } as unknown as TapsmithGrpcClient;
+    try {
+      const err = await listDevicesFromDaemon({ findBin: () => bin, connect: () => stub }).catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: 'LIST_DEVICES_FAILED', message: expect.stringContaining('adb hung'), fix: expect.stringContaining('doctor') });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it('DAEMON_START_FAILED for a daemon that starts but never answers suggests a retry, not a reinstall', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-list-devices-'));
