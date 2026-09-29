@@ -7,7 +7,7 @@ import { tryExec, scanEnvironment, type EnvScan, type SimulatorInfo } from './en
 import { detectAndroidPackage, detectIosBundleId } from './init-detect.js';
 import type { InitCommandOptions } from './cli-program.js';
 import { formatJson, jsonError } from './cli-json.js';
-import { avdCaptureSupport, avdCaptureWarning, captureAvdFix, type AvdImageInfo } from './avd-images.js';
+import { avdCaptureSupport, avdCaptureWarning, noAvdsListedMessage, type AvdImageInfo } from './avd-images.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -114,7 +114,8 @@ export function avdPickerChoices(
 
 /** The wizard's network-capture summary line for the Android emulator. */
 export function androidEmulatorCaptureLine(avd: string | undefined, avdImages: AvdImageInfo[]): string {
-  if (!avd) return `  ${YELLOW}⚠${RESET} Android emulator — no AVD configured. ${captureAvdFix(avdImages)}`;
+  // The picker always returns an AVD, so no AVD means `emulator -list-avds` listed none.
+  if (!avd) return `  ${YELLOW}⚠${RESET} Android emulator — ${noAvdsListedMessage(avdImages)}`;
   const warning = avdCaptureWarning(avd, avdImages);
   return warning
     ? `  ${YELLOW}⚠${RESET} Android emulator — ${warning}`
@@ -168,7 +169,7 @@ async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
       initial,
     });
   } else if (useEmulators) {
-    console.log(`  ${YELLOW}⚠${RESET} No AVDs found. ${captureAvdFix(env.avdImages)}`);
+    console.log(`  ${YELLOW}⚠${RESET} ${noAvdsListedMessage(env.avdImages)}`);
   }
 
   if (deviceType === 'physical' || deviceType === 'both') {

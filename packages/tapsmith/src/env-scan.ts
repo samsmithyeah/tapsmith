@@ -5,7 +5,7 @@
 import { execFileSync } from 'node:child_process';
 import { findDaemonBin } from './daemon-bin.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
-import { avdNames, scanAvdImageTags, type AvdImageInfo } from './avd-images.js';
+import { scanAvdImageTags, type AvdImageInfo } from './avd-images.js';
 
 // ─── Helpers ───
 
@@ -32,7 +32,7 @@ export interface EnvScan {
   androidHome: string | undefined;
   xcodeVersion: string | undefined;
   simulators: SimulatorInfo[];
-  /** AVD names: `emulator -list-avds` order, else the AVD home's AVDs when `emulator` is not on PATH. */
+  /** AVD names, in `emulator -list-avds` order (empty when `emulator` is not on PATH). */
   avds: string[];
   /** Each AVD's system image, for judging HTTPS capture (`avdCaptureSupport`). */
   avdImages: AvdImageInfo[];
@@ -125,7 +125,6 @@ export function scanEnvironment(): EnvScan {
   }
 
   const avdImages = scanAvdImageTags();
-  avds = avdNames(avds, avdImages);
 
   return { nodeVersion, daemonBin, agentApk, agentTestApk, adbVersion, androidHome, xcodeVersion, simulators, avds, avdImages, isMacOS };
 }

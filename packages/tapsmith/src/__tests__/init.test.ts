@@ -158,8 +158,13 @@ describe('androidEmulatorCaptureLine()', () => {
 
   it('warns when no AVD was chosen', () => {
     const line = stripAnsi(androidEmulatorCaptureLine(undefined, []));
-    expect(line).toContain('⚠ Android emulator — no AVD configured');
+    expect(line).toContain('⚠ Android emulator — No Android AVDs found');
     expect(line).toContain('npx tapsmith create-avd');
+  });
+
+  it('blames PATH when AVDs exist but the emulator listed none', () => {
+    const line = stripAnsi(androidEmulatorCaptureLine(undefined, studioAvds));
+    expect(line).toContain('`emulator` command is not on PATH');
   });
 });
 

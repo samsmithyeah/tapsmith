@@ -10,7 +10,7 @@ import type { EnvScan, SimulatorInfo } from './env-scan.js';
 import type { AndroidConfig, IosConfig, Platform } from './init.js';
 import { generateConfig, generateExampleTest } from './init.js';
 import { writeAgentsMd } from './agents-md.js';
-import { avdCaptureSupport, avdCaptureWarning, captureAvdFix } from './avd-images.js';
+import { avdCaptureSupport, avdCaptureWarning, noAvdsListedMessage } from './avd-images.js';
 import * as detectDefaults from './init-detect.js';
 import type { InitCommandOptions } from './cli-program.js';
 
@@ -196,7 +196,7 @@ export function resolveInitPlan(
         ? env.avds.find((name) => avdCaptureSupport(env.avdImages.find((a) => a.name === name)) === 'capable')
         : undefined;
       avd = capable ?? env.avds[0];
-      if (!avd) warnings.push(`No Android AVDs found. ${captureAvdFix(env.avdImages)}`);
+      if (!avd) warnings.push(noAvdsListedMessage(env.avdImages));
     }
     if (useEmulators && avd && args.networkCapture) {
       const warning = avdCaptureWarning(avd, env.avdImages);

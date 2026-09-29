@@ -301,6 +301,14 @@ describe('resolveInitPlan() AVD choice with network capture', () => {
     expect(plan.warnings[0]).not.toContain('Android Studio');
   });
 
+  it('says emulator must be on PATH, writing no avd, when only the AVD home lists AVDs', () => {
+    // Stock Android Studio: AVDs exist but `emulator` is not on PATH, so Tapsmith can't launch them.
+    const plan = resolveInitPlan(android({ networkCapture: true }), { ...studioEnv, avds: [] }, detectStubs);
+    expect(plan.android?.avd).toBeUndefined();
+    expect(plan.warnings).toHaveLength(1);
+    expect(plan.warnings[0]).toContain('`emulator` command is not on PATH');
+  });
+
   it('adds no AVD warning for physical-device-only Android', () => {
     const plan = resolveInitPlan(android({ networkCapture: true, deviceType: 'physical' }), playOnlyEnv, detectStubs);
     expect(plan.android?.avd).toBeUndefined();

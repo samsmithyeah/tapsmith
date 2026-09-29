@@ -6,7 +6,7 @@ import {
   avdCaptureSupport,
   avdCaptureWarning,
   avdHomeDir,
-  avdNames,
+  noAvdsListedMessage,
   captureAvdFix,
   newCaptureAvd,
   parseAvdApiLevel,
@@ -171,12 +171,16 @@ describe('avdHomeDir()', () => {
   });
 });
 
-describe('avdNames()', () => {
-  it('keeps the emulator\'s list when it has one', () => {
-    expect(avdNames(['B', 'A'], [{ name: 'C' }])).toEqual(['B', 'A']);
+describe('noAvdsListedMessage()', () => {
+  it('suggests create-avd when the machine has no AVDs', () => {
+    expect(noAvdsListedMessage([])).toBe("No Android AVDs found. Create a capture-capable AVD — run: npx tapsmith create-avd, then set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config");
   });
 
-  it('falls back to the AVD home when emulator is not on PATH', () => {
-    expect(avdNames([], [{ name: 'Pixel_9' }, { name: 'Medium_Phone' }])).toEqual(['Medium_Phone', 'Pixel_9']);
+  it('blames PATH, not the AVDs, when the AVD home has AVDs the emulator did not list', () => {
+    const message = noAvdsListedMessage([good, play]);
+    expect(message).toContain('Found AVDs (Medium_Phone_API_36, Tapsmith_Phone_API_36)');
+    expect(message).toContain('`emulator` command is not on PATH');
+    expect(message).not.toContain('No Android AVDs found');
+    expect(message).not.toContain('create-avd');
   });
 });
