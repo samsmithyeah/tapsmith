@@ -15,7 +15,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { findDaemonBin } from './daemon-bin.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
-import { formatJson, jsonError, type JsonCheck } from './cli-json.js';
+import { formatJson, jsonError, stripAnsi, type JsonCheck } from './cli-json.js';
 
 // ─── ANSI helpers ───
 
@@ -51,12 +51,6 @@ export interface DoctorJson {
   inventory: DoctorInventory;
 }
 
-const ANSI_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
-
-export function stripAnsi(value: string): string {
-  return value.replace(ANSI_RE, '');
-}
-
 function plainCheck(check: CheckEntry): CheckEntry {
   const plain: CheckEntry = {
     ...check,
@@ -90,10 +84,12 @@ export function checkLine(label: string, detail: string | undefined): string {
 }
 
 function record(report: Reporter, entry: CheckEntry): void {
-  // Optional keys are left out of the JSON rather than printed as null.
-  if (entry.detail === undefined) delete entry.detail;
-  if (entry.fix === undefined) delete entry.fix;
-  report.checks.push(entry);
+  // Always the documented key order, and optional keys left out of the JSON
+  // rather than printed as null.
+  const ordered: CheckEntry = { id: entry.id, status: entry.status, label: entry.label };
+  if (entry.detail !== undefined) ordered.detail = entry.detail;
+  if (entry.fix !== undefined) ordered.fix = entry.fix;
+  report.checks.push(ordered);
 }
 
 function pass(report: Reporter, id: string, label: string, detail?: string): void {
@@ -185,7 +181,7 @@ function checkAndroidHome(report: Reporter): void {
   try {
     const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
     if (androidHome) {
-      pass(report, 'android-home', 'ANDROID_HOME set', androidHome);
+      pass(report, 'android-home', process.env.ANDROID_HOME ? 'ANDROID_HOME' : 'ANDROID_SDK_ROOT', androidHome);
     } else {
       warn(report, 'android-home', 'ANDROID_HOME not set', 'Set ANDROID_HOME to your Android SDK location');
     }

@@ -13,12 +13,12 @@ import {
   parseAvdApiLevel,
   parseNetworksetupProxy,
   scanAvdImageTags,
-  stripAnsi,
   summarizeAvdImages,
   type AvdImageInfo,
   type CheckEntry,
   type ServiceProxySetting,
 } from '../doctor.js';
+import { stripAnsi } from '../cli-json.js';
 
 describe('buildDoctorJson()', () => {
   const checks: CheckEntry[] = [
@@ -147,6 +147,8 @@ describe('runDoctor() --json with the real checks', () => {
       id: 'config', status: 'pass', label: 'Config file found', detail: 'tapsmith.config.mjs',
     });
     for (const check of json.checks) {
+      // The documented key order, from the real call sites.
+      expect(Object.keys(check).slice(0, 3), JSON.stringify(check)).toEqual(['id', 'status', 'label']);
       expect(Object.keys(check).every((k) => ['id', 'status', 'label', 'detail', 'fix'].includes(k)), JSON.stringify(check)).toBe(true);
       expect(Object.values(check).every((v) => typeof v === 'string' && v.length > 0 && !v.includes('\x1b')), JSON.stringify(check)).toBe(true);
     }

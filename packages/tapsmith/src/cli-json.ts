@@ -27,15 +27,26 @@ export interface CliJsonErrorEnvelope {
   error: CliJsonError;
 }
 
-/** Build the error envelope, leaving out the optional keys that are not set. */
+const ANSI_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+
+/** Remove ANSI escape sequences: --json output carries none. */
+export function stripAnsi(value: string): string {
+  return value.replace(ANSI_RE, '');
+}
+
+/**
+ * Build the error envelope, leaving out the optional keys that are not set.
+ * Text that came from elsewhere (a child's coloured stderr, an error message)
+ * is stripped of ANSI codes here, so no caller has to remember to.
+ */
 export function jsonError(
   code: string,
   message: string,
   opts: { fix?: string; candidates?: string[] } = {},
 ): CliJsonErrorEnvelope {
-  const error: CliJsonError = { code, message };
-  if (opts.fix !== undefined) error.fix = opts.fix;
-  if (opts.candidates !== undefined) error.candidates = opts.candidates;
+  const error: CliJsonError = { code, message: stripAnsi(message) };
+  if (opts.fix !== undefined) error.fix = stripAnsi(opts.fix);
+  if (opts.candidates !== undefined) error.candidates = opts.candidates.map(stripAnsi);
   return { error };
 }
 

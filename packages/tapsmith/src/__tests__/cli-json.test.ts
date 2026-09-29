@@ -20,6 +20,14 @@ describe('jsonError()', () => {
   });
 });
 
+describe('jsonError() and ANSI codes', () => {
+  it('strips escape codes from every text field (a child\'s coloured stderr, say)', () => {
+    expect(jsonError('RUN_FAILED', 'no results: \x1b[31mFatal error: boom\x1b[0m', { fix: '\x1b[2mrun doctor\x1b[0m', candidates: ['\x1b[1ma.apk\x1b[0m'] })).toEqual({
+      error: { code: 'RUN_FAILED', message: 'no results: Fatal error: boom', fix: 'run doctor', candidates: ['a.apk'] },
+    });
+  });
+});
+
 describe('formatJson()', () => {
   it('prints one pretty-printed document ending in a newline', () => {
     expect(formatJson({ ok: true })).toBe('{\n  "ok": true\n}\n');

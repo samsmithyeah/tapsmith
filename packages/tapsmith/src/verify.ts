@@ -185,6 +185,21 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
         timeout: 10 * 60 * 1000,
       });
 
+      // A signal that arrived while spawnSync blocked the event loop (Ctrl-C
+      // reaches the whole process group) is still queued: yield once so
+      // onSignal runs and exits 130, instead of reporting the interrupted run
+      // as RUN_FAILED and removing the handler in the finally below.
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+
+      if (child.signal) {
+        // The child alone was killed (a CI cancel that signals it directly):
+        // an interrupt too, not a failed setup. Exit as the signal would have
+        // (the finally cleans up).
+        if (!args.json) console.error(`Verification interrupted (${child.signal}).`);
+        process.exitCode = 128 + (os.constants.signals[child.signal] ?? 2);
+        return;
+      }
+
       if (child.error || !fs.existsSync(resultsFile)) {
         const reason = child.error
           ? `Failed to execute test process: ${child.error.message}`

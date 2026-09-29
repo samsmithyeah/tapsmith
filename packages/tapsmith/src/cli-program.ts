@@ -762,7 +762,8 @@ function jsonErrorCode(command: string, commanderCode: string): string {
 /**
  * Parse `argv` (the arguments after `tapsmith`) and run the matching
  * handler. Resolves to the exit code: usage errors are reported and resolve
- * to 1; anything a handler throws propagates.
+ * to 1. Anything a handler throws propagates, except under --json, where it
+ * is printed as an UNEXPECTED_ERROR envelope and resolves to 1.
  */
 export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> {
   const io = deps.io ?? {

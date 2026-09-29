@@ -78,7 +78,7 @@ Tapsmith Doctor
 
   Android
   ✓ ADB 37.0.0
-  ✓ ANDROID_HOME /Users/you/Library/Android/sdk
+  ✓ ANDROID_HOME (/Users/you/Library/Android/sdk)
   ⚠ No Android devices connected
     ↳ Start an emulator or connect a device with USB debugging enabled
   ✓ Android agent (@tapsmith/agent-android)
