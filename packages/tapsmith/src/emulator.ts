@@ -198,7 +198,16 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
 
   for (const entry of uniqueBySerial.values()) {
     const inAdb = adbDeviceMap.get(entry.serial);
-    const argv = entry.pid > 0 && d.isProcessAlive(entry.pid) ? d.readProcessArgs(entry.pid) : undefined;
+    const alive = entry.pid > 0 && d.isProcessAlive(entry.pid);
+    const argv = alive ? d.readProcessArgs(entry.pid) : undefined;
+
+    // Alive but unreadable (e.g. `ps` timed out): ownership is undetermined.
+    // Keep the record so the next run can decide, but neither reuse nor kill.
+    if (alive && argv === undefined) {
+      surviving.push(entry);
+      continue;
+    }
+
     const owned = argv !== undefined
       && isTapsmithLaunchedEmulator(argv, { port: entry.port, avd: entry.avd });
 

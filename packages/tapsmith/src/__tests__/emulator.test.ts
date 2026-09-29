@@ -482,7 +482,7 @@ describe('emulator utilities', () => {
     });
 
     it('reads a real process command line that the identity check accepts', async () => {
-      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', ...emulatorLaunchArgs('Real_AVD', 5582)], { stdio: 'ignore' });
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', '--', ...emulatorLaunchArgs('Real_AVD', 5582)], { stdio: 'ignore' });
       try {
         await new Promise((resolve) => child.once('spawn', resolve));
         const argv = readProcessArgs(child.pid!);
@@ -595,7 +595,23 @@ describe('emulator utilities', () => {
       expect(h.killProcess).not.toHaveBeenCalled();
     });
 
-    it('treats an unreadable command line as not ours', () => {
+    it('keeps the record, without reusing or killing, when a live PID cannot be read', () => {
+      const e = entry();
+      const h = harness({
+        entries: [e],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: {},
+        healthy: false,
+      });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [] });
+      expect(h.probeDeviceHealth).not.toHaveBeenCalled();
+      expect(h.killEmulator).not.toHaveBeenCalled();
+      expect(h.killProcess).not.toHaveBeenCalled();
+      expect(h.written).toEqual([[e]]);
+    });
+
+    it("never kills when an offline emulator's command line is unreadable", () => {
       const h = harness({
         entries: [entry()],
         adb: [{ serial: 'emulator-5554', state: 'offline' }],
