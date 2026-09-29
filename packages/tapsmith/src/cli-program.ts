@@ -879,7 +879,16 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
     await program.parseAsync(args, { from: 'user' });
     return state.exitCode;
   } catch (err) {
-    if (!(err instanceof CommanderError)) throw err;
+    if (!(err instanceof CommanderError)) {
+      // A handler that threw under --json (a module that failed to load, a
+      // bug past the command's own error handling) still owes stdout one JSON
+      // document. Text mode leaves it to the CLI's fatal-error handler.
+      if (!state.json || !state.command) throw err;
+      io.out(formatJson(jsonError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), {
+        fix: 'To see the full error, run the same command again without --json',
+      })));
+      return 1;
+    }
     if (state.json && state.command && err.exitCode !== 0) {
       io.out(formatJson(jsonError(jsonErrorCode(state.command, err.code), state.jsonError ?? err.message, {
         fix: `Run: npx tapsmith ${state.command} --help`,

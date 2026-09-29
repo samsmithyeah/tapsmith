@@ -549,6 +549,27 @@ describe('usage errors under --json', () => {
     });
   });
 
+  it.each([
+    [['doctor', '--json'], 'doctor'],
+    [['init', '--yes', '--json'], 'init'],
+    [['ios', 'setup-device', '--json'], 'iosSetupDevice'],
+  ])('%j: a handler that throws still prints the UNEXPECTED_ERROR envelope, exit 1', async (argv, handler) => {
+    const out: string[] = [];
+    const handlers = new Proxy({} as CliHandlers, {
+      get: (_t, name) => async () => { if (name === handler) throw new Error('Cannot find module ./x.js'); },
+    });
+    const code = await runCli(argv, { handlers, version: '0.0.0', io: { out: (t) => out.push(t), err: () => {} } });
+    expect(code).toBe(1);
+    expect(JSON.parse(out.join(''))).toEqual({
+      error: { code: 'UNEXPECTED_ERROR', message: 'Cannot find module ./x.js', fix: expect.stringContaining('without --json') },
+    });
+  });
+
+  it('without --json, a handler that throws still reaches the fatal-error handler', async () => {
+    const handlers = new Proxy({} as CliHandlers, { get: () => async () => { throw new Error('boom'); } });
+    await expect(runCli(['doctor'], { handlers, version: '0.0.0', io: { out: () => {}, err: () => {} } })).rejects.toThrow('boom');
+  });
+
   it('mcp-server usage errors go to stderr, keeping the stdio channel clean', async () => {
     const h = await usageError(['mcp-server', '--bogus']);
     expect(h.out).toBe('');

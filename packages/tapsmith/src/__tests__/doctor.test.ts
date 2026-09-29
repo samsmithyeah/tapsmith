@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import {
   assessSystemProxy,
   buildDoctorJson,
+  checkLine,
   runDoctor,
   configLoadFailure,
   isSupportedNodeVersion,
@@ -86,6 +87,13 @@ describe('doctor --json schema (PILOT-270)', () => {
     expect(Object.keys(json.inventory)).toEqual(['avds', 'simulators', 'connectedDevices']);
     expect(Object.keys(json.inventory.simulators[0]!)).toEqual(['name', 'udid', 'state', 'runtime']);
     expect(Object.keys(json.inventory.connectedDevices[0]!)).toEqual(['serial', 'state']);
+  });
+});
+
+describe('checkLine()', () => {
+  it('prints the detail dimmed in parentheses after the label, as doctor always has', () => {
+    expect(checkLine('Tapsmith daemon found', '/usr/local/bin/tapsmith-core')).toBe('Tapsmith daemon found \x1b[2m(/usr/local/bin/tapsmith-core)\x1b[0m');
+    expect(checkLine('Node.js 22.1.0', undefined)).toBe('Node.js 22.1.0');
   });
 });
 

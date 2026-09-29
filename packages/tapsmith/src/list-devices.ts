@@ -285,11 +285,12 @@ const DAEMON_BIN_FIX = 'Reinstall tapsmith (npm install tapsmith), or set TAPSMI
 /**
  * Spin up an ephemeral `tapsmith-core` daemon, issue `ListDevices`, and tear
  * down. Same shape as `ios network configure`'s helper — this command is
- * short-lived and doesn't need to reuse a long-running daemon. Every failure
- * is a ListDevicesError naming the stage that failed.
+ * short-lived and doesn't need to reuse a long-running daemon. Finding,
+ * starting and querying the daemon fail as a ListDevicesError naming the
+ * stage; anything else (no free port, a broken install) propagates as is.
  */
 export async function listDevicesFromDaemon(
-  opts: { findBin?: () => string; readyTimeoutMs?: number } = {},
+  opts: { findBin?: () => string; readyTimeoutMs?: number; connect?: (address: string) => TapsmithGrpcClient } = {},
 ): Promise<DeviceInfoProto[]> {
   let bin: string;
   try {
@@ -305,8 +306,11 @@ export async function listDevicesFromDaemon(
   let spawnError: Error | undefined;
   child.on('error', (err) => { spawnError = err; });
 
-  const client = new TapsmithGrpcClient(`127.0.0.1:${port}`);
+  let client: TapsmithGrpcClient | undefined;
   try {
+    // Inside the try: a client that cannot be built (a missing proto file)
+    // must not leave the daemon just spawned running.
+    client = (opts.connect ?? ((address) => new TapsmithGrpcClient(address)))(`127.0.0.1:${port}`);
     const ready = await client.waitForReady(opts.readyTimeoutMs ?? 5_000);
     if (!ready) {
       throw new ListDevicesError(
@@ -326,7 +330,7 @@ export async function listDevicesFromDaemon(
       );
     }
   } finally {
-    client.close();
+    client?.close();
     child.kill();
   }
 }
@@ -376,6 +380,9 @@ export async function runListDevices(opts: { json: boolean }, overrides: Partial
     const { physical, usbAttached } = deps.enrich();
     rows = buildDeviceRows(daemonDevices, physical, usbAttached);
   } catch (err) {
+    // Text mode lets an unexpected error reach the CLI's fatal-error handler,
+    // stack and all, like the other commands.
+    if (!opts.json && !(err instanceof ListDevicesError)) throw err;
     const failure = err instanceof ListDevicesError
       ? jsonError(err.code, err.message, { fix: err.fix })
       : jsonError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err));

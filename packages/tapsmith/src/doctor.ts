@@ -85,7 +85,7 @@ interface Reporter {
 }
 
 /** A check's line in the text output: the label, then its detail dimmed in parentheses. */
-function checkLine(label: string, detail: string | undefined): string {
+export function checkLine(label: string, detail: string | undefined): string {
   return detail ? `${label} ${dim(`(${detail})`)}` : label;
 }
 

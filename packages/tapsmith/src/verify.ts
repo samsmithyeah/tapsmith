@@ -218,8 +218,15 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
       if (!summary.ok) process.exitCode = 1;
     } finally {
       signals.forEach((sig) => process.off(sig, onSignal));
-      fs.rmSync(resultsFile, { force: true });
-      cleanupVerifySmokeTest(scaffolded, testDirCreated, testDir);
+      // Best effort, reported on stderr: the verdict is already on stdout, and a
+      // throw here would add a second document under --json.
+      try {
+        fs.rmSync(resultsFile, { force: true });
+        cleanupVerifySmokeTest(scaffolded, testDirCreated, testDir);
+      } catch (err) {
+        console.error(`⚠ Could not clean up after verify: ${err instanceof Error ? err.message : String(err)}`
+          + (scaffolded ? ` (remove ${scaffolded.tempDir} by hand)` : ''));
+      }
     }
   } catch (err) {
     emitError(args.json, 'UNEXPECTED_ERROR',

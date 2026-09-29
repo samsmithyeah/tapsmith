@@ -2401,7 +2401,8 @@ removing one, or changing what it means, is a breaking change.
 - **stdout holds exactly one JSON document**, and nothing else from Tapsmith: no banner, no progress, no
   ANSI codes. Two things are outside that promise: `--help` still prints help, and code in your config file
   that writes to stdout (a top-level `console.log`) still lands there, since `doctor`, `verify` and `telemetry`
-  load the config. A run interrupted by a signal (Ctrl-C, a CI cancel) exits 130 with no output.
+  load the config. A run interrupted by a signal (Ctrl-C, a CI cancel) exits with the signal's code (130 for
+  Ctrl-C, 143 for `SIGTERM`) and may print nothing.
 - **When the command could not do its job**, the document is the error envelope and the exit code is 1:
 
   ```json
@@ -2443,7 +2444,8 @@ The results:
   devicectl` lists, as `{ udid, name, osVersion, paired, developerMode, transport, fix? }`, where `osVersion`
   is empty when devicectl does not report it, `developerMode` is `enabled`, `disabled` or `unknown`,
   `transport` is `wired`, `localNetwork` or `unknown` (not connected now), and `fix` is set on an unpaired
-  device.
+  device. `developerMode` and `transport` pass through what devicectl reports, so treat a value not listed
+  here as unknown.
 - **`list-devices --json`**: `{ devices }`, each `{ ready, platform, serial, name, osLabel, blockers }` —
   `platform` is `android`, `android-emu`, `ios-sim` or `ios-device`; `osLabel` is like `iOS 18.1` or empty
   when unknown; `blockers` are the fixes that would make it ready, empty when `ready`.
@@ -2453,8 +2455,8 @@ The results:
 
 A health check is `{ id, status, label, detail?, fix? }`. `id` is stable — match on it, not on `label`, which
 can hold values (`Node.js 22.1.0`) and whose wording may change. `status` is `pass`, `warn` (not blocking) or
-`fail`. `detail` is what the text output prints dimmed after the label (a path, where something was found,
-device names); `fix` says how to resolve a `warn` or `fail` and may span several lines. `doctor`'s ids include `node`, `daemon`, `config`, `config-load`, `adb`, `android-home`,
+`fail`. `detail` is extra context (a path, where something was found, device names), which `doctor`'s text
+output prints dimmed after the label; `fix` says how to resolve a `warn` or `fail` and may span several lines. `doctor`'s ids include `node`, `daemon`, `config`, `config-load`, `adb`, `android-home`,
 `android-devices`, `android-agent`, `app-apk`, `avd-images`, `xcode`, `simctl`, `ios-sim-agent`, `mitm-ca`,
 `mitmproxy`, `network-extension` and `system-proxy`, each only where it applies; `ios setup-device`'s are
 `xcode-clt`, `devicectl`, `iproxy`, `signing`, `sudo-ddi-mount`, `ios-agent-runner`, `profile-expiry` and

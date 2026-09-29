@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { buildDeviceRows, listDevicesFromDaemon, ListDevicesError, runListDevices, type ListDevicesDeps } from '../list-devices.js';
 import type { DeviceInfoProto } from '../grpc-client.js';
 import type { PhysicalDeviceInfo } from '../ios-devicectl.js';
@@ -257,6 +260,11 @@ describe('runListDevices --json', () => {
     expect(JSON.parse(h.out())).toMatchObject({ error: { code: 'UNEXPECTED_ERROR', message: 'devicectl parse blew up' } });
   });
 
+  it('text mode lets an unexpected error reach the CLI fatal-error handler, like the other commands', async () => {
+    const h = capture({ enrich: () => { throw new Error('devicectl parse blew up'); } });
+    await expect(runListDevices({ json: false }, h.deps)).rejects.toThrow('devicectl parse blew up');
+  });
+
   it('keeps text-mode failures on stderr, exit 1', async () => {
     const h = capture({ fetchDevices: async () => { throw new ListDevicesError('DAEMON_NOT_FOUND', 'no daemon', 'reinstall'); } });
     expect(await runListDevices({ json: false }, h.deps)).toBe(1);
@@ -271,6 +279,34 @@ describe('listDevicesFromDaemon failure codes', () => {
     const err = await listDevicesFromDaemon({ findBin: () => { throw new Error('not found anywhere'); } }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ListDevicesError);
     expect(err).toMatchObject({ code: 'DAEMON_NOT_FOUND', message: expect.stringContaining('not found anywhere') });
+  });
+
+  it('kills the spawned daemon when the gRPC client cannot be built', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-list-devices-'));
+    const pidFile = path.join(dir, 'pid');
+    const bin = path.join(dir, 'fake-core');
+    fs.writeFileSync(bin, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 30\n`, { mode: 0o755 });
+    try {
+      const err = await listDevicesFromDaemon({
+        findBin: () => bin,
+        connect: () => {
+          // Wait for the child to record its pid, then fail as a missing proto file would.
+          const deadline = Date.now() + 5_000;
+          while (!fs.existsSync(pidFile) && Date.now() < deadline) { /* spin */ }
+          throw new Error('ENOENT: tapsmith.proto');
+        },
+      }).catch((e: unknown) => e);
+      expect(err).toMatchObject({ message: 'ENOENT: tapsmith.proto' });
+      const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+      const deadline = Date.now() + 2_000;
+      let alive = true;
+      while (alive && Date.now() < deadline) {
+        try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 20)); } catch { alive = false; }
+      }
+      expect(alive).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('DAEMON_START_FAILED when the daemon cannot be started, naming the spawn error', async () => {
