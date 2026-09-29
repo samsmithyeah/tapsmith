@@ -58,6 +58,7 @@ import {
 import { isRecoverableInfrastructureError, serializeConfig } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort, pickFreePort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
+import { moreDevicesAdvice, noDeviceAdvice } from './device-advice.js';
 import {
   createUiLaunchSteps,
   UiLaunchProgress,
@@ -539,7 +540,7 @@ async function setupSequentialDevice(
   if (!target.selectedSerial) {
     progress?.fail('primary-device', 'no online device found');
     throw new Error(
-      'No online devices found. Connect a device, start an emulator, or set `avd` in your config to auto-launch emulators.',
+      `No online devices found. ${noDeviceAdvice(cfg)}`,
     );
   }
 
@@ -916,9 +917,7 @@ async function provisionGroupMemberDevices(
     throw new Error(
       `use.devices asks for ${group.length} device(s) but only ${pool.length + pinned.length + 1} could be provisioned `
       + `(${[primary, ...pinned, ...pool].filter(Boolean).join(', ')}). `
-      + (cfg.platform === 'ios'
-        ? 'Boot more simulators matching `simulator`, or pin members with `device`.'
-        : 'Connect more devices, set `avd` so emulators can be launched, or pin members with `device`.'),
+      + moreDevicesAdvice(cfg),
     );
   }
   return { serials, launched: provision.launched, fresh: provision.freshSerials };
@@ -986,13 +985,12 @@ async function ensureSequentialTargetDevice(
         else process.stderr.write(`${DIM}${message}${RESET}\n`);
         return { selectedSerial: udid, launched: [] };
       } catch (e) {
-        console.error(
-          red(
-            `No simulator specified and physical device auto-detect failed: ${(e as Error).message}\n` +
-              `Set \`simulator\` (e.g. simulator: "iPhone 16") or \`device\` in your config.`,
-          ),
+        // Thrown, not exited: the caller decides whether the run can go on
+        // without this device target (a multi-target run can — PILOT-400).
+        throw new Error(
+          `No simulator specified and physical device auto-detect failed: ${(e as Error).message}\n` +
+            `Set \`simulator\` (e.g. simulator: "iPhone 16") or \`device\` in your config.`,
         );
-        process.exit(1);
       }
     }
     const simulatorName = config.simulator;
@@ -1020,8 +1018,7 @@ async function ensureSequentialTargetDevice(
       const udid = provisionSimulator(simulatorName, config.app);
       return { selectedSerial: udid, launched: [] };
     } catch (e) {
-      console.error(red(`Failed to provision iOS simulator: ${(e as Error).message}`));
-      process.exit(1);
+      throw new Error(`Failed to provision iOS simulator: ${(e as Error).message}`);
     }
   }
 

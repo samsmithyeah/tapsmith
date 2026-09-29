@@ -50,6 +50,7 @@ import {
   type ClonedSimulator,
 } from './ios-simulator.js';
 import { freeStaleAgentPort, findPidsOnPort } from './port-utils.js';
+import { moreDevicesAdvice, noDeviceAdvice, workerStartAdvice } from './device-advice.js';
 import { notifyLegacySudoersIfPresent } from './legacy-cleanup.js';
 import {
   forkStdioForLaunchProgress,
@@ -1226,8 +1227,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       throw new LaunchSetupError(
         isIos
           ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
-          : 'No online devices found. Connect a device, start an emulator, ' +
-            'or set `avd` in your config to auto-launch emulators.',
+          : `No online devices found. ${noDeviceAdvice(config)}`,
       );
     }
 
@@ -1255,9 +1255,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       throw new LaunchSetupError(
         `use.devices asks for ${groupSize} device(s) per test but only ${deviceSerials.length} could be provisioned `
         + `(${deviceSerials.join(', ')}). `
-        + (isIos
-          ? 'Boot more simulators matching `simulator`, or pin members with `device`.'
-          : 'Connect more devices, set `avd` so emulators can be launched, or pin members with `device`.'),
+        + moreDevicesAdvice(config),
       );
     }
 
@@ -1449,9 +1447,14 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           ? `${prefix}0/${maxUsefulWorkers} worker(s) ready; ${firstFailure}`
           : `${prefix}no worker-ready devices`,
       );
+      // Devices were found — the workers on them failed. Say which, and
+      // why: "no worker-ready devices … or set `avd`" was wrong on both
+      // counts when another bucket had a ready device or `avd` was set
+      // (PILOT-400).
       throw new LaunchSetupError(
-        'No worker-ready devices found. Start healthy emulators or devices, ' +
-        'or set `avd` in your config to auto-launch emulators.',
+        `${prefix}No worker could start${firstFailure ? `: ${firstFailure}` : ''}\n`
+        + (failedWorkerMessages.length > 0 ? `${failedWorkerMessages.join('\n')}\n` : '')
+        + workerStartAdvice(),
       );
     }
 
