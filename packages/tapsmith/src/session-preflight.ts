@@ -165,10 +165,11 @@ interface IosForegroundProbeTiming {
  *  clear a dialog the inline dismissals could not, and costs an agent restart. */
 class BlockingDialogError extends Error {}
 
-/** The app under test's own ANR/crash dialog (closed by the time this is
- *  thrown). Not terminal: {@link ensureSessionReady}'s recovery relaunches the
- *  app and reports it, which is what makes a before-test preflight retry the
- *  file. */
+/** A dialog that is (or may be) the app under test's own: its ANR or crash
+ *  dialog, or one whose owner could not be read. Not handled inline, and not
+ *  terminal: {@link ensureSessionReady}'s recovery clears it, relaunches the
+ *  app and reports the recovery, which is what makes a before-test preflight
+ *  retry the file. */
 class AppUnderTestDialogError extends Error {}
 
 /** Dismissals of blocking system dialogs within one
@@ -1063,8 +1064,8 @@ function isAndroidSystemOverlay(hierarchyXml: string): boolean {
  * Clear a system ANR/crash dialog found in `hierarchyXml`. Returns false when
  * there is no system dialog; the caller re-reads the screen after a true.
  * Throws
- * {@link AppUnderTestDialogError} when the dialog is the app under test's own,
- * after closing it, and {@link BlockingDialogError} when other packages' dialogs keep
+ * {@link AppUnderTestDialogError} when the dialog is the app under test's own
+ * (after closing it) or its owner is unknown, and {@link BlockingDialogError} when other packages' dialogs keep
  * coming back past {@link MAX_BLOCKING_DIALOG_DISMISSALS}.
  *
  * Handled inline rather than by `ensureSessionReady`'s recovery: that path's
@@ -1105,9 +1106,17 @@ async function clearBlockingDialog(
     // runs again; if the dialog keeps coming back, this message is the error.
     const message = `The app under test is showing a system dialog: ${dialog}. `
       + 'It stopped responding or crashed. Check the app\'s logs (adb logcat) for the cause.';
-    process.stderr.write(`[tapsmith] ${message} Closing it and relaunching the app.\n`);
+    process.stderr.write(`[tapsmith] ${message} Closing it.\n`);
     await dismissDialogOnce(ctx, hierarchyXml, true);
     throw new AppUnderTestDialogError(message);
+  }
+  if (owners.length === 0) {
+    // dumpsys named no owner, so this may be the app under test's own dialog:
+    // nothing inline may kill it or wait it out as a stranger's. The normal
+    // recovery clears it and reports the relaunch, as for any session fault.
+    throw new AppUnderTestDialogError(
+      `A system dialog is on screen and its owner could not be read: ${dialog}.`,
+    );
   }
   if (dialogs.dismissals >= MAX_BLOCKING_DIALOG_DISMISSALS) {
     const times = dialogs.seen.get(title) ?? 0;
@@ -1122,15 +1131,13 @@ async function clearBlockingDialog(
     );
   }
 
-  const repeats = dialogs.seen.get(title) ?? 0;
-  dialogs.seen.set(title, repeats + 1);
+  dialogs.seen.set(title, (dialogs.seen.get(title) ?? 0) + 1);
   dialogs.dismissals++;
   // Another package's dialog: "Close app" kills the hung process and the
   // system restarts it clean, where "Wait" leaves it hung to re-ANR within
-  // seconds. With no owner it might be the app under test's, so never kill:
-  // "Wait", and "Close app" only when it is the only button (a crash dialog,
-  // whose process is already dead).
-  const closeFirst = owners.length > 0;
+  // seconds. Never for system_server ("Process system isn't responding"):
+  // killing it restarts the whole runtime, agent and app with it.
+  const closeFirst = !owners.includes(SYSTEM_SERVER_PROCESS);
   process.stderr.write(
     `[tapsmith] Dismissing system dialog ${dialog} `
     + `(${dialogs.dismissals}/${MAX_BLOCKING_DIALOG_DISMISSALS})\n`,
@@ -1144,6 +1151,9 @@ async function clearBlockingDialog(
   // bring the app back to the front if it is not there.
   return true;
 }
+
+/** system_server's process name in an ANR dialog's window title. */
+const SYSTEM_SERVER_PROCESS = 'system';
 
 /** Resource ids of the ANR / crash dialog's buttons (AOSP `aerr_*`). */
 const SYSTEM_DIALOG_BUTTON_IDS: Partial<Record<string, string>> = {
@@ -1165,8 +1175,8 @@ async function dismissDialogOnce(
   // control carries; `first()` because a thrashing emulator can stack two such
   // dialogs, and closing either one is progress. Any other label is tapped by
   // text only when the app shows no control with the same text.
-  // A label counts when the dump has its button id (whatever language the
-  // button's text is in) or a system node with its text.
+  // A label counts when the dump has its button id (even if the button's text
+  // differs from the English label) or a system node with its text.
   const hasId = (l: string) => {
     const buttonId = SYSTEM_DIALOG_BUTTON_IDS[l];
     return !!buttonId && hierarchyXml.includes(`resource-id="${buttonId}"`);

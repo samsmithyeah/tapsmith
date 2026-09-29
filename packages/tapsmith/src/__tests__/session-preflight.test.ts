@@ -1146,20 +1146,49 @@ describe('session-preflight', () => {
       expect(ctx.device.startAgent).not.toHaveBeenCalled();
     });
 
-    it('only taps "Wait" when the owner is unknown, even when the dialog comes back', async () => {
-      // Without an owner the dialog might be the app under test's: killing it
-      // would drop beforeAll state with no recovery reported.
+    it('hands a dialog whose owner cannot be read to the normal recovery, reporting it', async () => {
+      // It may be the app under test's own: nothing inline may kill it or
+      // wait it out as a stranger's. Recovery clears it and reports the
+      // relaunch, so a before-test preflight retries the file.
       const ctx = withOwner();
+      const onRecovery = vi.fn();
       vi.mocked(ctx.client.getUiHierarchy)
-        .mockResolvedValueOnce(launcherAnr) // verify: the dialog
-        .mockResolvedValueOnce(home) //        gone after "Wait"
-        .mockResolvedValueOnce(launcherAnr) // back again
+        .mockResolvedValueOnce(launcherAnr) // verify
+        .mockResolvedValueOnce(launcherAnr) // recovery's dismissal read
         .mockResolvedValue(home);
+
+      await expect(ensureSessionReady(ctx, 'before test', undefined, { onRecovery, retryBackoffMs: [0] })).resolves.toBeUndefined();
+
+      expect(onRecovery).toHaveBeenCalledTimes(1);
+      expect(String(onRecovery.mock.calls[0][0])).toContain('its owner could not be read: "Pixel Launcher isn\'t responding"');
+      expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
+      expect(ctx.device.locator).not.toHaveBeenCalled();
+    });
+
+    it('does the same for an unattributed crash dialog, which offers only "Close app"', async () => {
+      const ctx = withOwner();
+      const onRecovery = vi.fn();
+      const crash = hierarchy(
+        `<hierarchy><node package="android" resource-id="android:id/alertTitle" text="Example keeps stopping" />`
+        + '<node package="android" resource-id="android:id/aerr_close" text="Close app" /></hierarchy>',
+      );
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValueOnce(crash).mockResolvedValue(home);
+
+      await expect(ensureSessionReady(ctx, 'before test', undefined, { onRecovery, retryBackoffMs: [0] })).resolves.toBeUndefined();
+
+      expect(onRecovery).toHaveBeenCalledTimes(1);
+      expect(ctx.device.launchApp).toHaveBeenCalledWith(PKG, { activity: '.MainActivity', waitForIdle: false });
+    });
+
+    it('taps "Wait", never "Close app", on system_server\'s own ANR', async () => {
+      // Killing system_server restarts the runtime: agent, app and all.
+      const ctx = withOwner('system');
+      const systemAnr = hierarchy(launcherAnr.hierarchyXml.replace('Pixel Launcher isn\'t responding', 'Process system isn\'t responding'));
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValueOnce(systemAnr).mockResolvedValue(home);
 
       await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
 
-      expect(tapped(ctx)).toEqual(['id:Wait', 'id:Wait']);
-      expect(ctx.device.launchApp).not.toHaveBeenCalled();
+      expect(tapped(ctx)).toEqual(['id:Wait']);
     });
 
     it('handles a dialog that appears while waiting for the app to draw', async () => {
@@ -1178,7 +1207,7 @@ describe('session-preflight', () => {
     });
 
     it('keeps dismissing when clearing one dialog reveals another', async () => {
-      const ctx = withOwner();
+      const ctx = withOwner(LAUNCHER);
       const dialog = (text: string, button: string) =>
         hierarchy(`<node package="android" text="${text} isn&apos;t responding" /><node package="android" text="${button}" />`);
       vi.mocked(ctx.client.getUiHierarchy)
@@ -1290,7 +1319,7 @@ describe('session-preflight', () => {
     });
 
     it('taps the dialog\'s own button, not a same-labelled control of the app underneath', async () => {
-      const ctx = withOwner();
+      const ctx = withOwner('system');
       const underneath = hierarchy(launcherAnr.hierarchyXml.replace(
         '<hierarchy>', `<hierarchy><node package="${PKG}" text="Not Now" /><node package="${PKG}" text="Wait" />`,
       ));
@@ -1355,7 +1384,7 @@ describe('session-preflight', () => {
       expect(tapped(alone)).toEqual(['OK']);
     });
 
-    it('taps the ANR button by id when its text is not in English', async () => {
+    it('taps the ANR button by id when its text differs from the English label', async () => {
       const ctx = withOwner(LAUNCHER);
       vi.mocked(ctx.client.getUiHierarchy)
         .mockResolvedValueOnce(hierarchy(launcherAnr.hierarchyXml.replace('text="Close app"', 'text="App schließen"')))

@@ -338,7 +338,7 @@ session preflight failed during startup launch: A system dialog is blocking the 
 - Give the AVD more CPU cores and RAM (Android Studio → Device Manager → Edit)
 - Cold-boot the emulator, or wipe its data if the dialog shows up on every boot
 
-When the dialog belongs to **the app under test**, your app hung or crashed, so Tapsmith does not treat it as noise. It logs `The app under test is showing a system dialog: …`, closes the dialog and relaunches the app, the same recovery it runs when the agent drops. Before a test, that retries the file so `beforeAll` hooks run again. If the dialog keeps coming back, the run fails with that message. Check `adb logcat` for the cause. `TAPSMITH_DEBUG=1` also logs the screen's hierarchy when a dialog is found.
+When the dialog belongs to **the app under test**, your app hung or crashed, so Tapsmith does not treat it as noise. It logs `The app under test is showing a system dialog: …`, closes the dialog and relaunches the app, the same recovery it runs when the agent drops. In `tapsmith test` runs, a recovery before a test retries the file so `beforeAll` hooks run again. A dialog whose owner Tapsmith cannot read gets the same treatment. If the dialog keeps coming back, the run fails with that message. Check `adb logcat` for the cause. `TAPSMITH_DEBUG=1` also logs the screen's hierarchy when a dialog is found.
 
 ### Tapsmith was loaded without `import.meta.dirname`
 
