@@ -41,6 +41,11 @@ export class GitHubActionsReporter implements TapsmithReporter {
         emitAnnotation('warning', test, test.firstAttemptError, 'flaky: ');
       }
     }
+    for (const test of result.tests) {
+      for (const warning of test.warnings ?? []) {
+        emitAnnotation('warning', test, new Error(warning), 'warning: ');
+      }
+    }
 
     // Write a summary using GitHub Actions job summary
     if (process.env.GITHUB_STEP_SUMMARY) {

@@ -38,6 +38,29 @@ export interface SessionPreflightContext {
    * purpose — one context object is shared across a worker's files.
    */
   capabilities?: ResetCapabilities
+  /**
+   * System dialogs the preflight handled, oldest first, waiting for the runner
+   * to attach them to the affected test (a warning for the app under test's
+   * own, a trace row for every one) and empty the list. Required so every
+   * embedder hands the runner the same list it hands the preflight; shared by
+   * reference, like `capabilities`.
+   */
+  notices: PreflightNotice[]
+}
+
+/** A system ANR/crash dialog the Android preflight dealt with. */
+export interface PreflightNotice {
+  /** `app-dialog`: the app under test's own (closed; its test gets a warning).
+   *  `foreign-dialog`: another package's (dismissed; trace row only). */
+  kind: 'app-dialog' | 'foreign-dialog'
+  /** The dialog's title, e.g. `Pixel Launcher isn't responding`. */
+  title: string
+  /** Owning process, when dumpsys named exactly one (or it is the app's). */
+  owner?: string
+  /** One line for the test result and the trace row. */
+  message: string
+  /** When it was handled (ms since epoch). */
+  timestamp: number
 }
 
 /**
@@ -1107,6 +1130,13 @@ async function clearBlockingDialog(
     const message = `The app under test is showing a system dialog: ${dialog}. `
       + 'It stopped responding or crashed. Check the app\'s logs (adb logcat) for the cause.';
     process.stderr.write(`[tapsmith] ${message} Closing it.\n`);
+    ctx.notices.push({
+      kind: 'app-dialog',
+      title,
+      owner,
+      message: `The app under test (${pkg}) showed "${title}"; Tapsmith closed it and retried.`,
+      timestamp: Date.now(),
+    });
     // Never "Close app" while system_server's ANR is up: the tap might land
     // on its dialog, and killing it restarts the whole runtime.
     await dismissDialogOnce(ctx, hierarchyXml, owners.includes(SYSTEM_SERVER_PROCESS) ? NEVER_CLOSE_LABELS : CLOSE_FIRST_LABELS);
@@ -1140,6 +1170,13 @@ async function clearBlockingDialog(
   // seconds. Never for system_server ("Process system isn't responding"):
   // killing it restarts the whole runtime, agent and app with it.
   const order = owners.includes(SYSTEM_SERVER_PROCESS) ? NEVER_CLOSE_LABELS : CLOSE_FIRST_LABELS;
+  ctx.notices.push({
+    kind: 'foreign-dialog',
+    title,
+    owner,
+    message: `Dismissed a system dialog from another app: ${dialog}.`,
+    timestamp: Date.now(),
+  });
   process.stderr.write(
     `[tapsmith] Dismissing system dialog ${dialog} `
     + `(${dialogs.dismissals}/${MAX_BLOCKING_DIALOG_DISMISSALS})\n`,

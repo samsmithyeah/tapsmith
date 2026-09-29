@@ -348,6 +348,14 @@ describe('ListReporter', () => {
     expect(output).toContain('my passing test');
   });
 
+  it('prints a test warnings under its line (PILOT-398)', () => {
+    reporter.onRunStart!(makeConfig(), 1);
+    reporter.onTestEnd!(makeTestResult({ status: 'passed', fullName: 'warned test', warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith closed it and retried.'] }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('warned test');
+    expect(output).toContain('⚠ The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith closed it and retried.');
+  });
+
   it('prints error details for failed tests', () => {
     reporter.onRunStart!(makeConfig(), 1);
     reporter.onTestEnd!(makeTestResult({
@@ -820,6 +828,23 @@ describe('JsonReporter', () => {
     expect(report.suites[0].tests).toHaveLength(2);
 
     // Cleanup
+    fs.rmSync(tmpDir, { recursive: true });
+  });
+
+  it('writes a test warnings (PILOT-398)', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-json-'));
+    const outputFile = path.join(tmpDir, 'results.json');
+    const { JsonReporter } = await import('../reporters/json.js');
+    const reporter = new JsonReporter({ outputFile });
+    const warned = makeTestResult({ status: 'passed', fullName: 'test a', warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith closed it and retried.'] });
+    reporter.onRunStart!(makeConfig({ rootDir: '/' }), 1);
+    await reporter.onRunEnd!(makeFullResult({ tests: [warned], suites: [{ name: 'suite', durationMs: 1, tests: [warned], suites: [] }] }));
+
+    const report = JSON.parse(fs.readFileSync(outputFile, 'utf-8'));
+    expect(report.suites[0].tests[0].warnings).toEqual(['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith closed it and retried.']);
     fs.rmSync(tmpDir, { recursive: true });
   });
 

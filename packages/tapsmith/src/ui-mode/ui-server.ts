@@ -1449,11 +1449,15 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     videoPath?: string,
     workerId?: number,
     projectName?: string,
+    warnings?: string[],
   ): void {
     if (status === 'failed') failedFiles.add(filePath);
 
     const key = resultEntryKey({ projectName, filePath, fullName });
-    testResults.set(key, { fullName, filePath, status, duration, error, tracePath, videoPath, projectName, workerId });
+    testResults.set(key, {
+      fullName, filePath, status, duration, error, tracePath, videoPath, projectName, workerId,
+      ...(warnings?.length ? { warnings } : {}),
+    });
 
     broadcast({
       type: 'test-status',
@@ -2404,6 +2408,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
                 result.videoPath,
                 worker.id,
                 worker.currentFile?.projectName,
+                result.warnings,
               );
               if (result.status === 'passed') worker.passed++;
               else if (result.status === 'failed') worker.failed++;

@@ -340,6 +340,15 @@ session preflight failed during startup launch: A system dialog is blocking the 
 
 When the dialog belongs to **the app under test**, your app hung or crashed, so Tapsmith does not treat it as noise. It logs `The app under test is showing a system dialog: …`, closes the dialog and relaunches the app, the same recovery it runs when the agent drops. In `tapsmith test` runs, a recovery before a test retries the file so `beforeAll` hooks run again. A dialog whose owner Tapsmith cannot read also goes to that recovery, which dismisses it however it can. If the dialog keeps coming back, the run fails with that message. Check `adb logcat` for the cause. `TAPSMITH_DEBUG=1` also logs the screen's hierarchy when a dialog is found.
 
+The affected test's result carries a warning, even when the test then passes:
+
+```
+  ✓ [2] › tests/login.test.ts › signs in (6.4s)
+        ⚠ The app under test (com.example.app) showed "Example isn't responding"; Tapsmith closed it and retried.
+```
+
+The warning is in the result's `warnings` (the JSON reporter, `merge-reports` and MCP `run_tests`/`list_results` show it too) and in the test's trace as a `systemDialog` step. Another package's dialog is not a warning on the test. It appears only as a `systemDialog` step in the trace, beside the `Dismissing system dialog …` log line.
+
 ### Tapsmith was loaded without `import.meta.dirname`
 
 ```

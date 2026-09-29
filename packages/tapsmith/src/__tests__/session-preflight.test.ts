@@ -49,6 +49,7 @@ function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]
 
   return {
     label: 'Worker 0 (emulator-5554)',
+    notices: [] as import('../session-preflight.js').PreflightNotice[],
     config: { package: 'com.example.app', activity: '.MainActivity' },
     device,
     client,
@@ -1144,6 +1145,10 @@ describe('session-preflight', () => {
       expect(ctx.device.launchApp).not.toHaveBeenCalled();
       expect(onRecovery).not.toHaveBeenCalled();
       expect(ctx.device.startAgent).not.toHaveBeenCalled();
+      // Left for the runner: a trace row only, no warning on the test.
+      expect(ctx.notices).toEqual([expect.objectContaining({
+        kind: 'foreign-dialog', title: 'Pixel Launcher isn\'t responding', owner: LAUNCHER,
+      })]);
     });
 
     it('hands a dialog whose owner cannot be read to the normal recovery, reporting it', async () => {
@@ -1268,6 +1273,11 @@ describe('session-preflight', () => {
       );
       // recoverSession relaunched it.
       expect(ctx.device.launchApp).toHaveBeenCalledWith(PKG, { activity: '.MainActivity', waitForIdle: false });
+      // Left for the runner to put on the test result and in the trace.
+      expect(ctx.notices).toEqual([expect.objectContaining({
+        kind: 'app-dialog',
+        message: 'The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith closed it and retried.',
+      })]);
     });
 
     it('fails naming the app\'s own dialog when it keeps coming back', async () => {

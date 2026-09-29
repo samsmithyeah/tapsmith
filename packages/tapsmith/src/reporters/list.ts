@@ -20,6 +20,7 @@ import {
   red,
   formatDuration,
   formatError,
+  formatWarnings,
   formatSummaryLine,
   formatFlakySection,
   countFlaky,
@@ -96,6 +97,7 @@ export class ListReporter implements TapsmithReporter {
       const project = this._showProjectTags ? projectTag(test.project) : '';
       const file = this._fileSegment(test.filePath);
       this._write(`  ${red('✗')} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
+      for (const line of formatWarnings(test)) this._write(line + '\n');
       // The failing attempt's error and artifacts are worth seeing even
       // though a retry is coming — a flaky pass would otherwise hide what
       // actually failed, and this is where they chronologically belong.
@@ -124,6 +126,7 @@ export class ListReporter implements TapsmithReporter {
     const project = this._showProjectTags ? projectTag(test.project) : '';
     const file = this._fileSegment(test.filePath);
     this._write(`  ${icon} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
+    for (const line of formatWarnings(test)) this._write(line + '\n');
 
     if (test.error) {
       this._write(formatError(test.error) + '\n');

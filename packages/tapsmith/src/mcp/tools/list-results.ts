@@ -45,6 +45,7 @@ export function registerListResultsTool(server: McpServer, dispatcher: TestDispa
         lines.push(`[${icon}] ${r.fullName}${dur}${proj}`);
         lines.push(`       ${r.filePath}`);
         if (r.error) lines.push(`       Error: ${r.error}`);
+        for (const w of r.warnings ?? []) lines.push(`       Warning: ${w}`);
         if (details && r.status === 'failed' && r.tracePath) {
           const summary = readTraceSummary(r.tracePath);
           if (summary) {

@@ -106,6 +106,11 @@ describe('tapsmith_list_results reporting', () => {
     expect(out).toContain('/proj/e2e/login.test.ts');
   });
 
+  it('shows a result warnings (PILOT-398)', async () => {
+    const out = await listResults(dispatcherWith([result({ fullName: 'signs in', warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith closed it and retried.'] })]));
+    expect(out).toContain('Warning: The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith closed it and retried.');
+  });
+
   it('names the project a result came from', async () => {
     const out = await listResults(dispatcherWith([result({ projectName: 'ios' })]));
     expect(out).toContain('[PASS] signs in (120ms) [ios]');

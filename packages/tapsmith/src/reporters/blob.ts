@@ -40,6 +40,7 @@ interface SerializedTest {
   error?: { message: string; stack?: string }
   firstAttemptError?: { message: string; stack?: string }
   failedAttemptArtifacts?: { screenshot?: boolean; trace?: boolean; video?: boolean }
+  warnings?: string[]
   screenshotKey?: string
   traceKey?: string
   videoKey?: string
@@ -163,6 +164,7 @@ export class BlobReporter implements TapsmithReporter {
           ? { message: t.firstAttemptError.message, stack: t.firstAttemptError.stack }
           : undefined,
         failedAttemptArtifacts: t.failedAttemptArtifacts,
+        warnings: t.warnings,
         screenshotKey,
         traceKey,
         videoKey,
@@ -509,6 +511,7 @@ function restoreTest(t: SerializedTest, blobDir: string): TestResult {
       ? Object.assign(new Error(t.firstAttemptError.message), { stack: t.firstAttemptError.stack })
       : undefined,
     failedAttemptArtifacts: t.failedAttemptArtifacts,
+    warnings: t.warnings,
     screenshotPath: t.screenshotKey ? path.join(blobDir, t.screenshotKey) : undefined,
     tracePath: t.traceKey ? path.join(blobDir, t.traceKey) : undefined,
     videoPath: t.videoKey ? path.join(blobDir, t.videoKey) : undefined,

@@ -1666,6 +1666,22 @@ describe('retries', () => {
     expect(clean?.firstAttemptError).toBeUndefined();
   });
 
+  it('carries the discarded attempt\'s warnings onto the file-retry result', () => {
+    const warn = 'The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith closed it and retried.';
+    const firstAttempt: SuiteResult = {
+      name: '', durationMs: 1, suites: [], tests: [
+        { name: 'a', fullName: 'a', status: 'failed', durationMs: 1, error: new Error('session recovered during before test a'), warnings: [warn] },
+      ],
+    };
+    const retried: SuiteResult = {
+      name: '', durationMs: 1, suites: [], tests: [{ name: 'a', fullName: 'a', status: 'passed', durationMs: 1 }],
+    };
+
+    markFileRetryFlakes(firstAttempt, retried);
+
+    expect(retried.tests[0]).toMatchObject({ retry: 1, warnings: [warn] });
+  });
+
   it('does not consume per-test retries on a file-abort-worthy failure', async () => {
     // "session recovered" means the app was relaunched by infra and any
     // beforeAll-established state is gone — per-test retries would run
