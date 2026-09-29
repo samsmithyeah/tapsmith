@@ -302,7 +302,12 @@ function stopDaemon(child: ReturnType<typeof spawn>, graceMs = 3_000): void {
  * stage; anything else (no free port, a broken install) propagates as is.
  */
 export async function listDevicesFromDaemon(
-  opts: { findBin?: () => string; readyTimeoutMs?: number; connect?: (address: string) => TapsmithGrpcClient } = {},
+  opts: {
+    findBin?: () => string;
+    readyTimeoutMs?: number;
+    connect?: (address: string) => TapsmithGrpcClient;
+    spawnDaemon?: typeof spawn;
+  } = {},
 ): Promise<DeviceInfoProto[]> {
   let bin: string;
   try {
@@ -314,7 +319,7 @@ export async function listDevicesFromDaemon(
   const port = String(await pickFreePort());
   let child: ReturnType<typeof spawn>;
   try {
-    child = spawn(bin, ['--port', port], { stdio: ['ignore', 'ignore', 'ignore'] });
+    child = (opts.spawnDaemon ?? spawn)(bin, ['--port', port], { stdio: ['ignore', 'ignore', 'ignore'] });
   } catch (err) {
     // Some failures (ENOEXEC, EBADARCH: a corrupt or wrong-arch binary) throw
     // here rather than emitting 'error'.
@@ -329,10 +334,14 @@ export async function listDevicesFromDaemon(
   // exits at once (a crash, a missing library) is as broken. Either is known
   // at once, so neither waits out the ready timeout.
   let spawnError: string | undefined;
+  let exitedEarly = false;
   const spawnFailed = new Promise<false>((resolve) => {
     child.on('error', (err) => { spawnError = err.message; resolve(false); });
     child.on('exit', (code, signal) => {
-      spawnError ??= signal ? `it was killed by ${signal}` : `it exited with code ${code}`;
+      if (spawnError === undefined) {
+        spawnError = signal ? `it was killed by ${signal}` : `it exited with code ${code}`;
+        exitedEarly = true;
+      }
       resolve(false);
     });
   });
@@ -348,7 +357,9 @@ export async function listDevicesFromDaemon(
       throw new ListDevicesError(
         'DAEMON_START_FAILED',
         `Failed to start the tapsmith-core daemon (${bin}): ${spawnError}`,
-        DAEMON_BIN_FIX,
+        // A binary that could not be run is a broken install; one that ran and
+        // exited may have lost a port race, so a retry comes first.
+        exitedEarly ? `Re-run tapsmith list-devices; if it keeps failing: ${DAEMON_BIN_FIX}` : DAEMON_BIN_FIX,
       );
     }
     if (!ready) {

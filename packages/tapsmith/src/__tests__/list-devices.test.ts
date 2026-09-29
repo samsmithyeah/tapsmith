@@ -313,13 +313,23 @@ describe('listDevicesFromDaemon failure codes', () => {
     }
   }, 15_000);
 
-  it('DAEMON_START_FAILED with the reinstall fix for a binary spawn() throws on (ENOEXEC)', async () => {
+  it('DAEMON_START_FAILED with the reinstall fix when spawn() throws (ENOEXEC, EBADARCH)', async () => {
+    const spawnDaemon = (() => { throw Object.assign(new Error('spawn ENOEXEC'), { code: 'ENOEXEC' }); }) as unknown as typeof import('node:child_process').spawn;
+    const err = await listDevicesFromDaemon({ findBin: () => '/x/tapsmith-core', spawnDaemon }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ListDevicesError);
+    expect(err).toMatchObject({
+      code: 'DAEMON_START_FAILED',
+      message: 'Failed to start the tapsmith-core daemon (/x/tapsmith-core): spawn ENOEXEC',
+      fix: expect.stringMatching(/^Reinstall tapsmith/),
+    });
+  });
+
+  it('a garbage binary is DAEMON_START_FAILED however the platform reports it (throw on macOS, shell exit on Linux)', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-list-devices-'));
     const bin = path.join(dir, 'fake-core');
     fs.writeFileSync(bin, Buffer.from([0xde, 0xad, 0xbe, 0xef, 0x00, 0x01]), { mode: 0o755 });
     try {
       const err = await listDevicesFromDaemon({ findBin: () => bin }).catch((e: unknown) => e);
-      expect(err).toBeInstanceOf(ListDevicesError);
       expect(err).toMatchObject({ code: 'DAEMON_START_FAILED', fix: expect.stringContaining('TAPSMITH_DAEMON_BIN') });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -334,7 +344,12 @@ describe('listDevicesFromDaemon failure codes', () => {
       const started = Date.now();
       const err = await listDevicesFromDaemon({ findBin: () => bin, readyTimeoutMs: 10_000 }).catch((e: unknown) => e);
       expect(Date.now() - started).toBeLessThan(3_000);
-      expect(err).toMatchObject({ code: 'DAEMON_START_FAILED', message: expect.stringContaining('exited with code 3'), fix: expect.stringContaining('TAPSMITH_DAEMON_BIN') });
+      expect(err).toMatchObject({
+        code: 'DAEMON_START_FAILED',
+        message: expect.stringContaining('exited with code 3'),
+        // It ran, so it may have lost a port race: retry first, then reinstall.
+        fix: expect.stringMatching(/^Re-run tapsmith list-devices; if it keeps failing: Reinstall/),
+      });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

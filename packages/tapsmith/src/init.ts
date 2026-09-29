@@ -448,6 +448,8 @@ test('app launches successfully', async ({ device }) => {
 
 // ─── Main wizard ───
 
+const UNEXPECTED_FIX = 'To see the full error, run the same command again without --json';
+
 export async function runInit(opts: InitCommandOptions): Promise<void> {
   const { initArgsFromOptions, resolveInitPlan, executeInitPlan, InitError } = await import('./init-noninteractive.js');
 
@@ -457,7 +459,7 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
   } catch (err) {
     const initErr = err instanceof InitError
       ? err
-      : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err));
+      : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), { fix: UNEXPECTED_FIX });
     emitInitError(initErr, opts.json);
     process.exit(1);
     return;
@@ -518,7 +520,7 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
     } catch (err) {
       const initErr = err instanceof InitError
         ? err
-        : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err));
+        : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), { fix: UNEXPECTED_FIX });
       emitInitError(initErr, parsed.json);
       process.exit(1);
     }
