@@ -221,6 +221,7 @@ export function parseHooksMarker(hierarchyXml: string): HooksMarker | undefined 
   };
 }
 
-function xmlUnescape(s: string): string {
+/** Undo the five predefined XML entities in an attribute value. */
+export function xmlUnescape(s: string): string {
   return s.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }

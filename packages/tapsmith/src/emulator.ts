@@ -14,6 +14,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import type { DeviceStrategy } from './config.js';
+import { xmlUnescape } from './app-reset.js';
 
 const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
@@ -673,8 +674,62 @@ export function detectBlockingSystemDialog(rawHierarchy: string): string | undef
   // Weak matches alone are not sufficient — require at least one strong indicator
   if (!hasStrongMatch) return undefined;
 
-  const compact = rawHierarchy.replace(/\s+/g, ' ').trim();
-  return compact.slice(0, 160) || 'blocking system dialog detected';
+  return blockingDialogTitle(rawHierarchy, strongPatterns) ?? GENERIC_BLOCKING_DIALOG;
+}
+
+const GENERIC_BLOCKING_DIALOG = 'an app isn\'t responding or keeps stopping';
+
+/**
+ * The dialog's own title ("Pixel Launcher isn't responding"), entity-decoded:
+ * the `android:id/alertTitle` node when it matches, else the first text node
+ * that does. Undefined when the phrase only appears outside a `text` attribute.
+ */
+function blockingDialogTitle(rawHierarchy: string, patterns: RegExp[]): string | undefined {
+  const matches = (text: string) => patterns.some((p) => p.test(text.toLowerCase()));
+  let first: string | undefined;
+  for (const [node] of rawHierarchy.matchAll(/<node\b[^>]*>/g)) {
+    const text = node.match(/\btext="([^"]*)"/)?.[1];
+    if (!text) continue;
+    const decoded = xmlUnescape(text).trim();
+    if (!matches(decoded)) continue;
+    if (node.includes('resource-id="android:id/alertTitle"')) return decoded;
+    first ??= decoded;
+  }
+  return first;
+}
+
+/**
+ * Package that owns the ANR / crash dialog on screen, via `dumpsys window`.
+ *
+ * The dialog itself is drawn by system_server — every node in its hierarchy
+ * says `package="android"` — so the dump cannot tell the launcher's ANR from
+ * the app under test's. The framework titles the dialog's window
+ * `Application Not Responding: <process>` / `Application Error: <process>`,
+ * and that is the one place the owner is recorded. Undefined when adb fails or
+ * no such window is listed.
+ */
+export function blockingDialogOwnerViaAdb(
+  serial: string,
+  exec: ExecFileSyncLike = execFileSync,
+): string | undefined {
+  try {
+    const output = String(exec('adb', ['-s', serial, 'shell', 'dumpsys', 'window', 'windows'], {
+      encoding: 'utf-8',
+      timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }));
+    const match = output.match(/Window\{[0-9a-f]+ u\d+ (?:Application Not Responding|Application Error): ([^\s}:]+)(?::[^\s}]*)?\}/);
+    // The title names the process; a `:service` suffix is dropped so an app's
+    // secondary process still reads as the app.
+    return match?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+/** `"<title>" (<owner>)` — the one way a blocking dialog is named to users. */
+export function formatBlockingDialog(title: string, owner?: string): string {
+  return owner ? `"${title}" (${owner})` : `"${title}"`;
 }
 
 export function readUiHierarchyViaAdb(
@@ -788,7 +843,8 @@ export function probeDeviceHealth(
       if (afterHierarchy) {
         const stillBlocked = detectBlockingSystemDialog(afterHierarchy);
         if (stillBlocked) {
-          return { serial, healthy: false, reason: `blocking system dialog detected (${stillBlocked})` };
+          const dialog = formatBlockingDialog(stillBlocked, blockingDialogOwnerViaAdb(serial, exec));
+          return { serial, healthy: false, reason: `blocking system dialog detected: ${dialog}` };
         }
       }
     }

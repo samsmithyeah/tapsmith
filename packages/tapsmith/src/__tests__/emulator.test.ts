@@ -7,6 +7,8 @@ import {
   serialForPort,
   readUiHierarchyViaAdb,
   detectBlockingSystemDialog,
+  blockingDialogOwnerViaAdb,
+  formatBlockingDialog,
   dismissSystemDialogsViaAdb,
   recordLaunchedEmulators,
   unrecordLaunchedEmulators,
@@ -20,6 +22,12 @@ import {
 } from '../emulator.js';
 
 const manifestFile = path.join(os.tmpdir(), 'tapsmith-emulators.json');
+
+/** `uiautomator dump` of a real "Pixel Launcher isn't responding" dialog,
+ *  captured on an API 36 emulator (PILOT-398). */
+const LAUNCHER_ANR_FIXTURE = fs.readFileSync(
+  new URL('./fixtures/android-launcher-anr.xml', import.meta.url), 'utf-8',
+);
 
 describe('emulator utilities', () => {
   // Clean the PID manifest before/after all tests so provisionEmulators
@@ -123,6 +131,21 @@ describe('emulator utilities', () => {
       expect(result.healthy).toBe(false);
       expect(result.reason).toContain('blocking system dialog detected');
     });
+
+    it('names the persisting dialog and its owner, not raw XML', () => {
+      const exec = makePermissiveExec({
+        'adb|-s|emulator-5554|shell|echo|__tapsmith_health_ok__': '__tapsmith_health_ok__\n',
+        'adb|-s|emulator-5554|shell|getprop|sys.boot_completed': '1\n',
+        'adb|-s|emulator-5554|shell|pm|path|android': 'package:/system/framework/framework-res.apk\n',
+        'adb|-s|emulator-5554|exec-out|uiautomator|dump|/dev/tty': `${LAUNCHER_ANR_FIXTURE}UI hierchary dumped to: /dev/tty\n`,
+        'adb|-s|emulator-5554|shell|dumpsys|window|windows':
+          '  Window #6 Window{8667851 u0 Application Not Responding: com.google.android.apps.nexuslauncher}:\n',
+      });
+
+      expect(probeDeviceHealth('emulator-5554', exec).reason).toBe(
+        'blocking system dialog detected: "Pixel Launcher isn\'t responding" (com.google.android.apps.nexuslauncher)',
+      );
+    });
   });
 
   describe('readUiHierarchyViaAdb / detectBlockingSystemDialog', () => {
@@ -145,6 +168,75 @@ describe('emulator utilities', () => {
       expect(
         detectBlockingSystemDialog('<hierarchy><node text="System UI isn\'t responding" /></hierarchy>'),
       ).toContain('System UI');
+    });
+
+    // PILOT-399: the description used to be the first 160 chars of the whole
+    // dump, which always stopped at the XML prologue and never named the dialog.
+    it('names the dialog by its title in a real launcher-ANR dump', () => {
+      expect(detectBlockingSystemDialog(LAUNCHER_ANR_FIXTURE)).toBe('Pixel Launcher isn\'t responding');
+    });
+
+    it('decodes entities in the title', () => {
+      expect(detectBlockingSystemDialog('<node text="Fish &amp; Chips isn&apos;t responding" />'))
+        .toBe('Fish & Chips isn\'t responding');
+      expect(detectBlockingSystemDialog('<node text="Maps keeps stopping" resource-id="android:id/alertTitle" />'))
+        .toBe('Maps keeps stopping');
+    });
+
+    it('prefers the alert title over other matching text', () => {
+      const xml = '<node text="Earlier, Maps keeps stopping was logged" />'
+        + '<node resource-id="android:id/alertTitle" text="Google Play services isn’t responding" />';
+      expect(detectBlockingSystemDialog(xml)).toBe('Google Play services isn’t responding');
+    });
+
+    it('falls back to a generic description when the phrase is not in a text attribute', () => {
+      expect(detectBlockingSystemDialog('<node content-desc="Maps keeps stopping" />')).toBe('an app isn\'t responding or keeps stopping');
+    });
+
+    it('never returns hierarchy XML', () => {
+      expect(detectBlockingSystemDialog(LAUNCHER_ANR_FIXTURE)).not.toContain('<');
+    });
+  });
+
+  describe('blockingDialogOwnerViaAdb', () => {
+    const windows = (title: string) =>
+      `  Window #5 Window{4b77699 u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}:\n`
+      + `  Window #6 Window{8667851 u0 ${title}}:\n`
+      + `    WindowStateAnimator{15c551f ${title}}:\n`;
+
+    it('reads the ANR owner from the dialog window title', () => {
+      const exec = makeExec({
+        'adb|-s|emulator-5554|shell|dumpsys|window|windows': windows('Application Not Responding: com.google.android.apps.nexuslauncher'),
+      });
+      expect(blockingDialogOwnerViaAdb('emulator-5554', exec)).toBe('com.google.android.apps.nexuslauncher');
+    });
+
+    it('reads the crash-dialog owner', () => {
+      const exec = makeExec({
+        'adb|-s|emulator-5554|shell|dumpsys|window|windows': windows('Application Error: com.example.app'),
+      });
+      expect(blockingDialogOwnerViaAdb('emulator-5554', exec)).toBe('com.example.app');
+      // A secondary process reads as its app.
+      expect(blockingDialogOwnerViaAdb('emulator-5554', makeExec({
+        'adb|-s|emulator-5554|shell|dumpsys|window|windows': windows('Application Not Responding: com.example.app:remote'),
+      }))).toBe('com.example.app');
+    });
+
+    it('returns undefined when no dialog window is listed or adb fails', () => {
+      expect(blockingDialogOwnerViaAdb('emulator-5554', makeExec({
+        'adb|-s|emulator-5554|shell|dumpsys|window|windows': '  Window #1 Window{1 u0 StatusBar}:\n',
+      }))).toBeUndefined();
+      expect(blockingDialogOwnerViaAdb('emulator-5554', makeExec({
+        'adb|-s|emulator-5554|shell|dumpsys|window|windows': new Error('device offline'),
+      }))).toBeUndefined();
+    });
+  });
+
+  describe('formatBlockingDialog', () => {
+    it('quotes the title and names the owner when known', () => {
+      expect(formatBlockingDialog('Pixel Launcher isn\'t responding', 'com.google.android.apps.nexuslauncher'))
+        .toBe('"Pixel Launcher isn\'t responding" (com.google.android.apps.nexuslauncher)');
+      expect(formatBlockingDialog('Pixel Launcher isn\'t responding')).toBe('"Pixel Launcher isn\'t responding"');
     });
   });
 
