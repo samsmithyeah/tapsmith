@@ -161,12 +161,14 @@ describe('avdCaptureWarning()', () => {
 });
 
 describe('avdHomeDir()', () => {
-  it('follows the emulator\'s resolution order', () => {
+  it('follows the SDK tools\' resolution order (where avdmanager writes AVDs)', () => {
     const home = '/home/u';
     expect(avdHomeDir({}, home)).toBe(path.join(home, '.android', 'avd'));
+    // ANDROID_EMULATOR_HOME is the emulator's config dir, not the AVD home.
+    expect(avdHomeDir({ ANDROID_EMULATOR_HOME: '/emu' }, home)).toBe(path.join(home, '.android', 'avd'));
     expect(avdHomeDir({ ANDROID_SDK_HOME: '/sdkhome' }, home)).toBe(path.join('/sdkhome', '.android', 'avd'));
-    expect(avdHomeDir({ ANDROID_SDK_HOME: '/sdkhome', ANDROID_EMULATOR_HOME: '/emu' }, home)).toBe(path.join('/emu', 'avd'));
-    expect(avdHomeDir({ ANDROID_EMULATOR_HOME: '/emu', ANDROID_USER_HOME: '/user' }, home)).toBe(path.join('/user', 'avd'));
+    expect(avdHomeDir({ ANDROID_SDK_HOME: '/sdkhome', ANDROID_PREFS_ROOT: '/prefs' }, home)).toBe(path.join('/prefs', '.android', 'avd'));
+    expect(avdHomeDir({ ANDROID_PREFS_ROOT: '/prefs', ANDROID_USER_HOME: '/user' }, home)).toBe(path.join('/user', 'avd'));
     expect(avdHomeDir({ ANDROID_USER_HOME: '/user', ANDROID_AVD_HOME: '/avds' }, home)).toBe('/avds');
   });
 });

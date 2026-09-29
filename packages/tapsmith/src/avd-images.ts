@@ -38,16 +38,18 @@ export interface AvdImageInfo {
 }
 
 /**
- * The directory the emulator reads AVDs from, in the emulator's own order:
- * `$ANDROID_AVD_HOME`, else `avd/` under `$ANDROID_USER_HOME`, else under
- * `$ANDROID_EMULATOR_HOME`, else `.android/avd` under the deprecated
- * `$ANDROID_SDK_HOME`, else `~/.android/avd`.
+ * The directory AVDs live in, in the SDK tools' documented order (the one
+ * `avdmanager`, which `create-avd` runs, writes to): `$ANDROID_AVD_HOME`,
+ * else `avd/` under `$ANDROID_USER_HOME`, else `.android/avd` under the
+ * deprecated `$ANDROID_PREFS_ROOT` / `$ANDROID_SDK_HOME`, else
+ * `~/.android/avd`. `$ANDROID_EMULATOR_HOME` is the emulator's config
+ * directory, not the AVD home, so it is not consulted.
  */
 export function avdHomeDir(env: NodeJS.ProcessEnv = process.env, homedir: string = os.homedir()): string {
   if (env.ANDROID_AVD_HOME) return env.ANDROID_AVD_HOME;
   if (env.ANDROID_USER_HOME) return path.join(env.ANDROID_USER_HOME, 'avd');
-  if (env.ANDROID_EMULATOR_HOME) return path.join(env.ANDROID_EMULATOR_HOME, 'avd');
-  if (env.ANDROID_SDK_HOME) return path.join(env.ANDROID_SDK_HOME, '.android', 'avd');
+  const prefsRoot = env.ANDROID_PREFS_ROOT || env.ANDROID_SDK_HOME;
+  if (prefsRoot) return path.join(prefsRoot, '.android', 'avd');
   return path.join(homedir, '.android', 'avd');
 }
 
