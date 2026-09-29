@@ -865,7 +865,9 @@ export function probeDeviceHealth(
       if (afterHierarchy) {
         const stillBlocked = detectBlockingSystemDialog(afterHierarchy);
         if (stillBlocked) {
-          const dialog = formatBlockingDialog(stillBlocked, blockingDialogOwnersViaAdb(serial, exec)[0]);
+          // Named only when unambiguous: several error windows cannot be told apart.
+          const owners = blockingDialogOwnersViaAdb(serial, exec);
+          const dialog = formatBlockingDialog(stillBlocked, owners.length === 1 ? owners[0] : undefined);
           return { serial, healthy: false, reason: `blocking system dialog detected: ${dialog}` };
         }
       }

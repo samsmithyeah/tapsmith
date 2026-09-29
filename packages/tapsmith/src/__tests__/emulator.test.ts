@@ -147,6 +147,22 @@ describe('emulator utilities', () => {
         'blocking system dialog detected: "Pixel Launcher isn\'t responding" (com.google.android.apps.nexuslauncher)',
       );
     });
+
+    it('names no owner when several dialog windows are listed', () => {
+      const exec = makePermissiveExec({
+        'adb|-s|emulator-5554|shell|echo|__tapsmith_health_ok__': '__tapsmith_health_ok__\n',
+        'adb|-s|emulator-5554|shell|getprop|sys.boot_completed': '1\n',
+        'adb|-s|emulator-5554|shell|pm|path|android': 'package:/system/framework/framework-res.apk\n',
+        'adb|-s|emulator-5554|exec-out|uiautomator|dump|/dev/tty': LAUNCHER_ANR_FIXTURE,
+        'adb|-s|emulator-5554|shell|dumpsys|window|windows':
+          '  Window #6 Window{1 u0 Application Not Responding: com.google.android.gms}:\n'
+          + '  Window #7 Window{2 u0 Application Not Responding: com.google.android.apps.nexuslauncher}:\n',
+      });
+
+      expect(probeDeviceHealth('emulator-5554', exec).reason).toBe(
+        'blocking system dialog detected: "Pixel Launcher isn\'t responding"',
+      );
+    });
   });
 
   describe('readUiHierarchyViaAdb / detectBlockingSystemDialog', () => {

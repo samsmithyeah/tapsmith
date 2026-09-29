@@ -1127,6 +1127,7 @@ async function clearBlockingDialog(
     + `(${dialogs.dismissals}/${MAX_BLOCKING_DIALOG_DISMISSALS})\n`,
   );
   await dismissDialogOnce(ctx, hierarchyXml, closeFirst);
+  await waitForDialogGone(ctx, title);
   if (pkg) await ctx.device.launchApp(pkg, launchOptions(ctx.config));
   return true;
 }
@@ -1146,18 +1147,18 @@ async function dismissDialogOnce(
   const order = closeFirst
     ? ['Close app', ...SYSTEM_DIALOG_DISMISS_LABELS.filter((l) => l !== 'Close app')]
     : SYSTEM_DIALOG_DISMISS_LABELS;
-  // Only the dialog's own buttons: the app's nodes are in the dump underneath,
-  // so both the lookup and the tap are scoped to system-drawn nodes. `first()`
-  // because a thrashing emulator can stack two dialogs with the same buttons;
-  // closing either one is progress.
+  // Only the dialog's own buttons: the app's nodes are in the dump underneath.
+  // The ANR/crash buttons are tapped by their system resource id, which no app
+  // control carries; `first()` because a thrashing emulator can stack two such
+  // dialogs, and closing either one is progress. Any other label is tapped by
+  // text only when the app shows no control with the same text.
   const label = order.find((l) => androidSystemNodeHasText(hierarchyXml, l));
+  const id = label ? SYSTEM_DIALOG_BUTTON_IDS[label] : undefined;
   try {
-    if (label) {
-      const id = SYSTEM_DIALOG_BUTTON_IDS[label];
-      const match = id && hierarchyXml.includes(`resource-id="${id}"`)
-        ? `@resource-id='${id}'`
-        : `@text='${label}'`;
-      await ctx.device.locator({ xpath: `//node[@package='android'][${match}]` }).first().tap();
+    if (id && hierarchyXml.includes(`resource-id="${id}"`)) {
+      await ctx.device.locator({ id }).first().tap();
+    } else if (label && !androidAppNodeHasText(hierarchyXml, label)) {
+      await ctx.device.getByText(label, { exact: true }).tap();
     } else {
       await ctx.device.pressBack();
     }
@@ -1170,11 +1171,37 @@ async function dismissDialogOnce(
 
 /** True when a system-drawn (`package="android"`) node's text is exactly `text`. */
 function androidSystemNodeHasText(hierarchyXml: string, text: string): boolean {
+  return nodesWithText(hierarchyXml, text).some((node) => node.includes('package="android"'));
+}
+
+/** True when a node of any other package has text exactly `text`. */
+function androidAppNodeHasText(hierarchyXml: string, text: string): boolean {
+  return nodesWithText(hierarchyXml, text).some((node) => !node.includes('package="android"'));
+}
+
+function nodesWithText(hierarchyXml: string, text: string): string[] {
   const attr = `text="${escapeXmlAttribute(text)}"`;
-  for (const [node] of hierarchyXml.matchAll(/<node\b[^>]*>/g)) {
-    if (node.includes(attr) && node.includes('package="android"')) return true;
+  return [...hierarchyXml.matchAll(/<node\b[^>]*>/g)].map(([node]) => node).filter((node) => node.includes(attr));
+}
+
+/** How long a dismissed dialog gets to leave the screen before the app is
+ *  relaunched. On an overloaded emulator it can linger past the tap, and
+ *  re-reading it would count as the dialog coming back. */
+const DIALOG_GONE_TIMEOUT_MS = 2_000;
+
+/** Poll until no dialog titled `title` is on screen, bounded; best effort. */
+async function waitForDialogGone(ctx: SessionPreflightContext, title: string): Promise<void> {
+  const deadline = Date.now() + DIALOG_GONE_TIMEOUT_MS;
+  for (;;) {
+    try {
+      const { hierarchyXml } = await ctx.client.getUiHierarchy();
+      if (detectBlockingSystemDialog(hierarchyXml) !== title) return;
+    } catch {
+      return;
+    }
+    if (Date.now() >= deadline) return;
+    await delay(HIERARCHY_POLL_INTERVAL_MS);
   }
-  return false;
 }
 
 async function recoverSession(ctx: SessionPreflightContext): Promise<void> {

@@ -1099,14 +1099,21 @@ describe('session-preflight', () => {
     );
     const home = hierarchy(`<hierarchy><node package="${PKG}" text="Home" /></hierarchy>`);
     const BUTTON_IDS: Record<string, string> = { 'android:id/aerr_close': 'Close app', 'android:id/aerr_wait': 'Wait' };
-    /** Every dismissal tap, in order: `id:<label>` when tapped by the dialog
-     *  button's resource id, `<label>` when by its text. */
-    const tapped = (ctx: ReturnType<typeof makeContext>) =>
-      vi.mocked(ctx.device.locator).mock.calls.map(([opts]) => {
-        const xpath = opts.xpath ?? '';
-        const id = xpath.match(/@resource-id='([^']+)'/)?.[1];
-        return id ? `id:${BUTTON_IDS[id] ?? id}` : xpath.match(/@text='([^']+)'/)?.[1] ?? xpath;
-      });
+    /** Every dismissal tap in call order: `id:<label>` when tapped by the
+     *  dialog button's resource id, `<label>` when by its text. */
+    const tapped = (ctx: ReturnType<typeof makeContext>) => {
+      const byText = vi.mocked(ctx.device.getByText).mock;
+      const byId = vi.mocked(ctx.device.locator).mock;
+      return [
+        ...byText.calls.map(([label], i) => [byText.invocationCallOrder[i], label] as const),
+        ...byId.calls.map(([opts], i) => [byId.invocationCallOrder[i], `id:${BUTTON_IDS[opts.id ?? ''] ?? opts.id}`] as const),
+      ].sort((a, b) => a[0] - b[0]).map(([, label]) => label);
+    };
+    /** Dumps that alternate between `a` and `b`, forever. */
+    const alternating = (a: ReturnType<typeof hierarchy>, b: ReturnType<typeof hierarchy>) => {
+      let n = 0;
+      return async () => (n++ % 2 === 0 ? a : b);
+    };
 
     function withOwner(...owners: string[]) {
       vi.mocked(blockingDialogOwnersViaAdb).mockReturnValue(owners);
@@ -1141,8 +1148,9 @@ describe('session-preflight', () => {
       // never kills it. A dialog that survives "Wait" gets closed.
       const ctx = withOwner();
       vi.mocked(ctx.client.getUiHierarchy)
-        .mockResolvedValueOnce(launcherAnr)
-        .mockResolvedValueOnce(launcherAnr)
+        .mockResolvedValueOnce(launcherAnr) // verify: the dialog
+        .mockResolvedValueOnce(home) //        gone after "Wait"
+        .mockResolvedValueOnce(launcherAnr) // back after the relaunch
         .mockResolvedValue(home);
 
       await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
@@ -1173,6 +1181,7 @@ describe('session-preflight', () => {
         hierarchy(`<node package="android" text="${text} isn&apos;t responding" /><node package="android" text="${button}" />`);
       vi.mocked(ctx.client.getUiHierarchy)
         .mockResolvedValueOnce(dialog('Google Play services', 'Wait'))
+        .mockResolvedValueOnce(dialog('Pixel Launcher', 'Close app')) // GMS gone, launcher revealed
         .mockResolvedValueOnce(dialog('Pixel Launcher', 'Close app'))
         .mockResolvedValue(home);
 
@@ -1186,7 +1195,8 @@ describe('session-preflight', () => {
     it('fails with a readable message once the dialog keeps coming back', async () => {
       const ctx = withOwner(LAUNCHER);
       const onRecovery = vi.fn();
-      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue(launcherAnr);
+      // Each dismissal clears it; each relaunch brings it back.
+      vi.mocked(ctx.client.getUiHierarchy).mockImplementation(alternating(launcherAnr, home));
 
       const err = await ensureSessionReady(ctx, 'worker startup launch', undefined, { onRecovery, retryBackoffMs: [0] })
         .then(() => undefined, (e: unknown) => e as Error);
@@ -1268,9 +1278,13 @@ describe('session-preflight', () => {
         `<node package="android" resource-id="android:id/alertTitle" text="${text} isn&apos;t responding" /><node package="android" text="Close app" />`,
       );
       vi.mocked(ctx.client.getUiHierarchy)
+        // Each one's gone-check already shows the next.
         .mockResolvedValueOnce(dialog('Google Play services'))
         .mockResolvedValueOnce(dialog('Pixel Launcher'))
+        .mockResolvedValueOnce(dialog('Pixel Launcher'))
         .mockResolvedValueOnce(dialog('System UI'))
+        .mockResolvedValueOnce(dialog('System UI'))
+        .mockResolvedValueOnce(dialog('Google Play services'))
         .mockResolvedValueOnce(dialog('Google Play services'))
         .mockResolvedValue(dialog('Maps'));
 
@@ -1281,24 +1295,49 @@ describe('session-preflight', () => {
       expect(err?.message).toContain('Tapsmith dismissed 4 system dialogs in a row and they kept appearing.');
     });
 
-    it('scopes every dismissal tap to the dialog\'s own nodes and takes the first of stacked dialogs', async () => {
-      // An app "OK" under a system dialog's "OK" must not make the tap
-      // ambiguous (a swallowed strict-mode error dismisses nothing), and two
-      // stacked ANR dialogs share their aerr_* ids.
+    it('taps stacked ANR dialogs\' shared button id with first()', async () => {
       const ctx = withOwner(LAUNCHER);
-      const okDialog = hierarchy(
-        `<hierarchy><node package="${PKG}" text="OK" /><node package="android" resource-id="android:id/alertTitle" text="Maps keeps stopping" />`
-        + '<node package="android" text="OK" /></hierarchy>',
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValueOnce(launcherAnr).mockResolvedValue(home);
+
+      await ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] });
+
+      expect(ctx.device.locator).toHaveBeenCalledWith({ id: 'android:id/aerr_close' });
+      const handle = vi.mocked(ctx.device.locator).mock.results[0].value as { first: ReturnType<typeof vi.fn> };
+      expect(handle.first).toHaveBeenCalled();
+    });
+
+    it('presses BACK instead of tapping a label the app underneath also shows', async () => {
+      // An app "OK" under a system dialog's "OK" makes a text tap ambiguous:
+      // a strict-mode error would be swallowed and nothing dismissed.
+      const ctx = withOwner(LAUNCHER);
+      const okDialog = (appOk: boolean) => hierarchy(
+        `<hierarchy>${appOk ? `<node package="${PKG}" text="OK" />` : ''}`
+        + '<node package="android" resource-id="android:id/alertTitle" text="Maps keeps stopping" /><node package="android" text="OK" /></hierarchy>',
       );
-      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValueOnce(okDialog).mockResolvedValue(home);
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValueOnce(okDialog(true)).mockResolvedValue(home);
+      await ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] });
+      expect(tapped(ctx)).toEqual([]);
+      expect(ctx.device.pressBack).toHaveBeenCalledTimes(1);
+
+      const alone = withOwner(LAUNCHER);
+      vi.mocked(alone.client.getUiHierarchy).mockResolvedValueOnce(okDialog(false)).mockResolvedValue(home);
+      await ensureSessionReady(alone, 'startup', undefined, { retryBackoffMs: [0] });
+      expect(tapped(alone)).toEqual(['OK']);
+    });
+
+    it('waits for a dismissed dialog to leave instead of counting it again', async () => {
+      // On an overloaded emulator the dialog can linger past the tap; a
+      // re-read must not count that as the dialog coming back.
+      const ctx = withOwner(LAUNCHER);
+      vi.mocked(ctx.client.getUiHierarchy)
+        .mockResolvedValueOnce(launcherAnr)
+        .mockResolvedValueOnce(launcherAnr) // still leaving
+        .mockResolvedValue(home);
 
       await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
 
-      const [[opts]] = vi.mocked(ctx.device.locator).mock.calls;
-      expect(opts).toEqual({ xpath: "//node[@package='android'][@text='OK']" });
-      const handle = vi.mocked(ctx.device.locator).mock.results[0].value as { first: ReturnType<typeof vi.fn> };
-      expect(handle.first).toHaveBeenCalled();
-      expect(ctx.device.getByText).not.toHaveBeenCalled();
+      expect(tapped(ctx)).toEqual(['id:Close app']);
+      expect(ctx.device.launchApp).toHaveBeenCalledTimes(1);
     });
 
     it('names no owner when several foreign dialog windows are listed, but still closes', async () => {
