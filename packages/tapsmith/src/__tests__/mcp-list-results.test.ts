@@ -107,8 +107,8 @@ describe('tapsmith_list_results reporting', () => {
   });
 
   it('shows a result warnings (PILOT-398)', async () => {
-    const out = await listResults(dispatcherWith([result({ fullName: 'signs in', warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith closed it and retried.'] })]));
-    expect(out).toContain('Warning: The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith closed it and retried.');
+    const out = await listResults(dispatcherWith([result({ fullName: 'signs in', warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it and recovered the session.'] })]));
+    expect(out).toContain('Warning: The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it and recovered the session.');
   });
 
   it('names the project a result came from', async () => {

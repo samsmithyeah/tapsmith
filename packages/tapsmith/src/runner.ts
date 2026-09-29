@@ -126,20 +126,28 @@ async function forEachDeviceBestEffort(opts: RunOptions, fn: (device: Device) =>
  * a warning — held for the next test result — for the app under test's own.
  */
 function drainPreflightNotices(opts: RunOptions, collector: TraceCollector | null): void {
-  for (const rd of resettableDevices(opts)) {
+  const devices = resettableDevices(opts);
+  for (const rd of devices) {
     for (const notice of rd.sessionContext.notices.splice(0)) {
+      // In a group, say whose app it was.
+      const message = devices.length > 1 ? `[${rd.name}] ${notice.message}` : notice.message;
       if (notice.kind === 'app-dialog') {
         const pending = (opts._preflightWarnings ??= []);
-        if (!pending.includes(notice.message)) pending.push(notice.message);
+        if (!pending.includes(message)) pending.push(message);
       }
+      // Stamped now, not when the dialog was handled (possibly before this
+      // trace began): rows keep their order on the timeline. The handling
+      // time goes in the log.
+      const now = Date.now();
       collector?.addActionEvent({
         category: 'device',
         action: 'systemDialog',
         duration: 0,
-        startTime: notice.timestamp,
-        endTime: notice.timestamp,
+        startTime: now,
+        endTime: now,
         success: true,
-        detail: notice.message,
+        detail: message,
+        log: [`handled at ${new Date(notice.timestamp).toISOString()}`],
         hasScreenshotBefore: false,
         hasScreenshotAfter: false,
         hasHierarchyBefore: false,
@@ -1526,7 +1534,11 @@ async function runSuiteContext(
     }
 
     const failed = failAll(ctx, parentPrefix, beforeAllError, opts.projectName, beforeAllScreenshot, beforeAllTrace);
+    // A dialog the scope-entry reset closed may be why the scope failed.
+    drainPreflightNotices(opts, null);
+    const scopeWarnings = opts._preflightWarnings?.splice(0) ?? [];
     for (const tr of collectResults(failed)) {
+      if (scopeWarnings.length > 0) tr.warnings = [...scopeWarnings];
       result.tests.push(tr);
       opts.reporter?.onTestEnd?.(tr);
     }

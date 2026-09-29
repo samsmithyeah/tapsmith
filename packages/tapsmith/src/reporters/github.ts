@@ -43,7 +43,8 @@ export class GitHubActionsReporter implements TapsmithReporter {
     }
     for (const test of result.tests) {
       for (const warning of test.warnings ?? []) {
-        emitAnnotation('warning', test, new Error(warning), 'warning: ');
+        // No stack: the location would be this reporter's own frame.
+        emitAnnotation('warning', test, Object.assign(new Error(warning), { stack: undefined }), 'warning: ');
       }
     }
 

@@ -37,8 +37,8 @@ describe('worker-protocol serialization', () => {
     });
 
     it('round-trips warnings (PILOT-398)', () => {
-      const result: TestResult = { name: 't', fullName: 't', status: 'passed', durationMs: 1, warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith closed it and retried.'] };
-      expect(deserializeTestResult(serializeTestResult(result, 0)).warnings).toEqual(['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith closed it and retried.']);
+      const result: TestResult = { name: 't', fullName: 't', status: 'passed', durationMs: 1, warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it and recovered the session.'] };
+      expect(deserializeTestResult(serializeTestResult(result, 0)).warnings).toEqual(['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it and recovered the session.']);
       expect(serializeTestResult({ ...result, warnings: undefined }, 0)).not.toHaveProperty('warnings');
     });
 

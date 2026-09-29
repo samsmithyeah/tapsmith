@@ -68,11 +68,11 @@ describe('tapsmith_run_tests result handling', () => {
     const result: TestRunResult = { status: 'passed', passed: 1, failed: 0, skipped: 0, duration: 100 };
     const res = await callRunTests(makeDispatcher({
       runFiles: async () => result,
-      getResults: () => [{ fullName: 'signs in', filePath: FILE, status: 'passed', warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith closed it and retried.'] }],
+      getResults: () => [{ fullName: 'signs in', filePath: FILE, status: 'passed', warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it and recovered the session.'] }],
     }), { files: [FILE] });
     expect(res.isError).toBeFalsy();
     expect(text(res)).toContain('All tests passed: 1 passed');
-    expect(text(res)).toContain('Warnings:\n  signs in: The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith closed it and retried.');
+    expect(text(res)).toContain('Warnings:\n  signs in: The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it and recovered the session.');
   });
 
   it('a filter that matches nothing is an error that lists available tests', async () => {

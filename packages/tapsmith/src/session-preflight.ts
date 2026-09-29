@@ -50,7 +50,8 @@ export interface SessionPreflightContext {
 
 /** A system ANR/crash dialog the Android preflight dealt with. */
 export interface PreflightNotice {
-  /** `app-dialog`: the app under test's own (closed; its test gets a warning).
+  /** `app-dialog`: the app under test's own, or one whose owner could not be
+   *  read (dismissed, session recovered; its test gets a warning).
    *  `foreign-dialog`: another package's (dismissed; trace row only). */
   kind: 'app-dialog' | 'foreign-dialog'
   /** The dialog's title, e.g. `Pixel Launcher isn't responding`. */
@@ -1134,7 +1135,7 @@ async function clearBlockingDialog(
       kind: 'app-dialog',
       title,
       owner,
-      message: `The app under test (${pkg}) showed "${title}"; Tapsmith closed it and retried.`,
+      message: `The app under test (${pkg}) showed "${title}"; Tapsmith dismissed it and recovered the session.`,
       timestamp: Date.now(),
     });
     // Never "Close app" while system_server's ANR is up: the tap might land
@@ -1146,6 +1147,13 @@ async function clearBlockingDialog(
     // dumpsys named no owner, so this may be the app under test's own dialog:
     // nothing inline may kill it or wait it out as a stranger's. The normal
     // recovery clears it and reports the relaunch, as for any session fault.
+    // It may be the app's, and the recovery relaunches it: warn on the test.
+    ctx.notices.push({
+      kind: 'app-dialog',
+      title,
+      message: `A system dialog was on screen and its owner could not be read: "${title}"; Tapsmith recovered the session.`,
+      timestamp: Date.now(),
+    });
     throw new AppUnderTestDialogError(
       `A system dialog is on screen and its owner could not be read: ${dialog}.`,
     );

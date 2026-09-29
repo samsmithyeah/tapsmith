@@ -739,7 +739,7 @@ describe('runner app reset (declared isolation)', () => {
       let calls = 0;
       opts.beforeEachTest = async () => {
         calls++;
-        if (calls === 2) opts.devices[0].sessionContext!.notices.push(appDialog('The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith closed it and retried.'), foreignDialog);
+        if (calls === 2) opts.devices[0].sessionContext!.notices.push(appDialog('The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it and recovered the session.'), foreignDialog);
       };
 
       const result = await runSuiteContext(ctx, '', [], [], opts);
@@ -747,7 +747,7 @@ describe('runner app reset (declared isolation)', () => {
       const [one, two] = collectResults(result);
       expect(one.warnings).toBeUndefined();
       // Another app's dialog is not a warning on the test (trace row only).
-      expect(two.warnings).toEqual(['The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith closed it and retried.']);
+      expect(two.warnings).toEqual(['The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it and recovered the session.']);
       expect(opts.devices[0].sessionContext!.notices).toEqual([]);
     });
 
@@ -765,6 +765,46 @@ describe('runner app reset (declared isolation)', () => {
       const result = await runSuiteContext(ctx, '', [], [], opts);
 
       expect(result.tests[0]).toMatchObject({ status: 'failed', warnings: ['closed it'] });
+    });
+
+    it('puts a dialog closed by the scope-entry reset on the first test', async () => {
+      const d = makeDevice();
+      pushContext();
+      tapsmithTest('one', async () => {});
+      tapsmithTest('two', async () => {});
+      const ctx = popContext();
+      const opts = makeOpts(d, makeConfig());
+      d.device._resetApp.mockImplementation(async () => {
+        opts.devices[0].sessionContext!.notices.push(appDialog('closed at file entry'));
+        return { modeRequested: 'clear', modeUsed: 'clear', fellBack: false, coldLaunch: true, durationMs: 5, hooksDetected: false, steps: [] };
+      });
+
+      const result = await runSuiteContext(ctx, '', [], [], opts);
+
+      const [one, two] = collectResults(result);
+      expect(one.warnings).toEqual(['closed at file entry']);
+      expect(two.warnings).toBeUndefined();
+    });
+
+    it('keeps the warning on every test of a scope whose beforeAll then failed', async () => {
+      const d = makeDevice();
+      pushContext();
+      tapsmithBeforeAll(async () => { throw new Error('app never came back'); });
+      tapsmithTest('one', async () => {});
+      tapsmithTest('two', async () => {});
+      const ctx = popContext();
+      const opts = makeOpts(d, makeConfig());
+      d.device._resetApp.mockImplementation(async () => {
+        opts.devices[0].sessionContext!.notices.push(appDialog('closed at file entry'));
+        return { modeRequested: 'clear', modeUsed: 'clear', fellBack: false, coldLaunch: true, durationMs: 5, hooksDetected: false, steps: [] };
+      });
+
+      const result = await runSuiteContext(ctx, '', [], [], opts);
+
+      expect(collectResults(result).map((t) => [t.status, t.warnings])).toEqual([
+        ['failed', ['closed at file entry']],
+        ['failed', ['closed at file entry']],
+      ]);
     });
 
     it('records a trace row for every handled dialog', async () => {

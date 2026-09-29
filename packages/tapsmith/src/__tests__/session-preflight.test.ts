@@ -1166,6 +1166,8 @@ describe('session-preflight', () => {
 
       expect(onRecovery).toHaveBeenCalledTimes(1);
       expect(String(onRecovery.mock.calls[0][0])).toContain('its owner could not be read: "Pixel Launcher isn\'t responding"');
+      // It may have been the app's own, and recovery relaunched the app.
+      expect(ctx.notices).toEqual([expect.objectContaining({ kind: 'app-dialog', title: 'Pixel Launcher isn\'t responding' })]);
       expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
       expect(ctx.device.locator).not.toHaveBeenCalled();
     });
@@ -1276,7 +1278,7 @@ describe('session-preflight', () => {
       // Left for the runner to put on the test result and in the trace.
       expect(ctx.notices).toEqual([expect.objectContaining({
         kind: 'app-dialog',
-        message: 'The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith closed it and retried.',
+        message: 'The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it and recovered the session.',
       })]);
     });
 
