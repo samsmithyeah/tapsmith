@@ -756,7 +756,9 @@ export async function coordinateBuckets(
         const fileCount = buckets[i].projects.reduce((n, p) => n + p.testFiles.length, 0);
         process.stderr.write(
           `${YELLOW}Device target ${buckets[i].label} could not start; its ${fileCount} test file(s) are reported as failed. `
-          + `The other device targets still run.\n${messageFromUnknown(err)}${RESET}\n`,
+          + `The other device targets still run.\n`
+          // A non-launch error is a bug, not a missing device: keep its stack.
+          + `${isLaunchSetupError(err) || !(err instanceof Error) ? messageFromUnknown(err) : (err.stack ?? err.message)}${RESET}\n`,
         );
       }
     }
@@ -777,9 +779,14 @@ export async function coordinateBuckets(
     arrived[i] = true;
     arrivedCount++;
     if (arrivedCount < buckets.length) return;
-    if (startFailures.size === buckets.length) renderAllFailed();
-    else renderStarted();
-    releaseBarrier();
+    // Released whatever rendering does: a throw here must not leave every
+    // waiting bucket parked on the barrier forever.
+    try {
+      if (startFailures.size === buckets.length) renderAllFailed();
+      else renderStarted();
+    } finally {
+      releaseBarrier();
+    }
   };
 
   const settled = await Promise.allSettled(buckets.map(async (bucket, i) => {
@@ -804,8 +811,6 @@ export async function coordinateBuckets(
     // One bucket (the others planned no workers) is a single-target run:
     // its error, hints and all, as runParallel would have thrown it.
     if (errors.length === 1) throw errors[0];
-    const nonLaunch = errors.find((err) => !isLaunchSetupError(err));
-    if (nonLaunch !== undefined) throw nonLaunch;
     // Each target's whole message: its later lines carry the hints (the
     // per-worker failures, a port squatter's kill command, the advice).
     throw new LaunchSetupError(
@@ -814,7 +819,9 @@ export async function coordinateBuckets(
         const [first, ...rest] = messageFromUnknown(err).split('\n');
         return [`${buckets[i].label}: ${first}`, ...rest.map((line) => `  ${line}`)].join('\n');
       }).join('\n'),
-      { cause: errors[0] },
+      // A non-launch error (a bug, not a missing device) is the cause, so
+      // its stack is there for TAPSMITH_DEBUG.
+      { cause: errors.find((err) => !isLaunchSetupError(err)) ?? errors[0] },
     );
   }
 
@@ -842,10 +849,12 @@ export function targetProvisionFailure(
   mode: 'UI mode' | 'Watch mode',
   failures: Array<{ label: string; err: unknown }>,
 ): LaunchSetupError {
-  const lines = failures.map(({ label, err }) => `Device target ${label} could not start: ${messageFromUnknown(err).split('\n')[0]}`);
+  const summaries = failures.map(({ label, err }) => `Device target ${label} could not start: ${messageFromUnknown(err).split('\n')[0]}`);
+  // Every target's later lines, indented under its summary: they carry the hints.
+  const blocks = failures.map(({ err }, i) => [summaries[i], ...messageFromUnknown(err).split('\n').slice(1).map((l) => `  ${l}`)]);
   return new LaunchSetupError(
-    `${lines[0]}${failures.length > 1 ? ` (and ${failures.length - 1} more)` : ''}\n`
-    + (failures.length > 1 ? `${lines.join('\n')}\n` : '')
+    `${summaries[0]}${failures.length > 1 ? ` (and ${failures.length - 1} more)` : ''}\n`
+    + (failures.length > 1 ? blocks.flat() : blocks[0].slice(1)).map((l) => `${l}\n`).join('')
     + `${mode} needs every device target to start. Pass --project to leave ${failures.length === 1 ? 'this target' : 'these targets'} out, `
     + 'or run `tapsmith test`, which runs the other targets and reports this one\'s tests as failed.',
     { cause: failures[0].err },

@@ -779,13 +779,34 @@ describe('coordinateBuckets()', () => {
     expect(result.tests).toEqual([]);
   });
 
-  it('rethrows a non-launch error as-is when every bucket fails, so its stack survives', async () => {
+  it('lists every target when every bucket fails, a non-launch error included, keeping it as the cause', async () => {
     const rec = recordingReporter();
-    const bug = new TypeError('real bug');
-    await expect(coordinateBuckets([
-      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('x')),
-      failingBucket('ios iPhone 17', [iosProject], bug),
-    ], coordination(rec))).rejects.toBe(bug);
+    const bug = new TypeError('Physical iOS device bucket failed to resolve');
+    let caught: unknown;
+    try {
+      await coordinateBuckets([
+        failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('No online devices found.')),
+        failingBucket('ios iPhone 17', [iosProject], bug),
+      ], coordination(rec));
+    } catch (err) {
+      caught = err;
+    }
+    expect(isLaunchSetupError(caught)).toBe(true);
+    expect((caught as Error).message).toContain('android Pixel_6: No online devices found.');
+    expect((caught as Error).message).toContain('ios iPhone 17: Physical iOS device bucket failed to resolve');
+    expect((caught as Error).cause).toBe(bug);
+  });
+
+  it('releases the barrier even when rendering the start throws, so no bucket hangs', async () => {
+    const rec = recordingReporter();
+    let released = false;
+    const throwing = { ...rec.reporter, onRunStart: () => { throw new Error('reporter bug'); } } as unknown as DispatcherOptions['reporter'];
+    const run = coordinateBuckets([
+      readyBucket('ios iPhone 17', [iosProject], passing('ios test', 'ios'), () => { released = true; }),
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('x'), 5),
+    ], { ...coordination(rec), reporter: throwing });
+    await expect(run).rejects.toThrow('reporter bug');
+    expect(released).toBe(true);
   });
 
   it('still rejects the run for a bucket that fails after dispatch, once every bucket has settled', async () => {
@@ -871,6 +892,16 @@ describe('targetProvisionFailure()', () => {
     expect(summary).toBe('Device target android Pixel_6 could not start: Failed to provision any devices for bucket "android Pixel_6".');
     expect(details.join('\n')).toContain('UI mode needs every device target to start');
     expect(details.join('\n')).toContain('--project');
+  });
+
+  it('keeps each target\'s hint lines', () => {
+    const err = targetProvisionFailure('UI mode', [
+      { label: 'ios iPhone 17', err: new Error('Failed to provision iOS simulator.\nRun: xcrun simctl list') },
+    ]);
+    expect(err.message.split('\n').slice(0, 2)).toEqual([
+      'Device target ios iPhone 17 could not start: Failed to provision iOS simulator.',
+      '  Run: xcrun simctl list',
+    ]);
   });
 
   it('lists every failed target', () => {

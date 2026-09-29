@@ -183,7 +183,8 @@ function reExecWithTsx(args: string[]): never {
 
 /**
  * Verify the target device is responsive before running tests.
- * Attempts ADB restart recovery if unresponsive, exits the process if not recoverable.
+ * Attempts ADB restart recovery if unresponsive, throws if not recoverable
+ * (the caller decides whether the run can go on without this device).
  */
 async function checkDeviceHealth(serial: string | undefined): Promise<void> {
   const target = serial ?? 'any connected device';
@@ -193,8 +194,7 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
     if (stable.healthy) return;
 
     if (stable.reason && !stable.reason.includes('ADB shell')) {
-      console.error(red(`Device ${target} is not ready: ${stable.reason}.`));
-      process.exit(1);
+      throw new Error(`Device ${target} is not ready: ${stable.reason}.`);
     }
   }
 
@@ -234,9 +234,7 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
   try {
     execFileSync('adb', ['start-server'], { timeout: 10_000, stdio: 'ignore' });
   } catch {
-    console.error(red('Failed to restart ADB server.'));
-    console.error(dim('  Check that Android SDK platform-tools are installed and on PATH.'));
-    process.exit(1);
+    throw new Error('Failed to restart ADB server.\n  Check that Android SDK platform-tools are installed and on PATH.');
   }
 
   // Wait for device to come back
@@ -248,20 +246,17 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
   }
 
   // Still unresponsive — give the user actionable guidance
-  console.error(red(`Device ${target} is not responding.`));
-  console.error('');
-  console.error('  Possible causes:');
-  console.error(dim('    • Emulator crashed or froze — restart it'));
-  console.error(dim('    • Multiple emulators competing for the same port'));
-  console.error(dim('    • USB device disconnected'));
-  console.error('');
-  console.error('  Try:');
-  console.error(dim('    $ adb kill-server && adb start-server'));
-  console.error(dim('    $ adb devices -l'));
-  if (serial?.startsWith('emulator')) {
-    console.error(dim(`    $ adb -s ${serial} emu kill  # restart the emulator`));
-  }
-  process.exit(1);
+  throw new Error([
+    `Device ${target} is not responding.`,
+    '  Possible causes:',
+    '    • Emulator crashed or froze — restart it',
+    '    • Multiple emulators competing for the same port',
+    '    • USB device disconnected',
+    '  Try:',
+    '    $ adb kill-server && adb start-server',
+    '    $ adb devices -l',
+    ...(serial?.startsWith('emulator') ? [`    $ adb -s ${serial} emu kill  # restart the emulator`] : []),
+  ].join('\n'));
 }
 
 // ─── Daemon management ───
@@ -473,8 +468,9 @@ async function ensureDaemonRunning(
       ? `tapsmith-core exited with code ${daemonExitCode} during startup`
       : 'failed to start tapsmith-core (not ready after 60s)';
     progress?.fail('daemon', reason);
-    console.error(red(`Failed to start Tapsmith daemon (${reason}). Is tapsmith-core installed?`));
-    process.exit(1);
+    // Thrown, not exited: a multi-target run goes on without this target.
+    newClient.close();
+    throw new Error(`Failed to start Tapsmith daemon (${reason}). Is tapsmith-core installed?`);
   }
 
   const version = (await newClient.ping()).version;
@@ -1515,11 +1511,11 @@ async function provisionPerProjectDevices(
   // Let every bucket settle, so the error names each target that failed
   // and no provisioning is left running behind it.
   const settled = await Promise.allSettled(tasks);
+  const { deviceTargetLabel, targetProvisionFailure } = await import('./dispatcher.js');
   const failures = settled.flatMap((r, i) => (r.status === 'rejected'
-    ? [{ label: bucketEntries[i].signature.split('|').slice(0, 2).join(' '), err: r.reason as unknown }]
+    ? [{ label: deviceTargetLabel(bucketEntries[i].signature), err: r.reason as unknown }]
     : []));
   if (failures.length > 0) {
-    const { targetProvisionFailure } = await import('./dispatcher.js');
     const error = targetProvisionFailure(modeName, failures);
     progress?.fail('worker-devices', error.message.split('\n')[0]);
     throw error;
@@ -2119,9 +2115,14 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
   // A plain multi-target `tapsmith test` goes on without a target that
   // cannot start: its files are reported failed and the other targets run
   // (PILOT-400). UI and watch still need the first target to start.
-  const toleratesTargetFailure = isMultiBucketSequential && !args.ui && !args.watch;
+  // Targets with files to run: a target whose projects were all filtered
+  // down to no files is not a target this run needs (a single effective
+  // target keeps the single-target behaviour).
+  const targetsWithFiles = new Set(projects.filter((p) => p.testFiles.length > 0).map((p) => p.deviceSignature));
+  const toleratesTargetFailure = targetsWithFiles.size > 1 && !args.ui && !args.watch;
   /** Device targets (by signature) that could not start, with the error. */
   const failedTargets = new Map<string, unknown>();
+  const { deviceTargetLabel } = await import('./dispatcher.js');
   const noteFailedTarget = (signature: string, err: unknown) => {
     failedTargets.set(signature, err);
     // The failed setup may have spawned this target's daemon. Nothing will
@@ -2135,7 +2136,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       .filter((p) => p.deviceSignature === signature)
       .reduce((n, p) => n + p.testFiles.length, 0);
     process.stderr.write(yellow(
-      `Device target ${signature.split('|').slice(0, 2).join(' ')} could not start; its ${fileCount} test file(s) are reported as failed. `
+      `Device target ${deviceTargetLabel(signature)} could not start; its ${fileCount} test file(s) are reported as failed. `
       + 'The other device targets still run.\n',
     ));
   };
@@ -2157,6 +2158,14 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', (err as Error).message);
       console.error(red((err as Error).message));
       if (!toleratesTargetFailure) {
+        if (targetsWithFiles.size > 1) {
+          // UI or watch with several targets: say which one, and how to go on.
+          const { targetProvisionFailure } = await import('./dispatcher.js');
+          const advice = targetProvisionFailure(args.ui ? 'UI mode' : 'Watch mode', [
+            { label: deviceTargetLabel(initialProject.deviceSignature), err },
+          ]).message.split('\n').at(-1);
+          console.error(dim(`Device target ${deviceTargetLabel(initialProject.deviceSignature)} could not start. ${advice}`));
+        }
         sequentialExitCode = 1;
         return;
       }
