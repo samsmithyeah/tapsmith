@@ -791,6 +791,27 @@ describe('the device tools the server advertises', () => {
     }
   });
 
+  it('tells an agent every form tapsmith_run_tests accepts for `files`', async () => {
+    // Both dispatchers resolve absolute, project-relative and glob paths
+    // (matchRequestedFiles); a description naming fewer steers agents away
+    // from forms that work (PILOT-267).
+    const server = createMcpServer({ dispatcher: makeDispatcher() });
+    const client = new Client({ name: 'probe', version: '1.0.0' }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    try {
+      await client.connect(clientTransport);
+      const runTests = (await client.listTools()).tools.find((t) => t.name === 'tapsmith_run_tests');
+      const files = (runTests?.inputSchema.properties?.files ?? {}) as { description?: string };
+      expect(files.description).toMatch(/absolute/i);
+      expect(files.description).toMatch(/relative to the project root/i);
+      expect(files.description).toMatch(/glob/i);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it('keeps the device tools, and drops only the dispatcher-backed ones, without a dispatcher', async () => {
     // The UI transport builds a server without a dispatcher for probing; the
     // device tools still have to be there, since they do not need one.
