@@ -26,6 +26,10 @@ const baseEnv: EnvScan = {
     { name: 'iPhone 16', udid: 'B', state: 'Shutdown', runtime: 'iOS 18 2' },
   ],
   avds: ['Pixel_7', 'Pixel_8'],
+  avdImages: [
+    { name: 'Pixel_7', tagId: 'google_apis', apiLevel: 36 },
+    { name: 'Pixel_8', tagId: 'google_apis', apiLevel: 36 },
+  ],
   isMacOS: true,
 };
 
@@ -231,6 +235,88 @@ describe('resolveInitPlan()', () => {
     );
     expect(plan.android?.avd).toBeUndefined();
     expect(plan.warnings.some((w) => w.includes('AVD'))).toBe(true);
+  });
+});
+
+// ─── AVD choice and HTTPS capture (PILOT-403) ───
+
+describe('resolveInitPlan() AVD choice with network capture', () => {
+  // Android Studio's default AVD (a Google Play image, listed first) beside a create-avd one.
+  const studioEnv: EnvScan = {
+    ...baseEnv,
+    avds: ['Medium_Phone_API_36', 'Tapsmith_Phone_API_36'],
+    avdImages: [
+      { name: 'Medium_Phone_API_36', tagId: 'google_apis_playstore', apiLevel: 36 },
+      { name: 'Tapsmith_Phone_API_36', tagId: 'google_apis', apiLevel: 36 },
+    ],
+  };
+  const playOnlyEnv: EnvScan = {
+    ...baseEnv,
+    avds: ['Medium_Phone_API_36'],
+    avdImages: [{ name: 'Medium_Phone_API_36', tagId: 'google_apis_playstore', apiLevel: 36 }],
+  };
+  const android = (over: Partial<InitCommandOptions> = {}) => initArgs({ yes: true, platform: 'android', ...over });
+
+  it('prefers a capture-capable AVD over an earlier Play image when capture is on', () => {
+    const plan = resolveInitPlan(android({ networkCapture: true }), studioEnv, detectStubs);
+    expect(plan.android?.avd).toBe('Tapsmith_Phone_API_36');
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it('keeps "first available" when capture is off', () => {
+    const plan = resolveInitPlan(android(), studioEnv, detectStubs);
+    expect(plan.android?.avd).toBe('Medium_Phone_API_36');
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it('warns, suggesting a NEW AVD, when only Play images exist', () => {
+    const plan = resolveInitPlan(android({ networkCapture: true }), playOnlyEnv, detectStubs);
+    expect(plan.android?.avd).toBe('Medium_Phone_API_36');
+    expect(plan.warnings).toHaveLength(1);
+    expect(plan.warnings[0]).toContain('Medium_Phone_API_36 uses a Google Play system image');
+    expect(plan.warnings[0]).toContain("run: npx tapsmith create-avd, then set avd: 'Tapsmith_Phone_API_36'");
+    expect(plan.warnings[0]).not.toContain('--force');
+  });
+
+  it('honours an explicit Play-image --avd but warns, pointing at the capable one', () => {
+    const plan = resolveInitPlan(android({ networkCapture: true, avd: 'Medium_Phone_API_36' }), studioEnv, detectStubs);
+    expect(plan.android?.avd).toBe('Medium_Phone_API_36');
+    expect(plan.warnings).toHaveLength(1);
+    expect(plan.warnings[0]).toContain("set avd: 'Tapsmith_Phone_API_36'");
+  });
+
+  it('does not vouch for an AVD whose image could not be read', () => {
+    const env: EnvScan = { ...baseEnv, avds: ['Mystery'], avdImages: [{ name: 'Mystery' }] };
+    const plan = resolveInitPlan(android({ networkCapture: true }), env, detectStubs);
+    expect(plan.android?.avd).toBe('Mystery');
+    expect(plan.warnings[0]).toContain('Could not read the system image of AVD Mystery');
+  });
+
+  it('suggests create-avd, not Android Studio, when there are no AVDs', () => {
+    const plan = resolveInitPlan(android({ networkCapture: true }), { ...baseEnv, avds: [], avdImages: [] }, detectStubs);
+    expect(plan.android?.avd).toBeUndefined();
+    expect(plan.warnings).toHaveLength(1);
+    expect(plan.warnings[0]).toContain('No Android AVDs found');
+    expect(plan.warnings[0]).toContain('npx tapsmith create-avd');
+    expect(plan.warnings[0]).not.toContain('Android Studio');
+  });
+
+  it('adds no AVD warning for physical-device-only Android', () => {
+    const plan = resolveInitPlan(android({ networkCapture: true, deviceType: 'physical' }), playOnlyEnv, detectStubs);
+    expect(plan.android?.avd).toBeUndefined();
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it('puts the warning in the --json result', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-exec-'));
+    try {
+      const args = android({ networkCapture: true, exampleTest: false, agentsMd: false });
+      const plan = resolveInitPlan(args, playOnlyEnv, detectStubs, tmp);
+      const result = executeInitPlan(plan, args, tmp);
+      expect(result.warnings.some((w) => w.includes('Google Play system image'))).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 
