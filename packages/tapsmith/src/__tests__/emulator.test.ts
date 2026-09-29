@@ -674,6 +674,34 @@ describe('emulator utilities', () => {
         listener: { 'emulator-5554': 7777 },
         healthy: false,
       });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(h.killProcess).toHaveBeenCalledWith(4242);
+      expect(h.killEmulator).not.toHaveBeenCalled();
+      expect(h.written).toEqual([[]]);
+    });
+
+    it('does not adopt a healthy emulator that holds the port instead of its own PID', () => {
+      const h = harness({
+        entries: [entry()],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+        listener: { 'emulator-5554': 7777 },
+      });
+      expect(reclaimOrphanedEmulators(h.deps).reusable).toEqual([]);
+      expect(h.probeDeviceHealth).not.toHaveBeenCalled();
+      expect(h.killEmulator).not.toHaveBeenCalled();
+      expect(h.written).toEqual([[]]);
+    });
+
+    it('kills an unhealthy emulator it launched by PID only when lsof cannot name the listener', () => {
+      const h = harness({
+        entries: [entry()],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+        healthy: false,
+      });
       expect(reclaimOrphanedEmulators(h.deps).killed).toEqual(['emulator-5554']);
       expect(h.killProcess).toHaveBeenCalledWith(4242);
       expect(h.killEmulator).not.toHaveBeenCalled();

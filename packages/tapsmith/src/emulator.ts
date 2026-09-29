@@ -230,7 +230,21 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
       continue;
     }
 
-    // Ours — health check to decide reuse vs kill
+    // Ours. The argv shows our PID asked for this console port, not that it
+    // holds it: when lsof names a different process on the port, our qemu
+    // lost it and the serial is someone else's. Stop our (useless) process,
+    // but neither reuse nor touch the serial.
+    const listener = inAdb ? d.findEmulatorPid(entry.serial) : undefined;
+    if (listener !== undefined && listener !== entry.pid) {
+      process.stderr.write(
+        `${YELLOW}Stopping Tapsmith emulator PID ${entry.pid} (AVD ${entry.avd}): it no longer holds ${entry.serial}. ` +
+        `Leaving the emulator now on ${entry.serial} alone.${RESET}\n`,
+      );
+      d.killProcess(entry.pid);
+      continue;
+    }
+
+    // Health check to decide reuse vs kill
     if (inAdb && inAdb.state === 'device') {
       const health = d.probeDeviceHealth(entry.serial);
       if (health.healthy) {
@@ -250,10 +264,9 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
       );
     }
 
-    // The argv says our PID asked for this console port, not that it holds
-    // it: only go through the serial (adb emu kill, and the port listener)
-    // when the listener really is our PID. Otherwise signal only our PID.
-    if (inAdb && d.findEmulatorPid(entry.serial) === entry.pid) {
+    // Go through the serial (adb emu kill, then the port listener) only when
+    // the listener is confirmed to be our PID; without lsof, signal the PID.
+    if (listener === entry.pid) {
       d.killEmulator(entry.serial);
     }
     // Kill by PID as well — more reliable than ADB when the device is unresponsive
