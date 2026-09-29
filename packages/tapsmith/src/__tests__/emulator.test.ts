@@ -206,6 +206,12 @@ describe('emulator utilities', () => {
       expect(detectBlockingSystemDialog(xml)).toBe('Google Play services isn’t responding');
     });
 
+    it('prefers a system-drawn node over the app\'s own text when there is no alert title', () => {
+      const xml = '<node package="com.example.app" text="The server isn&apos;t responding" />'
+        + '<node package="android" text="Maps keeps stopping" />';
+      expect(detectBlockingSystemDialog(xml)).toBe('Maps keeps stopping');
+    });
+
     it('falls back to a generic description when the phrase is not in a text attribute', () => {
       expect(detectBlockingSystemDialog('<node content-desc="Maps keeps stopping" />')).toBe('an app isn\'t responding or keeps stopping');
     });

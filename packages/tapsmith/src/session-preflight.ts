@@ -1107,7 +1107,9 @@ async function clearBlockingDialog(
     const message = `The app under test is showing a system dialog: ${dialog}. `
       + 'It stopped responding or crashed. Check the app\'s logs (adb logcat) for the cause.';
     process.stderr.write(`[tapsmith] ${message} Closing it.\n`);
-    await dismissDialogOnce(ctx, hierarchyXml, CLOSE_FIRST_LABELS);
+    // Never "Close app" while system_server's ANR is up: the tap might land
+    // on its dialog, and killing it restarts the whole runtime.
+    await dismissDialogOnce(ctx, hierarchyXml, owners.includes(SYSTEM_SERVER_PROCESS) ? NEVER_CLOSE_LABELS : CLOSE_FIRST_LABELS);
     throw new AppUnderTestDialogError(message);
   }
   if (owners.length === 0) {
@@ -1225,7 +1227,7 @@ async function waitForDialogGone(ctx: SessionPreflightContext, title: string): P
   const deadline = Date.now() + DIALOG_GONE_TIMEOUT_MS;
   for (;;) {
     try {
-      const { hierarchyXml } = await ctx.client.getUiHierarchy();
+      const { hierarchyXml } = await ctx.client.getUiHierarchy(IOS_APP_READY_POLL_DEADLINE_MS);
       // An empty dump proves nothing: the agent failed to read the screen.
       if (hierarchyXml.trim() && detectBlockingSystemDialog(hierarchyXml) !== title) return;
     } catch {

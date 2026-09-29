@@ -682,11 +682,14 @@ const GENERIC_BLOCKING_DIALOG = 'an app isn\'t responding or keeps stopping';
 
 /**
  * The dialog's own title ("Pixel Launcher isn't responding"), entity-decoded:
- * the `android:id/alertTitle` node when it matches, else the first text node
- * that does. Undefined when the phrase only appears outside a `text` attribute.
+ * the `android:id/alertTitle` node when it matches, else the first system-drawn
+ * text node that does, else the first of any package. Undefined when the phrase only appears outside a `text` attribute.
  */
 function blockingDialogTitle(rawHierarchy: string, patterns: RegExp[]): string | undefined {
   const matches = (text: string) => patterns.some((p) => p.test(text.toLowerCase()));
+  // Preference: the alert title, then any system-drawn node, then any node
+  // (the app's own text can carry the phrase too).
+  let systemDrawn: string | undefined;
   let first: string | undefined;
   for (const [node] of rawHierarchy.matchAll(/<node\b[^>]*>/g)) {
     const text = node.match(/\btext="([^"]*)"/)?.[1];
@@ -694,9 +697,10 @@ function blockingDialogTitle(rawHierarchy: string, patterns: RegExp[]): string |
     const decoded = xmlUnescape(text).trim();
     if (!matches(decoded)) continue;
     if (node.includes('resource-id="android:id/alertTitle"')) return decoded;
+    if (node.includes('package="android"')) systemDrawn ??= decoded;
     first ??= decoded;
   }
-  return first;
+  return systemDrawn ?? first;
 }
 
 /**

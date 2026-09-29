@@ -1295,6 +1295,15 @@ describe('session-preflight', () => {
       expect(onRecovery).toHaveBeenCalledTimes(1);
     });
 
+    it('closes the app\'s own dialog without "Close app" while system_server\'s ANR is also listed', async () => {
+      const ctx = withOwner('system', PKG);
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValueOnce(appAnr).mockResolvedValue(home);
+
+      await ensureSessionReady(ctx, 'before test', undefined, { retryBackoffMs: [0] });
+
+      expect(tapped(ctx)[0]).toBe('id:Wait');
+    });
+
     it('treats the dialog as the app\'s own when the app owns any of several dialog windows', async () => {
       // dumpsys lists every error window; which one the title belongs to is unknowable.
       const ctx = withOwner(LAUNCHER, PKG);
