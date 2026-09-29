@@ -324,6 +324,22 @@ Error: 14 UNAVAILABLE: failed to connect to all addresses
 3. Check that no other process is using port 50051 (the default daemon port)
 4. If using a custom `daemonAddress`, verify the daemon is running at that address
 
+### A system dialog is blocking the device (Android)
+
+```
+session preflight failed during startup launch: A system dialog is blocking the device: "Pixel Launcher isn't responding" (com.google.android.apps.nexuslauncher). Tapsmith dismissed it 4 times and it kept coming back. …
+```
+
+**What happened:** Before the tests start, and before each test, Tapsmith checks that the app is on screen. When another package's "isn't responding" or "keeps stopping" dialog covers it, Tapsmith dismisses the dialog, relaunches the app and checks again (you will see `Dismissing system dialog …` lines). This error means the dialog kept coming back. That usually happens on an overloaded emulator: a cold boot on a busy host can leave the launcher or Google Play services unresponsive for minutes.
+
+**Fixes:**
+
+- Close other emulators and heavy apps on the host, then run again
+- Give the AVD more CPU cores and RAM (Android Studio → Device Manager → Edit)
+- Cold-boot the emulator, or wipe its data if the dialog shows up on every boot
+
+When the dialog belongs to **the app under test**, Tapsmith leaves it on screen and fails straight away with `The app under test is showing a system dialog`, since your app hung or crashed. Check `adb logcat` for the cause. `TAPSMITH_DEBUG=1` also logs the screen's hierarchy when a dialog is found.
+
 ### Tapsmith was loaded without `import.meta.dirname`
 
 ```
