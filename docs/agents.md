@@ -27,8 +27,8 @@ so the project's agent has durable instructions. Skip with `--no-agents-md`.
 All `--json` surfaces (`init`, `verify`, `doctor`, `list-devices`, `telemetry`,
 `ios setup-device`) follow the same conventions: exactly one JSON document on stdout, on
 success and on failure (`{"error":{"code","message","fix?","candidates?"}}`), exit code
-0/1, no ANSI codes. A run interrupted by a signal exits above 128 and may print
-nothing, so check the exit code before parsing. `init --json` needs `--yes` (or a setup flag): the wizard has no JSON
+0/1, no ANSI codes. A command killed by a signal (Ctrl-C, a CI cancel) may print
+nothing, and an interrupted `verify` currently reports `RUN_FAILED`. `init --json` needs `--yes` (or a setup flag): the wizard has no JSON
 output. The schemas and error codes are in the
 [API reference](api-reference.md#json-output---json).
 

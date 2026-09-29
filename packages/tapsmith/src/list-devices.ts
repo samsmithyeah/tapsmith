@@ -326,12 +326,22 @@ export async function listDevicesFromDaemon(
     // must not leave the daemon just spawned running.
     client = (opts.connect ?? ((address) => new TapsmithGrpcClient(address)))(`127.0.0.1:${port}`);
     // A spawn that failed is known at once; don't wait out the ready timeout.
-    const ready = await Promise.race([client.waitForReady(opts.readyTimeoutMs ?? 5_000), spawnFailed]);
-    if (!ready) {
+    const readyTimeoutMs = opts.readyTimeoutMs ?? 5_000;
+    const ready = await Promise.race([client.waitForReady(readyTimeoutMs), spawnFailed]);
+    if (!ready && spawnError) {
       throw new ListDevicesError(
         'DAEMON_START_FAILED',
-        `Failed to start the tapsmith-core daemon (${bin})${spawnError ? `: ${spawnError.message}` : ''}`,
+        `Failed to start the tapsmith-core daemon (${bin}): ${spawnError.message}`,
         DAEMON_BIN_FIX,
+      );
+    }
+    if (!ready) {
+      // It started but did not answer: a slow or loaded host as often as a
+      // broken binary, so reinstalling is not the first thing to try.
+      throw new ListDevicesError(
+        'DAEMON_START_FAILED',
+        `The tapsmith-core daemon (${bin}) did not answer within ${readyTimeoutMs / 1000} s`,
+        'Re-run tapsmith list-devices; if it keeps failing, run npx tapsmith doctor --json',
       );
     }
     try {

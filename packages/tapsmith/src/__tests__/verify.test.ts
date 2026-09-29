@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport, runVerify, interruptedRunExitCode } from '../verify.js';
+import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport, runVerify } from '../verify.js';
 
 describe('pickVerifyTarget()', () => {
   it('prefers example.test.ts', () => {
@@ -113,19 +113,3 @@ describe('runVerify() with a config that fails to load', () => {
   });
 });
 
-describe('interruptedRunExitCode()', () => {
-  const timeout = Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT' });
-  it.each([
-    ['killed by Ctrl-C', { signal: 'SIGINT' as const, status: null }, 130],
-    ['killed by a CI cancel', { signal: 'SIGTERM' as const, status: null }, 143],
-    ['killed by a closed terminal', { signal: 'SIGHUP' as const, status: null }, 129],
-    ['exited 130 after catching SIGINT (parallel dispatcher)', { signal: null, status: 130 }, 130],
-    ['exited 143 after catching SIGTERM (parallel dispatcher)', { signal: null, status: 143 }, 143],
-    ['hit the 10-minute timeout', { signal: 'SIGTERM' as const, status: null, error: timeout }, undefined],
-    ['OOM-killed', { signal: 'SIGKILL' as const, status: null }, undefined],
-    ['crashed', { signal: 'SIGSEGV' as const, status: null }, undefined],
-    ['failed normally', { signal: null, status: 1 }, undefined],
-  ])('%s → %s', (_name, child, expected) => {
-    expect(interruptedRunExitCode(child)).toBe(expected);
-  });
-});

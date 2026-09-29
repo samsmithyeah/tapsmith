@@ -313,6 +313,21 @@ describe('listDevicesFromDaemon failure codes', () => {
     }
   }, 15_000);
 
+  it('DAEMON_START_FAILED for a daemon that starts but never answers suggests a retry, not a reinstall', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-list-devices-'));
+    const bin = path.join(dir, 'fake-core');
+    fs.writeFileSync(bin, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
+    try {
+      const err = await listDevicesFromDaemon({ findBin: () => bin, readyTimeoutMs: 300 }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ListDevicesError);
+      expect(err).toMatchObject({ code: 'DAEMON_START_FAILED', message: expect.stringContaining('did not answer within 0.3 s') });
+      expect((err as ListDevicesError).fix).not.toMatch(/[Rr]einstall/);
+      expect((err as ListDevicesError).fix).toContain('doctor');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it('DAEMON_START_FAILED when the daemon cannot be started, naming the spawn error', async () => {
     const started = Date.now();
     const err = await listDevicesFromDaemon({ findBin: () => '/nonexistent/tapsmith-core', readyTimeoutMs: 10_000 }).catch((e: unknown) => e);

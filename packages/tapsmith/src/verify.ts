@@ -96,24 +96,6 @@ export function cleanupVerifySmokeTest(scaffolded: ScaffoldedVerifyTest | undefi
   }
 }
 
-const INTERRUPT_SIGNALS: Partial<Record<NodeJS.Signals, number>> = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
-
-/**
- * The exit code for a `tapsmith test` run that was interrupted — Ctrl-C, a
- * CI cancel, a closed terminal — or undefined when it was not. The run was
- * interrupted when it was killed by SIGINT, SIGTERM or SIGHUP, or exited with
- * the matching code after catching one (the parallel dispatcher does). Our
- * own spawnSync timeout (SIGTERM + ETIMEDOUT) and a crash (SIGKILL, SIGSEGV)
- * are failed runs, reported with their stderr.
- */
-export function interruptedRunExitCode(
-  child: { signal: NodeJS.Signals | null; status: number | null; error?: Error },
-): number | undefined {
-  if ((child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') return undefined;
-  if (child.signal) return INTERRUPT_SIGNALS[child.signal];
-  return child.status !== null && Object.values(INTERRUPT_SIGNALS).includes(child.status) ? child.status : undefined;
-}
-
 // ─── Command entry ───
 
 function emitError(json: boolean, code: string, message: string, fix?: string): void {
@@ -202,16 +184,6 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
         env: { ...process.env, TAPSMITH_JSON_OUTPUT_FILE: resultsFile },
         timeout: 10 * 60 * 1000,
       });
-
-      const interrupted = interruptedRunExitCode(child);
-      if (interrupted !== undefined) {
-        // Ctrl-C and a CI cancel reach the whole process group, so the test
-        // run dies with them while spawnSync still blocks our own signal
-        // handler: an interrupt, not a failed setup (the finally cleans up).
-        if (!args.json) console.error('Verification interrupted.');
-        process.exitCode = interrupted;
-        return;
-      }
 
       if (child.error || !fs.existsSync(resultsFile)) {
         const reason = child.error
