@@ -1,7 +1,20 @@
-import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+
+// The PID manifest lives in os.tmpdir(), which is machine-wide: deleting the
+// real one here would wipe the reuse records of every other Tapsmith run on
+// this machine. Point the module under test at a private temp dir instead.
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  const nodeFs = await import('node:fs');
+  const nodePath = await import('node:path');
+  const dir = nodeFs.mkdtempSync(nodePath.join(actual.tmpdir(), 'tapsmith-emulator-test-'));
+  const tmpdir = () => dir;
+  return { ...actual, tmpdir, default: { ...actual, tmpdir } };
+});
 import {
   findAvailablePort,
   serialForPort,
@@ -17,13 +30,26 @@ import {
   selectDevicesForStrategy,
   filterPreferInstalledApp,
   waitForDeviceStability,
+  reclaimOrphanedEmulators,
+  cleanupStaleEmulators,
+  emulatorLaunchArgs,
+  isTapsmithLaunchedEmulator,
+  readProcessArgs,
+  TAPSMITH_EMULATOR_IDENTITY_FLAGS,
 } from '../emulator.js';
 
 const manifestFile = path.join(os.tmpdir(), 'tapsmith-emulators.json');
 
+afterAll(() => {
+  // Only ever the private dir the os mock created — never the real tmpdir.
+  if (path.basename(os.tmpdir()).startsWith('tapsmith-emulator-test-')) {
+    fs.rmSync(os.tmpdir(), { recursive: true, force: true });
+  }
+});
+
 describe('emulator utilities', () => {
-  // Clean the PID manifest before/after all tests so provisionEmulators
-  // tests don't leak fake entries that confuse real `npx tapsmith test` runs.
+  // Clean the (redirected) PID manifest before/after every test so
+  // provisionEmulators tests don't leak fake entries into each other.
   beforeEach(() => {
     try { fs.unlinkSync(manifestFile); } catch { /* ok */ }
   });
@@ -410,7 +436,465 @@ describe('emulator utilities', () => {
     });
   });
 
+  describe('manifest isolation', () => {
+    it('never points the tests at the machine-wide manifest', () => {
+      expect(path.dirname(manifestFile)).toMatch(/tapsmith-emulator-test-/);
+      // Assert through the module under test, not just this file's own path.
+      const emu = makeLaunchedEmulator('IsolationAVD', 5554);
+      Object.defineProperty(emu.process, 'pid', { value: 4321 });
+      recordLaunchedEmulators([emu]);
+      expect(JSON.parse(fs.readFileSync(manifestFile, 'utf-8'))).toEqual([
+        expect.objectContaining({ avd: 'IsolationAVD', pid: 4321 }),
+      ]);
+    });
+  });
+
+  describe('Tapsmith launch identity', () => {
+    const argvOf = (avd: string, port: number) => [
+      '/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64-headless',
+      ...emulatorLaunchArgs(avd, port),
+    ];
+
+    it('recognises the exact argv launchEmulator spawns', () => {
+      expect(isTapsmithLaunchedEmulator(argvOf('Pixel_API_36', 5556), { port: 5556, avd: 'Pixel_API_36' })).toBe(true);
+      expect(isTapsmithLaunchedEmulator(argvOf('Pixel_API_36', 5556), { port: 5556 })).toBe(true);
+    });
+
+    it('keys identity only on flags that are part of the real launch args', () => {
+      const args = emulatorLaunchArgs('A', 5554);
+      expect(TAPSMITH_EMULATOR_IDENTITY_FLAGS.length).toBeGreaterThan(0);
+      for (const flag of TAPSMITH_EMULATOR_IDENTITY_FLAGS) {
+        expect(args).toContain(flag);
+      }
+      expect(args.slice(args.indexOf('-avd'), args.indexOf('-avd') + 2)).toEqual(['-avd', 'A']);
+      expect(args.slice(args.indexOf('-port'), args.indexOf('-port') + 2)).toEqual(['-port', '5554']);
+    });
+
+    it('rejects a user-started emulator on the same port (no -read-only)', () => {
+      const argv = ['/sdk/qemu-system-aarch64', '-avd', 'Pixel_API_36', '-port', '5554', '-no-window'];
+      expect(isTapsmithLaunchedEmulator(argv, { port: 5554, avd: 'Pixel_API_36' })).toBe(false);
+    });
+
+    it('rejects a different port or AVD, matching whole values only', () => {
+      expect(isTapsmithLaunchedEmulator(argvOf('Pixel', 55540), { port: 5554 })).toBe(false);
+      expect(isTapsmithLaunchedEmulator(argvOf('Pixel', 5556), { port: 5554 })).toBe(false);
+      expect(isTapsmithLaunchedEmulator(argvOf('Pixel_2', 5554), { port: 5554, avd: 'Pixel' })).toBe(false);
+    });
+
+    it('reads a real process command line that the identity check accepts', async () => {
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', '--', ...emulatorLaunchArgs('Real_AVD', 5582)], { stdio: 'ignore' });
+      try {
+        await new Promise((resolve) => child.once('spawn', resolve));
+        const argv = readProcessArgs(child.pid!);
+        expect(argv).toBeDefined();
+        expect(isTapsmithLaunchedEmulator(argv!, { port: 5582, avd: 'Real_AVD' })).toBe(true);
+        expect(isTapsmithLaunchedEmulator(argv!, { port: 5554, avd: 'Real_AVD' })).toBe(false);
+      } finally {
+        child.kill();
+      }
+    });
+
+    it('falls back to ps when /proc is unavailable', async () => {
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', '--', ...emulatorLaunchArgs('Ps_AVD', 5584)], { stdio: 'ignore' });
+      try {
+        await new Promise((resolve) => child.once('spawn', resolve));
+        const argv = readProcessArgs(child.pid!, path.join(os.tmpdir(), 'no-such-proc'));
+        expect(argv).toBeDefined();
+        expect(isTapsmithLaunchedEmulator(argv!, { port: 5584, avd: 'Ps_AVD' })).toBe(true);
+      } finally {
+        child.kill();
+      }
+    });
+
+    it('returns undefined for a process that does not exist', () => {
+      expect(readProcessArgs(2 ** 22 + 12345)).toBeUndefined();
+    });
+
+    it('rejects an unrelated process', () => {
+      expect(isTapsmithLaunchedEmulator(['/usr/bin/node', 'server.js', '-port', '5554'], { port: 5554 })).toBe(false);
+      expect(isTapsmithLaunchedEmulator([], { port: 5554 })).toBe(false);
+    });
+  });
+
+  describe('reclaimOrphanedEmulators', () => {
+    const entry = (overrides: Partial<{ serial: string, pid: number, avd: string, port: number }> = {}) => ({
+      serial: 'emulator-5554',
+      pid: 4242,
+      avd: 'Pixel_API_36',
+      port: 5554,
+      launchedAt: '2026-09-28T10:00:00.000Z',
+      ...overrides,
+    });
+    const tapsmithArgv = (avd = 'Pixel_API_36', port = 5554) => ['/sdk/qemu-system-aarch64-headless', ...emulatorLaunchArgs(avd, port)];
+    const userArgv = ['/sdk/qemu-system-aarch64', '-avd', 'Pixel_API_36', '-port', '5554'];
+
+    function harness(opts: {
+      entries: ReturnType<typeof entry>[]
+      adb?: { serial: string, state: string }[]
+      alive?: number[]
+      argv?: Record<number, string[] | undefined>
+      listener?: Record<string, number | undefined>
+      healthy?: boolean
+    }) {
+      const written: unknown[][] = [];
+      const killEmulator = vi.fn();
+      const killProcess = vi.fn();
+      const probeDeviceHealth = vi.fn((serial: string) => ({ serial, healthy: opts.healthy ?? true, reason: opts.healthy === false ? 'pm unresponsive' : undefined }));
+      const deps = {
+        readManifest: () => opts.entries,
+        writeManifest: (e: unknown[]) => { written.push(e); },
+        listAdbDevices: () => opts.adb ?? [],
+        isProcessAlive: (pid: number) => (opts.alive ?? []).includes(pid),
+        readProcessArgs: (pid: number) => opts.argv?.[pid],
+        findEmulatorPid: (serial: string) => opts.listener?.[serial],
+        probeDeviceHealth,
+        killEmulator,
+        killProcess,
+      };
+      return { deps, written, killEmulator, killProcess, probeDeviceHealth };
+    }
+
+    beforeEach(() => {
+      vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('drops a dead entry and leaves a foreign emulator on the same serial running', () => {
+      const h = harness({
+        entries: [entry({ pid: 999991 })],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [7777],
+        argv: { 7777: userArgv },
+      });
+      const result = reclaimOrphanedEmulators(h.deps);
+      expect(result).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(h.killEmulator).not.toHaveBeenCalled();
+      expect(h.killProcess).not.toHaveBeenCalled();
+      expect(h.written).toEqual([[]]);
+    });
+
+    it('drops a dead entry whose serial is gone, killing nothing', () => {
+      const h = harness({ entries: [entry({ pid: 999991 })] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(h.killEmulator).not.toHaveBeenCalled();
+      expect(h.written).toEqual([[]]);
+    });
+
+    it('does not signal a recorded PID that now belongs to an unrelated process', () => {
+      const h = harness({
+        entries: [entry()],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: ['/usr/bin/node', 'server.js'] },
+        healthy: false,
+      });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(h.killProcess).not.toHaveBeenCalled();
+      expect(h.killEmulator).not.toHaveBeenCalled();
+      expect(h.written).toEqual([[]]);
+    });
+
+    it('does not reuse or kill a user emulator that happens to hold the recorded PID', () => {
+      const h = harness({
+        entries: [entry()],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: userArgv },
+      });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(h.probeDeviceHealth).not.toHaveBeenCalled();
+      expect(h.killEmulator).not.toHaveBeenCalled();
+      expect(h.killProcess).not.toHaveBeenCalled();
+    });
+
+    it('keeps the record, without reusing or killing, when a live PID cannot be read', () => {
+      const e = entry();
+      const h = harness({
+        entries: [e],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: {},
+        healthy: false,
+      });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: ['emulator-5554'] });
+      expect(h.probeDeviceHealth).not.toHaveBeenCalled();
+      expect(h.killEmulator).not.toHaveBeenCalled();
+      expect(h.killProcess).not.toHaveBeenCalled();
+      expect(h.written).toEqual([[e]]);
+    });
+
+    it("never kills when an offline emulator's command line is unreadable", () => {
+      const h = harness({
+        entries: [entry()],
+        adb: [{ serial: 'emulator-5554', state: 'offline' }],
+        alive: [4242],
+        argv: {},
+      });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: ['emulator-5554'] });
+      expect(h.killEmulator).not.toHaveBeenCalled();
+      expect(h.killProcess).not.toHaveBeenCalled();
+    });
+
+    it('reuses a healthy emulator it launched and keeps its record', () => {
+      const e = entry();
+      const h = harness({
+        entries: [e],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+      });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: ['emulator-5554'], killed: [], undetermined: [] });
+      expect(h.written).toEqual([[e]]);
+      expect(h.killEmulator).not.toHaveBeenCalled();
+    });
+
+    it('kills an unhealthy emulator it launched and drops its record', () => {
+      const h = harness({
+        entries: [entry()],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+        listener: { 'emulator-5554': 4242 },
+        healthy: false,
+      });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: ['emulator-5554'], undetermined: [] });
+      expect(h.killEmulator).toHaveBeenCalledWith('emulator-5554');
+      expect(h.killProcess).toHaveBeenCalledWith(4242);
+      expect(h.written).toEqual([[]]);
+    });
+
+    it('signals only its own PID when another process holds the console port', () => {
+      const h = harness({
+        entries: [entry()],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+        listener: { 'emulator-5554': 7777 },
+        healthy: false,
+      });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(h.killProcess).toHaveBeenCalledWith(4242);
+      expect(h.killEmulator).not.toHaveBeenCalled();
+      expect(h.written).toEqual([[]]);
+    });
+
+    it('does not adopt a healthy emulator that holds the port instead of its own PID', () => {
+      const h = harness({
+        entries: [entry()],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+        listener: { 'emulator-5554': 7777 },
+      });
+      expect(reclaimOrphanedEmulators(h.deps).reusable).toEqual([]);
+      expect(h.probeDeviceHealth).not.toHaveBeenCalled();
+      expect(h.killEmulator).not.toHaveBeenCalled();
+      expect(h.written).toEqual([[]]);
+    });
+
+    it('kills an unhealthy emulator it launched by PID only when lsof cannot name the listener', () => {
+      const h = harness({
+        entries: [entry()],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+        healthy: false,
+      });
+      expect(reclaimOrphanedEmulators(h.deps).killed).toEqual(['emulator-5554']);
+      expect(h.killProcess).toHaveBeenCalledWith(4242);
+      expect(h.killEmulator).not.toHaveBeenCalled();
+    });
+
+    it('kills an unresponsive emulator it launched by PID when adb has lost it', () => {
+      const h = harness({
+        entries: [entry()],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+      });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: ['emulator-5554'], undetermined: [] });
+      expect(h.killProcess).toHaveBeenCalledWith(4242);
+      expect(h.killEmulator).not.toHaveBeenCalled();
+    });
+
+    it('judges ownership by the last record for a duplicated serial', () => {
+      const h = harness({
+        entries: [entry({ pid: 4242 }), entry({ pid: 999991 })],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+      });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(h.killEmulator).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cleanupStaleEmulators heuristic pass', () => {
+    function harness(opts: {
+      adb: { serial: string, state: string }[]
+      listener?: Record<string, number | undefined>
+      argv?: Record<number, string[] | undefined>
+      avdNames?: Record<string, string>
+      healthy?: Record<string, boolean>
+    }) {
+      const killEmulator = vi.fn();
+      const deps = {
+        readManifest: () => [],
+        writeManifest: vi.fn(),
+        listAdbDevices: () => opts.adb,
+        isProcessAlive: () => false,
+        readProcessArgs: (pid: number) => opts.argv?.[pid],
+        findEmulatorPid: (serial: string) => opts.listener?.[serial],
+        resolveAvdName: (serial: string) => opts.avdNames?.[serial],
+        probeDeviceHealth: (serial: string) => ({ serial, healthy: opts.healthy?.[serial] ?? true, reason: 'boot not completed' }),
+        killEmulator,
+        killProcess: vi.fn(),
+        waitForAdbSettle: vi.fn(),
+      };
+      return { deps, killEmulator };
+    }
+
+    beforeEach(() => {
+      vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('leaves an unhealthy user emulator on the target AVD running', () => {
+      const h = harness({
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        listener: { 'emulator-5554': 7777 },
+        argv: { 7777: ['/sdk/qemu-system-aarch64', '-avd', 'Pixel', '-port', '5554'] },
+        avdNames: { 'emulator-5554': 'Pixel' },
+        healthy: { 'emulator-5554': false },
+      });
+      expect(cleanupStaleEmulators('Pixel', h.deps)).toEqual({ reusable: [], killed: [] });
+      expect(h.killEmulator).not.toHaveBeenCalled();
+    });
+
+    it('leaves an offline user emulator running, with or without a target AVD', () => {
+      const h = harness({
+        adb: [{ serial: 'emulator-5554', state: 'offline' }],
+        listener: { 'emulator-5554': 7777 },
+        argv: { 7777: ['/sdk/qemu-system-aarch64', '-avd', 'Pixel', '-port', '5554'] },
+      });
+      expect(cleanupStaleEmulators('Pixel', h.deps).killed).toEqual([]);
+      expect(cleanupStaleEmulators(undefined, h.deps).killed).toEqual([]);
+      expect(h.killEmulator).not.toHaveBeenCalled();
+    });
+
+    it('does not kill when no process can be tied to the serial', () => {
+      const h = harness({
+        adb: [{ serial: 'emulator-5554', state: 'unauthorized' }],
+        listener: {},
+      });
+      expect(cleanupStaleEmulators('Pixel', h.deps).killed).toEqual([]);
+      expect(h.killEmulator).not.toHaveBeenCalled();
+    });
+
+    it('kills an unhealthy Tapsmith-launched orphan missing from the manifest', () => {
+      const h = harness({
+        adb: [{ serial: 'emulator-5556', state: 'device' }],
+        listener: { 'emulator-5556': 8888 },
+        argv: { 8888: ['/sdk/qemu-system-aarch64-headless', ...emulatorLaunchArgs('Pixel', 5556)] },
+        avdNames: { 'emulator-5556': 'Pixel' },
+        healthy: { 'emulator-5556': false },
+      });
+      expect(cleanupStaleEmulators('Pixel', h.deps).killed).toEqual(['emulator-5556']);
+      expect(h.killEmulator).toHaveBeenCalledWith('emulator-5556');
+    });
+
+    it('leaves a Tapsmith-launched orphan of a different AVD alone', () => {
+      const h = harness({
+        adb: [{ serial: 'emulator-5556', state: 'offline' }],
+        listener: { 'emulator-5556': 8888 },
+        argv: { 8888: ['/sdk/qemu-system-aarch64-headless', ...emulatorLaunchArgs('Other', 5556)] },
+      });
+      expect(cleanupStaleEmulators('Pixel', h.deps).killed).toEqual([]);
+      expect(h.killEmulator).not.toHaveBeenCalled();
+    });
+
+    it('hands a serial whose record was dropped to the heuristic pass', () => {
+      const deadRecord = [{ serial: 'emulator-5556', pid: 999991, avd: 'Pixel', port: 5556, launchedAt: '2026-09-28T10:00:00.000Z' }];
+      const orphan = harness({
+        adb: [{ serial: 'emulator-5556', state: 'device' }],
+        listener: { 'emulator-5556': 8888 },
+        argv: { 8888: ['/sdk/qemu-system-aarch64-headless', ...emulatorLaunchArgs('Pixel', 5556)] },
+        avdNames: { 'emulator-5556': 'Pixel' },
+        healthy: { 'emulator-5556': false },
+      });
+      expect(cleanupStaleEmulators('Pixel', { ...orphan.deps, readManifest: () => deadRecord }).killed).toEqual(['emulator-5556']);
+
+      const user = harness({
+        adb: [{ serial: 'emulator-5556', state: 'device' }],
+        listener: { 'emulator-5556': 7777 },
+        argv: { 7777: ['/sdk/qemu-system-aarch64', '-avd', 'Pixel', '-port', '5556'] },
+        avdNames: { 'emulator-5556': 'Pixel' },
+        healthy: { 'emulator-5556': false },
+      });
+      expect(cleanupStaleEmulators('Pixel', { ...user.deps, readManifest: () => deadRecord }).killed).toEqual([]);
+      expect(user.killEmulator).not.toHaveBeenCalled();
+    });
+
+    it('leaves a serial whose ownership phase 1 could not determine to phase 1', () => {
+      const record = [{ serial: 'emulator-5556', pid: 8888, avd: 'Pixel', port: 5556, launchedAt: '2026-09-28T10:00:00.000Z' }];
+      let reads = 0;
+      const h = harness({
+        adb: [{ serial: 'emulator-5556', state: 'offline' }],
+        listener: { 'emulator-5556': 8888 },
+      });
+      const result = cleanupStaleEmulators('Pixel', {
+        ...h.deps,
+        readManifest: () => record,
+        isProcessAlive: () => true,
+        // Unreadable in phase 1, readable (and Tapsmith's) if asked again.
+        readProcessArgs: () => (reads++ === 0 ? undefined : ['/sdk/qemu', ...emulatorLaunchArgs('Pixel', 5556)]),
+      });
+      expect(result.killed).toEqual([]);
+      expect(h.killEmulator).not.toHaveBeenCalled();
+    });
+
+    it('does not kill an offline transport with no process behind it', () => {
+      const h = harness({ adb: [{ serial: 'emulator-5554', state: 'offline' }], listener: {} });
+      expect(cleanupStaleEmulators(undefined, h.deps).killed).toEqual([]);
+      expect(h.killEmulator).not.toHaveBeenCalled();
+    });
+
+    it('leaves a healthy Tapsmith-launched orphan running', () => {
+      const h = harness({
+        adb: [{ serial: 'emulator-5556', state: 'device' }],
+        listener: { 'emulator-5556': 8888 },
+        argv: { 8888: ['/sdk/qemu-system-aarch64-headless', ...emulatorLaunchArgs('Pixel', 5556)] },
+        avdNames: { 'emulator-5556': 'Pixel' },
+      });
+      expect(cleanupStaleEmulators('Pixel', h.deps).killed).toEqual([]);
+    });
+  });
+
   describe('provisionEmulators', () => {
+    it('never launches on the port of an offline emulator it left running', async () => {
+      const ports: number[] = [];
+      await provisionEmulators(
+        { existingSerials: [], workers: 1, avd: 'Pixel' },
+        {
+          listAdbDevices: () => [{ serial: 'emulator-5554', state: 'offline' }],
+          listAvds: () => ['Pixel'],
+          getRunningAvdName: () => undefined,
+          launchEmulator: (avd, port) => {
+            ports.push(port);
+            return makeLaunchedEmulator(avd, port);
+          },
+          waitForBoot: async () => undefined,
+          probeDeviceHealth: (serial) => ({ serial, healthy: true }),
+          waitForDeviceStability: async (serial) => ({ serial, healthy: true }),
+          killEmulator: vi.fn(),
+        },
+      );
+      expect(ports).toEqual([5556]);
+    });
+
     it('does not fall back to a different AVD when the requested one boots unhealthy', async () => {
       const killed: string[] = [];
       const launchedAvds: string[] = [];
@@ -422,6 +906,7 @@ describe('emulator utilities', () => {
           avd: 'Broken_API_35',
         },
         {
+          listAdbDevices: () => [],
           listAvds: () => ['Broken_API_35', 'Pixel_9_API_35'],
           getRunningAvdName: () => undefined,
           launchEmulator: (avd, port) => {
@@ -453,6 +938,7 @@ describe('emulator utilities', () => {
           avd: 'Broken_API_35',
         },
         {
+          listAdbDevices: () => [],
           listAvds: () => ['Broken_API_35'],
           getRunningAvdName: () => undefined,
           launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port),
@@ -479,6 +965,7 @@ describe('emulator utilities', () => {
           avd: 'Pixel_9_API_35',
         },
         {
+          listAdbDevices: () => [],
           listAvds: () => ['Pixel_9_API_35', 'Small_Phone_API_35'],
           getRunningAvdName: (serial) => serial === 'emulator-5554' ? 'Pixel_9_API_35' : undefined,
           launchEmulator: (avd, port) => {
@@ -508,6 +995,7 @@ describe('emulator utilities', () => {
           avd: 'Pixel_9_API_35',
         },
         {
+          listAdbDevices: () => [],
           listAvds: () => ['Pixel_9_API_35'],
           getRunningAvdName: () => 'Small_Phone_API_35',
           launchEmulator: (avd, port) => {
