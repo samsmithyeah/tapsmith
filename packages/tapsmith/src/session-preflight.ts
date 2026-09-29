@@ -1131,16 +1131,17 @@ async function clearBlockingDialog(
     const message = `The app under test is showing a system dialog: ${dialog}. `
       + 'It stopped responding or crashed. Check the app\'s logs (adb logcat) for the cause.';
     process.stderr.write(`[tapsmith] ${message} Closing it.\n`);
+    // Never "Close app" while system_server's ANR is up: the tap might land
+    // on its dialog, and killing it restarts the whole runtime.
+    const dismissed = await dismissDialogOnce(ctx, hierarchyXml, owners.includes(SYSTEM_SERVER_PROCESS) ? NEVER_CLOSE_LABELS : CLOSE_FIRST_LABELS);
     ctx.notices.push({
       kind: 'app-dialog',
       title,
       owner,
-      message: `The app under test (${pkg}) showed "${title}"; Tapsmith dismissed it.`,
+      message: `The app under test (${pkg}) showed "${title}"; `
+        + (dismissed ? 'Tapsmith dismissed it.' : 'Tapsmith could not dismiss it.'),
       timestamp: Date.now(),
     });
-    // Never "Close app" while system_server's ANR is up: the tap might land
-    // on its dialog, and killing it restarts the whole runtime.
-    await dismissDialogOnce(ctx, hierarchyXml, owners.includes(SYSTEM_SERVER_PROCESS) ? NEVER_CLOSE_LABELS : CLOSE_FIRST_LABELS);
     throw new AppUnderTestDialogError(message);
   }
   if (owners.length === 0) {
@@ -1213,12 +1214,13 @@ const SYSTEM_DIALOG_BUTTON_IDS: Partial<Record<string, string>> = {
   'Wait': 'android:id/aerr_wait',
 };
 
-/** One tap on a dismissal button the dialog shows, or BACK when none is. */
+/** One tap on a dismissal button the dialog shows, or BACK when none is.
+ *  False when the tap itself failed. */
 async function dismissDialogOnce(
   ctx: SessionPreflightContext,
   hierarchyXml: string,
   order: readonly string[],
-): Promise<void> {
+): Promise<boolean> {
   // Only the dialog's own buttons: the app's nodes are in the dump underneath.
   // The ANR/crash buttons are tapped by their system resource id, which no app
   // control carries; `first()` because a thrashing emulator can stack two such
@@ -1241,9 +1243,11 @@ async function dismissDialogOnce(
       await ctx.device.pressBack();
     }
     await ctx.device.waitForIdle(1_000);
+    return true;
   } catch {
     // The dialog may have gone on its own between the dump and the tap; the
     // caller re-reads the screen either way.
+    return false;
   }
 }
 

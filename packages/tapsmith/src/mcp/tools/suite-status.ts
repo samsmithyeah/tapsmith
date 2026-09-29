@@ -86,6 +86,9 @@ export function registerSuiteStatusTool(server: McpServer, dispatcher: TestDispa
           } else if (row.status === 'failed') {
             lines.push(`  FAIL: ${row.fullName}${row.error ? ` — ${row.error}` : ''}`);
           }
+          if (!details) {
+            for (const w of row.warnings ?? []) lines.push(`  WARN: ${row.fullName} — ${w}`);
+          }
         }
       }
 

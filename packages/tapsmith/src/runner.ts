@@ -1237,10 +1237,13 @@ async function runTracedAppReset(
     // file-abort recovery, and could land after them.
     const settled = await Promise.allSettled(resets);
     const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    // On failure the notices stay on the session contexts: a file retry, or
+    // the failed scope's results, pick them up (the scope's per-file warning
+    // holder would be discarded with a rethrown infra error).
     if (failure) throw failure.reason;
+    drainPreflightNotices(opts, collector);
     return reports;
   } finally {
-    drainPreflightNotices(opts, collector);
     collector?.endGroup();
   }
 }

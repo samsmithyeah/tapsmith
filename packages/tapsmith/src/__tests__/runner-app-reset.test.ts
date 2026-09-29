@@ -807,6 +807,22 @@ describe('runner app reset (declared isolation)', () => {
       ]);
     });
 
+    it('keeps the warning when the entry reset that closed the dialog then failed', async () => {
+      const d = makeDevice();
+      pushContext();
+      tapsmithTest('one', async () => {});
+      const ctx = popContext();
+      const opts = makeOpts(d, makeConfig());
+      d.device._resetApp.mockImplementation(async () => {
+        opts.devices[0].sessionContext!.notices.push(appDialog('closed at file entry'));
+        throw new Error('App reset failed: RESET_FAILED');
+      });
+
+      const result = await runSuiteContext(ctx, '', [], [], opts);
+
+      expect(collectResults(result).map((t) => [t.status, t.warnings])).toEqual([['failed', ['closed at file entry']]]);
+    });
+
     it('shows the warning on the attempt it interrupted as well as the final result', async () => {
       const d = makeDevice();
       let attempts = 0;
