@@ -251,6 +251,12 @@ describe('runListDevices --json', () => {
     expect(parsed.error).toMatchObject({ code: 'UNEXPECTED_ERROR', message: 'boom' });
   });
 
+  it('reports a throw while enriching the rows as UNEXPECTED_ERROR too, never an empty stdout', async () => {
+    const h = capture({ enrich: () => { throw new Error('devicectl parse blew up'); } });
+    expect(await runListDevices({ json: true }, h.deps)).toBe(1);
+    expect(JSON.parse(h.out())).toMatchObject({ error: { code: 'UNEXPECTED_ERROR', message: 'devicectl parse blew up' } });
+  });
+
   it('keeps text-mode failures on stderr, exit 1', async () => {
     const h = capture({ fetchDevices: async () => { throw new ListDevicesError('DAEMON_NOT_FOUND', 'no daemon', 'reinstall'); } });
     expect(await runListDevices({ json: false }, h.deps)).toBe(1);

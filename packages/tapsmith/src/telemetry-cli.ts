@@ -117,7 +117,7 @@ export async function runTelemetryCommand(args: TelemetryCommandArgs, deps: Tele
     (deps.stdout ?? ((text) => process.stdout.write(text)))(formatJson(jsonError(
       'UNEXPECTED_ERROR',
       `telemetry could not finish: ${err instanceof Error ? err.message : String(err)}`,
-      { fix: 'To see the full error, run it without --json: npx tapsmith telemetry' },
+      { fix: 'To see the full error, run the same command again without --json' },
     )));
     return 1;
   }

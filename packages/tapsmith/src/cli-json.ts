@@ -15,7 +15,7 @@
 export interface CliJsonError {
   /** Stable, SCREAMING_SNAKE machine code (e.g. `BAD_ARGS`, `DAEMON_NOT_FOUND`). */
   code: string;
-  /** One line for a human. */
+  /** For a person; may span several lines (verify's RUN_FAILED carries the run's stderr). */
   message: string;
   /** What to do about it, often the exact command to run. */
   fix?: string;
@@ -50,11 +50,11 @@ export type JsonCheckStatus = 'pass' | 'warn' | 'fail';
 
 /** One row of a health checklist (`doctor`, `ios setup-device`). */
 export interface JsonCheck {
-  /** Stable id to match on; the label's wording may change. */
+  /** Stable id to match on; the label may hold values (a version) and its wording may change. */
   id: string;
   status: JsonCheckStatus;
   label: string;
-  /** The variable part the text output prints dimmed: a path, a version, a list of names. */
+  /** What the text output prints dimmed after the label: a path, a source, a list of names. */
   detail?: string;
   /** How to fix a `warn` or `fail`; may span several lines. */
   fix?: string;

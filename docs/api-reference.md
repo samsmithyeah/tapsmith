@@ -2398,16 +2398,19 @@ reports usage errors on stderr.
 AI agents. The shapes below are a contract for scripts to rely on: new keys may be added, but renaming or
 removing one, or changing what it means, is a breaking change.
 
-- **stdout holds exactly one JSON document**, and nothing else: no banner, no progress, no ANSI codes.
-  Anything else a command prints goes to stderr.
+- **stdout holds exactly one JSON document**, and nothing else from Tapsmith: no banner, no progress, no
+  ANSI codes. Two things are outside that promise: `--help` still prints help, and code in your config file
+  that writes to stdout (a top-level `console.log`) still lands there, since `doctor`, `verify` and `telemetry`
+  load the config. A run interrupted by a signal (Ctrl-C, a CI cancel) exits 130 with no output.
 - **When the command could not do its job**, the document is the error envelope and the exit code is 1:
 
   ```json
   { "error": { "code": "DAEMON_NOT_FOUND", "message": "…", "fix": "…" } }
   ```
 
-  `code` is a stable `SCREAMING_SNAKE` identifier (table below), `message` one line for a person, `fix` what
-  to do about it, and `candidates` (init only) the choices that made it undecidable.
+  `code` is a stable `SCREAMING_SNAKE` identifier (table below), `message` a description for a person (it can
+  span lines: `verify`'s `RUN_FAILED` includes the end of the run's stderr), `fix` what to do about it, and
+  `candidates` (init only) the choices that made it undecidable.
 - **Otherwise** the document is the command's result, which never has a top-level `error` key — so
   `"error" in result` tells the two apart. A result can still mean failure: `doctor` with a failing check and
   `verify` with a failing test exit 1 and print their result with `"ok": false`.
@@ -2419,7 +2422,7 @@ removing one, or changing what it means, is a breaking change.
 | every command above | `BAD_ARGS` (a usage error), `UNEXPECTED_ERROR` (a bug or an environment failure the command did not anticipate; `init` and `verify` included) |
 | `init` | `UNKNOWN_FLAG`, `MISSING_FLAG_VALUE`, `INVALID_PLATFORM`, `INVALID_DEVICE_TYPE`, `NO_PLATFORM`, `NO_APK`, `AMBIGUOUS_APK`, `NO_PACKAGE`, `NO_IOS_APP`, `AMBIGUOUS_IOS_APP`, `NO_BUNDLE_ID`, `IOS_REQUIRES_MACOS`, `IOS_PHYSICAL_INTERACTIVE_ONLY`, `CONFIG_EXISTS`, `NON_INTERACTIVE_TTY` (no terminal and no `--yes`), `JSON_REQUIRES_YES` (`--json` in a terminal without `--yes` or a setup flag: the wizard has no JSON output) |
 | `verify` | `NO_CONFIG`, `CONFIG_ERROR`, `RUN_FAILED`, `PARSE_FAILED` |
-| `doctor` | none of its own: a check that cannot run is a failed check in the result |
+| `doctor` | none of its own: a check that cannot run is reported in the result, usually as a `warn` (`Could not check …`) |
 | `list-devices` | `DAEMON_NOT_FOUND`, `DAEMON_START_FAILED`, `LIST_DEVICES_FAILED` |
 | `telemetry` | `TELEMETRY_WRITE_FAILED` (`enable` / `disable` could not write `~/.tapsmith/telemetry.json`) |
 | `ios setup-device` | `UNSUPPORTED_PLATFORM` (not macOS) |
@@ -2435,10 +2438,12 @@ The results:
   `checks` are health checks (below); `inventory` is `{ avds, simulators, connectedDevices }`: AVD names,
   simulators as `{ name, udid, state, runtime }`, and connected Android devices as `{ serial, state }`.
 - **`ios setup-device --json`**: `{ ok, checks, devices }` — `ok` is the same verdict as the exit code;
-  `checks` are health checks (below), ending with `device-connected`; `devices` are the devices `xcrun
-  devicectl` lists, as `{ udid, name, osVersion, paired, developerMode, transport, fix? }`, where
-  `developerMode` is `enabled`, `disabled` or `unknown`, `transport` is `wired` or `localNetwork`, and `fix`
-  is set on an unpaired device.
+  `checks` are health checks (below), ending with `device-connected`, which fails when no device is listed or
+  a listed device is unpaired, so `ok` is false exactly when some check fails; `devices` are the devices `xcrun
+  devicectl` lists, as `{ udid, name, osVersion, paired, developerMode, transport, fix? }`, where `osVersion`
+  is empty when devicectl does not report it, `developerMode` is `enabled`, `disabled` or `unknown`,
+  `transport` is `wired`, `localNetwork` or `unknown` (not connected now), and `fix` is set on an unpaired
+  device.
 - **`list-devices --json`**: `{ devices }`, each `{ ready, platform, serial, name, osLabel, blockers }` —
   `platform` is `android`, `android-emu`, `ios-sim` or `ios-device`; `osLabel` is like `iOS 18.1` or empty
   when unknown; `blockers` are the fixes that would make it ready, empty when `ready`.
@@ -2446,10 +2451,10 @@ The results:
   configPath, configConsulted, docs }` — `reason` is `env`, `config` or `machine` when disabled; see
   [Telemetry](telemetry.md).
 
-A health check is `{ id, status, label, detail?, fix? }`. `id` is stable — match on it, not on `label`, whose
-wording may change. `status` is `pass`, `warn` (not blocking) or `fail`. `detail` is the variable part the text
-output prints dimmed (a path, a version, device names); `fix` says how to resolve a `warn` or `fail` and may
-span several lines. `doctor`'s ids include `node`, `daemon`, `config`, `config-load`, `adb`, `android-home`,
+A health check is `{ id, status, label, detail?, fix? }`. `id` is stable — match on it, not on `label`, which
+can hold values (`Node.js 22.1.0`) and whose wording may change. `status` is `pass`, `warn` (not blocking) or
+`fail`. `detail` is what the text output prints dimmed after the label (a path, where something was found,
+device names); `fix` says how to resolve a `warn` or `fail` and may span several lines. `doctor`'s ids include `node`, `daemon`, `config`, `config-load`, `adb`, `android-home`,
 `android-devices`, `android-agent`, `app-apk`, `avd-images`, `xcode`, `simctl`, `ios-sim-agent`, `mitm-ca`,
 `mitmproxy`, `network-extension` and `system-proxy`, each only where it applies; `ios setup-device`'s are
 `xcode-clt`, `devicectl`, `iproxy`, `signing`, `sudo-ddi-mount`, `ios-agent-runner`, `profile-expiry` and

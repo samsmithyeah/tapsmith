@@ -60,10 +60,26 @@ describe('buildSetupDeviceJson() (ios setup-device --json schema)', () => {
     expect(json.devices).toEqual([]);
   });
 
-  it('an unpaired device makes ok false and carries its own fix', () => {
-    const json = buildSetupDeviceJson(passing, { ok: true, devices: [device({ isPaired: false })], label: 'Physical iOS device paired' });
+  it('an unpaired device makes ok false, fails device-connected naming it, and carries its own fix', () => {
+    const json = buildSetupDeviceJson(passing, {
+      ok: true, devices: [device(), device({ udid: 'U2', name: 'iPad', isPaired: false })], label: 'Physical iOS device paired',
+    });
     expect(json.ok).toBe(false);
-    expect(json.devices[0]).toMatchObject({ paired: false, fix: expect.stringContaining('Use for Development') });
+    expect(json.checks.at(-1)).toEqual({
+      id: 'device-connected', status: 'fail', label: 'Physical iOS device paired',
+      detail: 'not paired: iPad (U2)', fix: expect.stringContaining('Use for Development'),
+    });
+    expect(json.devices[1]).toMatchObject({ paired: false, fix: expect.stringContaining('Use for Development') });
+  });
+
+  it.each([
+    ['all passing', passing, { ok: true, devices: [device()], label: 'x' }],
+    ['a required check failing', [{ id: 'iproxy', result: { label: 'iproxy', ok: false } }], { ok: true, devices: [device()], label: 'x' }],
+    ['no device', passing, { ok: false, devices: [], label: 'x' }],
+    ['an unpaired device', passing, { ok: true, devices: [device({ isPaired: false })], label: 'x' }],
+  ])('ok is false exactly when some check fails (%s)', (_name, results, deviceCheck) => {
+    const json = buildSetupDeviceJson(results, deviceCheck);
+    expect(json.ok).toBe(!json.checks.some((c) => c.status === 'fail'));
   });
 });
 

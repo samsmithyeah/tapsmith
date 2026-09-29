@@ -34,7 +34,7 @@ const red = (s: string): string => `${RED}${s}${RESET}`;
 
 // ─── Check result tracking ───
 
-/** One check: `label` is the stable wording, `detail` the variable part the text output prints dimmed. */
+/** One check. Match on `id`: `label` may hold values (a version, a count) and its wording may change. */
 export type CheckEntry = JsonCheck;
 
 export type CheckList = CheckEntry[];
@@ -730,7 +730,7 @@ export async function runDoctor(opts: { json: boolean; config?: string }, overri
     deps.stdout(formatJson(jsonError(
       'UNEXPECTED_ERROR',
       `doctor could not finish: ${err instanceof Error ? err.message : String(err)}`,
-      { fix: 'To see the full error, run it without --json: npx tapsmith doctor' },
+      { fix: 'To see the full error, run the same command again without --json' },
     )));
     return 1;
   }

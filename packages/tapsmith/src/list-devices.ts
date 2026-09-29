@@ -370,9 +370,11 @@ export async function runListDevices(opts: { json: boolean }, overrides: Partial
     ...overrides,
   };
 
-  let daemonDevices: DeviceInfoProto[];
+  let rows: DeviceRow[];
   try {
-    daemonDevices = await deps.fetchDevices();
+    const daemonDevices = await deps.fetchDevices();
+    const { physical, usbAttached } = deps.enrich();
+    rows = buildDeviceRows(daemonDevices, physical, usbAttached);
   } catch (err) {
     const failure = err instanceof ListDevicesError
       ? jsonError(err.code, err.message, { fix: err.fix })
@@ -385,9 +387,6 @@ export async function runListDevices(opts: { json: boolean }, overrides: Partial
     }
     return 1;
   }
-
-  const { physical, usbAttached } = deps.enrich();
-  const rows = buildDeviceRows(daemonDevices, physical, usbAttached);
 
   if (opts.json) {
     deps.stdout(formatJson({ devices: rows }));

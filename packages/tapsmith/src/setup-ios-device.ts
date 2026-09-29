@@ -442,11 +442,12 @@ type DeviceConnectionCheck = ReturnType<typeof checkDeviceConnection>;
 export interface SetupDeviceJsonDevice {
   udid: string;
   name: string;
+  /** Empty when devicectl does not report it. */
   osVersion: string;
   paired: boolean;
   /** `enabled`, `disabled` or `unknown` (only iOS 16+ reports it). */
   developerMode: string;
-  /** How CoreDevice reaches it: `wired` (USB) or `localNetwork` (Wi-Fi). */
+  /** How CoreDevice reaches it: `wired` (USB), `localNetwork` (Wi-Fi), or `unknown` (not connected now). */
   transport: string;
   fix?: string;
 }
@@ -468,6 +469,23 @@ function jsonCheck(id: string, result: { label: string; ok: boolean; detail?: st
   if (result.detail !== undefined) check.detail = result.detail;
   if (!result.ok && result.fix) check.fix = result.fix.join('\n');
   return check;
+}
+
+/**
+ * The device row of the checklist. It fails when no device is listed and when
+ * a listed device is unpaired, so a failing `ok` always has a failing check
+ * to explain it.
+ */
+function deviceConnectedCheck(deviceCheck: DeviceConnectionCheck): JsonCheck {
+  const unpaired = deviceCheck.devices.filter((d) => !d.isPaired);
+  if (!deviceCheck.ok || unpaired.length === 0) return jsonCheck('device-connected', deviceCheck);
+  return {
+    id: 'device-connected',
+    status: 'fail',
+    label: deviceCheck.label,
+    detail: `not paired: ${unpaired.map((d) => `${d.name} (${d.udid})`).join(', ')}`,
+    fix: UNPAIRED_FIX,
+  };
 }
 
 /**
@@ -493,7 +511,7 @@ export function buildSetupDeviceJson(
     ok: requiredChecksPass(results.map((r) => r.result), deviceCheck),
     checks: [
       ...results.map(({ id, result }) => jsonCheck(id, result)),
-      jsonCheck('device-connected', deviceCheck),
+      deviceConnectedCheck(deviceCheck),
     ],
     devices: deviceCheck.devices.map((d) => {
       const entry: SetupDeviceJsonDevice = {
@@ -565,7 +583,7 @@ export async function runSetupIosDevice(opts: { json: boolean }, overrides: Part
       deps.stdout(formatJson(jsonError(
         'UNEXPECTED_ERROR',
         `ios setup-device could not finish: ${err instanceof Error ? err.message : String(err)}`,
-        { fix: 'To see the full error, run it without --json: npx tapsmith ios setup-device' },
+        { fix: 'To see the full error, run the same command again without --json' },
       )));
       return 1;
     }
