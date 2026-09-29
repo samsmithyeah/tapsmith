@@ -50,9 +50,13 @@ export function jsonError(
   return { error };
 }
 
-/** Every `--json` document, success or error, is printed the same way. */
+/**
+ * Every `--json` document, success or error, is printed the same way, with
+ * ANSI codes stripped from every string in it (a test's coloured error
+ * message, a build log), so no command has to remember to.
+ */
 export function formatJson(value: unknown): string {
-  return JSON.stringify(value, null, 2) + '\n';
+  return JSON.stringify(value, (_key, v: unknown) => (typeof v === 'string' ? stripAnsi(v) : v), 2) + '\n';
 }
 
 // ─── Health checks ───

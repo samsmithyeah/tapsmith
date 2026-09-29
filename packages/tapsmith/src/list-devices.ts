@@ -335,6 +335,9 @@ export async function listDevicesFromDaemon(
   } finally {
     client?.close();
     child.kill();
+    // Don't let a daemon slow to shut down (a ListDevices call stuck on a
+    // hung adb) hold the CLI open after the answer is out.
+    child.unref();
   }
 }
 

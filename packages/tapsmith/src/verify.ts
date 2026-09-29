@@ -96,6 +96,17 @@ export function cleanupVerifySmokeTest(scaffolded: ScaffoldedVerifyTest | undefi
   }
 }
 
+/**
+ * Whether the `tapsmith test` run ended because the user interrupted it:
+ * killed by Ctrl-C's SIGINT, or exiting 130 after catching it (the parallel
+ * dispatcher does). A timeout (SIGTERM + ETIMEDOUT) or a crash (SIGKILL,
+ * SIGSEGV) is a failed run, reported with its stderr.
+ */
+export function isInterruptedRun(child: { signal: NodeJS.Signals | null; status: number | null; error?: Error }): boolean {
+  if ((child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') return false;
+  return child.signal === 'SIGINT' || child.status === 130;
+}
+
 // ─── Command entry ───
 
 function emitError(json: boolean, code: string, message: string, fix?: string): void {
@@ -185,18 +196,12 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
         timeout: 10 * 60 * 1000,
       });
 
-      // A signal that arrived while spawnSync blocked the event loop (Ctrl-C
-      // reaches the whole process group) is still queued: yield once so
-      // onSignal runs and exits 130, instead of reporting the interrupted run
-      // as RUN_FAILED and removing the handler in the finally below.
-      await new Promise<void>((resolve) => { setImmediate(resolve); });
-
-      if (child.signal) {
-        // The child alone was killed (a CI cancel that signals it directly):
-        // an interrupt too, not a failed setup. Exit as the signal would have
-        // (the finally cleans up).
-        if (!args.json) console.error(`Verification interrupted (${child.signal}).`);
-        process.exitCode = 128 + (os.constants.signals[child.signal] ?? 2);
+      if (isInterruptedRun(child)) {
+        // Ctrl-C reaches the whole process group, so the test run dies with
+        // it while spawnSync still blocks our own signal handler: an
+        // interrupt, not a failed setup (the finally cleans up).
+        if (!args.json) console.error('Verification interrupted.');
+        process.exitCode = 130;
         return;
       }
 

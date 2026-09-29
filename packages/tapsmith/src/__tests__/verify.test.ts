@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport, runVerify } from '../verify.js';
+import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport, runVerify, isInterruptedRun } from '../verify.js';
 
 describe('pickVerifyTarget()', () => {
   it('prefers example.test.ts', () => {
@@ -110,5 +110,19 @@ describe('runVerify() with a config that fails to load', () => {
       process.exitCode = exitCode;
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('isInterruptedRun()', () => {
+  const timeout = Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT' });
+  it.each([
+    ['killed by Ctrl-C', { signal: 'SIGINT' as const, status: null }, true],
+    ['exited 130 after catching SIGINT (parallel dispatcher)', { signal: null, status: 130 }, true],
+    ['hit the 10-minute timeout', { signal: 'SIGTERM' as const, status: null, error: timeout }, false],
+    ['OOM-killed', { signal: 'SIGKILL' as const, status: null }, false],
+    ['crashed', { signal: 'SIGSEGV' as const, status: null }, false],
+    ['failed normally', { signal: null, status: 1 }, false],
+  ])('%s → %s', (_name, child, expected) => {
+    expect(isInterruptedRun(child)).toBe(expected);
   });
 });

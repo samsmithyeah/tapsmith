@@ -29,6 +29,12 @@ describe('jsonError() and ANSI codes', () => {
 });
 
 describe('formatJson()', () => {
+  it('strips ANSI codes from every string in a result, however deep', () => {
+    expect(JSON.parse(formatJson({ failures: [{ error: '\x1b[31mexpected 1 to be 2\x1b[0m' }], ok: false }))).toEqual({
+      failures: [{ error: 'expected 1 to be 2' }], ok: false,
+    });
+  });
+
   it('prints one pretty-printed document ending in a newline', () => {
     expect(formatJson({ ok: true })).toBe('{\n  "ok": true\n}\n');
   });
