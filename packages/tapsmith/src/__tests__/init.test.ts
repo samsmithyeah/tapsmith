@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { generateConfig, generateExampleTest } from '../init.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { generateConfig, generateExampleTest, runInit } from '../init.js';
+import type { InitCommandOptions } from '../cli-program.js';
 
 describe('generateConfig()', () => {
   it('generates single-platform Android config', () => {
@@ -115,5 +116,44 @@ describe('generateExampleTest()', () => {
     // which would make every scaffolded project / `tapsmith verify` fail.
     expect(test).not.toContain("getByRole('any')");
     expect(test).toContain("getByRole('text')");
+  });
+});
+
+// ─── --json never runs the wizard (PILOT-270, PILOT-266 item 1) ───
+
+describe('runInit() --json without --yes', () => {
+  const opts = (over: Partial<InitCommandOptions> = {}): InitCommandOptions => ({
+    yes: false, json: true, force: false, networkCapture: false, exampleTest: true, agentsMd: true, ...over,
+  });
+  const ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (ttyDescriptor) Object.defineProperty(process.stdin, 'isTTY', ttyDescriptor);
+    else delete (process.stdin as { isTTY?: boolean }).isTTY;
+  });
+
+  async function run(isTTY: boolean, over: Partial<InitCommandOptions> = {}): Promise<{ out: string; exit: unknown }> {
+    Object.defineProperty(process.stdin, 'isTTY', { value: isTTY, configurable: true });
+    let out = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out += String(chunk); return true; });
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new Error(`exit ${code}`); }) as never);
+    const exit = await runInit(opts(over)).then(() => undefined, (err: unknown) => (err as Error).message);
+    return { out, exit };
+  }
+
+  it('in a terminal, refuses with JSON_REQUIRES_YES instead of starting the interactive wizard', async () => {
+    const { out, exit } = await run(true);
+    expect(exit).toBe('exit 1');
+    expect(JSON.parse(out)).toEqual({
+      error: { code: 'JSON_REQUIRES_YES', message: expect.stringContaining('--json'), fix: expect.stringContaining('npx tapsmith init --yes --json') },
+    });
+  });
+
+  it('without a terminal, keeps reporting NON_INTERACTIVE_TTY', async () => {
+    const { out, exit } = await run(false);
+    expect(exit).toBe('exit 1');
+    expect((JSON.parse(out) as { error: { code: string } }).error.code).toBe('NON_INTERACTIVE_TTY');
   });
 });

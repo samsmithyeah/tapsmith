@@ -465,6 +465,17 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
 
   const nonInteractive = parsed.yes || parsed.anySetupFlag;
 
+  if (!nonInteractive && parsed.json && process.stdin.isTTY) {
+    // The wizard's prompts cannot be JSON, and --json promises nothing else on stdout.
+    const err = new InitError(
+      'JSON_REQUIRES_YES',
+      '--json needs a non-interactive run: the interactive wizard has no JSON output',
+      { fix: 'Run: npx tapsmith init --yes --json (or pass a setup flag such as --platform)' },
+    );
+    emitInitError(err, true);
+    process.exit(1);
+  }
+
   if (!nonInteractive && !process.stdin.isTTY) {
     const err = new InitError(
       'NON_INTERACTIVE_TTY',
