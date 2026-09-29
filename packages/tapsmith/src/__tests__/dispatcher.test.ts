@@ -13,6 +13,8 @@ import {
   isLaunchSetupError,
   LaunchSetupError,
   coordinateBuckets,
+  deviceTargetLabel,
+  targetStartFailureResults,
   type BucketRunner,
   type DispatcherOptions,
 } from '../dispatcher.js';
@@ -783,5 +785,31 @@ describe('coordinateBuckets()', () => {
     ], coordination(rec, progress))).rejects.toThrow();
     expect(progress.log.some((e) => e.id === 'worker-devices' && e.state === 'failed')).toBe(true);
     expect(progress.log.at(-1)?.state).toBe('finish');
+  });
+});
+
+// The sequential path reports a target that cannot start with the same
+// results as the parallel one.
+describe('targetStartFailureResults()', () => {
+  it('labels the target from its signature', () => {
+    expect(deviceTargetLabel('android|Pixel_6|emulator')).toBe('android Pixel_6');
+    expect(deviceTargetLabel('ios|iPhone 17')).toBe('ios iPhone 17');
+  });
+
+  it('fails each file once with the first line of the reason and no dispatcher stack', () => {
+    const project = makeProject('android', 'android|Pixel_6', ['/t/a.test.ts', '/t/b.test.ts']);
+    const results = targetStartFailureResults('android Pixel_6', [project], new Error('No online devices found.\nConnect a device'));
+    expect(results.map((r) => [r.name, r.filePath, r.status, r.project])).toEqual([
+      ['a.test.ts', '/t/a.test.ts', 'failed', 'android'],
+      ['b.test.ts', '/t/b.test.ts', 'failed', 'android'],
+    ]);
+    expect(results[0].error?.message).toBe('Device target "android Pixel_6" could not start: No online devices found.');
+    expect(results[0].error?.stack).toBeUndefined();
+  });
+
+  it('accepts a non-Error rejection', () => {
+    const project = makeProject('ios', 'ios|iPhone 17', ['/t/a.test.ts']);
+    expect(targetStartFailureResults('ios iPhone 17', [project], 'boom')[0].error?.message)
+      .toBe('Device target "ios iPhone 17" could not start: boom');
   });
 });

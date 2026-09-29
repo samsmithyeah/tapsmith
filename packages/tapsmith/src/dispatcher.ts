@@ -528,7 +528,7 @@ export function planMultiBucket(
       .filter((wave) => wave.length > 0);
 
     // Short human label for log lines: "android Pixel_6" / "ios iPhone 17".
-    const bucketLabel = bucketSignature.split('|').slice(0, 2).join(' ').trim();
+    const bucketLabel = deviceTargetLabel(bucketSignature);
 
     plans.push({
       portOffset: idx * PORTS_PER_BUCKET,
@@ -762,7 +762,7 @@ export async function coordinateBuckets(
     }
     c.reporter.onRunStart?.(c.config, c.testFileCount);
     for (const [i, err] of startFailures) {
-      for (const result of bucketStartFailureResults(buckets[i], err)) {
+      for (const result of targetStartFailureResults(buckets[i].label, buckets[i].projects, err)) {
         startFailureResults.push(result);
         c.reporter.onTestEnd?.(result);
       }
@@ -816,10 +816,25 @@ export async function coordinateBuckets(
   };
 }
 
-/** One failed result per file of a bucket that could not start. */
-function bucketStartFailureResults(bucket: BucketRunner, err: unknown): TestResult[] {
-  const message = `Device target "${bucket.label}" could not start: ${messageFromUnknown(err).split('\n')[0]}`;
-  return bucket.projects.flatMap((project) => project.testFiles.map((file) => {
+/**
+ * Short label for a device target, from its signature: "android Pixel_6",
+ * "ios iPhone 17".
+ */
+export function deviceTargetLabel(deviceSignature: string): string {
+  return deviceSignature.split('|').slice(0, 2).join(' ').trim();
+}
+
+/**
+ * One failed result per test file of `projects`, for a device target that
+ * could not start. Shared by the parallel and sequential paths (PILOT-400).
+ */
+export function targetStartFailureResults(
+  label: string,
+  projects: import('./project.js').ResolvedProject[],
+  err: unknown,
+): TestResult[] {
+  const message = `Device target "${label}" could not start: ${messageFromUnknown(err).split('\n')[0]}`;
+  return projects.flatMap((project) => project.testFiles.map((file) => {
     const error = new Error(message);
     // The stack is the dispatcher's, not the user's: reporters would print
     // its frames under every file.

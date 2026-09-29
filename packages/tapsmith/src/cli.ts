@@ -2098,6 +2098,30 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     );
   }
 
+  // A plain multi-target `tapsmith test` goes on without a target that
+  // cannot start: its files are reported failed and the other targets run
+  // (PILOT-400). UI and watch still need the first target to start.
+  const toleratesTargetFailure = isMultiBucketSequential && !args.ui && !args.watch;
+  /** Device targets (by signature) that could not start, with the error. */
+  const failedTargets = new Map<string, unknown>();
+  const noteFailedTarget = (signature: string, err: unknown) => {
+    failedTargets.set(signature, err);
+    // The failed setup may have spawned this target's daemon. Nothing will
+    // use it, and the next target's setup would overwrite the handle the
+    // final teardown kills, orphaning it.
+    if (spawnedDaemonProcess) {
+      try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
+      spawnedDaemonProcess = undefined;
+    }
+    const fileCount = projects
+      .filter((p) => p.deviceSignature === signature)
+      .reduce((n, p) => n + p.testFiles.length, 0);
+    process.stderr.write(yellow(
+      `Device target ${signature.split('|').slice(0, 2).join(' ')} could not start; its ${fileCount} test file(s) are reported as failed. `
+      + 'The other device targets still run.\n',
+    ));
+  };
+
   try {
     try {
       currentSequentialState = await setupSequentialDevice(
@@ -2114,22 +2138,30 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       // used to print "✗ Primary device" for a group member that failed.
       if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', (err as Error).message);
       console.error(red((err as Error).message));
-      sequentialExitCode = 1;
-      return;
+      if (!toleratesTargetFailure) {
+        sequentialExitCode = 1;
+        return;
+      }
+      noteFailedTarget(initialProject.deviceSignature, err);
     }
 
-    client = currentSequentialState.client;
-    device = currentSequentialState.device;
-    launchedEmulators = currentSequentialState.launchedEmulators;
-    // Mirror the chosen device serial onto the root config so any code path
-    // still reading from `config.device` (UI/watch handoff) sees it.
-    config.device = currentSequentialState.deviceSerial;
+    if (currentSequentialState) {
+      client = currentSequentialState.client;
+      device = currentSequentialState.device;
+      launchedEmulators = currentSequentialState.launchedEmulators;
+      // Mirror the chosen device serial onto the root config so any code path
+      // still reading from `config.device` (UI/watch handoff) sees it.
+      config.device = currentSequentialState.deviceSerial;
+    }
 
     // ─── UI mode ───
     // If --ui is set, start the interactive UI server. It keeps the
     // daemon, emulator, and agent alive and serves a Preact SPA.
     // When workers > 1, the UI server manages its own daemons and workers.
     if (args.ui) {
+      // UI and watch return above when the first target cannot start
+      // (toleratesTargetFailure is off for them), so they always have one.
+      if (!currentSequentialState || !client || !device) throw new Error('internal: UI mode without a started device');
       const { startUIServer } = await import('./ui-mode/ui-server.js');
 
       const uiScreenshotDir =
@@ -2233,6 +2265,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     // daemon, emulator, and agent alive and re-runs tests on file changes.
     // The watch coordinator handles its own cleanup and never returns.
     if (args.watch) {
+      if (!currentSequentialState || !client || !device) throw new Error('internal: watch mode without a started device');
       const { runWatchMode } = await import('./watch.js');
 
       const watchScreenshotDir =
@@ -2325,6 +2358,16 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
         : undefined;
 
     const failedProjects = new Set<string>();
+    /** Report a project on a target that could not start: each file failed. */
+    const reportTargetStartFailure = async (project: import('./project.js').ResolvedProject, err: unknown) => {
+      const { deviceTargetLabel, targetStartFailureResults } = await import('./dispatcher.js');
+      for (const result of targetStartFailureResults(deviceTargetLabel(project.deviceSignature), [project], err)) {
+        reporter.onTestFileStart(result.filePath!);
+        allResults.push(result);
+        reporter.onTestFileEnd(result.filePath!, [result]);
+      }
+      failedProjects.add(project.name);
+    };
     const projectsWithFiles = projects.filter((p) => p.testFiles.length > 0);
     const showProjectHeaders = projectsWithFiles.length > 1;
 
@@ -2353,16 +2396,28 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
 
         let projectFailed = false;
 
+        // A target that could not start: its files fail with the reason,
+        // and its dependents are skipped like any failed project's.
+        if (project.testFiles.length > 0 && failedTargets.has(project.deviceSignature)) {
+          const targetFailure = failedTargets.get(project.deviceSignature);
+          await reportTargetStartFailure(project, targetFailure);
+          continue;
+        }
+
         // ─── Per-project device switching ───
         // When this project's device signature differs from the currently
-        // bound device, tear down the previous state and provision the
-        // new device before running its files.
-        if (project.testFiles.length > 0 && currentSequentialState
-          && currentSequentialState.signature !== project.deviceSignature) {
+        // bound device (or none is, the first target having failed to
+        // start), tear down the previous state and provision the new device
+        // before running its files.
+        if (project.testFiles.length > 0
+          && currentSequentialState?.signature !== project.deviceSignature) {
           process.stdout.write(
             dim(`\nSwitching device for project "${project.name}" (target: ${project.deviceSignature.split('|').slice(0, 2).join(' ')})\n`),
           );
-          teardownSequentialDevice(currentSequentialState);
+          if (currentSequentialState) teardownSequentialDevice(currentSequentialState);
+          currentSequentialState = undefined;
+          client = undefined;
+          device = undefined;
           // Reset emulator tracking — the new state owns its own list
           launchedEmulators = [];
           // A `use`-less project's config *is* the root config, which now holds
@@ -2382,8 +2437,12 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
             );
           } catch (err) {
             console.error(red(`Failed to set up device for project "${project.name}": ${(err as Error).message}`));
-            sequentialExitCode = 1;
-            return;
+            // Only a multi-target run switches devices, so the run goes on
+            // without this target (PILOT-400): its projects fail here, and
+            // any later ones on it through failedTargets above.
+            noteFailedTarget(project.deviceSignature, err);
+            await reportTargetStartFailure(project, err);
+            continue;
           }
           client = currentSequentialState.client;
           device = currentSequentialState.device;
