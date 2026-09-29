@@ -448,7 +448,7 @@ test('app launches successfully', async ({ device }) => {
 
 // ─── Main wizard ───
 
-const UNEXPECTED_FIX = 'To see the full error, run the same command again without --json';
+const UNEXPECTED_FIX = 'Run: npx tapsmith doctor --json to check the environment';
 
 export async function runInit(opts: InitCommandOptions): Promise<void> {
   const { initArgsFromOptions, resolveInitPlan, executeInitPlan, InitError } = await import('./init-noninteractive.js');

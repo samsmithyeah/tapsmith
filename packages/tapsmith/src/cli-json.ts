@@ -29,9 +29,14 @@ export interface CliJsonErrorEnvelope {
   error: CliJsonError;
 }
 
+/** An OSC sequence (an OSC-8 hyperlink, a window title), whatever its body: ESC ] … BEL or ESC \. */
+const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
 /** Remove ANSI escape sequences (colours, OSC-8 hyperlinks): --json output carries none. */
 export function stripAnsi(value: string): string {
-  return stripVTControlCharacters(value);
+  // stripVTControlCharacters only knows OSC bodies of URL-safe characters; a
+  // link with a comma or a space would leave half of itself behind.
+  return stripVTControlCharacters(value.replace(OSC_RE, ''));
 }
 
 /**

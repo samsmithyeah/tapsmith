@@ -31,6 +31,7 @@ describe('jsonError() and ANSI codes', () => {
 describe('formatJson()', () => {
   it('strips OSC-8 hyperlinks whole, not just their introducer', () => {
     expect(JSON.parse(formatJson({ error: '\x1b]8;;https://tapsmith.dev\x07docs\x1b]8;;\x07' }))).toEqual({ error: 'docs' });
+    expect(JSON.parse(formatJson({ error: '\x1b]8;;file:///a b/x?a=1,b+c\x1b\\docs\x1b]8;;\x1b\\' }))).toEqual({ error: 'docs' });
   });
 
   it('strips ANSI codes from every string in a result, however deep', () => {

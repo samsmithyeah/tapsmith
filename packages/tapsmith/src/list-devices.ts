@@ -295,6 +295,27 @@ function stopDaemon(child: ReturnType<typeof spawn>, graceMs = 3_000): void {
 }
 
 /**
+ * Wait up to `timeoutMs` for the daemon to accept connections, in short
+ * steps: grpc-js keeps a waitForReady deadline armed after the client is
+ * closed, so one long wait would hold the process open for the whole timeout
+ * even when the daemon has already failed. `gaveUp` stops the loop once the
+ * caller has stopped waiting (the daemon exited).
+ */
+async function waitForDaemon(
+  client: TapsmithGrpcClient,
+  timeoutMs: number,
+  gaveUp: () => boolean,
+  stepMs = 250,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const left = deadline - Date.now();
+    if (left <= 0 || gaveUp()) return false;
+    if (await client.waitForReady(Math.min(stepMs, left))) return true;
+  }
+}
+
+/**
  * Spin up an ephemeral `tapsmith-core` daemon, issue `ListDevices`, and tear
  * down. Same shape as `ios network configure`'s helper — this command is
  * short-lived and doesn't need to reuse a long-running daemon. Finding,
@@ -352,7 +373,7 @@ export async function listDevicesFromDaemon(
     // must not leave the daemon just spawned running.
     client = (opts.connect ?? ((address) => new TapsmithGrpcClient(address)))(`127.0.0.1:${port}`);
     const readyTimeoutMs = opts.readyTimeoutMs ?? 5_000;
-    const ready = await Promise.race([client.waitForReady(readyTimeoutMs), spawnFailed]);
+    const ready = await Promise.race([waitForDaemon(client, readyTimeoutMs, () => spawnError !== undefined), spawnFailed]);
     if (!ready && spawnError) {
       throw new ListDevicesError(
         'DAEMON_START_FAILED',

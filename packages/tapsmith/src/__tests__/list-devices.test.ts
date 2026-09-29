@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { buildDeviceRows, listDevicesFromDaemon, ListDevicesError, runListDevices, type ListDevicesDeps } from '../list-devices.js';
 import type { DeviceInfoProto, TapsmithGrpcClient } from '../grpc-client.js';
 import type { PhysicalDeviceInfo } from '../ios-devicectl.js';
@@ -354,6 +355,27 @@ describe('listDevicesFromDaemon failure codes', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('the process exits promptly after a failed start, not after the ready timeout', () => {
+    // grpc-js keeps a waitForReady deadline armed after close(); a single long
+    // wait held the CLI open for the whole timeout after reporting the failure.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-list-devices-'));
+    const bin = path.join(dir, 'fake-core');
+    fs.writeFileSync(bin, '#!/bin/sh\nexit 3\n', { mode: 0o755 });
+    const script = path.join(dir, 'probe.mts');
+    const moduleUrl = new URL('../list-devices.ts', import.meta.url).href;
+    fs.writeFileSync(script, `import { listDevicesFromDaemon } from '${moduleUrl}';\n`
+      + `await listDevicesFromDaemon({ findBin: () => '${bin}', readyTimeoutMs: 8_000 }).catch((e) => console.log(e.code));\n`);
+    try {
+      const tsx = new URL('../../node_modules/tsx/dist/cli.mjs', import.meta.url).pathname;
+      const started = Date.now();
+      const r = spawnSync(process.execPath, [tsx, script], { encoding: 'utf8', timeout: 20_000 });
+      expect(r.stdout.trim(), r.stderr).toBe('DAEMON_START_FAILED');
+      expect(Date.now() - started).toBeLessThan(6_000);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it('LIST_DEVICES_FAILED when the daemon answers but ListDevices rejects', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-list-devices-'));
