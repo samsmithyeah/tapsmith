@@ -730,7 +730,7 @@ export async function runDoctor(opts: { json: boolean; config?: string }, overri
     deps.stdout(formatJson(jsonError(
       'UNEXPECTED_ERROR',
       `doctor could not finish: ${err instanceof Error ? err.message : String(err)}`,
-      { fix: 'Run npx tapsmith doctor without --json to see the full error' },
+      { fix: 'To see the full error, run it without --json: npx tapsmith doctor' },
     )));
     return 1;
   }

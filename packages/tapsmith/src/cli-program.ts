@@ -104,7 +104,7 @@ export interface CliHandlers {
   mergeReports(opts: { dir?: string; config?: string }): Promise<number | void>;
   listDevices(opts: { json: boolean }): Promise<number | void>;
   createAvd(opts: CreateAvdCommandOptions): Promise<number | void>;
-  iosSetupDevice(opts: Record<string, never>): Promise<number | void>;
+  iosSetupDevice(opts: { json: boolean }): Promise<number | void>;
   iosBuildAgent(opts: { teamId?: string; cwd?: string; derivedDataPath?: string; verbose: boolean }): Promise<number | void>;
   iosNetworkSetupSimulator(opts: Record<string, never>): Promise<number | void>;
   iosNetworkConfigure(opts: IosNetworkCommandOptions): Promise<number | void>;
@@ -287,7 +287,7 @@ device, then reports whether Tapsmith saw the request and could decrypt it.
 Run it after tapsmith ios network configure, before running tests.`;
 
 /** Commands whose `--json` output also carries usage errors. */
-const JSON_ERROR_COMMANDS = new Set(['init', 'verify', 'doctor', 'list-devices', 'telemetry']);
+const JSON_ERROR_COMMANDS = new Set(['init', 'verify', 'doctor', 'list-devices', 'telemetry', 'ios setup-device']);
 
 interface ParseState {
   /** The command being parsed, once known. */
@@ -500,7 +500,8 @@ function buildProgram(deps: RunCliDeps, io: CliIo, state: ParseState): Command {
   ios
     .command('setup-device')
     .description('Preflight checklist for physical iOS device testing')
-    .action(() => act('ios setup-device', handlers.iosSetupDevice)({}));
+    .addOption(jsonOption('Machine-readable report: the checks, with fixes, and the listed devices'))
+    .action((opts: { json: boolean }) => act('ios setup-device', handlers.iosSetupDevice)({ json: opts.json }));
 
   ios
     .command('build-agent')

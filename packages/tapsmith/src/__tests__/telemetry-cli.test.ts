@@ -208,6 +208,23 @@ describe('tapsmith telemetry enable / disable', () => {
   });
 });
 
+describe('telemetry --json unexpected errors (PILOT-270)', () => {
+  it('prints UNEXPECTED_ERROR on stdout instead of nothing', async () => {
+    const h = harness();
+    h.telemetry.status = () => { throw new Error('state unreadable'); };
+    expect(await h.run(['status', '--json'])).toBe(1);
+    expect(JSON.parse(h.text())).toEqual({
+      error: { code: 'UNEXPECTED_ERROR', message: 'telemetry could not finish: state unreadable', fix: expect.stringContaining('without --json') },
+    });
+  });
+
+  it('text mode still throws, for the CLI\'s fatal-error handler', async () => {
+    const h = harness();
+    h.telemetry.status = () => { throw new Error('state unreadable'); };
+    await expect(h.run(['status'])).rejects.toThrow('state unreadable');
+  });
+});
+
 describe('telemetry --json schema (PILOT-270)', () => {
   // A public contract (docs/api-reference.md, CLI → JSON output).
   it('has exactly the documented keys; reason and anonymousId only when set', async () => {

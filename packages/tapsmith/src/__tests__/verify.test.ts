@@ -39,6 +39,13 @@ describe('summarizeVerifyReport()', () => {
     expect(summary.failures).toEqual([{ fullName: 'b', error: 'boom', screenshotPath: '/s.png' }]);
   });
 
+  it('has exactly the documented --json keys (PILOT-270)', () => {
+    // A public contract (docs/api-reference.md, CLI → JSON output); runVerify adds testFile.
+    const summary = summarizeVerifyReport(report);
+    expect(Object.keys(summary)).toEqual(['ok', 'passed', 'failed', 'skipped', 'duration', 'failures']);
+    expect(Object.keys(JSON.parse(JSON.stringify(summary.failures[0])))).toEqual(['fullName', 'error', 'screenshotPath']);
+  });
+
   it('reports ok on all-pass', () => {
     const allPass = { ...report, stats: { ...report.stats, failed: 0 }, suites: [{ ...report.suites[0], tests: [report.suites[0].tests[0]] }] };
     expect(summarizeVerifyReport(allPass).ok).toBe(true);

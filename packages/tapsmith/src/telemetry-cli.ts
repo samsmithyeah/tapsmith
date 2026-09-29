@@ -104,8 +104,26 @@ function describe(view: ConfigView): string {
   return lines.join('\n') + '\n';
 }
 
-/** Runs the command and returns the process exit code. */
+/**
+ * Runs the command and returns the process exit code. Under --json an
+ * unexpected error is the shared error envelope on stdout, as for every
+ * other --json command; in text mode it reaches the CLI's fatal-error handler.
+ */
 export async function runTelemetryCommand(args: TelemetryCommandArgs, deps: TelemetryCommandDeps = {}): Promise<number> {
+  if (!args.json) return telemetryCommand(args, deps);
+  try {
+    return await telemetryCommand(args, deps);
+  } catch (err) {
+    (deps.stdout ?? ((text) => process.stdout.write(text)))(formatJson(jsonError(
+      'UNEXPECTED_ERROR',
+      `telemetry could not finish: ${err instanceof Error ? err.message : String(err)}`,
+      { fix: 'To see the full error, run it without --json: npx tapsmith telemetry' },
+    )));
+    return 1;
+  }
+}
+
+async function telemetryCommand(args: TelemetryCommandArgs, deps: TelemetryCommandDeps): Promise<number> {
   const telemetry = deps.telemetry ?? defaultTelemetry;
   const stdout = deps.stdout ?? ((text) => process.stdout.write(text));
   const stderr = deps.stderr ?? ((text) => process.stderr.write(text));

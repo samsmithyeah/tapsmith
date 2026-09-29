@@ -489,8 +489,9 @@ describe('commands', () => {
     expect((await run(['ios', 'network', 'verify', 'U1'])).calls).toEqual([['iosNetworkVerify', { udid: 'U1' }]]);
   });
 
-  it('ios setup-device and ios network setup-simulator take no options', async () => {
-    expect((await run(['ios', 'setup-device'])).calls).toEqual([['iosSetupDevice', {}]]);
+  it('ios setup-device takes --json (PILOT-270); ios network setup-simulator takes no options', async () => {
+    expect((await run(['ios', 'setup-device'])).calls).toEqual([['iosSetupDevice', { json: false }]]);
+    expect((await run(['ios', 'setup-device', '--json'])).calls).toEqual([['iosSetupDevice', { json: true }]]);
     expect((await run(['ios', 'network', 'setup-simulator'])).calls).toEqual([['iosNetworkSetupSimulator', {}]]);
   });
 
@@ -526,6 +527,9 @@ describe('usage errors under --json', () => {
     [['doctor', '--json', '--bogus'], 'BAD_ARGS'],
 
     [['telemetry', '--json', 'toggle'], 'BAD_ARGS'],
+    [['list-devices', '--json', '--bogus'], 'BAD_ARGS'],
+    [['ios', 'setup-device', '--json', '--bogus'], 'BAD_ARGS'],
+    [['ios', 'setup-device', 'extra', '--json'], 'BAD_ARGS'],
     [['-c', 'x.mjs', 'doctor', '--json'], 'BAD_ARGS'],
   ])('%j prints a JSON error with code %s on stdout', async (argv, code) => {
     const h = await usageError(argv);
@@ -533,7 +537,8 @@ describe('usage errors under --json', () => {
     const parsed = JSON.parse(h.out) as { error: { code: string; message: string; fix: string } };
     expect(parsed.error.code).toBe(code);
     expect(parsed.error.message).toBeTruthy();
-    expect(parsed.error.fix).toContain(`tapsmith ${argv.find((t) => !t.startsWith('-') && t !== 'x.mjs')} --help`);
+    const command = argv[0] === 'ios' ? 'ios setup-device' : argv.find((t) => !t.startsWith('-') && t !== 'x.mjs');
+    expect(parsed.error.fix).toBe(`Run: npx tapsmith ${command} --help`);
   });
 
   it('list-devices uses the shared envelope too (it used to print { error: <message> })', async () => {
@@ -703,6 +708,14 @@ describe('tapsmith ios', () => {
     expect(h.err).toContain('tapsmith test does not take it either');
   });
 
+  it('--json misplaced before ios setup-device is reported as that command\'s JSON error', async () => {
+    const h = await usageError(['--json', 'ios', 'setup-device']);
+    expect(h.err).toBe('');
+    expect(JSON.parse(h.out)).toEqual({
+      error: { code: 'BAD_ARGS', message: expect.stringContaining("'--json' goes after the command: tapsmith ios setup-device --json"), fix: 'Run: npx tapsmith ios setup-device --help' },
+    });
+  });
+
   it('a boolean misplaced flag before a nested command names that command, not a top-level namesake', async () => {
     let h = await usageError(['--json', 'ios', 'network', 'verify', 'U1']);
     expect(h.out).toBe('');
@@ -742,9 +755,9 @@ describe('tapsmith ios', () => {
 
 describe('printsBanner()', () => {
   it('keeps --json output byte-clean', async () => {
-    for (const command of ['list-devices', 'doctor', 'verify']) {
+    for (const command of ['list-devices', 'doctor', 'verify', 'ios setup-device']) {
       // The options object exactly as the command's handler receives it.
-      const h = await run([command, '--json']);
+      const h = await run([...command.split(' '), '--json']);
       expect(printsBanner(command, h.calls[0]![1] as Record<string, unknown>), command).toBe(false);
       expect(printsBanner(command, { json: false }), command).toBe(true);
     }
