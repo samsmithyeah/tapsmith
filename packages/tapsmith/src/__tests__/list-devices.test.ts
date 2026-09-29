@@ -349,7 +349,7 @@ describe('listDevicesFromDaemon failure codes', () => {
         code: 'DAEMON_START_FAILED',
         message: expect.stringContaining('exited with code 3'),
         // It ran, so it may have lost a port race: retry first, then reinstall.
-        fix: expect.stringMatching(/^Re-run tapsmith list-devices; if it keeps failing: Reinstall/),
+        fix: expect.stringMatching(/^Re-run npx tapsmith list-devices; if it keeps failing: Reinstall/),
       });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

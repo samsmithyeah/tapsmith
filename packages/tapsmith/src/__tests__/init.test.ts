@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { generateConfig, generateExampleTest, runInit } from '../init.js';
 import type { InitCommandOptions } from '../cli-program.js';
 
@@ -149,6 +152,22 @@ describe('runInit() --json without --yes', () => {
     expect(JSON.parse(out)).toEqual({
       error: { code: 'JSON_REQUIRES_YES', message: expect.stringContaining('--json'), fix: expect.stringContaining('npx tapsmith init --yes --json') },
     });
+  });
+
+  it('in a terminal, a setup flag without --yes runs non-interactively instead of refusing', async () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-tty-')));
+    const cwd = process.cwd();
+    try {
+      process.chdir(dir);
+      const { out, exit } = await run(true, { platform: 'android', apk: path.join(dir, 'missing.apk') });
+      expect(exit).toBe('exit 1');
+      const code = (JSON.parse(out) as { error: { code: string } }).error.code;
+      expect(code).not.toBe('JSON_REQUIRES_YES');
+      expect(code).not.toBe('NON_INTERACTIVE_TTY');
+    } finally {
+      process.chdir(cwd);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('without a terminal, keeps reporting NON_INTERACTIVE_TTY', async () => {

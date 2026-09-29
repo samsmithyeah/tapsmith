@@ -466,8 +466,9 @@ function jsonCheck(id: string, result: { label: string; ok: boolean; detail?: st
     status: result.ok ? 'pass' : result.advisory === true ? 'warn' : 'fail',
     label: result.label,
   };
-  if (result.detail !== undefined) check.detail = result.detail;
-  if (!result.ok && result.fix) check.fix = result.fix.join('\n');
+  // An empty detail or fix is no detail or fix, as in doctor.
+  if (result.detail) check.detail = result.detail;
+  if (!result.ok && result.fix && result.fix.length > 0) check.fix = result.fix.join('\n');
   return check;
 }
 

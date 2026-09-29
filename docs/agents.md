@@ -28,7 +28,7 @@ All `--json` surfaces (`init`, `verify`, `doctor`, `list-devices`, `telemetry`,
 `ios setup-device`) follow the same conventions: exactly one JSON document on stdout, on
 success and on failure (`{"error":{"code","message","fix?","candidates?"}}`), exit code
 0/1, no ANSI codes. A command killed by a signal (Ctrl-C, a CI cancel) exits
-non-zero and may print nothing, and an interrupted `verify` currently reports `RUN_FAILED`. `init --json` needs `--yes` (or a setup flag): the wizard has no JSON
+non-zero and may print nothing; an interrupted `verify` may instead report `RUN_FAILED`. `init --json` needs `--yes` (or a setup flag): the wizard has no JSON
 output. The schemas and error codes are in the
 [API reference](api-reference.md#json-output---json).
 

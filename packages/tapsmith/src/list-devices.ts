@@ -380,7 +380,7 @@ export async function listDevicesFromDaemon(
         `Failed to start the tapsmith-core daemon (${bin}): ${spawnError}`,
         // A binary that could not be run is a broken install; one that ran and
         // exited may have lost a port race, so a retry comes first.
-        exitedEarly ? `Re-run tapsmith list-devices; if it keeps failing: ${DAEMON_BIN_FIX}` : DAEMON_BIN_FIX,
+        exitedEarly ? `Re-run npx tapsmith list-devices; if it keeps failing: ${DAEMON_BIN_FIX}` : DAEMON_BIN_FIX,
       );
     }
     if (!ready) {
@@ -389,7 +389,7 @@ export async function listDevicesFromDaemon(
       throw new ListDevicesError(
         'DAEMON_START_FAILED',
         `The tapsmith-core daemon (${bin}) did not answer within ${readyTimeoutMs / 1000} s`,
-        'Re-run tapsmith list-devices; if it keeps failing, run npx tapsmith doctor --json',
+        'Re-run npx tapsmith list-devices; if it keeps failing, run npx tapsmith doctor --json',
       );
     }
     try {
@@ -399,7 +399,7 @@ export async function listDevicesFromDaemon(
       throw new ListDevicesError(
         'LIST_DEVICES_FAILED',
         `The daemon could not list devices: ${err instanceof Error ? err.message : String(err)}`,
-        'Re-run tapsmith list-devices; if it keeps failing, run npx tapsmith doctor --json',
+        'Re-run npx tapsmith list-devices; if it keeps failing, run npx tapsmith doctor --json',
       );
     }
   } finally {
