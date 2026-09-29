@@ -304,14 +304,17 @@ export async function listDevicesFromDaemon(
   // A binary that cannot be executed emits 'error' instead of throwing; with
   // no listener that would crash the process instead of reporting it.
   let spawnError: Error | undefined;
-  child.on('error', (err) => { spawnError = err; });
+  const spawnFailed = new Promise<false>((resolve) => {
+    child.on('error', (err) => { spawnError = err; resolve(false); });
+  });
 
   let client: TapsmithGrpcClient | undefined;
   try {
     // Inside the try: a client that cannot be built (a missing proto file)
     // must not leave the daemon just spawned running.
     client = (opts.connect ?? ((address) => new TapsmithGrpcClient(address)))(`127.0.0.1:${port}`);
-    const ready = await client.waitForReady(opts.readyTimeoutMs ?? 5_000);
+    // A spawn that failed is known at once; don't wait out the ready timeout.
+    const ready = await Promise.race([client.waitForReady(opts.readyTimeoutMs ?? 5_000), spawnFailed]);
     if (!ready) {
       throw new ListDevicesError(
         'DAEMON_START_FAILED',
@@ -385,7 +388,9 @@ export async function runListDevices(opts: { json: boolean }, overrides: Partial
     if (!opts.json && !(err instanceof ListDevicesError)) throw err;
     const failure = err instanceof ListDevicesError
       ? jsonError(err.code, err.message, { fix: err.fix })
-      : jsonError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err));
+      : jsonError('UNEXPECTED_ERROR', `list-devices could not finish: ${err instanceof Error ? err.message : String(err)}`, {
+        fix: 'To see the full error, run the same command again without --json',
+      });
     if (opts.json) {
       deps.stdout(formatJson(failure));
     } else {

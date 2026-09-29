@@ -250,14 +250,15 @@ describe('runListDevices --json', () => {
   it('reports anything else as UNEXPECTED_ERROR', async () => {
     const h = capture({ fetchDevices: async () => { throw new Error('boom'); } });
     expect(await runListDevices({ json: true }, h.deps)).toBe(1);
-    const parsed = JSON.parse(h.out()) as { error: { code: string; message: string } };
-    expect(parsed.error).toMatchObject({ code: 'UNEXPECTED_ERROR', message: 'boom' });
+    expect(JSON.parse(h.out())).toEqual({
+      error: { code: 'UNEXPECTED_ERROR', message: 'list-devices could not finish: boom', fix: 'To see the full error, run the same command again without --json' },
+    });
   });
 
   it('reports a throw while enriching the rows as UNEXPECTED_ERROR too, never an empty stdout', async () => {
     const h = capture({ enrich: () => { throw new Error('devicectl parse blew up'); } });
     expect(await runListDevices({ json: true }, h.deps)).toBe(1);
-    expect(JSON.parse(h.out())).toMatchObject({ error: { code: 'UNEXPECTED_ERROR', message: 'devicectl parse blew up' } });
+    expect(JSON.parse(h.out())).toMatchObject({ error: { code: 'UNEXPECTED_ERROR', message: expect.stringContaining('devicectl parse blew up') } });
   });
 
   it('text mode lets an unexpected error reach the CLI fatal-error handler, like the other commands', async () => {
@@ -310,7 +311,10 @@ describe('listDevicesFromDaemon failure codes', () => {
   });
 
   it('DAEMON_START_FAILED when the daemon cannot be started, naming the spawn error', async () => {
-    const err = await listDevicesFromDaemon({ findBin: () => '/nonexistent/tapsmith-core', readyTimeoutMs: 300 }).catch((e: unknown) => e);
+    const started = Date.now();
+    const err = await listDevicesFromDaemon({ findBin: () => '/nonexistent/tapsmith-core', readyTimeoutMs: 10_000 }).catch((e: unknown) => e);
+    // The spawn error ends the wait at once, not after the ready timeout.
+    expect(Date.now() - started).toBeLessThan(3_000);
     expect(err).toBeInstanceOf(ListDevicesError);
     expect(err).toMatchObject({ code: 'DAEMON_START_FAILED', message: expect.stringContaining('ENOENT') });
     expect((err as ListDevicesError).fix).toContain('TAPSMITH_DAEMON_BIN');

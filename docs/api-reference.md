@@ -2401,8 +2401,8 @@ removing one, or changing what it means, is a breaking change.
 - **stdout holds exactly one JSON document**, and nothing else from Tapsmith: no banner, no progress, no
   ANSI codes. Two things are outside that promise: `--help` still prints help, and code in your config file
   that writes to stdout (a top-level `console.log`) still lands there, since `doctor`, `verify` and `telemetry`
-  load the config. A run interrupted by a signal (Ctrl-C, a CI cancel) exits with the signal's code (130 for
-  Ctrl-C, 143 for `SIGTERM`) and may print nothing.
+  load the config. A run interrupted by a signal (Ctrl-C, a CI cancel) exits with a code above 128 (130 for
+  Ctrl-C) and may print nothing.
 - **When the command could not do its job**, the document is the error envelope and the exit code is 1:
 
   ```json

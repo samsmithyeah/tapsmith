@@ -220,12 +220,16 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
       signals.forEach((sig) => process.off(sig, onSignal));
       // Best effort, reported on stderr: the verdict is already on stdout, and a
       // throw here would add a second document under --json.
+      // Each step on its own, so a results file that cannot be removed never
+      // leaves the scaffolded smoke test in the project.
+      const warnCleanup = (what: string, err: unknown): void => {
+        console.error(`⚠ Could not remove ${what}: ${err instanceof Error ? err.message : String(err)}`);
+      };
+      try { fs.rmSync(resultsFile, { force: true }); } catch (err) { warnCleanup(resultsFile, err); }
       try {
-        fs.rmSync(resultsFile, { force: true });
         cleanupVerifySmokeTest(scaffolded, testDirCreated, testDir);
       } catch (err) {
-        console.error(`⚠ Could not clean up after verify: ${err instanceof Error ? err.message : String(err)}`
-          + (scaffolded ? ` (remove ${scaffolded.tempDir} by hand)` : ''));
+        warnCleanup(scaffolded ? `${scaffolded.tempDir} (the throwaway smoke test; remove it by hand)` : 'the smoke test', err);
       }
     }
   } catch (err) {

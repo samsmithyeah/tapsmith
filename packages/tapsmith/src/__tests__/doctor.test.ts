@@ -129,6 +129,30 @@ describe('runDoctor()', () => {
   });
 });
 
+describe('runDoctor() --json with the real checks', () => {
+  it('splits label and detail at the call sites and leaves no undefined keys', async () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-doctor-json-')));
+    const cwd = process.cwd();
+    let out = '';
+    try {
+      fs.writeFileSync(path.join(dir, 'tapsmith.config.mjs'), 'export default {}\n');
+      process.chdir(dir);
+      await runDoctor({ json: true }, { stdout: (t) => { out += t; } });
+    } finally {
+      process.chdir(cwd);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    const json = JSON.parse(out) as { checks: Array<Record<string, unknown>> };
+    expect(json.checks.find((c) => c.id === 'config')).toEqual({
+      id: 'config', status: 'pass', label: 'Config file found', detail: 'tapsmith.config.mjs',
+    });
+    for (const check of json.checks) {
+      expect(Object.keys(check).every((k) => ['id', 'status', 'label', 'detail', 'fix'].includes(k)), JSON.stringify(check)).toBe(true);
+      expect(Object.values(check).every((v) => typeof v === 'string' && v.length > 0 && !v.includes('\x1b')), JSON.stringify(check)).toBe(true);
+    }
+  }, 120_000);
+});
+
 describe('isSupportedNodeVersion()', () => {
   it('requires Node.js 22 or newer', () => {
     expect(isSupportedNodeVersion('21.9.0')).toBe(false);
