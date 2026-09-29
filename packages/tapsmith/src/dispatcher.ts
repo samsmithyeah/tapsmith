@@ -817,6 +817,29 @@ export async function coordinateBuckets(
 }
 
 /**
+ * The error for UI or watch mode when device targets could not be
+ * provisioned. Those modes keep a worker per target alive for the whole
+ * session and cannot yet go on without one (PILOT-415), so this fails the
+ * start — labelled, and pointing at the ways to run the other targets —
+ * instead of surfacing as a "Fatal error" with a stack (PILOT-400).
+ *
+ * @internal — exported for unit testing.
+ */
+export function targetProvisionFailure(
+  mode: 'UI mode' | 'Watch mode',
+  failures: Array<{ label: string; err: unknown }>,
+): LaunchSetupError {
+  const lines = failures.map(({ label, err }) => `Device target ${label} could not start: ${messageFromUnknown(err).split('\n')[0]}`);
+  return new LaunchSetupError(
+    `${lines[0]}${failures.length > 1 ? ` (and ${failures.length - 1} more)` : ''}\n`
+    + (failures.length > 1 ? `${lines.join('\n')}\n` : '')
+    + `${mode} needs every device target to start. Pass --project to leave ${failures.length === 1 ? 'this target' : 'these targets'} out, `
+    + 'or run `tapsmith test`, which runs the other targets and reports this one\'s tests as failed.',
+    { cause: failures[0].err },
+  );
+}
+
+/**
  * Short label for a device target, from its signature: "android Pixel_6",
  * "ios iPhone 17".
  */

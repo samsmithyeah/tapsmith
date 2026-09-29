@@ -1436,6 +1436,8 @@ async function provisionPerProjectDevices(
   budgetCap: number | undefined,
   /** Buckets that pin a device, taken before the sequential setup ran (see `allocateBucketWorkers`). */
   pinnedSignatures: import('./project.js').PinnedBuckets,
+  /** Names the mode in the error when a target cannot be provisioned. */
+  modeName: 'UI mode' | 'Watch mode',
   progress?: LaunchProgressSink,
 ): Promise<PerProjectProvisionResult> {
   progress?.start('worker-devices', 'preparing devices across project targets');
@@ -1488,7 +1490,8 @@ async function provisionPerProjectDevices(
 
     if (provisioned.serials.length === 0) {
       throw new Error(
-        `Failed to provision any devices for bucket "${signature.split('|').slice(0, 2).join(' ')}".`,
+        `Failed to provision any devices for bucket "${signature.split('|').slice(0, 2).join(' ')}".`
+        + (bucketEffective.platform === 'ios' ? '' : ` ${noDeviceAdvice(bucketEffective)}`),
       );
     }
     if (provisioned.serials.length < groupSize) {
@@ -1506,7 +1509,19 @@ async function provisionPerProjectDevices(
     return { signature, bucketEffective, provisioned, groupSize };
   });
 
-  const outcomes = await Promise.all(tasks);
+  // Let every bucket settle, so the error names each target that failed
+  // and no provisioning is left running behind it.
+  const settled = await Promise.allSettled(tasks);
+  const failures = settled.flatMap((r, i) => (r.status === 'rejected'
+    ? [{ label: bucketEntries[i].signature.split('|').slice(0, 2).join(' '), err: r.reason as unknown }]
+    : []));
+  if (failures.length > 0) {
+    const { targetProvisionFailure } = await import('./dispatcher.js');
+    const error = targetProvisionFailure(modeName, failures);
+    progress?.fail('worker-devices', error.message.split('\n')[0]);
+    throw error;
+  }
+  const outcomes = settled.map((r) => (r.status === 'fulfilled' ? r.value : null));
 
   for (const outcome of outcomes) {
     if (!outcome) continue;
@@ -2178,7 +2193,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
 
       if (isMultiBucketSequential) {
         // Multi-device-target projects: provision per-bucket devices.
-        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, pinnedSignatures, launchProgress);
+        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, pinnedSignatures, 'UI mode', launchProgress);
         uiWorkerGroups = perBucket.workerGroups;
         uiConfigByDevice = perBucket.configByDevice;
         uiDeviceGroupByDevice = perBucket.deviceGroupByDevice;
@@ -2281,7 +2296,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       let watchWorkersOverride: number | undefined;
 
       if (isMultiBucketSequential) {
-        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, pinnedSignatures);
+        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, pinnedSignatures, 'Watch mode');
         watchWorkerGroups = perBucket.workerGroups;
         watchConfigByDevice = perBucket.configByDevice;
         watchDeviceGroupByDevice = perBucket.deviceGroupByDevice;

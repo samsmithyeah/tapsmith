@@ -15,6 +15,7 @@ import {
   coordinateBuckets,
   deviceTargetLabel,
   targetStartFailureResults,
+  targetProvisionFailure,
   type BucketRunner,
   type DispatcherOptions,
 } from '../dispatcher.js';
@@ -811,5 +812,32 @@ describe('targetStartFailureResults()', () => {
     const project = makeProject('ios', 'ios|iPhone 17', ['/t/a.test.ts']);
     expect(targetStartFailureResults('ios iPhone 17', [project], 'boom')[0].error?.message)
       .toBe('Device target "ios iPhone 17" could not start: boom');
+  });
+});
+
+// UI and watch mode cannot yet run without one of their targets (PILOT-415):
+// a provisioning failure fails the start with a labelled message instead of
+// "Fatal error" plus a stack (PILOT-400).
+describe('targetProvisionFailure()', () => {
+  it('is a launch failure naming the target, with a way forward', () => {
+    const err = targetProvisionFailure('UI mode', [
+      { label: 'android Pixel_6', err: new Error('Failed to provision any devices for bucket "android Pixel_6".\nmore') },
+    ]);
+    expect(isLaunchSetupError(err)).toBe(true);
+    const [summary, ...details] = err.message.split('\n');
+    expect(summary).toBe('Device target android Pixel_6 could not start: Failed to provision any devices for bucket "android Pixel_6".');
+    expect(details.join('\n')).toContain('UI mode needs every device target to start');
+    expect(details.join('\n')).toContain('--project');
+  });
+
+  it('lists every failed target', () => {
+    const err = targetProvisionFailure('Watch mode', [
+      { label: 'android Pixel_6', err: new Error('a') },
+      { label: 'ios iPhone 17', err: 'b' },
+    ]);
+    const [summary, ...details] = err.message.split('\n');
+    expect(summary).toBe('Device target android Pixel_6 could not start: a (and 1 more)');
+    expect(details).toContain('Device target ios iPhone 17 could not start: b');
+    expect(details.join('\n')).toContain('these targets');
   });
 });
