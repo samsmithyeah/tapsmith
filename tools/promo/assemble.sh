@@ -15,14 +15,14 @@ ffmpeg -y -v error \
   -i music.wav \
   -filter_complex "\
 [0:a]adelay=600|600[a1];\
-[1:a]adelay=15200|15200[a2];\
+[1:a]adelay=15100|15100[a2];\
 [2:a]adelay=17550|17550[a3];\
 [3:a]adelay=32900|32900[a4];\
 [4:a]adelay=51500|51500[a5];\
 [5:a]adelay=62800|62800[a6];\
 [6:a]adelay=75900|75900[a7];\
 [7:a]adelay=92700|92700[a8];\
-[8:a]adelay=109500|109500[a9];\
+[8:a]adelay=109300|109300[a9];\
 [9:a]adelay=125600|125600[a10];\
 [a1][a2][a3][a4][a5][a6][a7][a8][a9][a10]amix=inputs=10:normalize=0,volume=1.0[vo];\
 [10:a]volume=0.9[mus];\

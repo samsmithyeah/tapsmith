@@ -33,7 +33,8 @@ the page), so no patch is needed there.
 - **Node 22+** — on Apple Silicon make sure `node` resolves to an **arm64**
   build (the Claude/Rosetta x64 trap breaks the UI-mode recording step; see
   the note in `record-ui` below)
-- **Python 3** with a venv for audio: `python3 -m venv venv && ./venv/bin/pip install edge-tts numpy`
+- **An ElevenLabs API key** (`ELEVENLABS_API_KEY`) — only to regenerate the voiceover
+- **Python 3** with a venv for audio: `python3 -m venv venv && ./venv/bin/pip install numpy`
   (a venv created under Rosetta has x86_64 numpy — run those scripts with
   `arch -x86_64 ./venv/bin/python …` from an arm64 shell, or recreate the venv)
 - `npm install` in this directory (installs `puppeteer-core`)
@@ -44,13 +45,11 @@ The checked-in `clip-*.mp4` files are the finished screen recordings, so
 tweaking text, timing, scenes, or audio never touches a device:
 
 ```bash
-# 1. Voiceover (only if vo/lines.txt changed)
-while IFS='|' read -r n text; do
-  ./venv/bin/edge-tts --voice en-US-AndrewMultilingualNeural --rate=-4% \
-    --text "$text" --write-media "vo/seg$n.mp3"
-done < vo/lines.txt
-# (seg2a "Tapsmith is the next step." is synthesized at --rate=-10% so it can
-# breathe in the rest; seg8, the feature list, at --rate=+8% to fit its scene)
+# 1. Voiceover (only if vo/lines.txt changed) — ElevenLabs, voice
+#    bZOiovivKA2Bl3lLvbC6 on the Eleven v4 model. Pass segment ids to redo only
+#    those (e.g. `node generate-vo.mjs 3 8`); it fails if a segment overruns its
+#    slot on the timeline. Per-segment speed lives in the script.
+node generate-vo.mjs   # key from $ELEVENLABS_API_KEY or tools/promo/.env (git-ignored)
 
 # 2. Music bed (deterministic synth; regenerates music.wav)
 ./venv/bin/python synth-music.py
@@ -266,6 +265,7 @@ If the opening frames changed, also refresh the poster:
 | `probe-s3.mjs` | Renders QC stills of specific timeline moments |
 | `synth-music.py` | Ambient music bed (numpy, deterministic) |
 | `vo/lines.txt` | Voiceover script, one line per segment |
+| `generate-vo.mjs` | `vo/lines.txt` -> `vo/seg*.mp3` via ElevenLabs, with a fit check against the timeline |
 | `assets/` | Vector mark, Poppins/JetBrains Mono woff2, screenshots |
 | `clip-ui.mp4` / `clip-trace.mp4` | Finished screen-recording clips |
 | `clip-ui-session.mp4` | Full UI-mode session archive (source for future re-cuts) |
