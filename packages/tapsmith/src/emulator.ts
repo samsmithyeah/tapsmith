@@ -104,18 +104,75 @@ export interface ReclaimResult {
   killed: string[]
 }
 
+interface ReclaimDeps {
+  readManifest: () => EmulatorManifestEntry[]
+  writeManifest: (entries: EmulatorManifestEntry[]) => void
+  listAdbDevices: () => AdbDeviceEntry[]
+  isProcessAlive: (pid: number) => boolean
+  readProcessArgs: (pid: number) => string[] | undefined
+  probeDeviceHealth: (serial: string) => DeviceHealthResult
+  killEmulator: (serial: string) => void
+  killProcess: (pid: number) => void
+}
+
+function resolveReclaimDeps(deps: Partial<ReclaimDeps>): ReclaimDeps {
+  return {
+    readManifest: deps.readManifest ?? readManifest,
+    writeManifest: deps.writeManifest ?? writeManifest,
+    listAdbDevices: deps.listAdbDevices ?? listAdbDevices,
+    isProcessAlive: deps.isProcessAlive ?? isProcessAlive,
+    readProcessArgs: deps.readProcessArgs ?? readProcessArgs,
+    probeDeviceHealth: deps.probeDeviceHealth ?? probeDeviceHealth,
+    killEmulator: deps.killEmulator ?? killEmulator,
+    killProcess: deps.killProcess ?? killProcess,
+  };
+}
+
+/**
+ * The command line of a running process, as whitespace-separated tokens, or
+ * `undefined` when it cannot be read. `-ww` stops `ps` truncating it.
+ */
+function readProcessArgs(pid: number): string[] | undefined {
+  try {
+    const output = execFileSync('ps', ['-ww', '-o', 'args=', '-p', String(pid)], {
+      encoding: 'utf-8',
+      timeout: 5_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    return output ? output.split(/\s+/) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function killProcess(pid: number): void {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    // Already dead
+  }
+}
+
 /**
  * Reclaim healthy emulators from previous Tapsmith runs, kill unhealthy ones.
  *
- * Reads the PID manifest and health-checks each entry:
- * - **Healthy + process alive**: keep it running and in the manifest for reuse.
- * - **Unhealthy or process dead**: kill it, clean up ADB transport, remove from manifest.
+ * Reads the PID manifest and, for each entry, first proves the emulator is
+ * still the one Tapsmith launched: the recorded PID is alive and its command
+ * line carries Tapsmith's launch arguments for that AVD and port. A serial
+ * alone proves nothing — it is just a console port, and a user's own
+ * emulator started later takes the same default port (PILOT-401).
+ *
+ * - **Not provably ours** (PID dead, or reused by another process): drop the
+ *   entry and touch nothing — whatever holds that serial now is not ours.
+ * - **Ours and healthy**: keep it running and in the manifest for reuse.
+ * - **Ours but unhealthy or unresponsive**: kill it and drop the entry.
  *
  * This is what makes back-to-back `npx tapsmith test` fast — emulators survive
  * between runs and get reused instead of relaunched.
  */
-export function reclaimOrphanedEmulators(): ReclaimResult {
-  const entries = readManifest();
+export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): ReclaimResult {
+  const d = resolveReclaimDeps(deps);
+  const entries = d.readManifest();
   if (entries.length === 0) return { reusable: [], killed: [] };
 
   // Deduplicate entries by serial — the manifest can accumulate duplicates
@@ -128,31 +185,28 @@ export function reclaimOrphanedEmulators(): ReclaimResult {
   const reusable: string[] = [];
   const killed: string[] = [];
   const surviving: EmulatorManifestEntry[] = [];
-  const adbDevices = listAdbDevices();
-  const adbDeviceMap = new Map(adbDevices.map((d) => [d.serial, d]));
+  const adbDevices = d.listAdbDevices();
+  const adbDeviceMap = new Map(adbDevices.map((device) => [device.serial, device]));
 
   for (const entry of uniqueBySerial.values()) {
-    const processAlive = entry.pid > 0 && isProcessAlive(entry.pid);
     const inAdb = adbDeviceMap.get(entry.serial);
+    const argv = entry.pid > 0 && d.isProcessAlive(entry.pid) ? d.readProcessArgs(entry.pid) : undefined;
+    const owned = argv !== undefined
+      && isTapsmithLaunchedEmulator(argv, { port: entry.port, avd: entry.avd });
 
-    // Process is dead and not in ADB — nothing to do, drop from manifest
-    if (!processAlive && !inAdb) {
+    if (!owned) {
+      if (inAdb) {
+        process.stderr.write(
+          `${DIM}Dropping stale record of ${entry.serial} (AVD ${entry.avd}, PID ${entry.pid}): ` +
+          `that emulator is gone. Leaving the emulator now on ${entry.serial} running — Tapsmith did not launch it.${RESET}\n`,
+        );
+      }
       continue;
     }
 
-    // Process is dead but serial lingers in ADB — clean up the stale transport
-    if (!processAlive && inAdb) {
-      process.stderr.write(
-        `${YELLOW}Cleaning up stale ADB transport ${entry.serial} (process gone, AVD ${entry.avd}).${RESET}\n`,
-      );
-      killEmulator(entry.serial);
-      killed.push(entry.serial);
-      continue;
-    }
-
-    // Process is alive — health check to decide reuse vs kill
+    // Ours — health check to decide reuse vs kill
     if (inAdb && inAdb.state === 'device') {
-      const health = probeDeviceHealth(entry.serial);
+      const health = d.probeDeviceHealth(entry.serial);
       if (health.healthy) {
         process.stderr.write(
           `${DIM}Reusing emulator ${entry.serial} (AVD ${entry.avd}) from previous run.${RESET}\n`,
@@ -170,20 +224,17 @@ export function reclaimOrphanedEmulators(): ReclaimResult {
       );
     }
 
-    // Kill by PID directly — more reliable than ADB when device is unresponsive
-    try {
-      process.kill(entry.pid, 'SIGTERM');
-    } catch {
-      // Already dead
-    }
+    // Our PID holds this console port, so the serial is ours to kill too.
     if (inAdb) {
-      killEmulator(entry.serial);
+      d.killEmulator(entry.serial);
     }
+    // Kill by PID as well — more reliable than ADB when the device is unresponsive
+    d.killProcess(entry.pid);
     killed.push(entry.serial);
   }
 
   // Write back only the surviving healthy entries
-  writeManifest(surviving);
+  d.writeManifest(surviving);
   return { reusable, killed };
 }
 
@@ -311,6 +362,12 @@ export function clearOfflineEmulatorTransports(): string[] {
   return offlineEmulators;
 }
 
+interface CleanupDeps extends ReclaimDeps {
+  findEmulatorPid: (serial: string) => number | undefined
+  resolveAvdName: (serial: string) => string | undefined
+  waitForAdbSettle: (killedSerials: string[]) => void
+}
+
 export interface CleanupStaleResult {
   /** Healthy emulators from previous runs that are ready for reuse. */
   reusable: string[]
@@ -323,21 +380,33 @@ export interface CleanupStaleResult {
  *
  * Two-phase approach:
  * 1. **Manifest-based**: Health-check emulators recorded by previous Tapsmith
- *    runs. Reuse healthy ones, kill unhealthy/dead ones.
+ *    runs. Reuse healthy ones and kill unhealthy ones that are provably still
+ *    Tapsmith-launched; drop every other entry without killing anything.
  * 2. **Heuristic**: Kill emulators matching the target AVD that are in an
- *    offline/unauthorized state, or that fail health checks. This catches
- *    edge cases where the manifest was lost (e.g. first run after upgrade).
+ *    offline/unauthorized state, or that fail health checks — but only when
+ *    the process on the console port was started with Tapsmith's launch
+ *    arguments. This catches Tapsmith emulators whose manifest entry was lost;
+ *    emulators Tapsmith did not launch are never killed.
  */
 export function cleanupStaleEmulators(
   targetAvd?: string,
-  resolveAvdName: (serial: string) => string | undefined = getRunningAvdName,
+  deps: Partial<CleanupDeps> = {},
 ): CleanupStaleResult {
+  const d = resolveReclaimDeps(deps);
+  const resolveAvdName = deps.resolveAvdName ?? getRunningAvdName;
+  const findPid = deps.findEmulatorPid ?? findEmulatorPid;
+  const settle = deps.waitForAdbSettle ?? waitForAdbSettle;
+
   // Phase 1: manifest-based reclaim/kill (precise)
-  const reclaim = reclaimOrphanedEmulators();
+  const reclaim = reclaimOrphanedEmulators(d);
   const handled = new Set([...reclaim.reusable, ...reclaim.killed]);
 
-  // Phase 2: heuristic cleanup for anything the manifest missed
-  const devices = listAdbDevices();
+  // Phase 2: heuristic cleanup for Tapsmith emulators the manifest missed
+  // (the manifest is not written atomically, so concurrent runs can lose an
+  // entry). An emulator is only killed here when the process holding its
+  // console port carries Tapsmith's launch arguments; a user's own emulator —
+  // offline, unauthorized or mid-ANR — is left running.
+  const devices = d.listAdbDevices();
   const killed = [...reclaim.killed];
 
   for (const device of devices) {
@@ -350,24 +419,30 @@ export function cleanupStaleEmulators(
       if (avdName && avdName !== targetAvd) continue;
     }
 
-    // Offline/unauthorized transports are definitely stale
+    let problem: string | undefined;
     if (device.state === 'offline' || device.state === 'unauthorized') {
-      killEmulator(device.serial);
-      killed.push(device.serial);
+      problem = device.state;
+    } else if (device.state === 'device') {
+      const health = d.probeDeviceHealth(device.serial);
+      if (!health.healthy) problem = health.reason ?? 'health check failed';
+    }
+    if (!problem) continue;
+
+    const port = Number(device.serial.slice('emulator-'.length));
+    const pid = findPid(device.serial);
+    const argv = pid !== undefined ? d.readProcessArgs(pid) : undefined;
+    if (argv === undefined || !isTapsmithLaunchedEmulator(argv, { port, avd: targetAvd })) {
+      process.stderr.write(
+        `${DIM}Leaving emulator ${device.serial} running (${problem}): Tapsmith did not launch it.${RESET}\n`,
+      );
       continue;
     }
 
-    // For "device" state, run a quick health check
-    if (device.state === 'device') {
-      const health = probeDeviceHealth(device.serial);
-      if (!health.healthy) {
-        process.stderr.write(
-          `${YELLOW}Killing stale emulator ${device.serial}: ${health.reason ?? 'health check failed'}.${RESET}\n`,
-        );
-        killEmulator(device.serial);
-        killed.push(device.serial);
-      }
-    }
+    process.stderr.write(
+      `${YELLOW}Killing stale emulator ${device.serial}: ${problem}.${RESET}\n`,
+    );
+    d.killEmulator(device.serial);
+    killed.push(device.serial);
   }
 
   // Wait for ADB to settle after kills. `adb emu kill` and process kills are
@@ -375,7 +450,7 @@ export function cleanupStaleEmulators(
   // this wait, the very next `adb devices` call (in device discovery) will see
   // the dead emulators as "offline" or "device" and waste time on them.
   if (killed.length > 0) {
-    waitForAdbSettle(killed);
+    settle(killed);
   }
 
   return { reusable: reclaim.reusable, killed };
@@ -695,23 +770,60 @@ export function readUiHierarchyViaAdb(
 }
 
 /**
- * Launch an emulator instance for the given AVD on the specified port.
- * Returns immediately — use `waitForBoot` to wait until the device is ready.
+ * Flags, besides `-avd <name>` and `-port <n>`, that identify an emulator as
+ * one Tapsmith launched. Every one of them is part of the real launch args
+ * (`emulatorLaunchArgs` spreads this list in), so the ownership check cannot
+ * drift from what `launchEmulator` spawns. Keep it to flags Tapsmith will
+ * always pass: a user launching from Android Studio does not use `-read-only`.
  */
-export function launchEmulator(avd: string, port: number): LaunchedEmulator {
-  const serial = serialForPort(port);
+export const TAPSMITH_EMULATOR_IDENTITY_FLAGS = ['-read-only'] as const;
 
-  const proc = spawn('emulator', [
+/** The exact argv `launchEmulator` passes to the `emulator` binary. */
+export function emulatorLaunchArgs(avd: string, port: number): string[] {
+  return [
     '-avd', avd,
     '-port', String(port),
-    '-read-only',
+    ...TAPSMITH_EMULATOR_IDENTITY_FLAGS,
     '-no-snapshot-load',
     '-no-snapshot-save',
     '-no-boot-anim',
     '-no-audio',
     '-gpu', 'swiftshader_indirect',
     '-no-window',
-  ], {
+  ];
+}
+
+/**
+ * Whether a process command line (`argv`, as tokens) is an emulator that
+ * `launchEmulator` started on `port` — and, when given, for `avd`.
+ *
+ * The `emulator` launcher exec's qemu in place, so the PID Tapsmith records
+ * is the qemu process and its argv still carries Tapsmith's arguments. A
+ * serial is only a port and ports are reused, so this — not the serial — is
+ * what proves an emulator is Tapsmith's to reuse or kill (PILOT-401).
+ */
+export function isTapsmithLaunchedEmulator(
+  argv: readonly string[],
+  expected: { port: number, avd?: string },
+): boolean {
+  const valueOf = (flag: string): string | undefined => {
+    const i = argv.indexOf(flag);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  if (valueOf('-port') !== String(expected.port)) return false;
+  const avd = valueOf('-avd');
+  if (avd === undefined || (expected.avd !== undefined && avd !== expected.avd)) return false;
+  return TAPSMITH_EMULATOR_IDENTITY_FLAGS.every((flag) => argv.includes(flag));
+}
+
+/**
+ * Launch an emulator instance for the given AVD on the specified port.
+ * Returns immediately — use `waitForBoot` to wait until the device is ready.
+ */
+export function launchEmulator(avd: string, port: number): LaunchedEmulator {
+  const serial = serialForPort(port);
+
+  const proc = spawn('emulator', emulatorLaunchArgs(avd, port), {
     // Detach so emulators survive parent exit — they're expensive to boot and
     // the next run will reuse them. The PID manifest tracks ownership so
     // orphans from crashes get cleaned up on the next startup.
