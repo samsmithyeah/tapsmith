@@ -129,10 +129,18 @@ function resolveReclaimDeps(deps: Partial<ReclaimDeps>): ReclaimDeps {
 }
 
 /**
- * The command line of a running process, as whitespace-separated tokens, or
- * `undefined` when it cannot be read. `-ww` stops `ps` truncating it.
+ * The command line of a running process as its argv tokens, or `undefined`
+ * when it cannot be read. Linux exposes the exact argv in
+ * `/proc/<pid>/cmdline` (NUL-separated, no tool needed); elsewhere — and in
+ * a sandbox without /proc — `ps` is used, with `-ww` so it is not truncated.
  */
-function readProcessArgs(pid: number): string[] | undefined {
+export function readProcessArgs(pid: number): string[] | undefined {
+  try {
+    const argv = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8').split('\0').filter((arg) => arg.length > 0);
+    if (argv.length > 0) return argv;
+  } catch {
+    // No /proc (macOS) or the process is gone — fall back to ps
+  }
   try {
     const output = execFileSync('ps', ['-ww', '-o', 'args=', '-p', String(pid)], {
       encoding: 'utf-8',
@@ -197,8 +205,8 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
     if (!owned) {
       if (inAdb) {
         process.stderr.write(
-          `${DIM}Dropping stale record of ${entry.serial} (AVD ${entry.avd}, PID ${entry.pid}): ` +
-          `that emulator is gone. Leaving whatever is now on ${entry.serial} alone — Tapsmith can't confirm it launched it.${RESET}\n`,
+          `${DIM}Dropping stale record of ${entry.serial} (AVD ${entry.avd}): can't confirm PID ${entry.pid} is still ` +
+          `the emulator Tapsmith launched. Leaving whatever is now on ${entry.serial} alone.${RESET}\n`,
         );
       }
       continue;

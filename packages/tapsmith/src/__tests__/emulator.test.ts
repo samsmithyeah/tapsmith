@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -33,6 +34,7 @@ import {
   cleanupStaleEmulators,
   emulatorLaunchArgs,
   isTapsmithLaunchedEmulator,
+  readProcessArgs,
   TAPSMITH_EMULATOR_IDENTITY_FLAGS,
 } from '../emulator.js';
 
@@ -437,6 +439,13 @@ describe('emulator utilities', () => {
   describe('manifest isolation', () => {
     it('never points the tests at the machine-wide manifest', () => {
       expect(path.dirname(manifestFile)).toMatch(/tapsmith-emulator-test-/);
+      // Assert through the module under test, not just this file's own path.
+      const emu = makeLaunchedEmulator('IsolationAVD', 5554);
+      Object.defineProperty(emu.process, 'pid', { value: 4321 });
+      recordLaunchedEmulators([emu]);
+      expect(JSON.parse(fs.readFileSync(manifestFile, 'utf-8'))).toEqual([
+        expect.objectContaining({ avd: 'IsolationAVD', pid: 4321 }),
+      ]);
     });
   });
 
@@ -470,6 +479,23 @@ describe('emulator utilities', () => {
       expect(isTapsmithLaunchedEmulator(argvOf('Pixel', 55540), { port: 5554 })).toBe(false);
       expect(isTapsmithLaunchedEmulator(argvOf('Pixel', 5556), { port: 5554 })).toBe(false);
       expect(isTapsmithLaunchedEmulator(argvOf('Pixel_2', 5554), { port: 5554, avd: 'Pixel' })).toBe(false);
+    });
+
+    it('reads a real process command line that the identity check accepts', async () => {
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', ...emulatorLaunchArgs('Real_AVD', 5582)], { stdio: 'ignore' });
+      try {
+        await new Promise((resolve) => child.once('spawn', resolve));
+        const argv = readProcessArgs(child.pid!);
+        expect(argv).toBeDefined();
+        expect(isTapsmithLaunchedEmulator(argv!, { port: 5582, avd: 'Real_AVD' })).toBe(true);
+        expect(isTapsmithLaunchedEmulator(argv!, { port: 5554, avd: 'Real_AVD' })).toBe(false);
+      } finally {
+        child.kill();
+      }
+    });
+
+    it('returns undefined for a process that does not exist', () => {
+      expect(readProcessArgs(2 ** 22 + 12345)).toBeUndefined();
     });
 
     it('rejects an unrelated process', () => {
