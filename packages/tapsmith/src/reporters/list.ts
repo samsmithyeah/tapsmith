@@ -10,7 +10,7 @@
  * @see PILOT-67
  */
 
-import type { TapsmithReporter, FullResult, TestStartInfo } from '../reporter.js';
+import type { TapsmithReporter, FullResult, RunStartInfo, TestStartInfo } from '../reporter.js';
 import type { TapsmithConfig } from '../config.js';
 import type { TestResult } from '../runner.js';
 import {
@@ -52,7 +52,7 @@ export class ListReporter implements TapsmithReporter {
   private _originalStderrWrite?: WriteMethod;
   private _internalWriteDepth = 0;
 
-  onRunStart(config: TapsmithConfig, fileCount: number): void {
+  onRunStart(config: TapsmithConfig, fileCount: number, info?: RunStartInfo): void {
     this._testIndex = 0;
     this._multipleWorkers = config.workers > 1;
     this._showProjectTags = (config.projects?.length ?? 0) > 1;
@@ -60,7 +60,8 @@ export class ListReporter implements TapsmithReporter {
     this._inProgress = [];
     this._linesRendered = 0;
     this._installWriteInterceptors();
-    this._write(`\nRunning tests from ${fileCount} file(s)\n\n`);
+    // A merge replays shards' results; it runs no tests and has no file count.
+    if (!info?.merge) this._write(`\nRunning tests from ${fileCount} file(s)\n\n`);
   }
 
   onTestFileStart(_filePath: string): void {

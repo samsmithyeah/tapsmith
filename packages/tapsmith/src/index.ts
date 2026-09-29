@@ -71,6 +71,7 @@ export { defineConfig, loadConfig, type TapsmithConfig, type ProjectConfig, type
 export {
   type TapsmithReporter,
   type FullResult,
+  type RunStartInfo,
   type ReporterConfig,
   type ReporterDescription,
 } from './reporter.js';

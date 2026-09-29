@@ -97,6 +97,13 @@ describe('runMergeReports', () => {
     expect(fs.readdirSync(dir)).toEqual(['a.jsonl']);
     expect(mergeBlobs(dir).tests).toHaveLength(1);
   });
+
+  it.each(['list', 'line'])('does not tell the %s reporter it is running tests, since a merge runs none', async (reporter) => {
+    const dir = path.join(tmpDir, 'blobs');
+    writeBlob(dir, 'a.jsonl', undefined);
+    expect(await runMergeReports(dir, config({ reporter }))).toBe(0);
+    expect(out.join('')).not.toContain('Running tests');
+  });
 });
 
 describe('runMergeReports with a blob-only config', () => {

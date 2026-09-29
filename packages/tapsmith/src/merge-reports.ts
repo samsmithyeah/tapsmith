@@ -50,7 +50,7 @@ export async function runMergeReports(blobDir: string, config: TapsmithConfig): 
   // the merge with; fall back to the default, as an unset config would.
   if (reporters.length === 0) reporters = await createReporters('list');
   const dispatcher = new ReporterDispatcher(reporters);
-  dispatcher.onRunStart(config, 0);
+  dispatcher.onRunStart(config, 0, { merge: true });
   await dispatcher.onRunEnd(result);
 
   const summary = describeMergedBlobs(result);

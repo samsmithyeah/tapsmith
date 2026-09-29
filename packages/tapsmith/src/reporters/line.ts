@@ -8,7 +8,7 @@
  * @see PILOT-68
  */
 
-import type { TapsmithReporter, FullResult } from '../reporter.js';
+import type { TapsmithReporter, FullResult, RunStartInfo } from '../reporter.js';
 import type { TapsmithConfig } from '../config.js';
 import type { TestResult } from '../runner.js';
 import {
@@ -31,11 +31,12 @@ export class LineReporter implements TapsmithReporter {
   private _parallel = false;
   private _showProjectTags = false;
 
-  onRunStart(config: TapsmithConfig, fileCount: number): void {
+  onRunStart(config: TapsmithConfig, fileCount: number, info?: RunStartInfo): void {
     this._completed = 0;
     this._parallel = config.workers > 1;
     this._showProjectTags = config.workers > 1 && (config.projects?.length ?? 0) > 1;
-    process.stdout.write(`\nRunning tests from ${fileCount} file(s)\n\n`);
+    // A merge replays shards' results; it runs no tests and has no file count.
+    if (!info?.merge) process.stdout.write(`\nRunning tests from ${fileCount} file(s)\n\n`);
   }
 
   onTestEnd(test: TestResult): void {
