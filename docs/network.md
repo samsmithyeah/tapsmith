@@ -850,6 +850,8 @@ npx tapsmith show-trace tapsmith-results/traces/trace-my_test.zip
 
 The Network tab shows a sortable table with columns for method, URL, status code, content type, duration, and response size. Click a row to expand request/response headers and bodies. JSON bodies are pretty-printed automatically, and gRPC/protobuf bodies are decoded into their messages and fields (see [HTTP/2, gRPC, and passthrough connections](#http2-grpc-and-passthrough-connections)) with a **Raw** toggle for the original bytes.
 
+Image bodies (PNG, JPEG, GIF, WebP, AVIF, SVG, BMP, ICO) are rendered as pictures with their dimensions (an SVG shows them only when it declares its own size), including compressed or chunked ones (Tapsmith decodes those when it records them). PNG, JPEG, GIF and WebP are also recognised by their bytes when served with a generic type such as `application/octet-stream`. A **Raw** toggle shows the bytes. An image isn't previewed, and the viewer says why, when the capture holds only part of it (bodies are captured up to 1 MiB, a download may still be open, the connection may have stalled before its `Content-Length`, or a PNG, JPEG, GIF, WebP, BMP or ICO stops before the end its own structure declares — data appended after the end is fine, and so is a GIF without its trailer byte), when it's a `206 Partial Content` range, when a compressed body couldn't be decompressed, or when its format isn't one browsers display (such as TIFF).
+
 Route handler actions also appear as events in the trace viewer's actions panel (e.g., `route.fulfill`, `route.abort`), with the source location of your handler code highlighted.
 
 ### API request fixture in traces

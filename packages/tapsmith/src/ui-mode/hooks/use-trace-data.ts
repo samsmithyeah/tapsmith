@@ -9,6 +9,7 @@ import { useState, useRef } from 'preact/hooks';
 import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, NetworkEntry } from '../../trace/types.js';
 import type { InFlightAction } from '../../trace-viewer/types.js';
 import type { TestIsolation } from '../ui-protocol.js';
+import { bodyPlaceholder } from '../../trace/body-placeholder.js';
 
 // Re-export so existing callers (main.tsx) keep their import path.
 export type { InFlightAction };
@@ -71,9 +72,7 @@ export function base64ToBytes(base64: string): Uint8Array {
   // upper bound to short-circuit huge bodies before we allocate.
   const approxBytes = Math.floor((base64.length * 3) / 4);
   if (approxBytes > MAX_INLINE_BODY_BYTES) {
-    return new TextEncoder().encode(
-      `[body too large to display inline — ${(approxBytes / (1024 * 1024)).toFixed(1)} MB; open the trace archive to inspect]`,
-    );
+    return new TextEncoder().encode(bodyPlaceholder(approxBytes, 'display inline'));
   }
   try {
     const bin = atob(base64);

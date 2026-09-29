@@ -3,6 +3,7 @@ import { test, expect } from "../fixtures.js"
 import { GESTURES_FILE } from "../messages/scenarios.js"
 import { NetworkPane } from "../../panes/network.pane.js"
 import { actionEvent, networkEntry } from "../../trace-viewer/trace-builder.js"
+import { solidPng } from "../../png.js"
 
 const FULL_NAME = "Gestures screen > double tap registers double tap gesture"
 const HINT = "Enable network capture in your trace config to record HTTP requests."
@@ -187,4 +188,36 @@ test('isolates same-named tests across files during interleaved updates, replay 
   await explorer.node('smoke').nth(0).click()
   await detailTabs.select('Network')
   await expect(network.rows).toHaveCount(0)
+})
+
+test("a captured image previews live, and one too large to stream live says so", async ({ app, detailTabs, page, explorer }) => {
+  app.send({ type: "run-start", fileCount: 1 })
+  app.send({ type: "test-start", fullName: FULL_NAME, filePath: GESTURES_FILE })
+  const image = solidPng(12, 8)
+  // Past the SPA's 2 MiB inline-decode cap, so it is swapped for a marker.
+  const oversized = Buffer.alloc(3 * 1024 * 1024)
+  image.copy(oversized)
+  const imageEntry = (index: number, name: string, size: number) => ({
+    ...networkEntry({ index, url: `https://cdn.acme.dev/${name}`, contentType: "image/png", responseSize: size }),
+    responseBodyPath: `network/res-${index}.bin`,
+    responseHeaders: { "content-type": "image/png" },
+  })
+  app.send({
+    type: "network", testFullName: FULL_NAME, networkCaptureEnabled: true,
+    entries: [imageEntry(0, "avatar.png", image.length), imageEntry(1, "poster.png", oversized.length)],
+    bodies: { "network/res-0.bin": image.toString("base64"), "network/res-1.bin": oversized.toString("base64") },
+  })
+  await explorer.expandAll()
+  await explorer.clickNode("double tap registers double tap gesture")
+  await detailTabs.select("Network")
+  const network = new NetworkPane(page)
+
+  await network.selectRow("avatar.png")
+  await network.openDetailTab("Response")
+  await expect(network.imagePreview).toBeVisible()
+  await expect(network.bodyInfo).toContainText("12 × 8")
+
+  await network.selectRow("poster.png")
+  await expect(network.imageNote).toContainText("too large to show live")
+  await expect(network.imagePreview).toHaveCount(0)
 })

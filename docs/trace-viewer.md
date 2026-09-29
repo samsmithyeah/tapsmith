@@ -163,7 +163,7 @@ The Network tab shows a sortable table of all captured requests:
 
 Click a row to expand it and see full details:
 - **Request headers** and **response headers**
-- **Request body** and **response body** (JSON bodies are pretty-printed)
+- **Request body** and **response body** (JSON bodies are pretty-printed, and image bodies are shown as pictures with a **Raw** toggle)
 
 Use the filter bar to search by URL and the status buttons (All / 2XX / 3XX / 4XX / 5XX) to narrow results. Click column headers to sort.
 

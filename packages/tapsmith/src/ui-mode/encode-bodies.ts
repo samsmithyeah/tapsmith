@@ -11,6 +11,7 @@
  * keeps the full body — this cap only affects the live IPC stream.
  */
 import type { NetworkEntry } from '../trace/types.js';
+import { bodyPlaceholder } from '../trace/body-placeholder.js';
 
 /** Max raw body bytes transferred per request/response over IPC. Above
  * this, the body is replaced with a text marker and not decoded client-
@@ -25,11 +26,7 @@ export interface EncodedBodies {
 
 function encodeBody(buf: Buffer, label: 'request' | 'response'): string {
   if (buf.length > MAX_IPC_BODY_BYTES) {
-    const mb = (buf.length / (1024 * 1024)).toFixed(1);
-    return Buffer.from(
-      `[${label} body too large to stream live — ${mb} MB; open the trace archive to inspect]`,
-      'utf8',
-    ).toString('base64');
+    return Buffer.from(bodyPlaceholder(buf.length, 'stream live', label), 'utf8').toString('base64');
   }
   return buf.toString('base64');
 }

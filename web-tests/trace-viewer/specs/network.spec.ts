@@ -1,9 +1,14 @@
 // The Network tab: the captured request list, its filters, and the per-request
 // detail pane. Shared with UI mode.
 
+import * as zlib from "node:zlib"
 import { test, expect } from "../fixtures.js"
 import { actionEvent, networkEntry, type TraceSpec } from "../trace-builder.js"
 import type { ViewerHarness } from "../fixtures.js"
+import type { DetailTabsPane } from "../../panes/detail-tabs.pane.js"
+import type { NetworkPane } from "../../panes/network.pane.js"
+import type { NetworkEntry } from "../../trace-types.js"
+import { solidPng } from "../../png.js"
 
 const RESPONSE_BODY = JSON.stringify(
   { items: [{ id: 1, title: "Buy milk" }], total: 1 },
@@ -464,6 +469,618 @@ test.describe("Network tab", () => {
       // pretty-printer, which confusingly also reads "Raw" once it is on.
       await expect(network.decodeToggle).toHaveCount(0)
       await expect(network.prettyToggle).toBeVisible()
+    })
+  })
+
+  // ─── Image bodies ───
+
+  test.describe("image bodies", () => {
+    const IMAGE = solidPng(20, 10, [0, 128, 255])
+
+    /** A GET for an image, with its body at `network/res-0.bin`. */
+    const imageEntry = (o: {
+      contentType?: string
+      responseHeaders?: Record<string, string>
+      responseSize?: number
+      inFlight?: boolean
+    } = {}) => {
+      const contentType = o.contentType ?? "image/png"
+      const entry = networkEntry({
+        index: 0,
+        url: "https://cdn.acme.dev/avatar.png",
+        contentType,
+        responseBodyPath: "network/res-0.bin",
+        responseSize: o.responseSize ?? IMAGE.length,
+      })
+      return {
+        ...entry,
+        inFlight: o.inFlight,
+        responseHeaders: { "content-type": contentType, ...o.responseHeaders },
+      }
+    }
+
+    async function openResponse(
+      { viewer, detailTabs, network }: { viewer: ViewerHarness; detailTabs: DetailTabsPane; network: NetworkPane },
+      entry: NetworkEntry,
+      body: Uint8Array,
+    ) {
+      await viewer.open({
+        events: [actionEvent({ actionIndex: 0, action: "tap" })],
+        network: [entry],
+        networkBodies: { "network/res-0.bin": body },
+      })
+      await detailTabs.select("Network")
+      await network.selectRow("avatar.png")
+      await network.openDetailTab("Response")
+    }
+
+    /** The decoded pixel size — proves the browser decoded the bytes, which
+     * `toBeVisible` alone does not (a broken image still has a box). */
+    async function naturalSize(network: NetworkPane) {
+      return network.imagePreview.evaluate((img: HTMLImageElement) => [img.naturalWidth, img.naturalHeight])
+    }
+
+    test("renders an image response as a picture, with its dimensions", async ({ viewer, detailTabs, network }) => {
+      await openResponse({ viewer, detailTabs, network }, imageEntry(), IMAGE)
+
+      await expect(network.imagePreview).toBeVisible()
+      expect(await naturalSize(network)).toEqual([20, 10])
+      await expect(network.bodyInfo).toContainText("png")
+      await expect(network.bodyInfo).toContainText("20 × 10")
+      await expect(network.decodeToggle).toHaveCount(0)
+    })
+
+    test("can switch between the picture and the raw bytes", async ({ viewer, detailTabs, network }) => {
+      await openResponse({ viewer, detailTabs, network }, imageEntry(), IMAGE)
+      await expect(network.imagePreview).toBeVisible()
+
+      await network.imageToggle.click()
+      await expect(network.imagePreview).toHaveCount(0)
+      // PNG's signature carries the ASCII "PNG" and the "IHDR" chunk name.
+      await expect(network.detailBody).toContainText("IHDR")
+
+      await network.imageToggle.click()
+      await expect(network.imagePreview).toBeVisible()
+    })
+
+    test("previews a raster image served as SVG", async ({ viewer, detailTabs, network }) => {
+      await openResponse({ viewer, detailTabs, network }, imageEntry({ contentType: "image/svg+xml" }), IMAGE)
+
+      await expect(network.imagePreview).toBeVisible()
+      expect(await naturalSize(network)).toEqual([20, 10])
+      await expect(network.bodyInfo).toContainText("png")
+    })
+
+    test("recognises an image served with a generic content type", async ({ viewer, detailTabs, network }) => {
+      await openResponse({ viewer, detailTabs, network }, imageEntry({ contentType: "application/octet-stream" }), IMAGE)
+
+      await expect(network.imagePreview).toBeVisible()
+      expect(await naturalSize(network)).toEqual([20, 10])
+    })
+
+    // The runner stores bodies already dechunked and decompressed, with the
+    // wire headers and wire sizes left as they were — so these archives hold
+    // the plain image next to headers that say otherwise, as real ones do.
+    for (const encoding of ["gzip", "br"]) {
+      test(`shows a ${encoding}-encoded image the runner has decompressed`, async ({ viewer, detailTabs, network }) => {
+        const wire = encoding === "gzip" ? zlib.gzipSync(IMAGE) : zlib.brotliCompressSync(IMAGE)
+        await openResponse(
+          { viewer, detailTabs, network },
+          imageEntry({ responseHeaders: { "Content-Encoding": encoding }, responseSize: wire.length }),
+          IMAGE,
+        )
+
+        await expect(network.imagePreview).toBeVisible()
+        expect(await naturalSize(network)).toEqual([20, 10])
+      })
+    }
+
+    test("shows a chunked image, whose wire size includes the chunk framing", async ({ viewer, detailTabs, network }) => {
+      await openResponse(
+        { viewer, detailTabs, network },
+        imageEntry({ responseHeaders: { "Transfer-Encoding": "chunked" }, responseSize: IMAGE.length + 12 }),
+        IMAGE,
+      )
+
+      await expect(network.imagePreview).toBeVisible()
+    })
+
+    test("says why when a gzip body could not be decompressed", async ({ viewer, detailTabs, network }) => {
+      // The runner keeps the original bytes when decompression fails.
+      const wire = zlib.gzipSync(IMAGE)
+      await openResponse(
+        { viewer, detailTabs, network },
+        imageEntry({ responseHeaders: { "content-encoding": "gzip" }, responseSize: wire.length }),
+        wire,
+      )
+
+      await expect(network.imageNote).toContainText("couldn't be decompressed")
+      await expect(network.imagePreview).toHaveCount(0)
+    })
+
+    test("does not draw an image the capture cut short", async ({ viewer, detailTabs, network }) => {
+      await openResponse({ viewer, detailTabs, network }, imageEntry({ responseSize: 3 * 1024 * 1024 }), IMAGE)
+
+      await expect(network.imageNote).toContainText(`only ${IMAGE.length} B of this 3.0 MB image`)
+      await expect(network.imagePreview).toHaveCount(0)
+    })
+
+    test("does not draw a chunked image whose stream stopped on a chunk boundary", async ({
+      viewer,
+      detailTabs,
+      network,
+    }) => {
+      // Dechunked cleanly, wire size far under the capture cap — only the PNG
+      // itself (no IEND chunk) says the tail is missing.
+      const cut = IMAGE.subarray(0, IMAGE.length - 12)
+      await openResponse(
+        { viewer, detailTabs, network },
+        imageEntry({ responseHeaders: { "Transfer-Encoding": "chunked" }, responseSize: cut.length + 10 }),
+        cut,
+      )
+
+      await expect(network.imageNote).toContainText("stops before its end")
+      await expect(network.imagePreview).toHaveCount(0)
+    })
+
+    test("clips a large raw fallback until asked to show it all", async ({ viewer, detailTabs, network }) => {
+      // A capture-capped image falls back to raw bytes; a megabyte of wrapped
+      // text would freeze the pane, so only the start is rendered at first.
+      const big = Buffer.alloc(300 * 1024, 0x41)
+      IMAGE.copy(big)
+      big.write("TAIL-MARKER", big.length - 11)
+      await openResponse(
+        { viewer, detailTabs, network },
+        imageEntry({ responseSize: 2 * 1024 * 1024 }),
+        big,
+      )
+
+      await expect(network.imageNote).toContainText("only")
+      await expect(network.bodyClipped).toContainText("Showing the first 64K of 300K characters")
+      await expect(network.detailBody).not.toContainText("TAIL-MARKER")
+
+      await network.showAllBody.click()
+      await expect(network.detailBody).toContainText("TAIL-MARKER")
+      await expect(network.bodyClipped).toHaveCount(0)
+    })
+
+    test("does not draw an image shorter than its Content-Length", async ({ viewer, detailTabs, network }) => {
+      await openResponse(
+        { viewer, detailTabs, network },
+        imageEntry({ responseHeaders: { "Content-Length": String(IMAGE.length * 4) } }),
+        IMAGE,
+      )
+
+      await expect(network.imageNote).toContainText(`only ${IMAGE.length} B of this ${IMAGE.length * 4} B image`)
+      await expect(network.imagePreview).toHaveCount(0)
+    })
+
+    test("does not draw an image that was still downloading", async ({ viewer, detailTabs, network }) => {
+      await openResponse({ viewer, detailTabs, network }, imageEntry({ inFlight: true }), IMAGE)
+
+      await expect(network.imageNote).toContainText("still downloading")
+      await expect(network.imagePreview).toHaveCount(0)
+    })
+
+    test("falls back to the raw bytes when the body is not really an image", async ({ viewer, detailTabs, network }) => {
+      const notAnImage = new TextEncoder().encode("<html>Not found</html>")
+      await openResponse({ viewer, detailTabs, network }, imageEntry({ responseSize: notAnImage.length }), notAnImage)
+
+      await expect(network.imageNote).toContainText("couldn't display this body as png")
+      await expect(network.detailBody).toContainText("Not found")
+      await expect(network.imagePreview).toHaveCount(0)
+    })
+
+    test.describe("SVG", () => {
+      const svgEntry = () => imageEntry({ contentType: "image/svg+xml" })
+      // The script would stamp the viewer's window if it ever ran.
+      const SCRIPTED_SVG = new TextEncoder().encode(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" onload="window.__svgRan = true">` +
+          `<rect width="40" height="20" fill="#08f"/></svg>`,
+      )
+
+      test("draws an SVG as a PNG, so no SVG URL is left to open as a page", async ({
+        page,
+        viewer,
+        detailTabs,
+        network,
+      }) => {
+        await openResponse({ viewer, detailTabs, network }, svgEntry(), SCRIPTED_SVG)
+
+        await expect(network.imagePreview).toBeVisible()
+        await expect(network.bodyInfo).toContainText("40 × 20")
+        // What "Open image in new tab" would open: a blob of PNG, not SVG.
+        const shownType = await network.imagePreview.evaluate(async (img: HTMLImageElement) =>
+          (await (await fetch(img.src)).blob()).type,
+        )
+        expect(shownType).toBe("image/png")
+        expect(await page.evaluate(() => (window as { __svgRan?: boolean }).__svgRan)).toBeUndefined()
+      })
+
+      test("says so when an SVG can't be drawn, rather than showing nothing", async ({
+        viewer,
+        detailTabs,
+        network,
+      }) => {
+        const broken = new TextEncoder().encode(`<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect`)
+        await openResponse(
+          { viewer, detailTabs, network },
+          imageEntry({ contentType: "image/svg+xml", responseSize: broken.length }),
+          broken,
+        )
+
+        await expect(network.imageNote).toContainText("couldn't display this body as svg")
+        await expect(network.imagePreview).toHaveCount(0)
+      })
+
+      test("draws a sizeless SVG in a legacy encoding exactly as its UTF-8 twin", async ({
+        viewer,
+        detailTabs,
+        network,
+      }) => {
+        // The sizeless path decodes and re-serialises the SVG; its text must
+        // survive the declared encoding. (This catches a wrong decode. The
+        // write-back declaration only matters to engines that honour it —
+        // Chromium, which runs here, does not.)
+        const svg = (encoding: string) =>
+          `<?xml version="1.0" encoding="${encoding}"?>` +
+          `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40">` +
+          `<text x="4" y="28" font-size="24" font-family="sans-serif">café ñ</text></svg>`
+        const latin1 = Buffer.from(svg("ISO-8859-1"), "latin1")
+        const utf8 = Buffer.from(svg("UTF-8"), "utf8")
+        const entry = (index: number, name: string, size: number) => ({
+          ...networkEntry({
+            index,
+            url: `https://cdn.acme.dev/${name}`,
+            contentType: "image/svg+xml",
+            responseBodyPath: `network/res-${index}.bin`,
+            responseSize: size,
+          }),
+          responseHeaders: { "content-type": "image/svg+xml" },
+        })
+        await viewer.open({
+          events: [actionEvent({ actionIndex: 0, action: "tap" })],
+          network: [entry(0, "latin1.svg", latin1.length), entry(1, "utf8.svg", utf8.length)],
+          networkBodies: { "network/res-0.bin": latin1, "network/res-1.bin": utf8 },
+        })
+        await detailTabs.select("Network")
+        const rasterOf = async (name: string) => {
+          await network.selectRow(name)
+          await network.openDetailTab("Response")
+          await expect(network.imagePreview).toBeVisible()
+          return network.imagePreview.evaluate(async (img: HTMLImageElement) => {
+            // Compare pixels, not PNG bytes: the encoder may differ run to run.
+            const bitmap = await createImageBitmap(await (await fetch(img.src)).blob())
+            const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+            const ctx = canvas.getContext("2d")!
+            ctx.drawImage(bitmap, 0, 0)
+            return Array.from(ctx.getImageData(0, 0, bitmap.width, bitmap.height).data).join(",")
+          })
+        }
+
+        expect(await rasterOf("latin1.svg")).toBe(await rasterOf("utf8.svg"))
+
+        // The Raw view reads it in the same encoding.
+        await network.selectRow("latin1.svg")
+        await network.openDetailTab("Response")
+        await network.imageToggle.click()
+        await expect(network.detailBody).toContainText("café ñ")
+      })
+
+      test("reads an SVG it can't preview in its declared encoding", async ({ viewer, detailTabs, network }) => {
+        const latin1 = Buffer.from(
+          `<?xml version="1.0" encoding="ISO-8859-1"?><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><text>café</text></svg>`,
+          "latin1",
+        )
+        // Cut short, so it falls back to text.
+        await openResponse(
+          { viewer, detailTabs, network },
+          imageEntry({ contentType: "image/svg+xml", responseSize: latin1.length * 2 }),
+          latin1,
+        )
+
+        await expect(network.imageNote).toBeVisible()
+        await expect(network.detailBody).toContainText("café")
+      })
+
+      test("reads an SVG in the charset its Content-Type names", async ({ viewer, detailTabs, network }) => {
+        // No XML declaration: only the HTTP charset says this is Latin-1.
+        const latin1 = Buffer.from(
+          `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><text>café</text></svg>`,
+          "latin1",
+        )
+        await openResponse(
+          { viewer, detailTabs, network },
+          imageEntry({ contentType: "image/svg+xml; charset=windows-1252", responseSize: latin1.length }),
+          latin1,
+        )
+        await expect(network.imagePreview).toBeVisible()
+        await network.imageToggle.click()
+        await expect(network.detailBody).toContainText("café")
+      })
+
+      test("keeps a sizeless SVG's prolog, such as an xml-stylesheet", async ({ viewer, detailTabs, network }) => {
+        // The stylesheet is what paints the rect; without the processing
+        // instruction the rect falls back to black.
+        const styled = new TextEncoder().encode(
+          `<?xml version="1.0"?><?xml-stylesheet href="#s" type="text/css"?>` +
+            `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">` +
+            `<style id="s">rect { fill: rgb(0, 200, 0) }</style><rect width="10" height="10"/></svg>`,
+        )
+        await openResponse(
+          { viewer, detailTabs, network },
+          imageEntry({ contentType: "image/svg+xml", responseSize: styled.length }),
+          styled,
+        )
+        await expect(network.imagePreview).toBeVisible()
+        const centre = await network.imagePreview.evaluate(async (img: HTMLImageElement) => {
+          const bitmap = await createImageBitmap(await (await fetch(img.src)).blob())
+          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+          const ctx = canvas.getContext("2d")!
+          ctx.drawImage(bitmap, 0, 0)
+          return Array.from(ctx.getImageData(bitmap.width >> 1, bitmap.height >> 1, 1, 1).data)
+        })
+        expect(centre.slice(0, 3)).toEqual([0, 200, 0])
+      })
+
+      test("keeps the size an SVG declares in absolute units other than px", async ({ viewer, detailTabs, network }) => {
+        // Inkscape's default: millimetres.
+        const inkscape = new TextEncoder().encode(
+          `<svg xmlns="http://www.w3.org/2000/svg" width="50mm" height="25mm" viewBox="0 0 50 25"><rect width="50" height="25" fill="#08f"/></svg>`,
+        )
+        await openResponse(
+          { viewer, detailTabs, network },
+          imageEntry({ contentType: "image/svg+xml", responseSize: inkscape.length }),
+          inkscape,
+        )
+
+        await expect(network.imagePreview).toBeVisible()
+        await expect(network.bodyInfo).toContainText("189 × 94")
+      })
+
+      test("draws an SVG with only a viewBox without claiming a size for it", async ({
+        viewer,
+        detailTabs,
+        network,
+      }) => {
+        const iconSvg = new TextEncoder().encode(
+          `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/></svg>`,
+        )
+        await openResponse({ viewer, detailTabs, network }, svgEntry(), iconSvg)
+
+        await expect(network.imagePreview).toBeVisible()
+        await expect(network.bodyInfo).not.toContainText("×")
+        // Shown at the proportions it was drawn at, not stretched.
+        const [shown, drawn] = await network.imagePreview.evaluate((img: HTMLImageElement) => [
+          img.clientWidth / img.clientHeight,
+          img.naturalWidth / img.naturalHeight,
+        ])
+        expect(shown).toBeCloseTo(drawn, 1)
+      })
+    })
+
+    test("explains that an image format browsers can't display is shown raw", async ({
+      viewer,
+      detailTabs,
+      network,
+    }) => {
+      const tiff = new Uint8Array([0x49, 0x49, 0x2a, 0x00, 8, 0, 0, 0])
+      await openResponse(
+        { viewer, detailTabs, network },
+        imageEntry({ contentType: "image/tiff", responseSize: tiff.length }),
+        tiff,
+      )
+
+      await expect(network.imageNote).toContainText("can't display image/tiff images")
+      await expect(network.imagePreview).toHaveCount(0)
+    })
+
+    test("does not draw one range of an image from a 206 response", async ({ viewer, detailTabs, network }) => {
+      const entry = { ...imageEntry({ responseHeaders: { "Content-Range": `bytes 0-${IMAGE.length - 1}/400000` } }), status: 206 }
+      await openResponse({ viewer, detailTabs, network }, entry, IMAGE)
+
+      await expect(network.imageNote).toContainText("206 Partial Content")
+      await expect(network.imagePreview).toHaveCount(0)
+    })
+
+    test("previews an uploaded image in the request payload", async ({ viewer, detailTabs, network }) => {
+      const upload = {
+        ...networkEntry({
+          index: 0,
+          method: "PUT",
+          url: "https://api.acme.dev/v1/me/avatar",
+          // The response is JSON; the payload's own type comes from its headers.
+          contentType: "application/json",
+          requestBodyPath: "network/req-0.bin",
+        }),
+        requestSize: IMAGE.length,
+        requestHeaders: { "Content-Type": "image/png" },
+      }
+      await viewer.open({
+        events: [actionEvent({ actionIndex: 0, action: "tap" })],
+        network: [upload],
+        networkBodies: { "network/req-0.bin": IMAGE },
+      })
+      await detailTabs.select("Network")
+      await network.selectRow("avatar")
+      await network.openDetailTab("Payload")
+
+      await expect(network.imagePreview).toBeVisible()
+      expect(await naturalSize(network)).toEqual([20, 10])
+    })
+
+    test("previews an upload whose response is still streaming", async ({ viewer, detailTabs, network }) => {
+      // The response has started, so the request body was sent in full.
+      const upload = {
+        ...networkEntry({
+          index: 0,
+          method: "PUT",
+          url: "https://api.acme.dev/v1/me/avatar",
+          status: 200,
+          contentType: "application/json",
+          requestBodyPath: "network/req-0.bin",
+        }),
+        inFlight: true,
+        requestSize: IMAGE.length,
+        requestHeaders: { "Content-Type": "image/png" },
+      }
+      await viewer.open({
+        events: [actionEvent({ actionIndex: 0, action: "tap" })],
+        network: [upload],
+        networkBodies: { "network/req-0.bin": IMAGE },
+      })
+      await detailTabs.select("Network")
+      await network.selectRow("avatar")
+      await network.openDetailTab("Payload")
+
+      await expect(network.imagePreview).toBeVisible()
+    })
+
+    test("does not draw an upload that has no response yet", async ({ viewer, detailTabs, network }) => {
+      const upload = {
+        ...networkEntry({
+          index: 0,
+          method: "PUT",
+          url: "https://api.acme.dev/v1/me/avatar",
+          status: 0,
+          contentType: "",
+          requestBodyPath: "network/req-0.bin",
+        }),
+        inFlight: true,
+        requestSize: IMAGE.length,
+        requestHeaders: { "Content-Type": "image/png" },
+      }
+      await viewer.open({
+        events: [actionEvent({ actionIndex: 0, action: "tap" })],
+        network: [upload],
+        networkBodies: { "network/req-0.bin": IMAGE },
+      })
+      await detailTabs.select("Network")
+      await network.selectRow("avatar")
+      await network.openDetailTab("Payload")
+
+      await expect(network.imageNote).toContainText("may still have been uploading")
+      await expect(network.imagePreview).toHaveCount(0)
+    })
+
+    test("types a payload by the response's Content-Type when the request declares none", async ({
+      viewer,
+      detailTabs,
+      network,
+    }) => {
+      // What the payload view always did; an empty header declares nothing too.
+      const headerVariants: Record<string, string>[] = [{}, { "Content-Type": "" }]
+      for (const requestHeaders of headerVariants) {
+        await viewer.open({
+          events: [actionEvent({ actionIndex: 0, action: "tap" })],
+          network: [{
+            ...networkEntry({
+              index: 0,
+              method: "POST",
+              url: "https://api.acme.dev/v1/items",
+              contentType: "application/json",
+              requestBodyPath: "network/req-0.bin",
+            }),
+            requestHeaders,
+          }],
+          networkBodies: { "network/req-0.bin": '{"title":"Buy milk"}' },
+        })
+        await detailTabs.select("Network")
+        await network.selectRow("items")
+        await network.openDetailTab("Payload")
+
+        await expect(network.bodyInfo).toContainText("json")
+        await expect(network.prettyToggle).toBeVisible()
+      }
+    })
+
+    test("types a non-image payload by its own Content-Type, not the response's", async ({
+      viewer,
+      detailTabs,
+      network,
+    }) => {
+      const form = {
+        ...networkEntry({
+          index: 0,
+          method: "POST",
+          url: "https://api.acme.dev/v1/login",
+          contentType: "application/json",
+          requestBodyPath: "network/req-0.bin",
+        }),
+        requestHeaders: { "Content-Type": "application/x-www-form-urlencoded" },
+      }
+      await viewer.open({
+        events: [actionEvent({ actionIndex: 0, action: "tap" })],
+        network: [form],
+        networkBodies: { "network/req-0.bin": "user=sam&remember=1" },
+      })
+      await detailTabs.select("Network")
+      await network.selectRow("login")
+      await network.openDetailTab("Payload")
+
+      await expect(network.detailBody).toContainText("user=sam")
+      await expect(network.bodyInfo).not.toContainText("json")
+      await expect(network.prettyToggle).toHaveCount(0)
+    })
+
+    test("labels an upload it cannot preview by the upload's own type", async ({ viewer, detailTabs, network }) => {
+      const upload = {
+        ...networkEntry({
+          index: 0,
+          method: "PUT",
+          url: "https://api.acme.dev/v1/me/avatar",
+          contentType: "application/json",
+          requestBodyPath: "network/req-0.bin",
+        }),
+        requestSize: 3 * 1024 * 1024,
+        requestHeaders: { "Content-Type": "image/png" },
+      }
+      await viewer.open({
+        events: [actionEvent({ actionIndex: 0, action: "tap" })],
+        network: [upload],
+        networkBodies: { "network/req-0.bin": IMAGE },
+      })
+      await detailTabs.select("Network")
+      await network.selectRow("avatar")
+      await network.openDetailTab("Payload")
+
+      await expect(network.imageNote).toContainText("only")
+      await expect(network.bodyInfo).toContainText("png")
+      await expect(network.prettyToggle).toHaveCount(0)
+    })
+
+    test("opens each image as a picture, even after the previous one was switched to raw", async ({
+      viewer,
+      detailTabs,
+      network,
+    }) => {
+      const second = solidPng(6, 4)
+      await viewer.open({
+        events: [actionEvent({ actionIndex: 0, action: "tap" })],
+        network: [
+          imageEntry(),
+          {
+            ...networkEntry({
+              index: 1,
+              url: "https://cdn.acme.dev/banner.png",
+              contentType: "image/png",
+              responseBodyPath: "network/res-1.bin",
+              responseSize: second.length,
+            }),
+            responseHeaders: { "content-type": "image/png" },
+          },
+        ],
+        networkBodies: { "network/res-0.bin": IMAGE, "network/res-1.bin": second },
+      })
+      await detailTabs.select("Network")
+      await network.selectRow("avatar.png")
+      await network.openDetailTab("Response")
+      await network.imageToggle.click()
+      await expect(network.imagePreview).toHaveCount(0)
+
+      await network.selectRow("banner.png")
+      await expect(network.imagePreview).toBeVisible()
+      expect(await naturalSize(network)).toEqual([6, 4])
     })
   })
 
