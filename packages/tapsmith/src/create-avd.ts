@@ -31,7 +31,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { unzipSync } from 'fflate';
 import Enquirer from 'enquirer';
-import { scanAvdImageTags } from './doctor.js';
+import { scanAvdImageTags } from './avd-images.js';
 import { DEFAULT_API_LEVEL, DEFAULT_DEVICE_PROFILE, defaultAbi, defaultAvdName } from './avd-defaults.js';
 import type { CreateAvdCommandOptions } from './cli-program.js';
 

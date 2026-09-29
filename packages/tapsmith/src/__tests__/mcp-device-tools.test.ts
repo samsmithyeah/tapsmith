@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -333,6 +336,15 @@ describe('tapsmith_tap', () => {
     expect(text(res)).toBe('Error: element not clickable');
   });
 
+  it('reports a failure the daemon gave no message for, rather than OK', async () => {
+    const daemon = makeDaemon({ elements: [makeElement({ text: 'Login' })] });
+    daemon.tap.mockResolvedValueOnce({ requestId: '1', success: false, errorType: '', errorMessage: '' });
+    hoisted.client = daemon.client;
+    const res = await callTool('tapsmith_tap', { locator: 'device.getByText("Login")' });
+    expect(res.isError).toBe(true);
+    expect(text(res)).not.toBe('OK');
+  });
+
   it('requires a locator, and says which argument is missing', async () => {
     const res = await callTool('tapsmith_tap', {});
     expect(res.isError).toBe(true);
@@ -384,6 +396,25 @@ describe('tapsmith_type', () => {
     expect(daemon.clearText.mock.calls[0][0]).toBeUndefined();
     expect(daemon.clearText.mock.calls[0][2]).toBe('el-2');
     expect(daemon.typeText.mock.calls[0][4]).toBe('el-2');
+  });
+
+  it('reports a clear that failed, and types nothing into the stale text', async () => {
+    // Typing after a failed clear appends to the old value, and "OK" hid it:
+    // the agent believed the field held exactly the new text (PILOT-267).
+    const daemon = makeDaemon({ elements: [makeElement({ text: 'Email' })] });
+    daemon.clearText.mockResolvedValueOnce({
+      requestId: '1', success: false, errorType: 'ACTION_FAILED', errorMessage: 'field is read-only',
+    });
+    hoisted.client = daemon.client;
+    const res = await callTool('tapsmith_type', {
+      locator: 'device.getByText("Email")',
+      text: 'new',
+      clear: true,
+    });
+    expect(res.isError).toBe(true);
+    expect(text(res)).toContain('clear');
+    expect(text(res)).toContain('field is read-only');
+    expect(daemon.typeText).not.toHaveBeenCalled();
   });
 
   it('refuses an ambiguous locator and types nothing', async () => {
@@ -470,6 +501,15 @@ describe('tapsmith_launch_app', () => {
     const res = await callTool('tapsmith_launch_app', { package: 'com.missing' });
     expect(res.isError).toBe(true);
     expect(text(res)).toBe('Error: package not installed');
+  });
+
+  it('reports a launch failure the daemon gave no message for, rather than OK', async () => {
+    const daemon = makeDaemon();
+    daemon.launchApp.mockResolvedValueOnce({ requestId: '1', success: false, errorType: '', errorMessage: '' });
+    hoisted.client = daemon.client;
+    const res = await callTool('tapsmith_launch_app', { package: 'com.example.app' });
+    expect(res.isError).toBe(true);
+    expect(text(res)).not.toBe('OK');
   });
 
   it('requires a package name, and says which argument is missing', async () => {
@@ -728,6 +768,47 @@ describe('the device tools the server advertises', () => {
       expect(filesArg, 'tapsmith_run_tests advertises no array argument').toBeDefined();
       expect(formatToolArgs('tapsmith_run_tests', { [filesArg!]: ['/proj/e2e/login.test.ts'] }))
         .toBe('Running login.test.ts');
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('reports the installed package version to the client, not a placeholder', async () => {
+    // Both transports build their server here, so this covers UI mode too.
+    const pkgPath = path.resolve(fileURLToPath(import.meta.url), '../../../package.json');
+    const { version } = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as { version: string };
+    const server = createMcpServer({ dispatcher: makeDispatcher() });
+    const client = new Client({ name: 'probe', version: '1.0.0' }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    try {
+      await client.connect(clientTransport);
+      expect(client.getServerVersion()?.version).toBe(version);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('tells an agent every form tapsmith_run_tests accepts for `files`', async () => {
+    // Both dispatchers resolve absolute, project-relative and glob paths
+    // (matchRequestedFiles); a description naming fewer steers agents away
+    // from forms that work (PILOT-267).
+    const server = createMcpServer({ dispatcher: makeDispatcher() });
+    const client = new Client({ name: 'probe', version: '1.0.0' }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    try {
+      await client.connect(clientTransport);
+      const runTests = (await client.listTools()).tools.find((t) => t.name === 'tapsmith_run_tests');
+      const files = (runTests?.inputSchema.properties?.files ?? {}) as { description?: string };
+      expect(files.description).toMatch(/absolute/i);
+      // "Project root" read as the repo root sent agents to `e2e/tests/…`
+      // when the config lives in e2e/; the resolution base is rootDir.
+      expect(files.description).toMatch(/relative to the config's directory \(rootDir\)/i);
+      expect(files.description).toMatch(/working directory/i);
+      expect(files.description).toMatch(/glob/i);
     } finally {
       await client.close();
       await server.close();

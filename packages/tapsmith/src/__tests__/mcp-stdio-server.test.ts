@@ -102,6 +102,11 @@ describe('tapsmith mcp-server over real stdio', () => {
     try {
       await client.connect(stdioTransport());
 
+      // Clients show and log this; a hardcoded placeholder told every agent
+      // it was talking to 0.1.0 whatever was installed (PILOT-267).
+      const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf-8')) as { version: string };
+      expect(client.getServerVersion()).toMatchObject({ name: 'tapsmith', version: pkg.version });
+
       // The inventory itself is pinned in mcp-device-tools; what matters here
       // is that a spawned server registers both halves of the surface without
       // a device, rather than dying partway through registration.

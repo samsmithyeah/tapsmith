@@ -169,7 +169,7 @@ Type text into an element matching the locator.
 |---|---|---|---|
 | `locator` | string | Yes | Tapsmith locator for the text field |
 | `text` | string | Yes | Text to type |
-| `clear` | boolean | No | Clear existing text before typing (default: false) |
+| `clear` | boolean | No | Clear existing text before typing (default: false). If the clear fails, the call returns that error and types nothing. |
 | `device` | string | No | Device serial. Defaults to the session's primary device — see [Choosing a device](#choosing-a-device). |
 
 #### `tapsmith_swipe`
@@ -216,9 +216,9 @@ Run Tapsmith test files and return structured results. Only one test run can exe
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `files` | string[] | Yes | File paths — absolute, relative to the project root, or globs. Use `tapsmith_list_tests` to find available files. An argument that matches no discovered file is named in the error rather than reported as an empty run. |
-| `test` | string | No | Run a specific test by its full name (e.g. `"Login screen > submits form"`). Only works with a single file. |
-| `project` | string | No | Project name to target a specific platform/device (e.g. `"android"`, `"ios"`). Required when the same test file runs on multiple platforms. |
+| `files` | string[] | Yes | File paths — absolute, relative to the config's directory (`rootDir`) or the server's working directory, or globs matched the same way (e.g. `"tests/login.test.ts"`, `"**/login.test.ts"`). Use `tapsmith_list_tests` to find available files. An argument that matches no discovered file is named in the error rather than reported as an empty run. |
+| `test` | string | No | Run only the tests whose full name (`"Describe > test name"`) contains this text, case-insensitively (e.g. `"submits form"`). It can match more than one test, and it applies across every file in `files`. A filter that matches nothing is an error listing the available tests, never a silent pass. |
+| `project` | string | No | Project name to target a specific platform/device (e.g. `"android"`, `"ios"`). Required when a requested file runs under more than one project: such a run is refused rather than sent to the first one. An unknown project name is refused too. |
 | `device` | string | No | Device serial, or a `use.devices` member name, the run must use. Prefer `project` to pick a platform. A session keeps its devices for its whole life, so `device` can confirm the device a run would use — or, on a headless session, choose it: until a test run or a device tool needs a device (listing tests and reading session info do not), `device` pins the device the session will use. A device that cannot be set up is refused with the reason, and nothing is pinned. A device the session cannot use for the run is refused with the one it holds; it is never ignored. In HTTP (UI) mode it is accepted only when exactly one worker of the files' device target could take the run and holds that device, since each run goes to whichever of those workers is free. |
 
 **On success:** returns a summary like "All tests passed: 5 passed, 0 skipped (12.3s)".
