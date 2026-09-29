@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDeviceRows } from '../list-devices.js';
+import { buildDeviceRows, listDevicesFromDaemon, ListDevicesError, runListDevices, type ListDevicesDeps } from '../list-devices.js';
 import type { DeviceInfoProto } from '../grpc-client.js';
 import type { PhysicalDeviceInfo } from '../ios-devicectl.js';
 
@@ -198,5 +198,79 @@ describe('buildDeviceRows — sort order', () => {
 describe('buildDeviceRows — empty input', () => {
   it('returns empty when no devices are connected', () => {
     expect(buildDeviceRows([], [])).toEqual([]);
+  });
+});
+
+// ─── --json contract (PILOT-270) ───
+
+describe('runListDevices --json', () => {
+  const capture = (deps: Partial<ListDevicesDeps>): { deps: ListDevicesDeps; out: () => string; err: () => string } => {
+    let out = '';
+    let err = '';
+    return {
+      deps: {
+        fetchDevices: async () => [],
+        enrich: () => ({ physical: [], usbAttached: new Set() }),
+        stdout: (t) => { out += t; },
+        stderr: (t) => { err += t; },
+        ...deps,
+      },
+      out: () => out,
+      err: () => err,
+    };
+  };
+
+  it('prints { devices } with exactly the documented row keys', async () => {
+    const h = capture({
+      fetchDevices: async () => [daemonDevice({ serial: 'emulator-5554', model: 'Pixel 9', platform: 'android', isEmulator: true, state: 'device', osVersion: '15' })],
+    });
+    expect(await runListDevices({ json: true }, h.deps)).toBe(0);
+    const parsed = JSON.parse(h.out()) as { devices: Array<Record<string, unknown>> };
+    expect(Object.keys(parsed)).toEqual(['devices']);
+    expect(parsed.devices).toEqual([{
+      ready: true, platform: 'android-emu', serial: 'emulator-5554', name: 'Pixel 9', osLabel: 'Android 15', blockers: [],
+    }]);
+    expect(h.err()).toBe('');
+  });
+
+  it.each([
+    ['DAEMON_NOT_FOUND'],
+    ['DAEMON_START_FAILED'],
+    ['LIST_DEVICES_FAILED'],
+  ])('reports a %s failure as the shared error envelope, exit 1', async (code) => {
+    const h = capture({ fetchDevices: async () => { throw new ListDevicesError(code, 'it broke', 'do this'); } });
+    expect(await runListDevices({ json: true }, h.deps)).toBe(1);
+    expect(JSON.parse(h.out())).toEqual({ error: { code, message: 'it broke', fix: 'do this' } });
+    expect(h.err()).toBe('');
+  });
+
+  it('reports anything else as UNEXPECTED_ERROR', async () => {
+    const h = capture({ fetchDevices: async () => { throw new Error('boom'); } });
+    expect(await runListDevices({ json: true }, h.deps)).toBe(1);
+    const parsed = JSON.parse(h.out()) as { error: { code: string; message: string } };
+    expect(parsed.error).toMatchObject({ code: 'UNEXPECTED_ERROR', message: 'boom' });
+  });
+
+  it('keeps text-mode failures on stderr, exit 1', async () => {
+    const h = capture({ fetchDevices: async () => { throw new ListDevicesError('DAEMON_NOT_FOUND', 'no daemon', 'reinstall'); } });
+    expect(await runListDevices({ json: false }, h.deps)).toBe(1);
+    expect(h.out()).toBe('');
+    expect(h.err()).toContain('no daemon');
+    expect(h.err()).toContain('reinstall');
+  });
+});
+
+describe('listDevicesFromDaemon failure codes', () => {
+  it('DAEMON_NOT_FOUND when no daemon binary resolves', async () => {
+    const err = await listDevicesFromDaemon({ findBin: () => { throw new Error('not found anywhere'); } }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ListDevicesError);
+    expect(err).toMatchObject({ code: 'DAEMON_NOT_FOUND', message: expect.stringContaining('not found anywhere') });
+  });
+
+  it('DAEMON_START_FAILED when the daemon cannot be started, naming the spawn error', async () => {
+    const err = await listDevicesFromDaemon({ findBin: () => '/nonexistent/tapsmith-core', readyTimeoutMs: 300 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ListDevicesError);
+    expect(err).toMatchObject({ code: 'DAEMON_START_FAILED', message: expect.stringContaining('ENOENT') });
+    expect((err as ListDevicesError).fix).toContain('TAPSMITH_DAEMON_BIN');
   });
 });

@@ -25,6 +25,7 @@
 
 import { Argument, Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { DEFAULT_API_LEVEL, DEFAULT_DEVICE_PROFILE, defaultAbi } from './avd-defaults.js';
+import { formatJson, jsonError } from './cli-json.js';
 import { TELEMETRY_DOCS_URL } from './telemetry.js';
 import { TRACE_MODES, type TraceMode } from './trace/types.js';
 import { VIDEO_MODES, type VideoMode } from './video/types.js';
@@ -878,17 +879,10 @@ export async function runCli(argv: string[], deps: RunCliDeps): Promise<number> 
     return state.exitCode;
   } catch (err) {
     if (!(err instanceof CommanderError)) throw err;
-    if (state.json && state.command === 'list-devices' && err.exitCode !== 0) {
-      // list-devices has always reported errors as { error: <message> }.
-      io.out(JSON.stringify({ error: state.jsonError ?? err.message }) + '\n');
-    } else if (state.json && state.command && err.exitCode !== 0) {
-      io.out(JSON.stringify({
-        error: {
-          code: jsonErrorCode(state.command, err.code),
-          message: state.jsonError ?? err.message,
-          fix: `Run: npx tapsmith ${state.command} --help`,
-        },
-      }, null, 2) + '\n');
+    if (state.json && state.command && err.exitCode !== 0) {
+      io.out(formatJson(jsonError(jsonErrorCode(state.command, err.code), state.jsonError ?? err.message, {
+        fix: `Run: npx tapsmith ${state.command} --help`,
+      })));
     }
     return err.exitCode;
   }

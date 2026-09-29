@@ -12,7 +12,7 @@
  * Output shape: NAME · PLATFORM · SERIAL · OS · STATUS. The STATUS cell
  * is either "Ready" or a one-line imperative fix ("Plug in via USB
  * cable"). Ready devices sort first. A `--json` flag emits the row model
- * for scripting.
+ * for scripting (schema: docs/api-reference.md, CLI → JSON output).
  *
  * For per-device iOS preflight with richer hints, `tapsmith ios setup-device`
  * does the heavy lifting.
@@ -22,6 +22,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { findDaemonBin } from './daemon-bin.js';
 import { TapsmithGrpcClient, type DeviceInfoProto } from './grpc-client.js';
 import { pickFreePort } from './port-utils.js';
+import { formatJson, jsonError } from './cli-json.js';
 import {
   listPhysicalDevices,
   listUsbAttachedIosDevices,
@@ -271,32 +272,59 @@ function statusStringColored(r: DeviceRow): string {
 
 // ─── Daemon bootstrap ───────────────────────────────────────────────────
 
+/** A failure the `--json` output reports under its own code. */
+export class ListDevicesError extends Error {
+  constructor(readonly code: string, message: string, readonly fix: string) {
+    super(message);
+    this.name = 'ListDevicesError';
+  }
+}
+
+const DAEMON_BIN_FIX = 'Reinstall tapsmith (npm install tapsmith), or set TAPSMITH_DAEMON_BIN to the tapsmith-core binary';
+
 /**
  * Spin up an ephemeral `tapsmith-core` daemon, issue `ListDevices`, and tear
  * down. Same shape as `ios network configure`'s helper — this command is
- * short-lived and doesn't need to reuse a long-running daemon.
+ * short-lived and doesn't need to reuse a long-running daemon. Every failure
+ * is a ListDevicesError naming the stage that failed.
  */
-async function listDevicesFromDaemon(): Promise<DeviceInfoProto[]> {
+export async function listDevicesFromDaemon(
+  opts: { findBin?: () => string; readyTimeoutMs?: number } = {},
+): Promise<DeviceInfoProto[]> {
+  let bin: string;
+  try {
+    bin = (opts.findBin ?? findDaemonBin)();
+  } catch (err) {
+    throw new ListDevicesError('DAEMON_NOT_FOUND', err instanceof Error ? err.message : String(err), DAEMON_BIN_FIX);
+  }
+
   const port = String(await pickFreePort());
-  const bin = findDaemonBin();
-  const child = spawn(
-    bin,
-    ['--port', port],
-    { stdio: ['ignore', 'ignore', 'ignore'] },
-  );
+  const child = spawn(bin, ['--port', port], { stdio: ['ignore', 'ignore', 'ignore'] });
+  // A binary that cannot be executed emits 'error' instead of throwing; with
+  // no listener that would crash the process instead of reporting it.
+  let spawnError: Error | undefined;
+  child.on('error', (err) => { spawnError = err; });
 
   const client = new TapsmithGrpcClient(`127.0.0.1:${port}`);
-  const ready = await client.waitForReady(5_000);
-  if (!ready) {
-    child.kill();
-    throw new Error(
-      'Failed to start tapsmith-core daemon. Is the binary on PATH? ' +
-      'Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.',
-    );
-  }
   try {
-    const response = await client.listDevices();
-    return response.devices;
+    const ready = await client.waitForReady(opts.readyTimeoutMs ?? 5_000);
+    if (!ready) {
+      throw new ListDevicesError(
+        'DAEMON_START_FAILED',
+        `Failed to start the tapsmith-core daemon (${bin})${spawnError ? `: ${spawnError.message}` : ''}`,
+        DAEMON_BIN_FIX,
+      );
+    }
+    try {
+      const response = await client.listDevices();
+      return response.devices;
+    } catch (err) {
+      throw new ListDevicesError(
+        'LIST_DEVICES_FAILED',
+        `The daemon could not list devices: ${err instanceof Error ? err.message : String(err)}`,
+        'Re-run tapsmith list-devices; if it keeps failing, run npx tapsmith doctor --json',
+      );
+    }
   } finally {
     client.close();
     child.kill();
@@ -305,24 +333,16 @@ async function listDevicesFromDaemon(): Promise<DeviceInfoProto[]> {
 
 // ─── CLI entry point ────────────────────────────────────────────────────
 
-export async function runListDevices(opts: { json: boolean }): Promise<void> {
-  const jsonOutput = opts.json;
+export interface ListDevicesDeps {
+  fetchDevices: () => Promise<DeviceInfoProto[]>;
+  /** devicectl + USB cross-reference for physical iOS devices. */
+  enrich: () => { physical: PhysicalDeviceInfo[]; usbAttached: Set<string> };
+  stdout: (text: string) => void;
+  stderr: (text: string) => void;
+}
 
-  let daemonDevices: DeviceInfoProto[];
-  try {
-    daemonDevices = await listDevicesFromDaemon();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (jsonOutput) {
-      process.stdout.write(JSON.stringify({ error: msg }) + '\n');
-    } else {
-      console.error(red(msg));
-    }
-    process.exit(1);
-  }
-
-  // Physical iOS enrichment only runs on macOS — `xcrun devicectl` is
-  // macOS-only. On other platforms we just show what the daemon returns.
+/** Physical iOS enrichment; macOS only — `xcrun devicectl` is macOS-only. */
+function enrichFromHost(): { physical: PhysicalDeviceInfo[]; usbAttached: Set<string> } {
   let physical: PhysicalDeviceInfo[] = [];
   let usbAttached: Set<string> = new Set();
   if (process.platform === 'darwin' && canRunXcrun()) {
@@ -337,15 +357,45 @@ export async function runListDevices(opts: { json: boolean }): Promise<void> {
       // Non-fatal — USB flag just won't fire without libimobiledevice.
     }
   }
+  return { physical, usbAttached };
+}
 
-  const rows = buildDeviceRows(daemonDevices, physical, usbAttached);
+/** Runs the command and returns the process exit code. */
+export async function runListDevices(opts: { json: boolean }, overrides: Partial<ListDevicesDeps> = {}): Promise<number> {
+  const deps: ListDevicesDeps = {
+    fetchDevices: () => listDevicesFromDaemon(),
+    enrich: enrichFromHost,
+    stdout: (text) => { process.stdout.write(text); },
+    stderr: (text) => { process.stderr.write(text); },
+    ...overrides,
+  };
 
-  if (jsonOutput) {
-    process.stdout.write(JSON.stringify({ devices: rows }, null, 2) + '\n');
-    return;
+  let daemonDevices: DeviceInfoProto[];
+  try {
+    daemonDevices = await deps.fetchDevices();
+  } catch (err) {
+    const failure = err instanceof ListDevicesError
+      ? jsonError(err.code, err.message, { fix: err.fix })
+      : jsonError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err));
+    if (opts.json) {
+      deps.stdout(formatJson(failure));
+    } else {
+      deps.stderr(red(failure.error.message) + '\n');
+      if (failure.error.fix) deps.stderr(dim(failure.error.fix) + '\n');
+    }
+    return 1;
   }
 
-  process.stdout.write('\n' + formatTable(rows) + '\n');
+  const { physical, usbAttached } = deps.enrich();
+  const rows = buildDeviceRows(daemonDevices, physical, usbAttached);
+
+  if (opts.json) {
+    deps.stdout(formatJson({ devices: rows }));
+    return 0;
+  }
+
+  deps.stdout('\n' + formatTable(rows) + '\n');
+  return 0;
 }
 
 function canRunXcrun(): boolean {

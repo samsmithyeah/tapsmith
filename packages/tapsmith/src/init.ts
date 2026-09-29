@@ -6,6 +6,7 @@ import figlet from 'figlet';
 import { tryExec, scanEnvironment, type EnvScan, type SimulatorInfo } from './env-scan.js';
 import { detectAndroidPackage, detectIosBundleId } from './init-detect.js';
 import type { InitCommandOptions } from './cli-program.js';
+import { formatJson, jsonError } from './cli-json.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -494,7 +495,7 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
       const result = executeInitPlan(plan, parsed);
 
       if (parsed.json) {
-        console.log(JSON.stringify(result, null, 2));
+        process.stdout.write(formatJson(result));
       } else {
         for (const f of result.filesCreated) console.log(`  ${green('✓')} ${f}`);
         for (const w of result.warnings) console.log(`  ${YELLOW}⚠${RESET} ${w}`);
@@ -529,7 +530,7 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
 
 function emitInitError(err: { code: string; message: string; fix?: string; candidates?: string[] }, json: boolean): void {
   if (json) {
-    console.log(JSON.stringify({ error: { code: err.code, message: err.message, fix: err.fix, candidates: err.candidates } }, null, 2));
+    process.stdout.write(formatJson(jsonError(err.code, err.message, { fix: err.fix, candidates: err.candidates })));
   } else {
     console.error(`  ${RED}✗${RESET} ${err.message}`);
     if (err.candidates) for (const c of err.candidates) console.error(`      - ${c}`);

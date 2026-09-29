@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { formatJson, jsonError } from './cli-json.js';
 
 // ─── Pure helpers (unit-tested) ───
 
@@ -99,7 +100,7 @@ export function cleanupVerifySmokeTest(scaffolded: ScaffoldedVerifyTest | undefi
 
 function emitError(json: boolean, code: string, message: string, fix?: string): void {
   if (json) {
-    console.log(JSON.stringify({ error: { code, message, fix } }, null, 2));
+    process.stdout.write(formatJson(jsonError(code, message, { fix })));
   } else {
     console.error(`✗ ${message}`);
     if (fix) console.error(`→ ${fix}`);
@@ -207,7 +208,7 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
       const summary = summarizeVerifyReport(report);
 
       if (args.json) {
-        console.log(JSON.stringify({ ...summary, testFile: path.relative(config.rootDir, target) }, null, 2));
+        process.stdout.write(formatJson({ ...summary, testFile: path.relative(config.rootDir, target) }));
       } else {
         console.log(summary.ok
           ? `✓ Setup verified: ${summary.passed} test(s) passed in ${(summary.duration / 1000).toFixed(1)}s`
@@ -222,6 +223,7 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
     }
   } catch (err) {
     emitError(args.json, 'UNEXPECTED_ERROR',
-      `An unexpected error occurred during verification: ${err instanceof Error ? err.message : String(err)}`);
+      `An unexpected error occurred during verification: ${err instanceof Error ? err.message : String(err)}`,
+      'Run: npx tapsmith doctor --json to diagnose the environment');
   }
 }

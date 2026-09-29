@@ -86,7 +86,7 @@ describe('runVerify() with a config that fails to load', () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-verify-cfg-')));
     const cwd = process.cwd();
     const exitCode = process.exitCode;
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const log = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {
       const file = path.join(dir, 'tapsmith.config.mjs');
       fs.writeFileSync(file, 'throw new Error("boom")\n');
@@ -96,6 +96,7 @@ describe('runVerify() with a config that fails to load', () => {
       expect(out.error.code).toBe('CONFIG_ERROR');
       expect(out.error.message).toContain(`Failed to load config file ${file}: boom`);
       expect(out.error.fix).not.toMatch(/init/);
+      expect(Object.keys(out.error)).toEqual(['code', 'message', 'fix']);
     } finally {
       log.mockRestore();
       process.chdir(cwd);

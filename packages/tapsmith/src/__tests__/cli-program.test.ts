@@ -536,10 +536,12 @@ describe('usage errors under --json', () => {
     expect(parsed.error.fix).toContain(`tapsmith ${argv.find((t) => !t.startsWith('-') && t !== 'x.mjs')} --help`);
   });
 
-  it('list-devices keeps its own { error: <message> } JSON error shape', async () => {
+  it('list-devices uses the shared envelope too (it used to print { error: <message> })', async () => {
     const h = await usageError(['list-devices', '--json', 'extra']);
     expect(h.err).toBe('');
-    expect(JSON.parse(h.out)).toEqual({ error: expect.stringMatching(/too many arguments/) });
+    expect(JSON.parse(h.out)).toEqual({
+      error: { code: 'BAD_ARGS', message: expect.stringMatching(/too many arguments/), fix: 'Run: npx tapsmith list-devices --help' },
+    });
   });
 
   it('mcp-server usage errors go to stderr, keeping the stdio channel clean', async () => {

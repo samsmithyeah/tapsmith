@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import {
   assessSystemProxy,
   buildDoctorJson,
+  runDoctor,
   configLoadFailure,
   isSupportedNodeVersion,
   parseAvdImageTag,
@@ -61,6 +62,62 @@ describe('buildDoctorJson()', () => {
       detail: 'detail',
       fix: 'fix',
     });
+  });
+});
+
+/** A check as the text output prints it: the label, then the detail in parentheses. */
+const shown = (c: { label: string; detail?: string }): string => stripAnsi(c.detail ? `${c.label} (${c.detail})` : c.label);
+
+describe('doctor --json schema (PILOT-270)', () => {
+  // A public contract (docs/api-reference.md, CLI → JSON output): a change here
+  // must be deliberate.
+  it('has exactly ok, checks and inventory, with the documented check and inventory keys', () => {
+    const json = buildDoctorJson([
+      { id: 'daemon', status: 'pass', label: 'Tapsmith daemon found', detail: '/tmp/bin' },
+      { id: 'adb', status: 'fail', label: 'ADB not found on PATH', fix: 'Install Android platform-tools' },
+    ], {
+      avds: ['Pixel_7'],
+      simulators: [{ name: 'iPhone 16', udid: 'ABC', state: 'Shutdown', runtime: 'iOS 18 2' }],
+      connectedDevices: [{ serial: 'emulator-5554', state: 'device' }],
+    });
+    expect(Object.keys(json)).toEqual(['ok', 'checks', 'inventory']);
+    expect(Object.keys(json.checks[0]!)).toEqual(['id', 'status', 'label', 'detail']);
+    expect(Object.keys(json.checks[1]!)).toEqual(['id', 'status', 'label', 'fix']);
+    expect(Object.keys(json.inventory)).toEqual(['avds', 'simulators', 'connectedDevices']);
+    expect(Object.keys(json.inventory.simulators[0]!)).toEqual(['name', 'udid', 'state', 'runtime']);
+    expect(Object.keys(json.inventory.connectedDevices[0]!)).toEqual(['serial', 'state']);
+  });
+});
+
+describe('runDoctor()', () => {
+  const report = { ok: true, checks: [{ id: 'node', status: 'pass' as const, label: 'Node.js 22.1.0' }], inventory: { avds: [], simulators: [], connectedDevices: [] } };
+
+  it('--json prints the report and exits 0 when nothing fails', async () => {
+    let out = '';
+    const code = await runDoctor({ json: true }, { report: async () => report, stdout: (t) => { out += t; } });
+    expect(code).toBe(0);
+    expect(JSON.parse(out)).toEqual(report);
+  });
+
+  it('--json exits 1 with the report (not an error envelope) when a check fails', async () => {
+    let out = '';
+    const failing = { ...report, ok: false, checks: [{ id: 'adb', status: 'fail' as const, label: 'ADB not found on PATH' }] };
+    const code = await runDoctor({ json: true }, { report: async () => failing, stdout: (t) => { out += t; } });
+    expect(code).toBe(1);
+    expect(JSON.parse(out)).toEqual(failing);
+  });
+
+  it('--json reports doctor itself breaking as the shared error envelope instead of an empty stdout', async () => {
+    let out = '';
+    const code = await runDoctor({ json: true }, { report: async () => { throw new Error('boom'); }, stdout: (t) => { out += t; } });
+    expect(code).toBe(1);
+    expect(JSON.parse(out)).toEqual({
+      error: { code: 'UNEXPECTED_ERROR', message: 'doctor could not finish: boom', fix: expect.stringContaining('without --json') },
+    });
+  });
+
+  it('text mode lets the error reach the CLI\'s fatal-error handler', async () => {
+    await expect(runDoctor({ json: false }, { report: async () => { throw new Error('boom'); } })).rejects.toThrow('boom');
   });
 });
 
@@ -160,14 +217,17 @@ describe('summarizeAvdImages()', () => {
     it('passes when the configured AVD is capture-capable, mentioning other Play AVDs as context', () => {
       const summary = summarizeAvdImages([goodAvd, playAvd], 'Tapsmith_Phone_API_36');
       expect(summary?.status).toBe('pass');
-      expect(stripAnsi(summary!.label)).toContain('Tapsmith_Phone_API_36 supports HTTPS capture');
-      expect(stripAnsi(summary!.label)).toContain('Medium_Phone_API_36');
+      expect(shown(summary!)).toContain('Tapsmith_Phone_API_36 supports HTTPS capture');
+      expect(shown(summary!)).toContain('Medium_Phone_API_36');
+      // The variable context is the detail, not part of the label.
+      expect(summary!.label).toBe('Configured AVD Tapsmith_Phone_API_36 supports HTTPS capture');
+      expect(summary!.detail).toContain('Medium_Phone_API_36');
     });
 
     it('passes without context when no Play AVDs exist', () => {
       const summary = summarizeAvdImages([goodAvd], 'Tapsmith_Phone_API_36');
       expect(summary?.status).toBe('pass');
-      expect(stripAnsi(summary!.label)).not.toContain('other AVD');
+      expect(shown(summary!)).not.toContain('other AVD');
     });
 
     it('warns when the configured AVD uses a Play image, suggesting a runnable replacement command', () => {
@@ -203,8 +263,8 @@ describe('summarizeAvdImages()', () => {
       const second: AvdImageInfo = { name: 'Other_Good', tagId: 'google_apis' };
       const summary = summarizeAvdImages([goodAvd, second, playAvd], ['Tapsmith_Phone_API_36', 'Other_Good']);
       expect(summary?.status).toBe('pass');
-      expect(stripAnsi(summary!.label)).toContain('Tapsmith_Phone_API_36, Other_Good support HTTPS capture');
-      expect(stripAnsi(summary!.label)).toContain('Medium_Phone_API_36');
+      expect(shown(summary!)).toContain('Tapsmith_Phone_API_36, Other_Good support HTTPS capture');
+      expect(shown(summary!)).toContain('Medium_Phone_API_36');
     });
   });
 
@@ -212,21 +272,21 @@ describe('summarizeAvdImages()', () => {
     it('warns on any Play-image AVD, counting capture-capable ones', () => {
       const summary = summarizeAvdImages([goodAvd, playAvd]);
       expect(summary?.status).toBe('warn');
-      expect(stripAnsi(summary!.label)).toContain('1 of 2 AVDs uses a Google Play system image');
-      expect(stripAnsi(summary!.label)).toContain('1 other AVD is capture-capable');
+      expect(shown(summary!)).toContain('1 of 2 AVDs uses a Google Play system image');
+      expect(shown(summary!)).toContain('1 other AVD is capture-capable');
       expect(summary?.fix).toContain('npx tapsmith create-avd --name Medium_Phone_API_36 --api 36 --force');
     });
 
     it('passes when all AVDs are capture-capable', () => {
       const summary = summarizeAvdImages([goodAvd]);
       expect(summary?.status).toBe('pass');
-      expect(stripAnsi(summary!.label)).toContain('1 AVD checked');
+      expect(shown(summary!)).toContain('1 AVD checked');
     });
 
     it('discloses unreadable AVDs in the pass label', () => {
       const summary = summarizeAvdImages([goodAvd, brokenAvd]);
       expect(summary?.status).toBe('pass');
-      expect(stripAnsi(summary!.label)).toContain('could not read: Broken');
+      expect(shown(summary!)).toContain('could not read: Broken');
     });
   });
 });
@@ -257,13 +317,13 @@ describe('assessSystemProxy()', () => {
   it('passes a proxy that is not on loopback (not Tapsmith)', () => {
     const r = assessSystemProxy([setting({ server: 'proxy.corp', port: 3128 })], undefined, false);
     expect(r.status).toBe('pass');
-    expect(stripAnsi(r.label)).toContain('not set by Tapsmith');
+    expect(shown(r)).toContain('not set by Tapsmith');
   });
 
   it('passes while the owning daemon is running', () => {
     const r = assessSystemProxy([setting({}), setting({ kind: 'HTTPS' })], record, true);
     expect(r.status).toBe('pass');
-    expect(stripAnsi(r.label)).toContain('pid 4242');
+    expect(shown(r)).toContain('pid 4242');
   });
 
   it('warns about a proxy left by an exited daemon, with the reset command', () => {
