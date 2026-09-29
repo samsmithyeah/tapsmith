@@ -10,16 +10,13 @@ import {
   runDoctor,
   configLoadFailure,
   isSupportedNodeVersion,
-  parseAvdImageTag,
-  parseAvdApiLevel,
   parseNetworksetupProxy,
-  scanAvdImageTags,
   summarizeAvdImages,
-  type AvdImageInfo,
   type CheckEntry,
   type ServiceProxySetting,
 } from '../doctor.js';
 import { stripAnsi } from '../cli-json.js';
+import type { AvdImageInfo } from '../avd-images.js';
 
 describe('buildDoctorJson()', () => {
   const checks: CheckEntry[] = [
@@ -178,75 +175,6 @@ describe('isSupportedNodeVersion()', () => {
   });
 });
 
-describe('parseAvdApiLevel()', () => {
-  it('extracts the API level from image.sysdir.1', () => {
-    expect(parseAvdApiLevel('image.sysdir.1 = system-images/android-36/google_apis_playstore/arm64-v8a/\n')).toBe(36);
-    expect(parseAvdApiLevel('image.sysdir.1=system-images/android-34/google_apis/x86_64/\n')).toBe(34);
-  });
-
-  it('returns undefined when absent', () => {
-    expect(parseAvdApiLevel('AvdId = X\n')).toBeUndefined();
-  });
-});
-
-describe('parseAvdImageTag()', () => {
-  it('extracts tag.id from config.ini', () => {
-    const ini = 'AvdId = Medium_Phone\nPlayStore.enabled = true\ntag.id = google_apis_playstore\ntag.ids = google_apis_playstore\n';
-    expect(parseAvdImageTag(ini)).toBe('google_apis_playstore');
-  });
-
-  it('handles google_apis images and whitespace variants', () => {
-    expect(parseAvdImageTag('tag.id=google_apis\n')).toBe('google_apis');
-    expect(parseAvdImageTag('tag.id =  google_apis \n')).toBe('google_apis');
-  });
-
-  it('returns undefined when tag.id is absent', () => {
-    expect(parseAvdImageTag('AvdId = X\n')).toBeUndefined();
-    // tag.ids must not match tag.id
-    expect(parseAvdImageTag('tag.ids = google_apis\n')).toBeUndefined();
-  });
-});
-
-describe('scanAvdImageTags()', () => {
-  function makeAvdHome(avds: Array<{ name: string; tagId?: string }>): string {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-avd-test-'));
-    for (const avd of avds) {
-      const avdDir = path.join(home, `${avd.name}.avd`);
-      fs.mkdirSync(avdDir);
-      fs.writeFileSync(path.join(home, `${avd.name}.ini`), `avd.ini.encoding=UTF-8\npath=${avdDir}\npath.rel=avd/${avd.name}.avd\n`);
-      const tagLine = avd.tagId ? `tag.id = ${avd.tagId}\n` : '';
-      fs.writeFileSync(path.join(avdDir, 'config.ini'), `AvdId = ${avd.name}\n${tagLine}`);
-    }
-    return home;
-  }
-
-  it('returns each AVD with its system image tag', () => {
-    const home = makeAvdHome([
-      { name: 'Pixel_7', tagId: 'google_apis' },
-      { name: 'Medium_Phone', tagId: 'google_apis_playstore' },
-    ]);
-    const avds = scanAvdImageTags(home).sort((a, b) => a.name.localeCompare(b.name));
-    expect(avds).toEqual([
-      { name: 'Medium_Phone', tagId: 'google_apis_playstore' },
-      { name: 'Pixel_7', tagId: 'google_apis' },
-    ]);
-  });
-
-  it('keeps AVDs whose config.ini is unreadable, without a tag', () => {
-    const home = makeAvdHome([{ name: 'Pixel_7', tagId: 'google_apis' }]);
-    fs.writeFileSync(path.join(home, 'Broken.ini'), 'path=/nonexistent/Broken.avd\n');
-    const avds = scanAvdImageTags(home).sort((a, b) => a.name.localeCompare(b.name));
-    expect(avds).toEqual([
-      { name: 'Broken', tagId: undefined },
-      { name: 'Pixel_7', tagId: 'google_apis' },
-    ]);
-  });
-
-  it('returns empty for a missing AVD home', () => {
-    expect(scanAvdImageTags('/nonexistent/avd-home')).toEqual([]);
-  });
-});
-
 describe('summarizeAvdImages()', () => {
   const goodAvd: AvdImageInfo = { name: 'Tapsmith_Phone_API_36', tagId: 'google_apis', apiLevel: 36 };
   const playAvd: AvdImageInfo = { name: 'Medium_Phone_API_36', tagId: 'google_apis_playstore', apiLevel: 36 };
@@ -279,11 +207,32 @@ describe('summarizeAvdImages()', () => {
       expect(shown(summary!)).not.toContain('other AVD');
     });
 
-    it('warns when the configured AVD uses a Play image, suggesting a runnable replacement command', () => {
+    it('warns when the configured AVD uses a Play image, pointing at a capture-capable AVD that already exists', () => {
       const summary = summarizeAvdImages([goodAvd, playAvd], 'Medium_Phone_API_36');
       expect(summary?.status).toBe('warn');
       expect(summary?.label).toContain('Medium_Phone_API_36 uses a Google Play system image');
-      expect(summary?.fix).toContain('npx tapsmith create-avd --name Medium_Phone_API_36 --api 36 --force');
+      expect(summary?.fix).toBe("Use Tapsmith_Phone_API_36, which supports HTTPS capture: set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config in place of 'Medium_Phone_API_36'");
+    });
+
+    it('suggests creating a NEW AVD, never --force over the configured one, when none is capture-capable (PILOT-404)', () => {
+      const summary = summarizeAvdImages([playAvd], 'Medium_Phone_API_36');
+      expect(summary?.status).toBe('warn');
+      expect(summary?.fix).toBe(
+        "Create a capture-capable AVD (your existing AVDs are left untouched) — run: npx tapsmith create-avd, then set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config in place of 'Medium_Phone_API_36'",
+      );
+    });
+
+    it('keeps the replacement on the Play AVD\'s API level', () => {
+      const play34: AvdImageInfo = { name: 'Pixel_API_34', tagId: 'google_apis_playstore', apiLevel: 34 };
+      const summary = summarizeAvdImages([play34], 'Pixel_API_34');
+      expect(summary?.fix).toContain('run: npx tapsmith create-avd --api 34, then set avd: \'Tapsmith_Phone_API_34\'');
+    });
+
+    it('prefers a capture-capable AVD on the same API level', () => {
+      const good34: AvdImageInfo = { name: 'Good_34', tagId: 'google_apis', apiLevel: 34 };
+      const play34: AvdImageInfo = { name: 'Play_34', tagId: 'google_apis_playstore', apiLevel: 34 };
+      const summary = summarizeAvdImages([goodAvd, good34, play34], 'Play_34');
+      expect(summary?.fix).toContain("set avd: 'Good_34'");
     });
 
     it('warns when the configured AVD does not exist', () => {
@@ -293,10 +242,12 @@ describe('summarizeAvdImages()', () => {
       expect(summary?.fix).toContain('--name Missing_AVD');
     });
 
-    it('warns when the configured AVD tag is unreadable', () => {
+    it('warns when the configured AVD tag is unreadable, without recreating it', () => {
       const summary = summarizeAvdImages([brokenAvd], 'Broken');
       expect(summary?.status).toBe('warn');
       expect(summary?.label).toContain('Could not read');
+      expect(summary?.fix).toContain('run: npx tapsmith create-avd,');
+      expect(summary?.fix).not.toContain('--name Broken');
     });
 
     it('handles multiple configured AVDs (e.g. per-project use.avd), reporting every issue', () => {
@@ -305,7 +256,21 @@ describe('summarizeAvdImages()', () => {
       expect(summary?.label).toContain('Gone not found');
       expect(summary?.label).toContain('Medium_Phone_API_36 uses a Google Play system image');
       expect(summary?.label).not.toContain('Tapsmith_Phone_API_36 uses');
-      expect(summary?.fix).toBe('Run: npx tapsmith create-avd --name Gone && npx tapsmith create-avd --name Medium_Phone_API_36 --api 36 --force');
+      expect(summary?.fix).toBe("Run: npx tapsmith create-avd --name Gone; Use Tapsmith_Phone_API_36, which supports HTTPS capture: set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config in place of 'Medium_Phone_API_36'");
+    });
+
+    it('names every bad configured AVD the fix replaces (per-project use.avd)', () => {
+      const play2: AvdImageInfo = { name: 'Other_Play', tagId: 'google_apis_playstore', apiLevel: 36 };
+      const summary = summarizeAvdImages([goodAvd, playAvd, play2], ['Medium_Phone_API_36', 'Other_Play']);
+      expect(summary?.fix).toContain("set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config in place of 'Medium_Phone_API_36', 'Other_Play'");
+    });
+
+    it('never suggests creating the same name as a missing configured AVD', () => {
+      // Tapsmith_Phone_API_36 is configured but missing, so `create-avd --name Tapsmith_Phone_API_36`
+      // is already suggested; the replacement for the Play AVD needs a different name.
+      const summary = summarizeAvdImages([playAvd], ['Tapsmith_Phone_API_36', 'Medium_Phone_API_36']);
+      expect(summary?.fix).toContain('Run: npx tapsmith create-avd --name Tapsmith_Phone_API_36;');
+      expect(summary?.fix).toContain("run: npx tapsmith create-avd --name Tapsmith_Phone_API_36_2, then set avd: 'Tapsmith_Phone_API_36_2'");
     });
 
     it('passes when all configured AVDs are capture-capable', () => {
@@ -323,7 +288,15 @@ describe('summarizeAvdImages()', () => {
       expect(summary?.status).toBe('warn');
       expect(shown(summary!)).toContain('1 of 2 AVDs uses a Google Play system image');
       expect(shown(summary!)).toContain('1 other AVD is capture-capable');
-      expect(summary?.fix).toContain('npx tapsmith create-avd --name Medium_Phone_API_36 --api 36 --force');
+      expect(summary?.fix).toBe("Use Tapsmith_Phone_API_36, which supports HTTPS capture: set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config");
+    });
+
+    it('suggests a new AVD under a free name when only Play images exist', () => {
+      // The default name is taken by a (Play-image) AVD, so the suggestion must not collide with it.
+      const takenDefault: AvdImageInfo = { name: 'Tapsmith_Phone_API_36', tagId: 'google_apis_playstore', apiLevel: 36 };
+      const summary = summarizeAvdImages([playAvd, takenDefault]);
+      expect(summary?.status).toBe('warn');
+      expect(summary?.fix).toContain("run: npx tapsmith create-avd --name Tapsmith_Phone_API_36_2, then set avd: 'Tapsmith_Phone_API_36_2'");
     });
 
     it('passes when all AVDs are capture-capable', () => {
@@ -337,6 +310,25 @@ describe('summarizeAvdImages()', () => {
       expect(summary?.status).toBe('pass');
       expect(shown(summary!)).toContain('could not read: Broken');
     });
+  });
+});
+
+describe('summarizeAvdImages() fixes are never destructive (PILOT-404)', () => {
+  const good: AvdImageInfo = { name: 'Good', tagId: 'google_apis', apiLevel: 36 };
+  const play: AvdImageInfo = { name: 'Medium_Phone_API_36', tagId: 'google_apis_playstore', apiLevel: 36 };
+  const broken: AvdImageInfo = { name: 'Broken' };
+  const machines: AvdImageInfo[][] = [[play], [play, good], [play, broken], [broken], [play, good, broken]];
+  const configs: Array<string | string[] | undefined> = [undefined, 'Medium_Phone_API_36', 'Broken', 'Gone', ['Medium_Phone_API_36', 'Gone', 'Broken']];
+
+  it('never suggests --force, for any machine and config', () => {
+    for (const avds of machines) {
+      for (const configured of configs) {
+        const fix = summarizeAvdImages(avds, configured)?.fix ?? '';
+        expect(fix, `${JSON.stringify(avds)} / ${JSON.stringify(configured)}`).not.toContain('--force');
+        // Never re-create an AVD that exists under its own name.
+        for (const avd of avds) expect(fix).not.toContain(`--name ${avd.name}`);
+      }
+    }
   });
 });
 

@@ -447,7 +447,7 @@ function buildProgram(deps: RunCliDeps, io: CliIo, state: ParseState): Command {
     .option('--package <id>', 'Android package name (default: read from the APK)')
     .option('--app <path>', 'iOS simulator .app bundle (default: auto-detected under ios/)')
     .option('--bundle-id <id>', 'iOS bundle identifier (default: read from Info.plist)')
-    .option('--avd <name>', 'Android AVD to auto-launch (default: first available)')
+    .option('--avd <name>', 'Android AVD to auto-launch (default: first available; with --network-capture, the first that supports HTTPS capture)')
     .option('--simulator <name>', 'iOS simulator name (default: newest available iPhone)')
     .option('--device-type <type>', 'emulator, physical or both (default: emulator)')
     .option('--network-capture', 'Enable HTTP(S) trace capture', false)

@@ -529,7 +529,7 @@ npx tapsmith doctor -c tapsmith.config.android.mjs   # judge a specific config
 
 Config-dependent checks (app APK path, AVD system image) follow the loaded config: the AVD check verifies the AVD(s) your config actually names — top-level `avd` or per-project `use.avd` — and mentions other AVDs on the machine only as context.
 
-Warnings and failures print a suggested fix on a `↳` line beneath them — where possible a ready-to-run command, e.g. a config pointing at a Google Play AVD suggests `npx tapsmith create-avd --name <avd> --api <level> --force` to replace it in place (same name, so no config change needed).
+Warnings and failures print a suggested fix on a `↳` line beneath them — where possible a ready-to-run command. For a config pointing at a Google Play AVD, the fix is never destructive: it names a capture-capable AVD you already have to set as `avd`, or else suggests `npx tapsmith create-avd` to create a new one beside it (your existing AVD and its data are left alone).
 
 Example output:
 

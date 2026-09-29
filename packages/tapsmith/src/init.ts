@@ -7,6 +7,7 @@ import { tryExec, scanEnvironment, type EnvScan, type SimulatorInfo } from './en
 import { detectAndroidPackage, detectIosBundleId } from './init-detect.js';
 import type { InitCommandOptions } from './cli-program.js';
 import { formatJson, jsonError } from './cli-json.js';
+import { avdCaptureSupport, avdCaptureWarning, noAvdsListedMessage, type AvdImageInfo } from './avd-images.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -91,6 +92,37 @@ export interface IosConfig {
   deviceAppPath?: string;
 }
 
+// ─── AVD choice and HTTPS capture (PILOT-403) ───
+
+/**
+ * The wizard's AVD picker: list order kept, Google Play images marked (HTTPS
+ * is never captured on them), and a capture-capable AVD pre-selected. The
+ * capture question comes later and defaults to yes, so the picker always
+ * prefers a capable AVD.
+ */
+export function avdPickerChoices(
+  avds: string[],
+  avdImages: AvdImageInfo[],
+): { choices: Array<{ name: string; message: string; hint?: string }>; initial: number } {
+  const support = avds.map((name) => avdCaptureSupport(avdImages.find((a) => a.name === name)));
+  const choices = avds.map((name, i) => (support[i] === 'play-image'
+    ? { name, message: name, hint: 'no HTTPS capture' }
+    : { name, message: name }));
+  const firstCapable = support.indexOf('capable');
+  return { choices, initial: firstCapable === -1 ? 0 : firstCapable };
+}
+
+/** The wizard's network-capture summary line for the Android emulator. */
+export function androidEmulatorCaptureLine(avd: string | undefined, avdImages: AvdImageInfo[]): string {
+  // The picker always returns an AVD, so no AVD means `emulator -list-avds`
+  // listed none — configureAndroid has already printed why.
+  if (!avd) return `  ${YELLOW}⚠${RESET} Android emulator — no AVD selected (see the AVD warning above)`;
+  const warning = avdCaptureWarning(avd, avdImages);
+  return warning
+    ? `  ${YELLOW}⚠${RESET} Android emulator — ${warning}`
+    : `  ${green('✓')} Android emulator (${avd}) — works automatically`;
+}
+
 async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
   console.log(`  ${bold('Android')}`);
 
@@ -130,13 +162,15 @@ async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
   let avd: string | undefined;
 
   if (useEmulators && env.avds.length > 0) {
+    const { choices, initial } = avdPickerChoices(env.avds, env.avdImages);
     avd = await ask<string>({
       type: 'select',
       message: 'Which AVD should Tapsmith auto-launch?',
-      choices: env.avds.map((a) => ({ name: a, message: a })),
+      choices,
+      initial,
     });
   } else if (useEmulators) {
-    console.log(`  ${YELLOW}⚠${RESET} No AVDs found. Create one in Android Studio, then set ${bold('avd')} in your config.`);
+    console.log(`  ${YELLOW}⚠${RESET} ${noAvdsListedMessage(env.avdImages)}`);
   }
 
   if (deviceType === 'physical' || deviceType === 'both') {
@@ -296,7 +330,7 @@ async function setupNetworkCapture(
 
   if (platforms.includes('android') && androidConfig) {
     if (androidConfig.useEmulators) {
-      lines.push(`  ${green('✓')} Android emulator — works automatically`);
+      lines.push(androidEmulatorCaptureLine(androidConfig.avd, env.avdImages));
     }
     if (androidConfig.usePhysicalDevices) {
       lines.push(`  ${YELLOW}⚠${RESET} Android physical — add the Tapsmith CA to your app's res/xml/network_security_config.xml:`);
