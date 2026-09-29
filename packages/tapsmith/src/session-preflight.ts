@@ -160,17 +160,23 @@ interface IosForegroundProbeTiming {
   retryDelayMs: number
 }
 
-/** A system ANR/crash dialog the preflight will not (or could not) clear.
- *  Terminal for {@link ensureSessionReady}: a recovery round cannot clear a
- *  dialog the inline dismissals could not, and costs an agent restart. */
+/** Another package's system dialog that kept coming back past the dismissal
+ *  budget. Terminal for {@link ensureSessionReady}: a recovery round cannot
+ *  clear a dialog the inline dismissals could not, and costs an agent restart. */
 class BlockingDialogError extends Error {}
+
+/** The app under test's own ANR/crash dialog (closed by the time this is
+ *  thrown). Not terminal: {@link ensureSessionReady}'s recovery relaunches the
+ *  app and reports it, which is what makes a before-test preflight retry the
+ *  file. */
+class AppUnderTestDialogError extends Error {}
 
 /** Dismissals of blocking system dialogs within one
  *  {@link ensureSessionReady} call, so a dialog that keeps coming back ends
  *  the preflight instead of spinning. */
 interface BlockingDialogTally {
   dismissals: number
-  /** Times each dialog title has been dismissed — a repeat escalates "Wait" to "Close app". */
+  /** Times each dialog title has been dismissed, for the final message. */
   seen: Map<string, number>
 }
 
@@ -969,7 +975,7 @@ async function waitForAndroidAppHierarchy(
         }
       }
     } catch (err) {
-      if (err instanceof BlockingDialogError) throw err;
+      if (err instanceof BlockingDialogError || err instanceof AppUnderTestDialogError) throw err;
     }
     await new Promise((resolve) => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
   }
@@ -1057,9 +1063,9 @@ function isAndroidSystemOverlay(hierarchyXml: string): boolean {
  * Clear a system ANR/crash dialog found in `hierarchyXml`. Returns false when
  * there is no system dialog; the caller re-reads the screen after a true.
  * Throws
- * {@link BlockingDialogError} when the dialog is the app under test's own (a
- * real hang or crash the test must fail on) or when dialogs keep coming back
- * past {@link MAX_BLOCKING_DIALOG_DISMISSALS}.
+ * {@link AppUnderTestDialogError} when the dialog is the app under test's own,
+ * after closing it, and {@link BlockingDialogError} when other packages' dialogs keep
+ * coming back past {@link MAX_BLOCKING_DIALOG_DISMISSALS}.
  *
  * Handled inline rather than by `ensureSessionReady`'s recovery: that path's
  * adb dismissal cannot read the screen while the agent holds UiAutomation, and
@@ -1074,11 +1080,11 @@ async function clearBlockingDialog(
   const title = detectBlockingSystemDialog(hierarchyXml);
   if (!title) return false;
 
-  // The dialog's nodes all say package="android"; only the window title names
-  // the owner, and only adb can read it.
   // No system-drawn node with the phrase: the app under test is showing
   // "… isn't responding" text of its own. Not ours to tap.
   if (!isSystemDrawnDialog(hierarchyXml)) return false;
+  // The dialog's nodes all say package="android"; only the window title names
+  // the owner, and only adb can read it.
   const owners = ctx.deviceSerial ? blockingDialogOwnersViaAdb(ctx.deviceSerial) : [];
 
   const pkg = ctx.config.package;
@@ -1092,15 +1098,16 @@ async function clearBlockingDialog(
   }
 
   if (appOwnsIt) {
-    // Fail this preflight on it, but close it: left on screen it would fail
-    // every later test on the device, and the next preflight relaunches the
-    // app fresh.
+    // The app under test hung or crashed: not a dialog to wave away. Close it
+    // (left up, it would fail every later test on the device) and hand over
+    // to ensureSessionReady's recovery. That relaunches the app and reports
+    // the recovery, so a before-test preflight retries the file and beforeAll
+    // runs again; if the dialog keeps coming back, this message is the error.
+    const message = `The app under test is showing a system dialog: ${dialog}. `
+      + 'It stopped responding or crashed. Check the app\'s logs (adb logcat) for the cause.';
+    process.stderr.write(`[tapsmith] ${message} Closing it and relaunching the app.\n`);
     await dismissDialogOnce(ctx, hierarchyXml, true);
-    throw new BlockingDialogError(
-      `The app under test is showing a system dialog: ${dialog}. `
-      + 'It stopped responding or crashed; Tapsmith closed it so the next test starts on a fresh launch. '
-      + 'Check the app\'s logs (adb logcat) for the cause.',
-    );
+    throw new AppUnderTestDialogError(message);
   }
   if (dialogs.dismissals >= MAX_BLOCKING_DIALOG_DISMISSALS) {
     const times = dialogs.seen.get(title) ?? 0;
@@ -1120,9 +1127,10 @@ async function clearBlockingDialog(
   dialogs.dismissals++;
   // Another package's dialog: "Close app" kills the hung process and the
   // system restarts it clean, where "Wait" leaves it hung to re-ANR within
-  // seconds. With no owner it might be the app under test's, so "Wait" first
-  // and "Close app" only once the same dialog has survived it.
-  const closeFirst = owners.length > 0 || repeats > 0;
+  // seconds. With no owner it might be the app under test's, so never kill:
+  // "Wait", and "Close app" only when it is the only button (a crash dialog,
+  // whose process is already dead).
+  const closeFirst = owners.length > 0;
   process.stderr.write(
     `[tapsmith] Dismissing system dialog ${dialog} `
     + `(${dialogs.dismissals}/${MAX_BLOCKING_DIALOG_DISMISSALS})\n`,

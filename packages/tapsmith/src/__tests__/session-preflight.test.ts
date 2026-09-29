@@ -1146,9 +1146,9 @@ describe('session-preflight', () => {
       expect(ctx.device.startAgent).not.toHaveBeenCalled();
     });
 
-    it('taps "Wait" first when the owner is unknown, and "Close app" once it comes back', async () => {
-      // Without an owner the dialog might be the app under test's; "Wait"
-      // never kills it. A dialog that survives "Wait" gets closed.
+    it('only taps "Wait" when the owner is unknown, even when the dialog comes back', async () => {
+      // Without an owner the dialog might be the app under test's: killing it
+      // would drop beforeAll state with no recovery reported.
       const ctx = withOwner();
       vi.mocked(ctx.client.getUiHierarchy)
         .mockResolvedValueOnce(launcherAnr) // verify: the dialog
@@ -1158,7 +1158,7 @@ describe('session-preflight', () => {
 
       await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
 
-      expect(tapped(ctx)).toEqual(['id:Wait', 'id:Close app']);
+      expect(tapped(ctx)).toEqual(['id:Wait', 'id:Wait']);
       expect(ctx.device.launchApp).not.toHaveBeenCalled();
     });
 
@@ -1223,19 +1223,47 @@ describe('session-preflight', () => {
       + '<node resource-id="android:id/aerr_close" text="Close app" package="android" /><node resource-id="android:id/aerr_wait" text="Wait" package="android" /></hierarchy>',
     );
 
-    it('fails fast on the app under test\'s own ANR, and closes it so later tests start fresh', async () => {
+    it('closes the app under test\'s own ANR and recovers, reporting it so the file retries', async () => {
+      // A before-test preflight retries the file (beforeAll runs again) only
+      // when a recovery is reported; an app hang is exactly such a case.
       const ctx = withOwner(PKG);
       const onRecovery = vi.fn();
+      vi.mocked(ctx.client.getUiHierarchy).mockResolvedValueOnce(appAnr).mockResolvedValue(home);
+
+      await expect(ensureSessionReady(ctx, 'before test', undefined, { onRecovery, retryBackoffMs: [0] })).resolves.toBeUndefined();
+
+      expect(tapped(ctx)).toEqual(['id:Close app']);
+      expect(onRecovery).toHaveBeenCalledTimes(1);
+      expect(String(onRecovery.mock.calls[0][0])).toContain(
+        'The app under test is showing a system dialog: "Example isn\'t responding" (com.example.app)',
+      );
+      // recoverSession relaunched it.
+      expect(ctx.device.launchApp).toHaveBeenCalledWith(PKG, { activity: '.MainActivity', waitForIdle: false });
+    });
+
+    it('fails naming the app\'s own dialog when it keeps coming back', async () => {
+      const ctx = withOwner(PKG);
       vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue(appAnr);
 
-      const err = await ensureSessionReady(ctx, 'startup launch', undefined, { onRecovery, retryBackoffMs: [0] })
+      const err = await ensureSessionReady(ctx, 'startup launch', undefined, { retryBackoffMs: [0] })
         .then(() => undefined, (e: unknown) => e as Error);
 
-      expect(err?.message).toContain('The app under test is showing a system dialog: "Example isn\'t responding" (com.example.app)');
-      // Left on screen, the dialog would fail every later test on the device.
-      expect(tapped(ctx)).toEqual(['id:Close app']);
-      expect(ctx.device.launchApp).not.toHaveBeenCalled();
-      expect(onRecovery).not.toHaveBeenCalled();
+      expect(err?.message).toContain(
+        'session preflight failed during startup launch: The app under test is showing a system dialog: "Example isn\'t responding" (com.example.app)',
+      );
+    });
+
+    it('surfaces the app\'s own dialog from the launch wait instead of polling out the deadline', async () => {
+      const ctx = withOwner(PKG);
+      const onRecovery = vi.fn();
+      vi.mocked(ctx.client.getUiHierarchy)
+        .mockResolvedValueOnce(hierarchy('<hierarchy><node package="com.android.systemui" /></hierarchy>'))
+        .mockResolvedValueOnce(appAnr)
+        .mockResolvedValue(home);
+
+      await expect(ensureSessionReady(ctx, 'startup', undefined, { onRecovery, retryBackoffMs: [0] })).resolves.toBeUndefined();
+
+      expect(onRecovery).toHaveBeenCalledTimes(1);
     });
 
     it('treats the dialog as the app\'s own when the app owns any of several dialog windows', async () => {
