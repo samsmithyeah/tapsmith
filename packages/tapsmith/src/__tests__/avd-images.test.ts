@@ -5,6 +5,8 @@ import * as path from 'node:path';
 import {
   avdCaptureSupport,
   avdCaptureWarning,
+  avdHomeDir,
+  avdNames,
   captureAvdFix,
   newCaptureAvd,
   parseAvdApiLevel,
@@ -93,6 +95,10 @@ describe('avdCaptureSupport()', () => {
     expect(avdCaptureSupport({ name: 'Atd', tagId: 'aosp_atd' })).toBe('capable');
     expect(avdCaptureSupport({ name: 'Aosp', tagId: 'default' })).toBe('capable');
     expect(avdCaptureSupport(play)).toBe('play-image');
+    // Play variants carry their own tags; none of them is rootable.
+    expect(avdCaptureSupport({ name: 'P16k', tagId: 'google_apis_playstore_ps16k' })).toBe('play-image');
+    expect(avdCaptureSupport({ name: 'Car', tagId: 'android-automotive-playstore' })).toBe('play-image');
+    expect(avdCaptureSupport({ name: 'G16k', tagId: 'google_apis_ps16k' })).toBe('capable');
     expect(avdCaptureSupport(broken)).toBe('unknown');
     expect(avdCaptureSupport(undefined)).toBe('unknown');
   });
@@ -145,6 +151,32 @@ describe('avdCaptureWarning()', () => {
 
   it('does not vouch for an AVD whose image could not be read (or was not found)', () => {
     expect(avdCaptureWarning('Broken', [broken])).toContain('Could not read the system image of AVD Broken');
-    expect(avdCaptureWarning('Nowhere', [])).toContain('Could not read the system image of AVD Nowhere');
+  });
+
+  it('says an AVD that does not exist was not found (e.g. a typo in --avd)', () => {
+    const warning = avdCaptureWarning('Pixle_7', [good]);
+    expect(warning).toContain('AVD Pixle_7 was not found on this machine');
+    expect(warning).toContain("set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config in place of 'Pixle_7'");
+  });
+});
+
+describe('avdHomeDir()', () => {
+  it('follows the emulator\'s resolution order', () => {
+    const home = '/home/u';
+    expect(avdHomeDir({}, home)).toBe(path.join(home, '.android', 'avd'));
+    expect(avdHomeDir({ ANDROID_SDK_HOME: '/sdkhome' }, home)).toBe(path.join('/sdkhome', '.android', 'avd'));
+    expect(avdHomeDir({ ANDROID_SDK_HOME: '/sdkhome', ANDROID_EMULATOR_HOME: '/emu' }, home)).toBe(path.join('/emu', 'avd'));
+    expect(avdHomeDir({ ANDROID_EMULATOR_HOME: '/emu', ANDROID_USER_HOME: '/user' }, home)).toBe(path.join('/user', 'avd'));
+    expect(avdHomeDir({ ANDROID_USER_HOME: '/user', ANDROID_AVD_HOME: '/avds' }, home)).toBe('/avds');
+  });
+});
+
+describe('avdNames()', () => {
+  it('keeps the emulator\'s list when it has one', () => {
+    expect(avdNames(['B', 'A'], [{ name: 'C' }])).toEqual(['B', 'A']);
+  });
+
+  it('falls back to the AVD home when emulator is not on PATH', () => {
+    expect(avdNames([], [{ name: 'Pixel_9' }, { name: 'Medium_Phone' }])).toEqual(['Medium_Phone', 'Pixel_9']);
   });
 });

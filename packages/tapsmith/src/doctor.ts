@@ -296,7 +296,9 @@ export function summarizeAvdImages(avds: AvdImageInfo[], configuredAvd?: string 
       const fixes: string[] = [];
       if (missing.length > 0) fixes.push(`Run: ${missing.map((name) => `npx tapsmith create-avd --name ${name}`).join(' && ')}`);
       const bad = [...configuredPlay, ...configuredUnreadable];
-      if (bad.length > 0) fixes.push(captureAvdFix(avds, bad[0].apiLevel));
+      if (bad.length > 0) {
+        fixes.push(captureAvdFix(avds, { replacing: bad.map((a) => a.name), apiLevel: bad[0].apiLevel, reserved: missing }));
+      }
       return {
         status: 'warn',
         label: issues.join('; '),
@@ -322,7 +324,7 @@ export function summarizeAvdImages(avds: AvdImageInfo[], configuredAvd?: string 
       status: 'warn',
       label: `${playStore.length} of ${avds.length} AVD${avds.length === 1 ? '' : 's'} use${playStore.length === 1 ? 's' : ''} a Google Play system image — no adb root, so HTTPS traffic will not be captured`,
       detail: `${playStore.map((a) => a.name).join(', ')}${context}`,
-      fix: captureAvdFix(avds, playStore[0].apiLevel),
+      fix: captureAvdFix(avds, { apiLevel: playStore[0].apiLevel }),
     };
   }
 

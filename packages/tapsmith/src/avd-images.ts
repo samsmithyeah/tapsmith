@@ -38,13 +38,27 @@ export interface AvdImageInfo {
 }
 
 /**
- * Scan the AVD home directory (`$ANDROID_AVD_HOME` or `~/.android/avd`) and
+ * The directory the emulator reads AVDs from, in the emulator's own order:
+ * `$ANDROID_AVD_HOME`, else `avd/` under `$ANDROID_USER_HOME`, else under
+ * `$ANDROID_EMULATOR_HOME`, else `.android/avd` under the deprecated
+ * `$ANDROID_SDK_HOME`, else `~/.android/avd`.
+ */
+export function avdHomeDir(env: NodeJS.ProcessEnv = process.env, homedir: string = os.homedir()): string {
+  if (env.ANDROID_AVD_HOME) return env.ANDROID_AVD_HOME;
+  if (env.ANDROID_USER_HOME) return path.join(env.ANDROID_USER_HOME, 'avd');
+  if (env.ANDROID_EMULATOR_HOME) return path.join(env.ANDROID_EMULATOR_HOME, 'avd');
+  if (env.ANDROID_SDK_HOME) return path.join(env.ANDROID_SDK_HOME, '.android', 'avd');
+  return path.join(homedir, '.android', 'avd');
+}
+
+/**
+ * Scan the AVD home directory (`avdHomeDir()`) and
  * return each AVD with its system image tag. Each `<name>.ini` points at the
  * `.avd` data directory via its `path=` key; the tag lives in that
  * directory's `config.ini`.
  */
 export function scanAvdImageTags(avdHome?: string): AvdImageInfo[] {
-  const home = avdHome ?? process.env.ANDROID_AVD_HOME ?? path.join(os.homedir(), '.android', 'avd');
+  const home = avdHome ?? avdHomeDir();
   let entries: string[];
   try {
     entries = fs.readdirSync(home);
@@ -71,8 +85,13 @@ export function scanAvdImageTags(avdHome?: string): AvdImageInfo[] {
 
 // ─── Capture capability ───
 
-/** Google Play system images: production builds without `adb root`. */
-const PLAY_STORE_TAG = 'google_apis_playstore';
+/**
+ * Google Play system images: production builds without `adb root`. Matched
+ * anywhere in the tag, since Play variants carry their own tags
+ * (`google_apis_playstore`, `google_apis_playstore_ps16k`,
+ * `android-automotive-playstore`).
+ */
+const PLAY_STORE_TAG_RE = /playstore/;
 
 /**
  * - `capable`: a rootable image (Google APIs, AOSP, ATD), so Tapsmith can
@@ -85,7 +104,7 @@ export type AvdCaptureSupport = 'capable' | 'play-image' | 'unknown';
 
 export function avdCaptureSupport(avd: AvdImageInfo | undefined): AvdCaptureSupport {
   if (!avd || avd.tagId === undefined) return 'unknown';
-  return avd.tagId === PLAY_STORE_TAG ? 'play-image' : 'capable';
+  return PLAY_STORE_TAG_RE.test(avd.tagId) ? 'play-image' : 'capable';
 }
 
 /**
@@ -98,15 +117,31 @@ export function avdCaptureSupport(avd: AvdImageInfo | undefined): AvdCaptureSupp
  * `apiLevel` keeps the replacement on the same Android version as the AVD
  * it stands in for.
  */
-export function newCaptureAvd(avds: AvdImageInfo[], apiLevel?: number): { name: string; command: string } {
+export function newCaptureAvd(
+  avds: AvdImageInfo[],
+  apiLevel?: number,
+  reserved: string[] = [],
+): { name: string; command: string } {
   const api = apiLevel ?? DEFAULT_API_LEVEL;
   const base = defaultAvdName(api);
-  const taken = new Set(avds.map((a) => a.name));
+  const taken = new Set([...avds.map((a) => a.name), ...reserved]);
   let name = base;
   for (let i = 2; taken.has(name); i++) name = `${base}_${i}`;
   const apiArg = api === DEFAULT_API_LEVEL ? '' : ` --api ${api}`;
   const nameArg = name === base ? '' : ` --name ${name}`;
   return { name, command: `npx tapsmith create-avd${apiArg}${nameArg}` };
+}
+
+export interface CaptureAvdFixOptions {
+  /**
+   * The configured AVD names the fix replaces. Named in the fix so the user
+   * edits the `avd` (or per-project `use.avd`) that actually holds them.
+   */
+  replacing?: string[];
+  /** Prefer (or create) an AVD on this API level. */
+  apiLevel?: number;
+  /** Names another suggested command will create; never suggested again. */
+  reserved?: string[];
 }
 
 /**
@@ -115,15 +150,17 @@ export function newCaptureAvd(avds: AvdImageInfo[], apiLevel?: number): { name: 
  * (preferring one on `apiLevel`), or else create a new one beside the
  * user's existing AVDs.
  */
-export function captureAvdFix(avds: AvdImageInfo[], apiLevel?: number): string {
+export function captureAvdFix(avds: AvdImageInfo[], opts: CaptureAvdFixOptions = {}): string {
+  const { replacing = [], apiLevel, reserved } = opts;
+  const inPlaceOf = replacing.length > 0 ? ` in place of ${replacing.map((n) => `'${n}'`).join(', ')}` : '';
   const capable = avds.filter((a) => avdCaptureSupport(a) === 'capable');
   if (capable.length > 0) {
     const pick = capable.find((a) => apiLevel !== undefined && a.apiLevel === apiLevel) ?? capable[0];
-    return `Use ${pick.name}, which supports HTTPS capture: set avd: '${pick.name}' in your Tapsmith config`;
+    return `Use ${pick.name}, which supports HTTPS capture: set avd: '${pick.name}' in your Tapsmith config${inPlaceOf}`;
   }
-  const { name, command } = newCaptureAvd(avds, apiLevel);
+  const { name, command } = newCaptureAvd(avds, apiLevel, reserved);
   const untouched = avds.length > 0 ? ' (your existing AVDs are left untouched)' : '';
-  return `Create a capture-capable AVD${untouched} — run: ${command}, then set avd: '${name}' in your Tapsmith config`;
+  return `Create a capture-capable AVD${untouched} — run: ${command}, then set avd: '${name}' in your Tapsmith config${inPlaceOf}`;
 }
 
 /**
@@ -134,8 +171,20 @@ export function avdCaptureWarning(name: string, avds: AvdImageInfo[]): string | 
   const avd = avds.find((a) => a.name === name);
   const support = avdCaptureSupport(avd);
   if (support === 'capable') return undefined;
-  const problem = support === 'play-image'
-    ? `AVD ${name} uses a Google Play system image — no adb root, so HTTPS traffic will not be captured`
-    : `Could not read the system image of AVD ${name}, so HTTPS capture on it is unverified (it needs a Google APIs image, not Google Play)`;
-  return `${problem}. ${captureAvdFix(avds, avd?.apiLevel)}`;
+  const problem = !avd
+    ? `AVD ${name} was not found on this machine, so HTTPS capture on it is unverified — check the name`
+    : support === 'play-image'
+      ? `AVD ${name} uses a Google Play system image — no adb root, so HTTPS traffic will not be captured`
+      : `Could not read the system image of AVD ${name}, so HTTPS capture on it is unverified (it needs a Google APIs image, not Google Play)`;
+  return `${problem}. ${captureAvdFix(avds, { replacing: [name], apiLevel: avd?.apiLevel })}`;
+}
+
+/**
+ * The AVD names to offer: the `emulator -list-avds` list, or — when the
+ * `emulator` binary is not on PATH, as on a stock Android Studio install —
+ * the AVDs found in the AVD home directory.
+ */
+export function avdNames(listed: string[], avdImages: AvdImageInfo[]): string[] {
+  if (listed.length > 0) return listed;
+  return avdImages.map((a) => a.name).sort((a, b) => a.localeCompare(b));
 }

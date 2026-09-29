@@ -211,14 +211,14 @@ describe('summarizeAvdImages()', () => {
       const summary = summarizeAvdImages([goodAvd, playAvd], 'Medium_Phone_API_36');
       expect(summary?.status).toBe('warn');
       expect(summary?.label).toContain('Medium_Phone_API_36 uses a Google Play system image');
-      expect(summary?.fix).toBe("Use Tapsmith_Phone_API_36, which supports HTTPS capture: set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config");
+      expect(summary?.fix).toBe("Use Tapsmith_Phone_API_36, which supports HTTPS capture: set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config in place of 'Medium_Phone_API_36'");
     });
 
     it('suggests creating a NEW AVD, never --force over the configured one, when none is capture-capable (PILOT-404)', () => {
       const summary = summarizeAvdImages([playAvd], 'Medium_Phone_API_36');
       expect(summary?.status).toBe('warn');
       expect(summary?.fix).toBe(
-        "Create a capture-capable AVD (your existing AVDs are left untouched) — run: npx tapsmith create-avd, then set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config",
+        "Create a capture-capable AVD (your existing AVDs are left untouched) — run: npx tapsmith create-avd, then set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config in place of 'Medium_Phone_API_36'",
       );
     });
 
@@ -256,7 +256,21 @@ describe('summarizeAvdImages()', () => {
       expect(summary?.label).toContain('Gone not found');
       expect(summary?.label).toContain('Medium_Phone_API_36 uses a Google Play system image');
       expect(summary?.label).not.toContain('Tapsmith_Phone_API_36 uses');
-      expect(summary?.fix).toBe("Run: npx tapsmith create-avd --name Gone; Use Tapsmith_Phone_API_36, which supports HTTPS capture: set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config");
+      expect(summary?.fix).toBe("Run: npx tapsmith create-avd --name Gone; Use Tapsmith_Phone_API_36, which supports HTTPS capture: set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config in place of 'Medium_Phone_API_36'");
+    });
+
+    it('names every bad configured AVD the fix replaces (per-project use.avd)', () => {
+      const play2: AvdImageInfo = { name: 'Other_Play', tagId: 'google_apis_playstore', apiLevel: 36 };
+      const summary = summarizeAvdImages([goodAvd, playAvd, play2], ['Medium_Phone_API_36', 'Other_Play']);
+      expect(summary?.fix).toContain("set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config in place of 'Medium_Phone_API_36', 'Other_Play'");
+    });
+
+    it('never suggests creating the same name as a missing configured AVD', () => {
+      // Tapsmith_Phone_API_36 is configured but missing, so `create-avd --name Tapsmith_Phone_API_36`
+      // is already suggested; the replacement for the Play AVD needs a different name.
+      const summary = summarizeAvdImages([playAvd], ['Tapsmith_Phone_API_36', 'Medium_Phone_API_36']);
+      expect(summary?.fix).toContain('Run: npx tapsmith create-avd --name Tapsmith_Phone_API_36;');
+      expect(summary?.fix).toContain("run: npx tapsmith create-avd --name Tapsmith_Phone_API_36_2, then set avd: 'Tapsmith_Phone_API_36_2'");
     });
 
     it('passes when all configured AVDs are capture-capable', () => {
