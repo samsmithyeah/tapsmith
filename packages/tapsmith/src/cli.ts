@@ -2158,8 +2158,9 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       // agent, launch, device group); this only catches a failure that
       // happened before any step was reached. Re-labelling the primary here
       // used to print "✗ Primary device" for a group member that failed.
-      if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', (err as Error).message.split('\n')[0]);
-      console.error(red((err as Error).message));
+      const message = err instanceof Error ? err.message : String(err);
+      if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', message.split('\n')[0]);
+      console.error(red(message));
       if (!toleratesTargetFailure) {
         if (targetsWithFiles.size > 1) {
           // UI or watch with several targets: say which one, and how to go on.
