@@ -1135,7 +1135,7 @@ async function clearBlockingDialog(
       kind: 'app-dialog',
       title,
       owner,
-      message: `The app under test (${pkg}) showed "${title}"; Tapsmith dismissed it and recovered the session.`,
+      message: `The app under test (${pkg}) showed "${title}"; Tapsmith dismissed it.`,
       timestamp: Date.now(),
     });
     // Never "Close app" while system_server's ANR is up: the tap might land
@@ -1151,7 +1151,7 @@ async function clearBlockingDialog(
     ctx.notices.push({
       kind: 'app-dialog',
       title,
-      message: `A system dialog was on screen and its owner could not be read: "${title}"; Tapsmith recovered the session.`,
+      message: `A system dialog was on screen and its owner could not be read (it may be the app's own): "${title}".`,
       timestamp: Date.now(),
     });
     throw new AppUnderTestDialogError(
@@ -1182,7 +1182,7 @@ async function clearBlockingDialog(
     kind: 'foreign-dialog',
     title,
     owner,
-    message: `Dismissed a system dialog from another app: ${dialog}.`,
+    message: `A system dialog from another app was on screen: ${dialog}.`,
     timestamp: Date.now(),
   });
   process.stderr.write(

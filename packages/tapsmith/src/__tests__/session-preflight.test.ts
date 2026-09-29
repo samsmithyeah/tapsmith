@@ -1278,7 +1278,7 @@ describe('session-preflight', () => {
       // Left for the runner to put on the test result and in the trace.
       expect(ctx.notices).toEqual([expect.objectContaining({
         kind: 'app-dialog',
-        message: 'The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it and recovered the session.',
+        message: 'The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it.',
       })]);
     });
 

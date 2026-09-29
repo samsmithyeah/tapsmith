@@ -1667,7 +1667,7 @@ describe('retries', () => {
   });
 
   it('carries the discarded attempt\'s warnings onto the file-retry result', () => {
-    const warn = 'The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it and recovered the session.';
+    const warn = 'The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it.';
     const firstAttempt: SuiteResult = {
       name: '', durationMs: 1, suites: [], tests: [
         { name: 'a', fullName: 'a', status: 'failed', durationMs: 1, error: new Error('session recovered during before test a'), warnings: [warn] },

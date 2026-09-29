@@ -739,7 +739,7 @@ describe('runner app reset (declared isolation)', () => {
       let calls = 0;
       opts.beforeEachTest = async () => {
         calls++;
-        if (calls === 2) opts.devices[0].sessionContext!.notices.push(appDialog('The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it and recovered the session.'), foreignDialog);
+        if (calls === 2) opts.devices[0].sessionContext!.notices.push(appDialog('The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it.'), foreignDialog);
       };
 
       const result = await runSuiteContext(ctx, '', [], [], opts);
@@ -747,7 +747,7 @@ describe('runner app reset (declared isolation)', () => {
       const [one, two] = collectResults(result);
       expect(one.warnings).toBeUndefined();
       // Another app's dialog is not a warning on the test (trace row only).
-      expect(two.warnings).toEqual(['The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it and recovered the session.']);
+      expect(two.warnings).toEqual(['The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it.']);
       expect(opts.devices[0].sessionContext!.notices).toEqual([]);
     });
 
@@ -804,6 +804,29 @@ describe('runner app reset (declared isolation)', () => {
       expect(collectResults(result).map((t) => [t.status, t.warnings])).toEqual([
         ['failed', ['closed at file entry']],
         ['failed', ['closed at file entry']],
+      ]);
+    });
+
+    it('shows the warning on the attempt it interrupted as well as the final result', async () => {
+      const d = makeDevice();
+      let attempts = 0;
+      pushContext();
+      tapsmithTest('flaky', async () => { attempts++; if (attempts === 1) throw new Error('first attempt fails'); });
+      const ctx = popContext();
+      const ended: Array<{ willRetry?: boolean; warnings?: string[] }> = [];
+      const opts = makeOpts(d, makeConfig({ appReset: 'none', retries: 1 }), {
+        reporter: { onTestEnd: (r) => { ended.push({ willRetry: r._willRetry, warnings: r.warnings }); } },
+      });
+      let calls = 0;
+      opts.beforeEachTest = async () => {
+        if (++calls === 1) opts.devices[0].sessionContext!.notices.push(appDialog('closed it'));
+      };
+
+      await runSuiteContext(ctx, '', [], [], opts);
+
+      expect(ended).toEqual([
+        { willRetry: true, warnings: ['closed it'] },
+        { willRetry: undefined, warnings: ['closed it'] },
       ]);
     });
 

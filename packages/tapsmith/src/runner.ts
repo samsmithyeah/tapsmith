@@ -2438,6 +2438,9 @@ async function runSuiteContext(
         videoPath,
         project: opts.projectName,
         retry: attempt,
+        // Shown under the attempt the dialog interrupted; the final result
+        // carries them too.
+        ...(opts._preflightWarnings?.length ? { warnings: [...opts._preflightWarnings] } : {}),
         _willRetry: true,
         filePath: opts.testFilePath,
       });

@@ -144,7 +144,8 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
           lines.push('');
           lines.push('Warnings:');
           for (const r of warned) {
-            for (const w of r.warnings ?? []) lines.push(`  ${r.fullName}: ${w}`);
+            const proj = r.projectName ? ` [${r.projectName}]` : '';
+            for (const w of r.warnings ?? []) lines.push(`  ${r.fullName}${proj}: ${w}`);
           }
         };
         const pushScreenshots = (): void => {

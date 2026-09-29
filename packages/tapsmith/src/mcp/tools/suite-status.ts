@@ -11,6 +11,7 @@ interface SuiteTestRow {
   fullName: string
   status: SuiteTestStatus
   error?: string
+  warnings?: string[]
 }
 
 export function registerSuiteStatusTool(server: McpServer, dispatcher: TestDispatcher): void {
@@ -81,6 +82,7 @@ export function registerSuiteStatusTool(server: McpServer, dispatcher: TestDispa
           if (details) {
             lines.push(`  [${statusIcon(row.status)}] ${row.fullName}`);
             if (row.error) lines.push(`         Error: ${row.error}`);
+            for (const w of row.warnings ?? []) lines.push(`         Warning: ${w}`);
           } else if (row.status === 'failed') {
             lines.push(`  FAIL: ${row.fullName}${row.error ? ` — ${row.error}` : ''}`);
           }
@@ -119,6 +121,7 @@ function collectRows(
         fullName: node.fullName,
         status: result ? (result.status as SuiteTestStatus) : 'not run',
         error: result?.error,
+        warnings: result?.warnings,
       });
     }
     if (node.children) {

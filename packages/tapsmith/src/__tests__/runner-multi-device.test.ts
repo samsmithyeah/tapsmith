@@ -565,3 +565,21 @@ describe('runner reports one anonymous telemetry event per file (PILOT-330)', ()
     }
   });
 });
+
+describe('system-dialog warnings in a device group (PILOT-398)', () => {
+  it('names the device whose app showed the dialog', async () => {
+    const alice = makeDevice('alice');
+    const bob = makeDevice('bob');
+    pushContext();
+    tapsmithTest('pair', async () => {});
+    const ctx = popContext();
+    const opts = makeOpts([alice, bob], makeConfig({ appReset: 'none' }));
+    opts.beforeEachTest = async () => {
+      bob.runDevice.sessionContext!.notices.push({ kind: 'app-dialog', title: 'App keeps stopping', message: 'closed it', timestamp: Date.now() });
+    };
+
+    const result = await runSuiteContext(ctx, '', [], [], opts);
+
+    expect(collectResults(result)[0].warnings).toEqual(['[bob] closed it']);
+  });
+});
