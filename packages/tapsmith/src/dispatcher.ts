@@ -283,6 +283,14 @@ export function pinnedWorkerDevices(
   return pins;
 }
 
+/**
+ * A JS engine error — a bug in Tapsmith, not a device that is missing.
+ * Provisioning failures throw plain `Error`s (or LaunchSetupError).
+ */
+function isProgrammingError(err: unknown): err is Error {
+  return err instanceof TypeError || err instanceof ReferenceError || err instanceof RangeError || err instanceof SyntaxError;
+}
+
 function messageFromUnknown(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -693,12 +701,15 @@ export async function coordinateBuckets(
   const total = c.totalWorkers;
   const arrived = buckets.map(() => false);
   const startFailures = new Map<number, unknown>();
+  // In bucket order, not the order they happened to fail in: reports and
+  // messages must not reshuffle from run to run.
+  const failuresInOrder = (): Array<[number, unknown]> => [...startFailures].sort(([a], [b]) => a - b);
   let arrivedCount = 0;
   let releaseBarrier!: () => void;
   const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
 
   const failureSummary = (err: unknown): string => messageFromUnknown(err).split('\n')[0];
-  const failedTargetsDetail = (): string => [...startFailures]
+  const failedTargetsDetail = (): string => failuresInOrder()
     .map(([i, err]) => `${buckets[i].label} could not start: ${failureSummary(err)}`)
     .join('; ');
 
@@ -752,18 +763,19 @@ export async function coordinateBuckets(
       progress.finish();
     }
     if (!c.quiet) {
-      for (const [i, err] of startFailures) {
+      for (const [i, err] of failuresInOrder()) {
         const fileCount = buckets[i].projects.reduce((n, p) => n + p.testFiles.length, 0);
         process.stderr.write(
           `${YELLOW}Device target ${buckets[i].label} could not start; its ${fileCount} test file(s) are reported as failed. `
           + `The other device targets still run.\n`
-          // A non-launch error is a bug, not a missing device: keep its stack.
-          + `${isLaunchSetupError(err) || !(err instanceof Error) ? messageFromUnknown(err) : (err.stack ?? err.message)}${RESET}\n`,
+          // A TypeError and the like is a bug, not a missing device: keep its
+          // stack. Plain Errors are ordinary provisioning failures.
+          + `${isProgrammingError(err) ? (err.stack ?? err.message) : messageFromUnknown(err)}${RESET}\n`,
         );
       }
     }
     c.reporter.onRunStart?.(c.config, c.testFileCount);
-    for (const [i, err] of startFailures) {
+    for (const [i, err] of failuresInOrder()) {
       for (const result of targetStartFailureResults(buckets[i].label, buckets[i].projects, err)) {
         startFailureResults.push(result);
         c.reporter.onTestFileStart?.(result.filePath!);
@@ -807,7 +819,7 @@ export async function coordinateBuckets(
   if (midRunFailure) throw midRunFailure.reason;
 
   if (buckets.length > 0 && startFailures.size === buckets.length) {
-    const errors = [...startFailures.values()];
+    const errors = failuresInOrder().map(([, err]) => err);
     // One bucket (the others planned no workers) is a single-target run:
     // its error, hints and all, as runParallel would have thrown it.
     if (errors.length === 1) throw errors[0];
@@ -815,13 +827,13 @@ export async function coordinateBuckets(
     // per-worker failures, a port squatter's kill command, the advice).
     throw new LaunchSetupError(
       'No device target could start\n'
-      + [...startFailures].map(([i, err]) => {
+      + failuresInOrder().map(([i, err]) => {
         const [first, ...rest] = messageFromUnknown(err).split('\n');
         return [`${buckets[i].label}: ${first}`, ...rest.map((line) => `  ${line}`)].join('\n');
       }).join('\n'),
-      // A non-launch error (a bug, not a missing device) is the cause, so
-      // its stack is there for TAPSMITH_DEBUG.
-      { cause: errors.find((err) => !isLaunchSetupError(err)) ?? errors[0] },
+      // A programming error, if any, is the cause, so its stack is there
+      // for TAPSMITH_DEBUG.
+      { cause: errors.find(isProgrammingError) ?? errors[0] },
     );
   }
 

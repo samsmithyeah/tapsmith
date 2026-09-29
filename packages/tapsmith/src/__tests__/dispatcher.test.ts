@@ -689,6 +689,17 @@ describe('coordinateBuckets()', () => {
     expect(result.tests.map((t) => t.status).sort()).toEqual(['failed', 'failed', 'passed']);
   });
 
+  it('reports failed targets in bucket order, whatever order they failed in', async () => {
+    const rec = recordingReporter();
+    const third = makeProject('ios-ipad', 'ios|iPad', ['/t/c.test.ts']);
+    const result = await coordinateBuckets([
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('slow'), 15),
+      readyBucket('ios iPhone 17', [iosProject], passing('one', 'ios')),
+      failingBucket('ios iPad', [third], new LaunchSetupError('fast')),
+    ], coordination(rec));
+    expect(result.tests.filter((t) => t.status === 'failed').map((t) => t.project)).toEqual(['android', 'android', 'ios-ipad']);
+  });
+
   it('keeps a three-bucket barrier counting a failed start as arrived', async () => {
     const rec = recordingReporter();
     const third = makeProject('ios-ipad', 'ios|iPad', ['/t/c.test.ts']);
