@@ -958,7 +958,7 @@ async function waitForAndroidAppHierarchy(
       const h = await ctx.client.getUiHierarchy();
       hierarchyXml = h.hierarchyXml;
       // The dialog can arrive after the launch (a launcher ANR on a cold
-      // emulator): clear it, relaunch, and keep waiting within the deadline.
+      // emulator): clear it and keep waiting within the deadline.
       if (await clearBlockingDialog(ctx, hierarchyXml, dialogs)) continue;
       if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
       if (isAndroidSystemOverlay(hierarchyXml)) {
@@ -1054,8 +1054,9 @@ function isAndroidSystemOverlay(hierarchyXml: string): boolean {
 }
 
 /**
- * Clear a system ANR/crash dialog found in `hierarchyXml` and relaunch the app
- * under test. Returns false when there is no system dialog. Throws
+ * Clear a system ANR/crash dialog found in `hierarchyXml`. Returns false when
+ * there is no system dialog; the caller re-reads the screen after a true.
+ * Throws
  * {@link BlockingDialogError} when the dialog is the app under test's own (a
  * real hang or crash the test must fail on) or when dialogs keep coming back
  * past {@link MAX_BLOCKING_DIALOG_DISMISSALS}.
@@ -1063,7 +1064,7 @@ function isAndroidSystemOverlay(hierarchyXml: string): boolean {
  * Handled inline rather than by `ensureSessionReady`'s recovery: that path's
  * adb dismissal cannot read the screen while the agent holds UiAutomation, and
  * each round pays an agent restart while a hung launcher re-ANRs within
- * seconds of every relaunch (PILOT-398).
+ * seconds of every app relaunch (PILOT-398).
  */
 async function clearBlockingDialog(
   ctx: SessionPreflightContext,
@@ -1128,7 +1129,11 @@ async function clearBlockingDialog(
   );
   await dismissDialogOnce(ctx, hierarchyXml, closeFirst);
   await waitForDialogGone(ctx, title);
-  if (pkg) await ctx.device.launchApp(pkg, launchOptions(ctx.config));
+  // No relaunch: another package's dialog leaves the app under test running
+  // underneath, and a launch with the configured activity is `am start -S`,
+  // which would silently drop beforeAll state without the recovery signal
+  // the before-test embedders retry the file on. The callers' own checks
+  // bring the app back to the front if it is not there.
   return true;
 }
 
@@ -1152,10 +1157,16 @@ async function dismissDialogOnce(
   // control carries; `first()` because a thrashing emulator can stack two such
   // dialogs, and closing either one is progress. Any other label is tapped by
   // text only when the app shows no control with the same text.
-  const label = order.find((l) => androidSystemNodeHasText(hierarchyXml, l));
-  const id = label ? SYSTEM_DIALOG_BUTTON_IDS[label] : undefined;
+  // A label counts when the dump has its button id (whatever language the
+  // button's text is in) or a system node with its text.
+  const hasId = (l: string) => {
+    const buttonId = SYSTEM_DIALOG_BUTTON_IDS[l];
+    return !!buttonId && hierarchyXml.includes(`resource-id="${buttonId}"`);
+  };
+  const label = order.find((l) => hasId(l) || androidSystemNodeHasText(hierarchyXml, l));
+  const id = label && hasId(label) ? SYSTEM_DIALOG_BUTTON_IDS[label] : undefined;
   try {
-    if (id && hierarchyXml.includes(`resource-id="${id}"`)) {
+    if (id) {
       await ctx.device.locator({ id }).first().tap();
     } else if (label && !androidAppNodeHasText(hierarchyXml, label)) {
       await ctx.device.getByText(label, { exact: true }).tap();
@@ -1184,8 +1195,8 @@ function nodesWithText(hierarchyXml: string, text: string): string[] {
   return [...hierarchyXml.matchAll(/<node\b[^>]*>/g)].map(([node]) => node).filter((node) => node.includes(attr));
 }
 
-/** How long a dismissed dialog gets to leave the screen before the app is
- *  relaunched. On an overloaded emulator it can linger past the tap, and
+/** How long a dismissed dialog gets to leave the screen before the preflight
+ *  reads it again. On an overloaded emulator it can linger past the tap, and
  *  re-reading it would count as the dialog coming back. */
 const DIALOG_GONE_TIMEOUT_MS = 2_000;
 

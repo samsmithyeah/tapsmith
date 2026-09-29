@@ -330,7 +330,7 @@ Error: 14 UNAVAILABLE: failed to connect to all addresses
 session preflight failed during startup launch: A system dialog is blocking the device: "Pixel Launcher isn't responding" (com.google.android.apps.nexuslauncher). Tapsmith dismissed it 4 times and it kept coming back. …
 ```
 
-**What happened:** Before the tests start, and before each test, Tapsmith checks that the app is on screen. When another package's "isn't responding" or "keeps stopping" dialog covers it, Tapsmith dismisses the dialog, relaunches the app and checks again (you will see `Dismissing system dialog …` lines). This error means the dialog kept coming back. That usually happens on an overloaded emulator: a cold boot on a busy host can leave the launcher or Google Play services unresponsive for minutes.
+**What happened:** Before the tests start, and before each test, Tapsmith checks that the app is on screen. When another package's "isn't responding" or "keeps stopping" dialog covers it, Tapsmith dismisses the dialog and checks again (you will see `Dismissing system dialog …` lines). This error means the dialog kept coming back. That usually happens on an overloaded emulator: a cold boot on a busy host can leave the launcher or Google Play services unresponsive for minutes.
 
 **Fixes:**
 

@@ -1125,7 +1125,7 @@ describe('session-preflight', () => {
       vi.mocked(blockingDialogOwnersViaAdb).mockReturnValue([]);
     });
 
-    it('closes another package\'s ANR, relaunches the app and carries on — no recovery round', async () => {
+    it('closes another package\'s ANR and carries on — no relaunch, no recovery round', async () => {
       const ctx = withOwner(LAUNCHER);
       const onRecovery = vi.fn();
       vi.mocked(ctx.client.getUiHierarchy)
@@ -1138,7 +1138,10 @@ describe('session-preflight', () => {
       // relaunch (reproduced on an API 36 emulator). "Close app" kills it and
       // the system restarts it clean.
       expect(tapped(ctx)).toEqual(['id:Close app']);
-      expect(ctx.device.launchApp).toHaveBeenCalledWith(PKG, { activity: '.MainActivity', waitForIdle: false });
+      // The app under test was running underneath. A launch with the
+      // configured activity is `am start -S`: it would drop beforeAll state
+      // without the recovery signal the before-test hooks retry the file on.
+      expect(ctx.device.launchApp).not.toHaveBeenCalled();
       expect(onRecovery).not.toHaveBeenCalled();
       expect(ctx.device.startAgent).not.toHaveBeenCalled();
     });
@@ -1150,13 +1153,13 @@ describe('session-preflight', () => {
       vi.mocked(ctx.client.getUiHierarchy)
         .mockResolvedValueOnce(launcherAnr) // verify: the dialog
         .mockResolvedValueOnce(home) //        gone after "Wait"
-        .mockResolvedValueOnce(launcherAnr) // back after the relaunch
+        .mockResolvedValueOnce(launcherAnr) // back again
         .mockResolvedValue(home);
 
       await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
 
       expect(tapped(ctx)).toEqual(['id:Wait', 'id:Close app']);
-      expect(ctx.device.launchApp).toHaveBeenCalledTimes(2);
+      expect(ctx.device.launchApp).not.toHaveBeenCalled();
     });
 
     it('handles a dialog that appears while waiting for the app to draw', async () => {
@@ -1171,7 +1174,6 @@ describe('session-preflight', () => {
       await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
 
       expect(tapped(ctx)).toEqual(['id:Close app']);
-      expect(ctx.device.launchApp).toHaveBeenCalledTimes(1);
       expect(ctx.device.startAgent).not.toHaveBeenCalled();
     });
 
@@ -1325,6 +1327,18 @@ describe('session-preflight', () => {
       expect(tapped(alone)).toEqual(['OK']);
     });
 
+    it('taps the ANR button by id when its text is not in English', async () => {
+      const ctx = withOwner(LAUNCHER);
+      vi.mocked(ctx.client.getUiHierarchy)
+        .mockResolvedValueOnce(hierarchy(launcherAnr.hierarchyXml.replace('text="Close app"', 'text="App schließen"')))
+        .mockResolvedValue(home);
+
+      await ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] });
+
+      expect(tapped(ctx)).toEqual(['id:Close app']);
+      expect(ctx.device.pressBack).not.toHaveBeenCalled();
+    });
+
     it('waits for a dismissed dialog to leave instead of counting it again', async () => {
       // On an overloaded emulator the dialog can linger past the tap; a
       // re-read must not count that as the dialog coming back.
@@ -1337,7 +1351,6 @@ describe('session-preflight', () => {
       await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
 
       expect(tapped(ctx)).toEqual(['id:Close app']);
-      expect(ctx.device.launchApp).toHaveBeenCalledTimes(1);
     });
 
     it('names no owner when several foreign dialog windows are listed, but still closes', async () => {
