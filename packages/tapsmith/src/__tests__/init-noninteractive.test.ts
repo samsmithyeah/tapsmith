@@ -230,11 +230,12 @@ describe('resolveInitPlan()', () => {
   it('omits avd with a warning when none available', () => {
     const plan = resolveInitPlan(
       initArgs({ yes: true, platform: 'android' }),
-      { ...baseEnv, avds: [] },
+      { ...baseEnv, avds: [], avdImages: [] },
       detectStubs,
     );
     expect(plan.android?.avd).toBeUndefined();
-    expect(plan.warnings.some((w) => w.includes('AVD'))).toBe(true);
+    expect(plan.warnings).toHaveLength(1);
+    expect(plan.warnings[0]).toContain('No Android AVDs found');
   });
 });
 
@@ -305,6 +306,13 @@ describe('resolveInitPlan() AVD choice with network capture', () => {
     // Stock Android Studio: AVDs exist but `emulator` is not on PATH, so Tapsmith can't launch them.
     const plan = resolveInitPlan(android({ networkCapture: true }), { ...studioEnv, avds: [] }, detectStubs);
     expect(plan.android?.avd).toBeUndefined();
+    expect(plan.warnings).toHaveLength(1);
+    expect(plan.warnings[0]).toContain('`emulator` command is not on PATH');
+  });
+
+  it('warns about PATH for an explicit --avd too, when emulator lists nothing', () => {
+    const plan = resolveInitPlan(android({ avd: 'Tapsmith_Phone_API_36' }), { ...studioEnv, avds: [] }, detectStubs);
+    expect(plan.android?.avd).toBe('Tapsmith_Phone_API_36');
     expect(plan.warnings).toHaveLength(1);
     expect(plan.warnings[0]).toContain('`emulator` command is not on PATH');
   });

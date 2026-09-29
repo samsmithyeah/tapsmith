@@ -188,6 +188,6 @@ export function avdCaptureWarning(name: string, avds: AvdImageInfo[]): string | 
 export function noAvdsListedMessage(avdImages: AvdImageInfo[]): string {
   if (avdImages.length === 0) return `No Android AVDs found. ${captureAvdFix([])}`;
   const names = avdImages.map((a) => a.name).sort((a, b) => a.localeCompare(b)).join(', ');
-  return `Found AVDs (${names}), but the Android \`emulator\` command is not on PATH, and Tapsmith needs it to launch them. `
-    + 'Add $ANDROID_HOME/emulator to PATH, then re-run npx tapsmith init';
+  return `Found AVDs (${names}), but \`emulator -list-avds\` listed none: the Android \`emulator\` command is not on PATH, or failed. `
+    + 'Tapsmith needs it to launch AVDs. Add $ANDROID_HOME/emulator to PATH, then re-run npx tapsmith init';
 }
