@@ -43,7 +43,7 @@ export function registerDeviceActionTools(server: McpServer, dispatcher?: TestDi
     {
       locator: z.string().describe('Tapsmith locator for the text field'),
       text: z.string().describe('Text to type'),
-      clear: z.boolean().optional().describe('Clear existing text before typing'),
+      clear: z.boolean().optional().describe('Clear existing text before typing. If the clear fails, the call returns that error and types nothing.'),
       device: z.string().optional().describe(DEVICE_ARG_DESCRIPTION),
       project: z.string().optional().describe(PROJECT_ARG_DESCRIPTION),
     },
