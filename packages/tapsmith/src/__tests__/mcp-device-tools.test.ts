@@ -804,7 +804,10 @@ describe('the device tools the server advertises', () => {
       const runTests = (await client.listTools()).tools.find((t) => t.name === 'tapsmith_run_tests');
       const files = (runTests?.inputSchema.properties?.files ?? {}) as { description?: string };
       expect(files.description).toMatch(/absolute/i);
-      expect(files.description).toMatch(/relative to the project root/i);
+      // "Project root" read as the repo root sent agents to `e2e/tests/…`
+      // when the config lives in e2e/; the resolution base is rootDir.
+      expect(files.description).toMatch(/relative to the config's directory \(rootDir\)/i);
+      expect(files.description).toMatch(/working directory/i);
       expect(files.description).toMatch(/glob/i);
     } finally {
       await client.close();
