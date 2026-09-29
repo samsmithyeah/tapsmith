@@ -156,15 +156,10 @@ describe('androidEmulatorCaptureLine()', () => {
     expect(stripAnsi(androidEmulatorCaptureLine('Mystery', [{ name: 'Mystery' }]))).toContain('Could not read the system image of AVD Mystery');
   });
 
-  it('warns when no AVD was chosen', () => {
-    const line = stripAnsi(androidEmulatorCaptureLine(undefined, []));
-    expect(line).toContain('⚠ Android emulator — No Android AVDs found');
-    expect(line).toContain('npx tapsmith create-avd');
-  });
-
-  it('blames PATH when AVDs exist but the emulator listed none', () => {
+  it('warns, without repeating the AVD warning already printed, when no AVD was chosen', () => {
     const line = stripAnsi(androidEmulatorCaptureLine(undefined, studioAvds));
-    expect(line).toContain('`emulator` command is not on PATH');
+    expect(line).toBe('  ⚠ Android emulator — no AVD selected (see the AVD warning above)');
+    expect(line).not.toContain('works automatically');
   });
 });
 

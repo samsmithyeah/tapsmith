@@ -114,8 +114,9 @@ export function avdPickerChoices(
 
 /** The wizard's network-capture summary line for the Android emulator. */
 export function androidEmulatorCaptureLine(avd: string | undefined, avdImages: AvdImageInfo[]): string {
-  // The picker always returns an AVD, so no AVD means `emulator -list-avds` listed none.
-  if (!avd) return `  ${YELLOW}⚠${RESET} Android emulator — ${noAvdsListedMessage(avdImages)}`;
+  // The picker always returns an AVD, so no AVD means `emulator -list-avds`
+  // listed none — configureAndroid has already printed why.
+  if (!avd) return `  ${YELLOW}⚠${RESET} Android emulator — no AVD selected (see the AVD warning above)`;
   const warning = avdCaptureWarning(avd, avdImages);
   return warning
     ? `  ${YELLOW}⚠${RESET} Android emulator — ${warning}`

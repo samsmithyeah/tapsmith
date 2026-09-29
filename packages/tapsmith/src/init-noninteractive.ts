@@ -201,7 +201,7 @@ export function resolveInitPlan(
     // launches AVDs with) isn't on PATH — the latter matters for an explicit
     // --avd too.
     if (useEmulators && env.avds.length === 0 && (!avd || env.avdImages.length > 0)) {
-      warnings.push(noAvdsListedMessage(env.avdImages));
+      warnings.push(noAvdsListedMessage(env.avdImages, avd));
     }
     if (useEmulators && avd && args.networkCapture) {
       const warning = avdCaptureWarning(avd, env.avdImages);

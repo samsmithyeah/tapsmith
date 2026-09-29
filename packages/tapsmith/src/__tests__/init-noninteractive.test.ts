@@ -315,6 +315,9 @@ describe('resolveInitPlan() AVD choice with network capture', () => {
     expect(plan.android?.avd).toBe('Tapsmith_Phone_API_36');
     expect(plan.warnings).toHaveLength(1);
     expect(plan.warnings[0]).toContain('`emulator` command is not on PATH');
+    // The config already names the AVD, so re-running init is not the fix.
+    expect(plan.warnings[0]).toContain('so Tapsmith can launch Tapsmith_Phone_API_36');
+    expect(plan.warnings[0]).not.toContain('re-run');
   });
 
   it('adds no AVD warning for physical-device-only Android', () => {
