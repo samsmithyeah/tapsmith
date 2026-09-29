@@ -595,67 +595,6 @@ async function runMultiBucket(opts: DispatcherOptions): Promise<FullResult> {
 
   const readyCounter = { count: 0 };
   const phaseCounters = createLaunchPhaseCounters();
-  let barrierArrived = 0;
-  let barrierFailed = false;
-  let firstLaunchError: unknown;
-  let launchFailureRendered = false;
-  let releaseBarrier!: () => void;
-  const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
-  const renderLaunchFailure = (err: unknown) => {
-    if (!opts.launchProgress || launchFailureRendered) return;
-    launchFailureRendered = true;
-    const failureSummary = messageFromUnknown(err).split('\n')[0];
-    opts.launchProgress.fail(
-      'worker-devices',
-      `${readyCounter.count}/${totalWorkersAcrossBuckets} worker device(s) ready; launch failed`,
-    );
-    for (const phase of launchPhaseIds) {
-      if (phaseCounters[phase].count >= totalWorkersAcrossBuckets) continue;
-      opts.launchProgress.update(phase, {
-        state: 'failed',
-        detail: failureSummary,
-        progress: { done: phaseCounters[phase].count, total: totalWorkersAcrossBuckets },
-      });
-    }
-    opts.launchProgress.fail('ui-workers', failureSummary);
-    opts.launchProgress.finish();
-  };
-
-  const beforeDispatch = async () => {
-    barrierArrived++;
-    if (barrierArrived === plans.length) {
-      opts.launchProgress?.complete(
-        'worker-devices',
-        `${readyCounter.count}/${totalWorkersAcrossBuckets} worker device(s) ready across ${buckets.length} bucket(s)`,
-      );
-      if (readyCounter.count < totalWorkersAcrossBuckets) {
-        opts.launchProgress?.update('ui-workers', {
-          state: 'warning',
-          detail: `${readyCounter.count}/${totalWorkersAcrossBuckets} worker(s) ready; ${totalWorkersAcrossBuckets - readyCounter.count} failed`,
-          progress: { done: readyCounter.count, total: totalWorkersAcrossBuckets },
-        });
-        for (const phase of launchPhaseIds) {
-          if (phaseCounters[phase].count >= totalWorkersAcrossBuckets) continue;
-          opts.launchProgress?.update(phase, {
-            state: 'warning',
-            detail: `${phaseCounters[phase].count}/${totalWorkersAcrossBuckets} completed; ${totalWorkersAcrossBuckets - phaseCounters[phase].count} worker(s) did not finish`,
-            progress: { done: phaseCounters[phase].count, total: totalWorkersAcrossBuckets },
-          });
-        }
-      } else {
-        opts.launchProgress?.complete('ui-workers', `${totalWorkersAcrossBuckets} worker(s) ready`);
-      }
-      opts.launchProgress?.finish();
-      opts.reporter.onRunStart?.(opts.config, opts.testFiles.length);
-      releaseBarrier();
-    }
-    await barrier;
-    if (barrierFailed) {
-      throw firstLaunchError instanceof Error
-        ? firstLaunchError
-        : new LaunchSetupError('A device bucket failed to initialize');
-    }
-  };
 
   if (opts.launchProgress) {
     opts.launchProgress.start(
@@ -678,23 +617,223 @@ async function runMultiBucket(opts: DispatcherOptions): Promise<FullResult> {
     );
   }
 
-  const results = await Promise.all(
-    plans.map((plan) => runParallel({
-      ...plan.bucketOpts,
-      launchProgress: opts.launchProgress,
-      beforeDispatch,
-      launchProgressReadyCounter: readyCounter,
-      launchProgressWorkerTotal: totalWorkersAcrossBuckets,
-      launchProgressPhaseCounters: phaseCounters,
-    }, plan.portOffset).catch((err) => {
-      barrierFailed = true;
-      firstLaunchError ??= err;
-      renderLaunchFailure(err);
-      releaseBarrier();
-      throw err;
+  return coordinateBuckets(
+    plans.map((plan) => ({
+      label: plan.bucketOpts.bucketLabel ?? '',
+      projects: plan.bucketOpts.projects ?? [],
+      run: (beforeDispatch) => runParallel({
+        ...plan.bucketOpts,
+        launchProgress: opts.launchProgress,
+        beforeDispatch,
+        launchProgressReadyCounter: readyCounter,
+        launchProgressWorkerTotal: totalWorkersAcrossBuckets,
+        launchProgressPhaseCounters: phaseCounters,
+      }, plan.portOffset),
     })),
+    {
+      config: opts.config,
+      reporter: opts.reporter,
+      testFileCount: opts.testFiles.length,
+      launchProgress: opts.launchProgress,
+      totalWorkers: totalWorkersAcrossBuckets,
+      readyCounter,
+      phaseCounters,
+    },
   );
-  return mergeBucketResults(results);
+}
+
+/** One bucket of a multi-bucket run, as {@link coordinateBuckets} drives it. */
+export interface BucketRunner {
+  /** Short target label for messages, e.g. "android Pixel_6". */
+  label: string
+  /** The bucket's projects — whose files are reported failed if it cannot start. */
+  projects: import('./project.js').ResolvedProject[]
+  /**
+   * Run the bucket. It must await `beforeDispatch` once its workers are
+   * ready and before dispatching any file; a rejection before that is a
+   * failed start.
+   */
+  run: (beforeDispatch: () => Promise<void>) => Promise<FullResult>
+}
+
+export interface BucketCoordination {
+  config: TapsmithConfig
+  reporter: TapsmithReporter
+  testFileCount: number
+  launchProgress?: LaunchProgressSink
+  totalWorkers: number
+  readyCounter: { count: number }
+  phaseCounters: LaunchPhaseCounters
+  /** Suppress the stderr summary of failed targets (unit tests). */
+  quiet?: boolean
+}
+
+/**
+ * Run concurrent buckets behind one launch barrier: no bucket dispatches a
+ * file until every bucket has either finished starting or failed to.
+ *
+ * A bucket that fails before the barrier does not stop the others (it used
+ * to abort the whole run — PILOT-400). Each of its projects' files is
+ * reported as one failed result carrying the target-labelled reason, the
+ * way Playwright fails every test of a project whose browser cannot launch
+ * and runs the rest. Files, not tests: tests are only collected inside a
+ * worker, and this bucket never had one. When every bucket fails, nothing
+ * ran and the run fails to start, as a single-bucket run does.
+ *
+ * Every bucket settles before this returns or rejects, so a sibling always
+ * reaches its own teardown instead of being orphaned when the process exits.
+ *
+ * @internal — exported for unit testing.
+ */
+export async function coordinateBuckets(
+  buckets: BucketRunner[],
+  c: BucketCoordination,
+): Promise<FullResult> {
+  const progress = c.launchProgress;
+  const total = c.totalWorkers;
+  const arrived = buckets.map(() => false);
+  const startFailures = new Map<number, unknown>();
+  let arrivedCount = 0;
+  let releaseBarrier!: () => void;
+  const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+
+  const failureSummary = (err: unknown): string => messageFromUnknown(err).split('\n')[0];
+  const failedTargetsDetail = (): string => [...startFailures]
+    .map(([i, err]) => `${buckets[i].label} could not start: ${failureSummary(err)}`)
+    .join('; ');
+
+  const renderAllFailed = () => {
+    if (!progress) return;
+    const detail = failedTargetsDetail();
+    progress.fail('worker-devices', `0/${total} worker device(s) ready; ${detail}`);
+    for (const phase of launchPhaseIds) {
+      if (c.phaseCounters[phase].count >= total) continue;
+      progress.update(phase, {
+        state: 'failed',
+        detail,
+        progress: { done: c.phaseCounters[phase].count, total },
+      });
+    }
+    progress.fail('ui-workers', detail);
+    progress.finish();
+  };
+
+  const renderStarted = () => {
+    const ready = c.readyCounter.count;
+    if (progress) {
+      if (startFailures.size > 0) {
+        progress.update('worker-devices', {
+          state: 'warning',
+          detail: `${ready}/${total} worker device(s) ready; ${failedTargetsDetail()}`,
+        });
+      } else {
+        progress.complete(
+          'worker-devices',
+          `${ready}/${total} worker device(s) ready across ${buckets.length} bucket(s)`,
+        );
+      }
+      if (ready < total) {
+        progress.update('ui-workers', {
+          state: 'warning',
+          detail: `${ready}/${total} worker(s) ready; ${total - ready} failed`,
+          progress: { done: ready, total },
+        });
+        for (const phase of launchPhaseIds) {
+          if (c.phaseCounters[phase].count >= total) continue;
+          progress.update(phase, {
+            state: 'warning',
+            detail: `${c.phaseCounters[phase].count}/${total} completed; ${total - c.phaseCounters[phase].count} worker(s) did not finish`,
+            progress: { done: c.phaseCounters[phase].count, total },
+          });
+        }
+      } else {
+        progress.complete('ui-workers', `${total} worker(s) ready`);
+      }
+      progress.finish();
+    }
+    if (!c.quiet) {
+      for (const [i, err] of startFailures) {
+        const fileCount = buckets[i].projects.reduce((n, p) => n + p.testFiles.length, 0);
+        process.stderr.write(
+          `${YELLOW}Device target ${buckets[i].label} could not start; its ${fileCount} test file(s) are reported as failed. `
+          + `The other device targets still run.\n${messageFromUnknown(err)}${RESET}\n`,
+        );
+      }
+    }
+    c.reporter.onRunStart?.(c.config, c.testFileCount);
+    for (const [i, err] of startFailures) {
+      for (const result of bucketStartFailureResults(buckets[i], err)) {
+        startFailureResults.push(result);
+        c.reporter.onTestEnd?.(result);
+      }
+    }
+  };
+
+  const startFailureResults: TestResult[] = [];
+  const arrive = (i: number) => {
+    if (arrived[i]) return;
+    arrived[i] = true;
+    arrivedCount++;
+    if (arrivedCount < buckets.length) return;
+    if (startFailures.size === buckets.length) renderAllFailed();
+    else renderStarted();
+    releaseBarrier();
+  };
+
+  const settled = await Promise.allSettled(buckets.map(async (bucket, i) => {
+    try {
+      return await bucket.run(async () => {
+        arrive(i);
+        await barrier;
+      });
+    } catch (err) {
+      if (arrived[i]) throw err; // failed mid-run, not at start
+      startFailures.set(i, err);
+      arrive(i);
+      return undefined;
+    }
+  }));
+
+  const midRunFailure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (midRunFailure) throw midRunFailure.reason;
+
+  if (startFailures.size === buckets.length) {
+    const errors = [...startFailures.values()];
+    const nonLaunch = errors.find((err) => !isLaunchSetupError(err));
+    if (nonLaunch !== undefined) throw nonLaunch;
+    throw new LaunchSetupError(
+      'No device target could start\n'
+      + [...startFailures].map(([i, err]) => `${buckets[i].label}: ${failureSummary(err)}`).join('\n'),
+    );
+  }
+
+  const results = settled.flatMap((r) => (r.status === 'fulfilled' && r.value ? [r.value] : []));
+  const merged = mergeBucketResults(results);
+  return {
+    ...merged,
+    status: startFailures.size > 0 ? 'failed' : merged.status,
+    tests: [...startFailureResults, ...merged.tests],
+  };
+}
+
+/** One failed result per file of a bucket that could not start. */
+function bucketStartFailureResults(bucket: BucketRunner, err: unknown): TestResult[] {
+  const message = `Device target "${bucket.label}" could not start: ${messageFromUnknown(err).split('\n')[0]}`;
+  return bucket.projects.flatMap((project) => project.testFiles.map((file) => {
+    const error = new Error(message);
+    // The stack is the dispatcher's, not the user's: reporters would print
+    // its frames under every file.
+    error.stack = undefined;
+    return {
+      name: path.basename(file),
+      fullName: path.basename(file),
+      filePath: file,
+      status: 'failed' as const,
+      durationMs: 0,
+      project: project.name,
+      error,
+    };
+  }));
 }
 
 /**
@@ -719,6 +858,14 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   const isIos = config.platform === 'ios';
   const deviceStrategy = resolveDeviceStrategy(config);
   const launchProgress = opts.launchProgress;
+  // One bucket of a multi-bucket run failing to start is not the run
+  // failing: the other buckets still run, and coordinateBuckets writes the
+  // launch rows' final state. Mark this bucket's trouble as a labelled
+  // warning so no ✗ precedes a run that goes on (PILOT-400).
+  const failStep = (id: LaunchStepId, detail: string) => {
+    if (opts.bucketLabel) launchProgress?.update(id, { state: 'warning', detail: `${opts.bucketLabel}: ${detail}` });
+    else launchProgress?.fail(id, detail);
+  };
 
   // Display IDs for log lines: globally unique across concurrent buckets.
   // Internal worker.id stays local (it's tied to daemon-port assignment).
@@ -925,7 +1072,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   }
 
   if (firstDaemonPort === undefined || firstAgentPort === undefined) {
-    launchProgress?.fail('daemon', `no daemon port available near ${baseDaemonPort + 1 + _portOffset}`);
+    failStep('daemon', `no daemon port available near ${baseDaemonPort + 1 + _portOffset}`);
     throw new LaunchSetupError(
       `No daemon port available for worker startup.\n` +
       `Checked ${maxFirstDaemonPortAttempts} port(s) starting at ${baseDaemonPort + 1 + _portOffset}.\n` +
@@ -949,7 +1096,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     const hint = portInUse
       ? `Port ${firstDaemonPort} is already in use. Another Tapsmith run may be active, or a stale daemon is running.\nRun: lsof -ti tcp:${firstDaemonPort} | xargs kill`
       : `Is tapsmith-core installed? Tried: ${daemonBin}`;
-    launchProgress?.fail('daemon', 'failed to start worker daemon');
+    failStep('daemon', 'failed to start worker daemon');
     throw new LaunchSetupError(`Failed to start worker daemon.\n${hint}`);
   }
 
@@ -967,7 +1114,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     const squatterHint = listenerPids.length > 0
       ? `Port ${firstDaemonPort} is held by PID ${listenerPids.join(', ')}. A stale tapsmith-core daemon may be running.\nRun: lsof -ti tcp:${firstDaemonPort} | xargs kill`
       : `Port ${firstDaemonPort} is held by an unknown process.\nRun: lsof -ti tcp:${firstDaemonPort} | xargs kill`;
-    launchProgress?.fail('daemon', 'spawned process bound to a different port');
+    failStep('daemon', 'spawned process bound to a different port');
     throw new LaunchSetupError(`Failed to start worker daemon: spawned process bound to a different port.\n${squatterHint}`);
   }
 
@@ -1223,7 +1370,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     }
 
     if (deviceSerials.length === 0) {
-      launchProgress?.fail('worker-devices', 'no worker-ready devices found');
+      failStep('worker-devices', 'no worker-ready devices found');
       throw new LaunchSetupError(
         isIos
           ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
@@ -1237,7 +1384,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       // keeping its pin, the unpinned ones taking the next free device.
       const primary = deviceGroup[0].device ?? deviceSerials.find((s) => !pinnedMemberSerials.includes(s));
       if (!primary) {
-        launchProgress?.fail('worker-devices', 'no device left for the group primary');
+        failStep('worker-devices', 'no device left for the group primary');
         throw new LaunchSetupError(
           `use.devices pins ${pinnedMemberSerials.join(', ')} but no other device is available for "${deviceGroup[0].name}". `
           + 'Pin it too with `device`, or boot another device.',
@@ -1251,7 +1398,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         : [primary, ...pinnedMemberSerials, ...deviceSerials.filter((s) => s !== primary && !pinnedMemberSerials.includes(s))];
     }
     if (deviceSerials.length < groupSize) {
-      launchProgress?.fail('worker-devices', `device group needs ${groupSize} device(s); ${deviceSerials.length} available`);
+      failStep('worker-devices', `device group needs ${groupSize} device(s); ${deviceSerials.length} available`);
       throw new LaunchSetupError(
         `use.devices asks for ${groupSize} device(s) per test but only ${deviceSerials.length} could be provisioned `
         + `(${deviceSerials.join(', ')}). `
@@ -1440,19 +1587,22 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       const firstFailure = failedWorkerMessages[0]
         ?.replace(/^Worker \d+ \([^)]+\): /, '')
         .split('\n')[0];
-      markIncompleteLaunchPhases('failed', firstFailure ?? `${prefix}worker startup failed`);
-      launchProgress?.fail(
+      markIncompleteLaunchPhases(
+        opts.bucketLabel ? 'warning' : 'failed',
+        `${prefix}${firstFailure ?? 'worker startup failed'}`,
+      );
+      failStep(
         'ui-workers',
         firstFailure
-          ? `${prefix}0/${maxUsefulWorkers} worker(s) ready; ${firstFailure}`
-          : `${prefix}no worker-ready devices`,
+          ? `0/${maxUsefulWorkers} worker(s) ready; ${firstFailure}`
+          : 'no worker-ready devices',
       );
       // Devices were found — the workers on them failed. Say which, and
       // why: "no worker-ready devices … or set `avd`" was wrong on both
       // counts when another bucket had a ready device or `avd` was set
-      // (PILOT-400).
+      // (PILOT-400). A multi-bucket run labels it with the target.
       throw new LaunchSetupError(
-        `${prefix}No worker could start${firstFailure ? `: ${firstFailure}` : ''}\n`
+        `No worker could start${firstFailure ? `: ${firstFailure}` : ''}\n`
         + (failedWorkerMessages.length > 0 ? `${failedWorkerMessages.join('\n')}\n` : '')
         + workerStartAdvice(),
       );
@@ -1492,9 +1642,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           launchProgress.complete('ui-workers', `${workerCount} worker(s) ready`);
         }
       }
-      if (opts.beforeDispatch) {
-        await opts.beforeDispatch();
-      } else {
+      if (!opts.beforeDispatch) {
         launchProgress.finish();
         reporter.onRunStart?.(config, testFiles.length);
       }
@@ -1503,6 +1651,9 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         `${DIM}Running ${testFiles.length} test file(s) across ${workerCount} worker(s)${RESET}\n`,
       );
     }
+    // A multi-bucket run's barrier: every bucket has to arrive (or fail to
+    // start) before any dispatches, with or without launch progress.
+    if (opts.beforeDispatch) await opts.beforeDispatch();
 
     // ─── Wave-based work-stealing dispatch ───
     // Build tagged file entries for dispatch. When projects are configured,

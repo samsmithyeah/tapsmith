@@ -11,12 +11,16 @@ import {
   handleParallelFileDoneMessage,
   pinnedWorkerDevices,
   isLaunchSetupError,
+  LaunchSetupError,
+  coordinateBuckets,
+  type BucketRunner,
   type DispatcherOptions,
 } from '../dispatcher.js';
 import { serializeTestResult, serializeSuiteResult } from '../worker-protocol.js';
 import type { ResolvedProject } from '../project.js';
 import type { TapsmithConfig } from '../config.js';
 import type { FullResult } from '../reporter.js';
+import type { LaunchProgressSink, LaunchStepId, LaunchStepState } from '../launch-progress.js';
 import type { SuiteResult, TestResult } from '../runner.js';
 
 // Planning is pure: we don't need a real reporter / testFiles — just enough
@@ -533,5 +537,251 @@ describe('pinnedWorkerDevices', () => {
 
   it('takes iOS pins as given: the daemon lists only booted simulators, and the sequential path does not require one', () => {
     expect(pinnedWorkerDevices([{ name: 'device-1', device: 'SIM-UDID' }], [], true)).toEqual(['SIM-UDID']);
+  });
+});
+
+// ─── coordinateBuckets ───
+
+// A multi-target run (android + ios projects) used to abort every bucket when
+// one could not start: the ready bucket's tests never ran (PILOT-400). Now a
+// bucket that fails before dispatch is reported — each of its files failed,
+// with the target-labelled reason — and the other buckets still run, the way
+// Playwright fails a project whose browser cannot launch and runs the rest.
+describe('coordinateBuckets()', () => {
+  interface Recorder {
+    reporter: DispatcherOptions['reporter']
+    events: string[]
+    ended: TestResult[]
+  }
+
+  function recordingReporter(): Recorder {
+    const events: string[] = [];
+    const ended: TestResult[] = [];
+    const reporter = {
+      onRunStart: () => { events.push('run-start'); },
+      onTestFileStart: () => {},
+      onTestStart: () => {},
+      onTestEnd: (t: TestResult) => { events.push(`end:${t.project}:${t.name}`); ended.push(t); },
+      onTestFileEnd: () => {},
+      onRunEnd: async () => {},
+    } as unknown as DispatcherOptions['reporter'];
+    return { reporter, events, ended };
+  }
+
+  interface ProgressRecorder {
+    sink: LaunchProgressSink
+    log: Array<{ id: LaunchStepId; state: LaunchStepState | 'finish'; detail?: string }>
+  }
+
+  function recordingProgress(): ProgressRecorder {
+    const log: ProgressRecorder['log'] = [];
+    const sink: LaunchProgressSink = {
+      start: (id, detail) => { log.push({ id, state: 'running', detail }); },
+      complete: (id, detail) => { log.push({ id, state: 'done', detail }); },
+      fail: (id, detail) => { log.push({ id, state: 'failed', detail }); },
+      hasFailure: () => log.some((e) => e.state === 'failed'),
+      skip: (id, detail) => { log.push({ id, state: 'skipped', detail }); },
+      update: (id, patch) => { if (patch.state) log.push({ id, state: patch.state, detail: patch.detail }); },
+      note: () => {},
+      finish: () => { log.push({ id: 'browser', state: 'finish' }); },
+    };
+    return { sink, log };
+  }
+
+  function passing(name: string, project: string): FullResult {
+    return {
+      status: 'passed',
+      duration: 100,
+      setupDuration: 10,
+      tests: [{ name, fullName: name, status: 'passed', durationMs: 5, project }],
+      suites: [],
+    };
+  }
+
+  /** A bucket that reaches the barrier, then (once released) returns `result`. */
+  function readyBucket(label: string, projects: ResolvedProject[], result: FullResult, onDispatch?: () => void): BucketRunner {
+    return {
+      label,
+      projects,
+      run: async (beforeDispatch) => {
+        await beforeDispatch();
+        onDispatch?.();
+        return result;
+      },
+    };
+  }
+
+  /** A bucket whose start fails with `err`, optionally after `delayMs`. */
+  function failingBucket(label: string, projects: ResolvedProject[], err: unknown, delayMs = 0): BucketRunner {
+    return {
+      label,
+      projects,
+      run: async () => {
+        if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+        throw err;
+      },
+    };
+  }
+
+  function coordination(rec: Recorder, progress?: ProgressRecorder) {
+    return {
+      config: makeConfig(),
+      reporter: rec.reporter,
+      testFileCount: 3,
+      launchProgress: progress?.sink,
+      totalWorkers: 2,
+      readyCounter: { count: 1 },
+      phaseCounters: {
+        daemon: { count: 1 },
+        'app-install': { count: 1 },
+        agent: { count: 1 },
+        'app-launch': { count: 1 },
+      },
+      quiet: true,
+    };
+  }
+
+  const androidProject = makeProject('android', 'android|Pixel_6', ['/t/a.test.ts', '/t/b.test.ts']);
+  const iosProject = makeProject('ios', 'ios|iPhone 17', ['/t/a.test.ts']);
+
+  it('runs the ready bucket and reports the failed bucket\'s files as failed with a labelled reason', async () => {
+    const rec = recordingReporter();
+    let iosDispatched = false;
+    const result = await coordinateBuckets([
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('No worker could start: launcher ANR\ndetails')),
+      readyBucket('ios iPhone 17', [iosProject], passing('ios test', 'ios'), () => { iosDispatched = true; }),
+    ], coordination(rec));
+
+    expect(iosDispatched).toBe(true);
+    expect(result.status).toBe('failed');
+    const failed = result.tests.filter((t) => t.status === 'failed');
+    expect(failed.map((t) => [t.project, t.name, t.filePath])).toEqual([
+      ['android', 'a.test.ts', '/t/a.test.ts'],
+      ['android', 'b.test.ts', '/t/b.test.ts'],
+    ]);
+    expect(failed[0].error?.message).toBe('Device target "android Pixel_6" could not start: No worker could start: launcher ANR');
+    expect(result.tests.filter((t) => t.status === 'passed').map((t) => t.name)).toEqual(['ios test']);
+  });
+
+  it('reports the failed files after onRunStart and before the ready bucket dispatches', async () => {
+    const rec = recordingReporter();
+    await coordinateBuckets([
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('boom')),
+      readyBucket('ios iPhone 17', [iosProject], passing('ios test', 'ios'), () => { rec.events.push('ios-dispatch'); }),
+    ], coordination(rec));
+    expect(rec.events).toEqual(['run-start', 'end:android:a.test.ts', 'end:android:b.test.ts', 'ios-dispatch']);
+  });
+
+  it('waits for a bucket that fails after the ready one reached the barrier', async () => {
+    const rec = recordingReporter();
+    const result = await coordinateBuckets([
+      readyBucket('ios iPhone 17', [iosProject], passing('ios test', 'ios')),
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('late'), 20),
+    ], coordination(rec));
+    expect(result.tests.map((t) => t.status).sort()).toEqual(['failed', 'failed', 'passed']);
+  });
+
+  it('keeps a three-bucket barrier counting a failed start as arrived', async () => {
+    const rec = recordingReporter();
+    const third = makeProject('ios-ipad', 'ios|iPad', ['/t/c.test.ts']);
+    const result = await coordinateBuckets([
+      readyBucket('ios iPhone 17', [iosProject], passing('one', 'ios')),
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('x'), 5),
+      readyBucket('ios iPad', [third], passing('two', 'ios-ipad')),
+    ], coordination(rec));
+    expect(result.tests.filter((t) => t.status === 'passed').map((t) => t.name)).toEqual(['one', 'two']);
+  });
+
+  it('reports every file of every project in the failed bucket, and none for a project with no files', async () => {
+    const rec = recordingReporter();
+    const setup = makeProject('android:setup', 'android|Pixel_6', ['/t/auth.setup.ts']);
+    const empty = makeProject('android:empty', 'android|Pixel_6', []);
+    const result = await coordinateBuckets([
+      failingBucket('android Pixel_6', [setup, androidProject, empty], new LaunchSetupError('x')),
+      readyBucket('ios iPhone 17', [iosProject], passing('ios test', 'ios')),
+    ], coordination(rec));
+    expect(result.tests.filter((t) => t.status === 'failed').map((t) => `${t.project}:${t.name}`)).toEqual([
+      'android:setup:auth.setup.ts',
+      'android:a.test.ts',
+      'android:b.test.ts',
+    ]);
+  });
+
+  it('treats any error before the barrier as a failed start while another bucket runs', async () => {
+    const rec = recordingReporter();
+    const result = await coordinateBuckets([
+      failingBucket('android Pixel_6', [androidProject], new TypeError('adb exploded')),
+      readyBucket('ios iPhone 17', [iosProject], passing('ios test', 'ios')),
+    ], coordination(rec));
+    expect(result.tests.find((t) => t.status === 'failed')?.error?.message)
+      .toBe('Device target "android Pixel_6" could not start: adb exploded');
+  });
+
+  it('fails to start, listing each target\'s reason, when every bucket fails', async () => {
+    const rec = recordingReporter();
+    const run = coordinateBuckets([
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('No online devices found.\nhint')),
+      failingBucket('ios iPhone 17', [iosProject], new LaunchSetupError('No booted iOS simulators found.'), 5),
+    ], coordination(rec));
+    await expect(run).rejects.toSatisfy((err: unknown) => {
+      if (!isLaunchSetupError(err)) return false;
+      const [summary, ...details] = err.message.split('\n');
+      return summary === 'No device target could start'
+        && details.includes('android Pixel_6: No online devices found.')
+        && details.includes('ios iPhone 17: No booted iOS simulators found.');
+    });
+    expect(rec.events).not.toContain('run-start');
+  });
+
+  it('rethrows a non-launch error as-is when every bucket fails, so its stack survives', async () => {
+    const rec = recordingReporter();
+    const bug = new TypeError('real bug');
+    await expect(coordinateBuckets([
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('x')),
+      failingBucket('ios iPhone 17', [iosProject], bug),
+    ], coordination(rec))).rejects.toBe(bug);
+  });
+
+  it('still rejects the run for a bucket that fails after dispatch, once every bucket has settled', async () => {
+    const rec = recordingReporter();
+    let iosFinished = false;
+    const midRun = new Error('All workers became unavailable');
+    await expect(coordinateBuckets([
+      { label: 'android Pixel_6', projects: [androidProject], run: async (before) => { await before(); throw midRun; } },
+      { label: 'ios iPhone 17', projects: [iosProject], run: async (before) => {
+        await before();
+        await new Promise((r) => setTimeout(r, 20));
+        iosFinished = true;
+        return passing('ios test', 'ios');
+      } },
+    ], coordination(rec))).rejects.toBe(midRun);
+    // The sibling ran to its own teardown instead of being orphaned by an
+    // early rejection (the process exits right after).
+    expect(iosFinished).toBe(true);
+  });
+
+  it('shows a failed bucket as a launch warning, not a failure, when another bucket runs', async () => {
+    const rec = recordingReporter();
+    const progress = recordingProgress();
+    await coordinateBuckets([
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('No worker could start: ANR')),
+      readyBucket('ios iPhone 17', [iosProject], passing('ios test', 'ios')),
+    ], coordination(rec, progress));
+    expect(progress.log.filter((e) => e.state === 'failed')).toEqual([]);
+    const devices = progress.log.filter((e) => e.id === 'worker-devices').at(-1);
+    expect(devices?.state).toBe('warning');
+    expect(devices?.detail).toContain('android Pixel_6 could not start: No worker could start: ANR');
+    expect(progress.log.at(-1)?.state).toBe('finish');
+  });
+
+  it('marks the launch failed when every bucket fails', async () => {
+    const rec = recordingReporter();
+    const progress = recordingProgress();
+    await expect(coordinateBuckets([
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('a')),
+      failingBucket('ios iPhone 17', [iosProject], new LaunchSetupError('b')),
+    ], coordination(rec, progress))).rejects.toThrow();
+    expect(progress.log.some((e) => e.id === 'worker-devices' && e.state === 'failed')).toBe(true);
+    expect(progress.log.at(-1)?.state).toBe('finish');
   });
 });
