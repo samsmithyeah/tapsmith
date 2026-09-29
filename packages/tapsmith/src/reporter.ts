@@ -24,13 +24,21 @@ export interface FullResult {
   suites: SuiteResult[]
 }
 
+export interface RunStartInfo {
+  /**
+   * True when `tapsmith merge-reports` is replaying shards' blob reports: no
+   * tests run, and `fileCount` is 0 because the merge runs no files.
+   */
+  merge?: boolean
+}
+
 export interface TestStartInfo {
   workerIndex?: number
   project?: string
 }
 
 export interface TapsmithReporter {
-  onRunStart?(config: TapsmithConfig, fileCount: number): void
+  onRunStart?(config: TapsmithConfig, fileCount: number, info?: RunStartInfo): void
   onTestFileStart?(filePath: string): void
   onTestStart?(fullName: string, filePath?: string, info?: TestStartInfo): void
   onTestEnd?(test: TestResult): void
@@ -61,10 +69,10 @@ export class ReporterDispatcher implements TapsmithReporter {
     this._reporters = reporters;
   }
 
-  onRunStart(config: TapsmithConfig, fileCount: number): void {
+  onRunStart(config: TapsmithConfig, fileCount: number, info?: RunStartInfo): void {
     for (const r of this._reporters) {
       try {
-        r.onRunStart?.(config, fileCount);
+        r.onRunStart?.(config, fileCount, info);
       } catch (err) {
         this._logError('onRunStart', err);
       }
