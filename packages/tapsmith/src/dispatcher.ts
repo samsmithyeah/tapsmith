@@ -285,10 +285,13 @@ export function pinnedWorkerDevices(
 
 /**
  * A JS engine error — a bug in Tapsmith, not a device that is missing.
+ * @internal — exported for the UI/watch provisioning path in cli.ts.
  * Provisioning failures throw plain `Error`s (or LaunchSetupError).
  */
-function isProgrammingError(err: unknown): err is Error {
-  return err instanceof TypeError || err instanceof ReferenceError || err instanceof RangeError || err instanceof SyntaxError;
+export function isProgrammingError(err: unknown): err is Error {
+  // Not SyntaxError: a JSON.parse of malformed simctl/adb output is the
+  // environment's fault, not a bug.
+  return err instanceof TypeError || err instanceof ReferenceError || err instanceof RangeError;
 }
 
 function messageFromUnknown(err: unknown): string {
@@ -823,6 +826,10 @@ export async function coordinateBuckets(
     // One bucket (the others planned no workers) is a single-target run:
     // its error, hints and all, as runParallel would have thrown it.
     if (errors.length === 1) throw errors[0];
+    // A bug in Tapsmith surfaces as itself — "Fatal error" with its stack —
+    // not folded into a "could not start" message.
+    const bug = errors.find(isProgrammingError);
+    if (bug) throw bug;
     // Each target's whole message: its later lines carry the hints (the
     // per-worker failures, a port squatter's kill command, the advice).
     throw new LaunchSetupError(
@@ -831,9 +838,7 @@ export async function coordinateBuckets(
         const [first, ...rest] = messageFromUnknown(err).split('\n');
         return [`${buckets[i].label}: ${first}`, ...rest.map((line) => `  ${line}`)].join('\n');
       }).join('\n'),
-      // A programming error, if any, is the cause, so its stack is there
-      // for TAPSMITH_DEBUG.
-      { cause: errors.find(isProgrammingError) ?? errors[0] },
+      { cause: errors[0] },
     );
   }
 

@@ -790,14 +790,14 @@ describe('coordinateBuckets()', () => {
     expect(result.tests).toEqual([]);
   });
 
-  it('lists every target when every bucket fails, a non-launch error included, keeping it as the cause', async () => {
+  it('lists every target when every bucket fails, a plain-Error provisioning failure included', async () => {
     const rec = recordingReporter();
-    const bug = new TypeError('Physical iOS device bucket failed to resolve');
+    const plain = new Error('Physical iOS device bucket failed to resolve');
     let caught: unknown;
     try {
       await coordinateBuckets([
         failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('No online devices found.')),
-        failingBucket('ios iPhone 17', [iosProject], bug),
+        failingBucket('ios iPhone 17', [iosProject], plain),
       ], coordination(rec));
     } catch (err) {
       caught = err;
@@ -805,7 +805,15 @@ describe('coordinateBuckets()', () => {
     expect(isLaunchSetupError(caught)).toBe(true);
     expect((caught as Error).message).toContain('android Pixel_6: No online devices found.');
     expect((caught as Error).message).toContain('ios iPhone 17: Physical iOS device bucket failed to resolve');
-    expect((caught as Error).cause).toBe(bug);
+  });
+
+  it('rethrows a programming error as itself when every bucket fails, so it shows as a bug with its stack', async () => {
+    const rec = recordingReporter();
+    const bug = new TypeError("Cannot read properties of undefined (reading 'serial')");
+    await expect(coordinateBuckets([
+      failingBucket('android Pixel_6', [androidProject], new LaunchSetupError('No online devices found.')),
+      failingBucket('ios iPhone 17', [iosProject], bug),
+    ], coordination(rec))).rejects.toBe(bug);
   });
 
   it('releases the barrier even when rendering the start throws, so no bucket hangs', async () => {

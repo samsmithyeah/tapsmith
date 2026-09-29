@@ -1511,7 +1511,10 @@ async function provisionPerProjectDevices(
   // Let every bucket settle, so the error names each target that failed
   // and no provisioning is left running behind it.
   const settled = await Promise.allSettled(tasks);
-  const { deviceTargetLabel, targetProvisionFailure } = await import('./dispatcher.js');
+  const { deviceTargetLabel, isProgrammingError, targetProvisionFailure } = await import('./dispatcher.js');
+  // A bug in Tapsmith surfaces as itself, with its stack.
+  const bug = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected' && isProgrammingError(r.reason));
+  if (bug) throw bug.reason;
   const failures = settled.flatMap((r, i) => (r.status === 'rejected'
     ? [{ label: deviceTargetLabel(bucketEntries[i].signature), err: r.reason as unknown }]
     : []));
@@ -2155,7 +2158,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       // agent, launch, device group); this only catches a failure that
       // happened before any step was reached. Re-labelling the primary here
       // used to print "✗ Primary device" for a group member that failed.
-      if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', (err as Error).message);
+      if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', (err as Error).message.split('\n')[0]);
       console.error(red((err as Error).message));
       if (!toleratesTargetFailure) {
         if (targetsWithFiles.size > 1) {
