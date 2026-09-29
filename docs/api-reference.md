@@ -2660,7 +2660,7 @@ Pass `--yes` or any setup flag below (every flag but `--json`) to run non-intera
 | `--package <id>` | Android package name (default: read from the APK) |
 | `--app <path>` | iOS simulator `.app` bundle (default: auto-detected under `ios/`) |
 | `--bundle-id <id>` | iOS bundle identifier (default: read from `Info.plist`) |
-| `--avd <name>` | Android AVD to auto-launch (default: first available) |
+| `--avd <name>` | Android AVD to auto-launch (default: first available; with `--network-capture`, the first that supports HTTPS capture — Google Play images don't, and init warns if it can only pick one) |
 | `--simulator <name>` | iOS simulator name (default: newest available iPhone) |
 | `--device-type <type>` | `emulator`, `physical` or `both` (default: `emulator`) |
 | `--network-capture` | Enable HTTP(S) capture in traces |

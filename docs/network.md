@@ -951,7 +951,7 @@ avdmanager create avd -n Tapsmith_Phone_API_36 \
   -k "system-images;android-36;google_apis;arm64-v8a" -d medium_phone
 ```
 
-`npx tapsmith doctor` flags any existing AVD that uses a Google Play image.
+`npx tapsmith doctor` flags any existing AVD that uses a Google Play image, and suggests a capture-capable AVD you already have or a new one to create. It never suggests overwriting yours. With network capture on, `npx tapsmith init` picks a capture-capable AVD when there is one, marks Play images "no HTTPS capture" in the wizard, and warns when it can only pick a Play image.
 
 To check an existing AVD, look at `tag.id` in `~/.android/avd/<name>.avd/config.ini`: `google_apis` (or `default`/`aosp_atd`) supports HTTPS capture; `google_apis_playstore` does not.
 
