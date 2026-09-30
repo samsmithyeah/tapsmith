@@ -45,6 +45,8 @@ import {
   launchEmulator,
   describeEmulatorExit,
   preserveEmulatorsForReuse,
+  waitForBoot,
+  waitForSystemSettle,
 } from '../emulator.js';
 
 const manifestFile = path.join(os.tmpdir(), 'tapsmith-emulators.json');
@@ -1385,7 +1387,7 @@ describe('launchEmulator process and early exit', () => {
     const emu = launchEmulator('Pixel', 5590, { headless: true, args: [] }, emulator);
     const exit = await emu.exited;
     expect(exit).toEqual({ kind: 'exited', code: 1, signal: null });
-    expect(fs.readFileSync(emu.logPath, 'utf-8')).toContain('Another emulator instance is running');
+    expect(fs.readFileSync(emu.logPath!, 'utf-8')).toContain('Another emulator instance is running');
     expect(describeEmulatorExit(exit, emu, { command: emulator, found: true, tried: [emulator] }))
       .toBe('AVD Pixel is already running without -read-only (opened from Android Studio, for example), '
         + 'and the emulator will not start a second instance beside it. Close that emulator, or point `avd` at another AVD.');
@@ -1399,13 +1401,17 @@ describe('launchEmulator process and early exit', () => {
 
   it.skipIf(process.platform === 'win32')('never writes its log through a planted symlink', async () => {
     const victim = path.join(os.tmpdir(), 'victim.txt');
-    fs.writeFileSync(victim, 'precious');
     const logPath = path.join(os.tmpdir(), 'tapsmith-emulator-5596.log');
     fs.rmSync(logPath, { force: true });
     fs.symlinkSync(victim, logPath);
+    fs.writeFileSync(victim, 'ERROR | Another emulator instance is running.');
     const emu = launchEmulator('Pixel', 5596, { headless: true, args: [] }, fakeEmulator('ERROR | boom', 1));
-    await emu.exited;
-    expect(fs.readFileSync(victim, 'utf-8')).toBe('precious');
+    const exit = await emu.exited;
+    expect(fs.readFileSync(victim, 'utf-8')).toBe('ERROR | Another emulator instance is running.');
+    // …and never quotes it back as this launch's output.
+    expect(emu.logPath).toBeUndefined();
+    expect(describeEmulatorExit(exit, emu, { command: 'x', found: true, tried: [] }))
+      .toBe('The emulator exited during boot (exit code 1).');
   });
 
   it('reports a binary that cannot be spawned as not found, with the paths tried', async () => {
@@ -1615,9 +1621,46 @@ describe('preserveEmulatorsForReuse', () => {
     ]);
   });
 
+  it('does not claim an emulator that has exited is still running', () => {
+    const lines: string[] = [];
+    const closed = makeLaunchedEmulator('Pixel', 5554);
+    Object.assign(closed.process, { exitCode: 0 });
+    const crashed = makeLaunchedEmulator('Pixel', 5556);
+    Object.assign(crashed.process, { exitCode: null, signalCode: 'SIGSEGV' });
+    preserveEmulatorsForReuse([closed, crashed, makeLaunchedEmulator('Pixel', 5558)], (text) => lines.push(text));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('emulator-5558');
+  });
+
   it('says nothing when it launched nothing', () => {
     const write = vi.fn();
     preserveEmulatorsForReuse([], write);
     expect(write).not.toHaveBeenCalled();
+  });
+});
+
+describe('boot waits stop when aborted', () => {
+  it('waitForBoot rejects at once for an aborted signal, without polling out its timeout', async () => {
+    const started = Date.now();
+    await expect(waitForBoot('emulator-5998', 60_000, AbortSignal.abort())).rejects.toThrow('Stopped waiting for emulator-5998 to boot');
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('waitForBoot stops a pending adb call when aborted mid-wait', async () => {
+    const controller = new AbortController();
+    const started = Date.now();
+    const wait = waitForBoot('emulator-5998', 60_000, controller.signal);
+    setTimeout(() => controller.abort(), 50);
+    await expect(wait).rejects.toThrow('Stopped waiting');
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('waitForSystemSettle and waitForDeviceStability do no work once aborted', async () => {
+    const exec = vi.fn(() => '') as unknown as typeof import('node:child_process').execFileSync;
+    await waitForSystemSettle('emulator-5998', 30_000, exec, AbortSignal.abort());
+    expect(exec).not.toHaveBeenCalled();
+    const probe = vi.fn((serial: string) => ({ serial, healthy: true }));
+    await waitForDeviceStability('emulator-5998', 20_000, probe, AbortSignal.abort());
+    expect(probe).not.toHaveBeenCalled();
   });
 });

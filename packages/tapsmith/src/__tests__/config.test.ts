@@ -715,6 +715,8 @@ describe('defineConfig()', () => {
       .toThrow('must not include -ports');
     expect(() => defineConfig({ emulatorLaunchOptions: { args: ['@Other_AVD'] } }))
       .toThrow('must not include @Other_AVD');
+    expect(() => defineConfig({ emulatorLaunchOptions: { args: ['--port', '5600'] } }))
+      .toThrow('must not include --port');
   });
 
   it('overrides timeout while keeping other defaults', () => {

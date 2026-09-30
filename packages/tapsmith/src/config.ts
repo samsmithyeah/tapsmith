@@ -707,8 +707,8 @@ function validateEmulatorLaunchOptions(raw: Partial<TapsmithConfig>): void {
   if (!Array.isArray(options.args) || options.args.some((arg) => typeof arg !== 'string')) {
     throw new Error(`config: emulatorLaunchOptions.args must be an array of strings (got ${JSON.stringify(options.args)})`);
   }
-  // `@Name` is the emulator's shorthand for `-avd Name`.
-  const reserved = options.args.filter((arg) => RESERVED_EMULATOR_ARGS.includes(arg) || arg.startsWith('@'));
+  // `@Name` is the emulator's shorthand for `-avd Name`, and it reads `--flag` as `-flag`.
+  const reserved = options.args.filter((arg) => RESERVED_EMULATOR_ARGS.includes(arg.replace(/^--/, '-')) || arg.startsWith('@'));
   if (reserved.length > 0) {
     throw new Error(
       `config: emulatorLaunchOptions.args must not include ${reserved.join(', ')}: Tapsmith sets the AVD, `

@@ -619,6 +619,8 @@ export async function waitForSystemSettle(
   serial: string,
   timeoutMs = POST_BOOT_SETTLE_TIMEOUT_MS,
   exec: ExecFileSyncLike = execFileSync,
+  /** Stops the settle loop — e.g. the emulator exited, so there is nothing to settle. */
+  signal?: AbortSignal,
 ): Promise<void> {
   const start = Date.now();
 
@@ -630,7 +632,7 @@ export async function waitForSystemSettle(
     }));
   };
 
-  while (Date.now() - start < timeoutMs) {
+  while (Date.now() - start < timeoutMs && !signal?.aborted) {
     // Dismiss any ANR dialogs that pop up during boot settling
     dismissSystemDialogsViaAdb(serial, exec);
 
@@ -673,7 +675,7 @@ export async function waitForSystemSettle(
   }
 
   // Timeout — still do one last dismissal attempt
-  dismissSystemDialogsViaAdb(serial, exec);
+  if (!signal?.aborted) dismissSystemDialogsViaAdb(serial, exec);
 }
 
 // ─── Emulator binary ───
@@ -826,8 +828,8 @@ export interface LaunchedEmulator {
   avd: string
   /** Whether it was launched without a window (`EmulatorLaunchSettings.headless`). */
   headless: boolean
-  /** The file the emulator's stdout and stderr go to. */
-  logPath: string
+  /** The file the emulator's stdout and stderr go to; undefined when it could not be opened. */
+  logPath: string | undefined
   /**
    * Settles when the process fails to spawn or exits — whenever that is.
    * During boot it means the launch failed (`describeEmulatorExit`).
@@ -1144,7 +1146,9 @@ export function launchEmulator(
     proc.once('exit', (code, signal) => resolve({ kind: 'exited', code, signal }));
   });
 
-  return { process: proc, port, serial, avd, headless: settings.headless, logPath, exited };
+  // Report the log only when this launch opened it: after a failed open the
+  // path may be a planted link or someone else's file, not this output.
+  return { process: proc, port, serial, avd, headless: settings.headless, logPath: logFd !== undefined ? logPath : undefined, exited };
 }
 
 /** The emulator refusing a `-read-only` instance beside a writable one of the same AVD. */
@@ -1160,7 +1164,7 @@ const EXIT_OUTPUT_LINES = 3;
  */
 export function describeEmulatorExit(
   exit: EmulatorExit,
-  emu: { avd: string, logPath: string },
+  emu: { avd: string, logPath: string | undefined },
   emulator: EmulatorBinary,
   readLog: (file: string) => string = (file) => fs.readFileSync(file, 'utf-8'),
 ): string {
@@ -1170,7 +1174,7 @@ export function describeEmulatorExit(
   }
   let log = '';
   try {
-    log = readLog(emu.logPath);
+    if (emu.logPath !== undefined) log = readLog(emu.logPath);
   } catch {
     // No log (unwritable tmpdir) — describe the exit alone.
   }
@@ -1185,7 +1189,8 @@ export function describeEmulatorExit(
     .map((line) => line.replace(/^[A-Z_]+\s*\|\s*/, ''));
   const how = exit.code !== null ? `exit code ${exit.code}` : `signal ${exit.signal ?? 'unknown'}`;
   const detail = quoted.length > 0 ? `: ${quoted.join(' / ')}` : '';
-  return `The emulator exited during boot (${how})${detail}. Full output: ${emu.logPath}`;
+  const where = emu.logPath !== undefined ? ` Full output: ${emu.logPath}` : '';
+  return `The emulator exited during boot (${how})${detail}.${where}`;
 }
 
 /**
@@ -1468,7 +1473,7 @@ export async function waitForBoot(
         // This prevents the "passes health check then stalls" pattern where
         // the launcher/PM are still initializing.
         const remainingMs = Math.max(timeoutMs - (Date.now() - start), 10_000);
-        await waitForSystemSettle(serial, remainingMs);
+        await waitForSystemSettle(serial, remainingMs, execFileSync, signal);
         checkAborted();
         return;
       }
@@ -1486,6 +1491,8 @@ export async function waitForDeviceStability(
   serial: string,
   timeoutMs = DEFAULT_DEVICE_STABILITY_TIMEOUT_MS,
   probe: (serial: string) => DeviceHealthResult = probeDeviceHealth,
+  /** Stops probing — e.g. the emulator exited, so it can never become stable. */
+  signal?: AbortSignal,
 ): Promise<DeviceHealthResult> {
   const start = Date.now();
   let consecutiveHealthy = 0;
@@ -1495,7 +1502,7 @@ export async function waitForDeviceStability(
     reason: 'device stability checks did not complete',
   };
 
-  while (Date.now() - start < timeoutMs) {
+  while (Date.now() - start < timeoutMs && !signal?.aborted) {
     const result = probe(serial);
     lastResult = result;
 
@@ -1631,6 +1638,7 @@ interface ProvisionDeps {
     serial: string,
     timeoutMs?: number,
     probe?: (serial: string) => DeviceHealthResult,
+    signal?: AbortSignal,
   ) => Promise<DeviceHealthResult>
   killEmulator: (serial: string) => void
 }
@@ -1773,6 +1781,7 @@ export async function provisionEmulators(opts: {
               emu.serial,
               DEFAULT_DEVICE_STABILITY_TIMEOUT_MS,
               resolvedDeps.probeDeviceHealth,
+              stopWaiting.signal,
             );
             if (!health.healthy) {
               throw new Error(health.reason ?? 'device health probe failed');
@@ -1846,6 +1855,8 @@ export function preserveEmulatorsForReuse(
   // them via reclaimOrphanedEmulators(). Say so: a headless emulator has no
   // window or Dock icon, so otherwise nothing shows it is still running.
   for (const emu of launched) {
+    // One that exited during the run (a closed window, a crash) is not left running.
+    if (emu.process.exitCode != null || emu.process.signalCode != null) continue;
     write(`${DIM}${leftRunningNotice(emu)}${RESET}\n`);
   }
 }
