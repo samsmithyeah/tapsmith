@@ -149,8 +149,15 @@ export function parseAdbDevicesOutput(output: string): AdbDevice[] {
     });
 }
 
-export function listConnectedAndroidDevices(): AdbDevice[] {
-  const output = tryExec('adb', ['devices']);
-  if (!output) return [];
-  return parseAdbDevicesOutput(output);
+/**
+ * What to do about an attached Android device adb cannot use, by its
+ * `adb devices` state; undefined for a usable (`device`) or unknown state.
+ * Shared by `list-devices` and `doctor` so they give the same advice.
+ */
+export function androidStateBlocker(state: string): string | undefined {
+  // adb surfaces "unauthorized" when the device hasn't accepted the RSA key
+  // yet and "offline" when the connection is broken.
+  if (state === 'unauthorized') return 'Accept the USB debugging prompt on the device';
+  if (state === 'offline') return 'Reconnect cable or run `adb kill-server`';
+  return undefined;
 }
