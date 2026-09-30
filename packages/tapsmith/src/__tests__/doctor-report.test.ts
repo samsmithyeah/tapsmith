@@ -236,6 +236,20 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     expect(code).toBe(1);
   });
 
+  it('checks each Android project\'s own apk, not only the root one', async () => {
+    withAdb();
+    withXcode();
+    fs.writeFileSync(path.join(dir, 'ok.apk'), '');
+    writeConfig("export default { projects: [{ name: 'a', use: { platform: 'android', apk: 'missing.apk' } }, { name: 'b', use: { apk: 'ok.apk' } }, { name: 'i', use: { platform: 'ios', app: 'x.app' } }] }\n");
+    const { code, json } = await doctorJson();
+    const rows = json.checks.filter((c) => c.id === 'app-apk');
+    expect(rows).toEqual([
+      expect.objectContaining({ status: 'fail', label: expect.stringContaining('missing.apk') }),
+      expect.objectContaining({ status: 'pass', detail: 'ok.apk' }),
+    ]);
+    expect(code).toBe(1);
+  });
+
   it('a mixed config on Linux without adb fails: none of its platforms can run', async () => {
     setPlatform('linux');
     writeConfig("export default { projects: [{ name: 'a' }, { name: 'i', use: { platform: 'ios' } }] }\n");

@@ -301,19 +301,21 @@ function checkAgentApks(report: Reporter): void {
   }
 }
 
-function checkAppApk(report: Reporter, config: { apk?: string; rootDir?: string } | undefined, required: boolean): void {
-  if (!config?.apk) return;
-  try {
-    const resolvedApk = path.resolve(config.rootDir ?? process.cwd(), config.apk);
-    if (fs.existsSync(resolvedApk)) {
-      pass(report, 'app-apk', 'App APK exists', path.basename(resolvedApk));
-    } else {
-      // A mixed config's machine may run only its iOS projects (see planPlatform).
-      const mark = required ? fail : warn;
-      mark(report, 'app-apk', `App APK not found at ${resolvedApk}`, 'Build your app APK, or fix the apk path in your Tapsmith config');
+function checkAppApk(report: Reporter, config: TapsmithConfig | undefined, required: boolean): void {
+  if (!config) return;
+  for (const apk of configAndroidApks(config)) {
+    try {
+      const resolvedApk = path.resolve(config.rootDir ?? process.cwd(), apk);
+      if (fs.existsSync(resolvedApk)) {
+        pass(report, 'app-apk', 'App APK exists', path.basename(resolvedApk));
+      } else {
+        // A mixed config's machine may run only its iOS projects (see planPlatform).
+        const mark = required ? fail : warn;
+        mark(report, 'app-apk', `App APK not found at ${resolvedApk}`, 'Build your app APK, or fix the apk path in your Tapsmith config');
+      }
+    } catch {
+      warn(report, 'app-apk', 'Could not check app APK path');
     }
-  } catch {
-    warn(report, 'app-apk', 'Could not check app APK path');
   }
 }
 
@@ -799,23 +801,15 @@ export async function runDoctor(opts: { json: boolean; config?: string }, overri
 
 export type DoctorPlatform = 'android' | 'ios';
 
-type PlatformScope = Pick<TapsmithConfig, 'platform' | 'app' | 'simulator' | 'iosXctestrun'>;
+type PlatformScope = Pick<TapsmithConfig, 'platform' | 'app' | 'simulator' | 'iosXctestrun' | 'apk'>;
+type PlatformConfig = PlatformScope & { projects?: Array<{ name?: string; use?: Partial<PlatformScope> }> };
 
 /**
- * The platforms a loaded config runs tests on: each project's (or, without
- * projects, the root's) `platform`, else iOS when it sets an iOS-only field
- * (the runner refuses that without `platform: 'ios'`, but the user clearly
- * means iOS), else Android — the runner's default.
+ * What each test scope runs with: every project's `use` over the root, or
+ * the root alone when there are no projects (the root itself runs nothing
+ * then, as in the runner).
  */
-/**
- * iOS-only fields set without `platform` — the runner refuses those
- * (`resolvePlatformFixture`), so doctor must too, rather than infer iOS and
- * report a config healthy that `tapsmith test` rejects. One entry per scope:
- * the project's name, or undefined for the root.
- */
-export function platformlessIosFields(
-  config: PlatformScope & { projects?: Array<{ name?: string; use?: Partial<PlatformScope> }> },
-): Array<{ project?: string; fields: string[] }> {
+function platformScopes(config: PlatformConfig): Array<{ project?: string; scope: PlatformScope; platform: DoctorPlatform }> {
   const scopes = config.projects && config.projects.length > 0
     ? config.projects.map((p) => ({
       project: p.name,
@@ -824,10 +818,38 @@ export function platformlessIosFields(
         app: p.use?.app ?? config.app,
         simulator: p.use?.simulator ?? config.simulator,
         iosXctestrun: p.use?.iosXctestrun ?? config.iosXctestrun,
-      } as PlatformScope,
+        apk: p.use?.apk ?? config.apk,
+      },
     }))
     : [{ project: undefined, scope: config as PlatformScope }];
-  return scopes
+  return scopes.map(({ project, scope }) => ({ project, scope, platform: scopePlatform(scope) }));
+}
+
+/**
+ * A scope's platform: its `platform`, else iOS when it sets an iOS-only
+ * field (the runner refuses that without `platform: 'ios'` — see
+ * `platformlessIosFields` — but the user clearly means iOS), else Android,
+ * the runner's default.
+ */
+function scopePlatform(scope: PlatformScope): DoctorPlatform {
+  if (scope.platform) return scope.platform === 'ios' ? 'ios' : 'android';
+  if (scope.app != null || scope.simulator != null || scope.iosXctestrun != null) return 'ios';
+  return 'android';
+}
+
+/** The platforms a loaded config runs tests on. */
+export function configPlatformTargets(config: PlatformConfig): Set<DoctorPlatform> {
+  return new Set(platformScopes(config).map((s) => s.platform));
+}
+
+/**
+ * iOS-only fields set without `platform` — the runner refuses those
+ * (`resolvePlatformFixture`), so doctor must too, rather than infer iOS and
+ * report a config healthy that `tapsmith test` rejects. One entry per scope:
+ * the project's name, or undefined for the root.
+ */
+export function platformlessIosFields(config: PlatformConfig): Array<{ project?: string; fields: string[] }> {
+  return platformScopes(config)
     .filter(({ scope }) => scope.platform == null)
     .map(({ project, scope }) => ({
       project,
@@ -836,22 +858,12 @@ export function platformlessIosFields(
     .filter((entry) => entry.fields.length > 0);
 }
 
-export function configPlatformTargets(config: PlatformScope & { projects?: Array<{ use?: Partial<PlatformScope> }> }): Set<DoctorPlatform> {
-  const scopes: PlatformScope[] = config.projects && config.projects.length > 0
-    ? config.projects.map((p) => ({
-      platform: p.use?.platform ?? config.platform,
-      app: p.use?.app ?? config.app,
-      simulator: p.use?.simulator ?? config.simulator,
-      iosXctestrun: p.use?.iosXctestrun ?? config.iosXctestrun,
-    }))
-    : [config];
-  const targets = new Set<DoctorPlatform>();
-  for (const scope of scopes) {
-    if (scope.platform) targets.add(scope.platform === 'ios' ? 'ios' : 'android');
-    else if (scope.app != null || scope.simulator != null || scope.iosXctestrun != null) targets.add('ios');
-    else targets.add('android');
-  }
-  return targets;
+/** The app APKs the config's Android scopes install, each once (projects' `use.apk` included). */
+export function configAndroidApks(config: PlatformConfig): string[] {
+  const apks = platformScopes(config)
+    .filter((s) => s.platform === 'android' && s.scope.apk)
+    .map((s) => s.scope.apk as string);
+  return [...new Set(apks)];
 }
 
 /**

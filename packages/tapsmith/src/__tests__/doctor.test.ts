@@ -7,6 +7,7 @@ import {
   buildDoctorJson,
   androidSdkVariable,
   checkLine,
+  configAndroidApks,
   configPlatformTargets,
   planPlatform,
   runDoctor,
@@ -479,5 +480,16 @@ describe('planPlatform() (PILOT-263)', () => {
     expect(planPlatform('android', undefined, 'linux')).toEqual({ run: true, required: false });
     expect(planPlatform('ios', undefined, 'darwin')).toEqual({ run: true, required: false });
     expect(planPlatform('ios', undefined, 'linux')).toEqual({ run: false, note: 'skipped: iOS testing needs macOS' });
+  });
+});
+
+describe('configAndroidApks() (PILOT-263)', () => {
+  it('lists the root apk without projects, and each Android project\'s apk (inherited or its own) once', () => {
+    expect(configAndroidApks({ apk: 'a.apk' })).toEqual(['a.apk']);
+    expect(configAndroidApks({ platform: 'ios', apk: 'a.apk' })).toEqual([]);
+    expect(configAndroidApks({
+      apk: 'root.apk',
+      projects: [{ use: {} }, { use: { apk: 'b.apk' } }, { use: { apk: 'b.apk' } }, { use: { platform: 'ios' } }],
+    })).toEqual(['root.apk', 'b.apk']);
   });
 });
