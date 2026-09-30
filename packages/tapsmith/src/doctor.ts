@@ -512,8 +512,9 @@ export function findMitmRedirector(
   const bin = path.join('Mitmproxy Redirector.app', 'Contents', 'MacOS', 'Mitmproxy Redirector');
   if (exists(path.join('/Applications', bin))) return '/Applications';
   if (exists(path.join(homedir, '.tapsmith', 'redirector', bin))) return '~/.tapsmith/redirector';
-  // The daemon extracts the redirector from the Homebrew *cask*'s tarball on
-  // first use (`find_brew_tarball`); the formula has no such tarball.
+  // The daemon extracts the redirector from the tarball inside the Homebrew
+  // cask on first use (`find_brew_tarball`), so look for that tarball rather
+  // than trusting `brew list`.
   const tarball = path.join('mitmproxy.app', 'Contents', 'Resources', 'mitmproxy_macos', 'Mitmproxy Redirector.app.tar');
   for (const caskroom of ['/opt/homebrew/Caskroom/mitmproxy', '/usr/local/Caskroom/mitmproxy']) {
     if (listDir(caskroom).some((version) => exists(path.join(caskroom, version, tarball)))) return 'Homebrew cask';
@@ -534,7 +535,7 @@ function checkMitmproxy(report: Reporter): void {
     if (source) {
       pass(report, 'mitmproxy', 'mitmproxy installed', source);
     } else {
-      warn(report, 'mitmproxy', 'mitmproxy redirector not found — needed for iOS simulator network capture', 'Run: brew install --cask mitmproxy');
+      warn(report, 'mitmproxy', 'mitmproxy redirector not found — needed for iOS simulator network capture', 'Run: brew install mitmproxy');
     }
   } catch {
     warn(report, 'mitmproxy', 'Could not check for mitmproxy');
@@ -963,7 +964,8 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
       checkAndroidHome(report);
       if (adbOk) checkConnectedDevices(report);
       checkAgentApks(report);
-      checkAppApk(report, config, androidPlan.required);
+      // With adb here, Android runs on this machine, so its APK must exist.
+      checkAppApk(report, config, androidPlan.required || (adbOk && !!targets));
     }
   }
 
@@ -984,7 +986,8 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   } else {
     iosChecked = true;
     if (checkXcode(report, iosPlan.required, !!targets)) {
-      checkSimctl(report, iosPlan.required);
+      // With Xcode here, the config's iOS projects run on this machine.
+      checkSimctl(report, !!targets);
       await checkSimulatorXctestrun(report);
     } else {
       iosChecked = iosPlan.required;

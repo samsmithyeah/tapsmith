@@ -226,6 +226,16 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     expect(code).toBe(0);
   });
 
+  it('a mixed config on a machine with both toolchains fails a missing APK and a failing simctl', async () => {
+    withAdb();
+    exec.table.set('xcodebuild -version', XCODE_VERSION);
+    writeConfig("export default { apk: 'missing.apk', projects: [{ name: 'a' }, { name: 'i', use: { platform: 'ios' } }] }\n");
+    const { code, json } = await doctorJson();
+    expect(check(json, 'app-apk')).toMatchObject({ status: 'fail' });
+    expect(check(json, 'simctl')).toMatchObject({ status: 'fail' });
+    expect(code).toBe(1);
+  });
+
   it('a mixed config on Linux without adb fails: none of its platforms can run', async () => {
     setPlatform('linux');
     writeConfig("export default { projects: [{ name: 'a' }, { name: 'i', use: { platform: 'ios' } }] }\n");
@@ -492,7 +502,7 @@ describe('findMitmRedirector()', () => {
   });
 
   it('does not count a Homebrew install without the cask\'s redirector tarball', () => {
-    // The formula (or a cask whose layout changed) has no tarball, so the daemon cannot extract one.
+    // A cask whose layout changed has no tarball where the daemon looks, so it cannot extract one.
     expect(find([], {}, ['11.0.2'])).toBeUndefined();
   });
 });
