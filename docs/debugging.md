@@ -554,7 +554,7 @@ npx tapsmith doctor -c tapsmith.config.android.mjs   # judge a specific config
 
 Doctor checks the platforms your config targets: an Android-only project is not failed for a missing Xcode, and an iOS-only one skips the Android checks, each with a `– skipped: …` line. A config with both Android and iOS projects warns, rather than fails, when this machine lacks one platform's tools but has the other's (a Linux CI job running only the Android projects). Before there is a config, it checks whatever is installed and warns, rather than fails, about a missing ADB or Xcode.
 
-Config-dependent checks (app APK path, AVD system image) follow the loaded config: the AVD check verifies the AVD(s) your config actually names — top-level `avd` or per-project `use.avd` — and mentions other AVDs on the machine only as context.
+Config-dependent checks (app APK path, AVD system image) follow the loaded config: the AVD checks verify the AVD(s) your Android projects actually use — top-level `avd` or per-project `use.avd`, merged the way `tapsmith test` merges them — and mentions other AVDs on the machine only as context.
 
 Warnings and failures print a suggested fix on a `↳` line beneath them — where possible a ready-to-run command. For a config pointing at a Google Play AVD, the fix is never destructive: it names a capture-capable AVD you already have to set as `avd`, or else suggests `npx tapsmith create-avd` to create a new one beside it (your existing AVD and its data are left alone).
 
@@ -574,6 +574,7 @@ Tapsmith Doctor
   ✓ 1 device connected (emulator-5554)
   ✓ Android agent (@tapsmith/agent-android)
   ✓ App APK exists (app-debug.apk)
+  ✓ Android emulator found (/Users/you/Library/Android/sdk/emulator/emulator)
 
   iOS
   ✓ Xcode 16.2
@@ -585,14 +586,15 @@ Tapsmith Doctor
   ✓ AVD system images support HTTPS capture (2 AVDs checked)
   ✓ mitmproxy installed
   ✓ Network Extension enabled
+  ✓ macOS system proxy not set by Tapsmith
 
-15 checks passed
+17 checks passed
 ```
 
 The checks cover:
 
-- **Core:** Node.js version, daemon binary presence, config file
-- **Android:** ADB, ANDROID_HOME, connected devices, agent APKs, app APK
+- **Core:** Node.js version, daemon binary presence, config file (and iOS-only fields set without `platform`)
+- **Android:** ADB, ANDROID_HOME, connected devices, agent APKs, app APK, and the emulator binary when an `avd` is configured
 - **iOS:** Xcode, simulators, xctestrun file (macOS only)
 - **Network Capture:** MITM CA certificate, AVD system image compatibility (Google Play images can't capture HTTPS — see [Android emulator image requirements](network.md#android-emulator-image-requirements)), mitmproxy installation, Network Extension status, and a macOS system proxy left behind by an exited daemon (with the command to clear it)
 

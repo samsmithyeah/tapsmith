@@ -358,6 +358,25 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     expect(text).toMatch(/iOS\n\s+– skipped: iOS testing needs macOS/);
   });
 
+  it('judges the AVDs Android projects boot, not a root avd every project overrides', async () => {
+    withAdb();
+    writeConfig("export default { avd: 'Old', projects: [{ name: 'a', use: { avd: 'New' } }, { name: 'i', use: { platform: 'ios', avd: 'Ios_Scoped' } }] }\n");
+    const { json } = await doctorJson();
+    const avd = check(json, 'avd-images');
+    expect(avd?.label).toContain('New');
+    expect(avd?.label).not.toContain('Old');
+    expect(avd?.label).not.toContain('Ios_Scoped');
+  });
+
+  it('reports every broken project in one config-load row', async () => {
+    withAdb();
+    writeConfig("export default { projects: [{ name: 'a', use: { emulatorLaunchOptions: {} } }, { name: 'b', use: { emulatorLaunchOptions: {} } }] }\n");
+    const { json } = await doctorJson();
+    const rows = json.checks.filter((c) => c.id === 'config-load');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.label).toMatch(/project a:.*project b:/);
+  });
+
   it('a project option the per-project merge rejects is a config-load failure, not a crash', async () => {
     withAdb();
     writeConfig("export default { projects: [{ name: 'a', use: { platform: 'android', emulatorLaunchOptions: { headless: true } } }] }\n");
@@ -620,9 +639,14 @@ describe('doctor android-emulator check (PILOT-417)', () => {
     withXcode();
     writeConfig('export default {}\n');
     expect(ids((await doctorJson()).json)).not.toContain('android-emulator');
-    fs.rmSync(path.join(dir, 'tapsmith.config.mjs'));
-    writeConfig("export default { platform: 'ios', simulator: 'iPhone 17', projects: [{ name: 'i' }] }\n", 'tapsmith.config.mjs');
-    expect(ids((await doctorJson()).json)).not.toContain('android-emulator');
+    // A fresh directory: the native import() cache would otherwise hand back the first config.
+    const iosDir = path.join(dir, 'ios-project');
+    writeConfig("export default { platform: 'ios', avd: 'Pixel_9', projects: [{ name: 'i' }] }\n", 'tapsmith.config.mjs', iosDir);
+    process.chdir(iosDir);
+    const { json } = await doctorJson();
+    expect(ids(json)).toContain('xcode');
+    expect(ids(json)).not.toContain('adb');
+    expect(ids(json)).not.toContain('android-emulator');
   });
 
   it('only warns in a mixed config on a machine that can run just the iOS projects', async () => {

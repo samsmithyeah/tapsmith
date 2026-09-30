@@ -995,13 +995,17 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   const scopes: TapsmithConfig[] = [];
   if (config && configPathOf(config)) {
     if (config.projects && config.projects.length > 0) {
+      const projectErrors: string[] = [];
       for (const project of config.projects) {
         try {
           scopes.push(effectiveConfigForProject(config, project));
         } catch (err) {
-          fail(report, 'config-load', `Config file has errors: project ${project.name}: ${err instanceof Error ? err.message : String(err)}`,
-            'Fix the config error above; tapsmith test stops on it too');
+          projectErrors.push(`project ${project.name}: ${err instanceof Error ? err.message : String(err)}`);
         }
+      }
+      // One row, so a consumer matching on the id sees every broken project.
+      if (projectErrors.length > 0) {
+        fail(report, 'config-load', `Config file has errors: ${projectErrors.join('; ')}`, 'Fix the config error above; tapsmith test stops on it too');
       }
     } else {
       scopes.push(config);
@@ -1011,11 +1015,9 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
     .filter((scope) => scopePlatform(scope) === 'android' && !!scope.avd)
     .map((scope) => ({ avd: scope.avd as string, launch: scope.launchEmulators !== false }));
 
-  // AVDs can be configured top-level or per-project (projects[].use.avd).
-  const configuredAvds = [
-    ...(config?.avd ? [config.avd] : []),
-    ...(config?.projects ?? []).map((p) => p.use?.avd).filter((avd): avd is string => !!avd),
-  ];
+  // The AVDs Android runs boot — the same list the emulator check judges,
+  // so the two never disagree about which AVDs the config uses.
+  const configuredAvds = [...new Set(avdLaunches.map((a) => a.avd))];
 
   // ─── Core ───
   if (printing) {
