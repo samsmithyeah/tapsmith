@@ -97,12 +97,18 @@ export function formatFlakySection(
     if (test.firstAttemptError) {
       lines.push(formatError(test.firstAttemptError));
     }
+    lines.push(...formatWarnings(test));
     if (test.tracePath) {
       const tag = test.failedAttemptArtifacts?.trace ? ' (failed attempt)' : '';
       lines.push(`        ${dim(`Trace${tag}: npx tapsmith show-trace ${test.tracePath}`)}`);
     }
   }
   return lines.join('\n') + '\n';
+}
+
+/** A test's warnings (e.g. a dialog the preflight closed), one indented line each. */
+export function formatWarnings(test: Pick<TestResult, 'warnings'>, indent = '        '): string[] {
+  return (test.warnings ?? []).map((w) => `${indent}${yellow(`⚠ ${w}`)}`);
 }
 
 export function workerTag(workerIndex: number | undefined): string {

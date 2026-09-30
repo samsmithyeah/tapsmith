@@ -126,6 +126,7 @@ function generateHtml(
       trace: traceFile,
       video: videoFile,
       project: t.project || null,
+      warnings: (t.warnings ?? []).map(escapeHtml),
     };
   });
 
@@ -165,6 +166,7 @@ function generateHtml(
   .test-duration { font-size: 12px; color: #999; }
   .test-details { padding: 0 16px 16px; border-top: 1px solid #f0f0f0; display: none; }
   .test-details.open { display: block; padding-top: 12px; }
+  .warning-msg { background: #fff8e1; border-left: 3px solid #f9a825; padding: 8px 12px; font-size: 13px; margin-bottom: 8px; border-radius: 0 4px 4px 0; }
   .error-msg { background: #fff3f3; border-left: 3px solid #f44336; padding: 12px; font-family: monospace; font-size: 13px; white-space: pre-wrap; margin-bottom: 8px; border-radius: 0 4px 4px 0; }
   .code-snippet { background: #1e1e2e; border-radius: 6px; padding: 0; margin-bottom: 8px; overflow-x: auto; font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.6; }
   .code-snippet .code-file { padding: 8px 12px; background: #2a2a3e; color: #a0a0c0; font-size: 11px; border-radius: 6px 6px 0 0; }
@@ -256,6 +258,7 @@ function render(filter, query) {
       details += '<div class="trace-cmd" onclick="copyCmd(this)" title="Click to copy">npx tapsmith show-trace ' + t.trace + '</div>';
     }
     if (t.error) details += '<div class="error-msg">' + t.error + '</div>';
+    (t.warnings || []).forEach(function(w) { details += '<div class="warning-msg">⚠ ' + w + '</div>'; });
     if (t.codeSnippet) {
       details += '<div class="code-snippet"><div class="code-file">' + t.codeSnippet.file + '</div><div class="code-lines">';
       t.codeSnippet.lines.forEach(function(sl) {

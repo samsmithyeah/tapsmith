@@ -120,6 +120,44 @@ async function forEachDeviceBestEffort(opts: RunOptions, fn: (device: Device) =>
   await Promise.allSettled(allDevices(opts).map(async (d) => { await fn(d); }));
 }
 
+/**
+ * Take the system-dialog notices the Android preflight left on each device's
+ * session context: a trace row for every one (when a trace is recording), and
+ * a warning — held for the next test result — for the app under test's own.
+ */
+function drainPreflightNotices(opts: RunOptions, collector: TraceCollector | null): void {
+  const devices = resettableDevices(opts);
+  for (const rd of devices) {
+    for (const notice of rd.sessionContext.notices.splice(0)) {
+      // In a group, say whose app it was.
+      const message = devices.length > 1 ? `[${rd.name}] ${notice.message}` : notice.message;
+      if (notice.kind === 'app-dialog') {
+        const pending = (opts._preflightWarnings ??= []);
+        if (!pending.includes(message)) pending.push(message);
+      }
+      // Stamped now, not when the dialog was handled (possibly before this
+      // trace began): rows keep their order on the timeline. The handling
+      // time goes in the log.
+      const now = Date.now();
+      collector?.addActionEvent({
+        category: 'device',
+        action: 'systemDialog',
+        duration: 0,
+        startTime: now,
+        endTime: now,
+        success: true,
+        detail: message,
+        log: [`handled at ${new Date(notice.timestamp).toISOString()}`],
+        hasScreenshotBefore: false,
+        hasScreenshotAfter: false,
+        hasHierarchyBefore: false,
+        hasHierarchyAfter: false,
+        ...(rd.device._traceDeviceId ? { deviceId: rd.device._traceDeviceId } : {}),
+      });
+    }
+  }
+}
+
 /** Devices whose embedder supplied a session context — the ones the runner can reset. */
 function resettableDevices(opts: RunOptions): Array<RunDevice & { sessionContext: SessionPreflightContext }> {
   return opts.devices.filter((d): d is RunDevice & { sessionContext: SessionPreflightContext } => !!d.sessionContext);
@@ -330,6 +368,12 @@ export interface TestResult {
    * in `durationMs`, mirroring how Playwright counts fixture setup.
    */
   setupMs?: number;
+  /**
+   * Things that happened to this test's session that did not fail it but that
+   * a reader should know — e.g. the app under test showed an ANR or crash
+   * dialog that the preflight closed before retrying (PILOT-398).
+   */
+  warnings?: string[];
 }
 
 export interface SuiteResult {
@@ -787,6 +831,8 @@ export interface RunOptions {
    * scope inheriting the parent's policy must reset back to it.
    */
   _applied?: { current?: AppResetPolicy };
+  /** @internal Warnings from preflight notices, waiting for the next test result. */
+  _preflightWarnings?: string[];
   /**
    * Run only tests whose fullName contains this value (case-insensitive
    * substring match). All other tests are skipped. May match several tests.
@@ -1191,7 +1237,11 @@ async function runTracedAppReset(
     // file-abort recovery, and could land after them.
     const settled = await Promise.allSettled(resets);
     const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    // On failure the notices stay on the session contexts: a file retry, or
+    // the failed scope's results, pick them up (the scope's per-file warning
+    // holder would be discarded with a rethrown infra error).
     if (failure) throw failure.reason;
+    drainPreflightNotices(opts, collector);
     return reports;
   } finally {
     collector?.endGroup();
@@ -1487,7 +1537,11 @@ async function runSuiteContext(
     }
 
     const failed = failAll(ctx, parentPrefix, beforeAllError, opts.projectName, beforeAllScreenshot, beforeAllTrace);
+    // A dialog the scope-entry reset closed may be why the scope failed.
+    drainPreflightNotices(opts, null);
+    const scopeWarnings = opts._preflightWarnings?.splice(0) ?? [];
     for (const tr of collectResults(failed)) {
+      if (scopeWarnings.length > 0) tr.warnings = [...scopeWarnings];
       result.tests.push(tr);
       opts.reporter?.onTestEnd?.(tr);
     }
@@ -1882,7 +1936,11 @@ async function runSuiteContext(
           // Setup work that may issue device actions (e.g. ensureSessionReady
           // in UI worker mode). Runs inside the beforeEach group.
           if (opts.beforeEachTest) {
-            await opts.beforeEachTest(fullName);
+            try {
+              await opts.beforeEachTest(fullName);
+            } finally {
+              drainPreflightNotices(opts, traceCollector);
+            }
           }
 
           // Wait for the device to be idle before each test. This ensures
@@ -2383,6 +2441,9 @@ async function runSuiteContext(
         videoPath,
         project: opts.projectName,
         retry: attempt,
+        // Shown under the attempt the dialog interrupted; the final result
+        // carries them too.
+        ...(opts._preflightWarnings?.length ? { warnings: [...opts._preflightWarnings] } : {}),
         _willRetry: true,
         filePath: opts.testFilePath,
       });
@@ -2408,6 +2469,10 @@ async function runSuiteContext(
 
     const setupMs = setupHolder.pendingMs;
     setupHolder.pendingMs = 0;
+    // Anything the preflight handled since the last result (the startup
+    // launch, a scope-entry reset, this test's own preflight) belongs here.
+    drainPreflightNotices(opts, null);
+    const warnings = opts._preflightWarnings?.splice(0) ?? [];
     const testResult: TestResult = {
       name: entry.name,
       fullName,
@@ -2423,6 +2488,7 @@ async function runSuiteContext(
       failedAttemptArtifacts,
       filePath: opts.testFilePath,
       ...(setupMs > 0 ? { setupMs } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
     result.tests.push(testResult);
     opts.reporter?.onTestEnd?.(testResult);
@@ -2644,12 +2710,18 @@ export function collectResults(suite: SuiteResult): TestResult[] {
  * the per-test retry loop records via `retry` + `firstAttemptError`.
  */
 export function markFileRetryFlakes(firstAttempt: SuiteResult, retried: SuiteResult): void {
+  const firstResults = collectResults(firstAttempt);
   const firstErrors = new Map(
-    collectResults(firstAttempt)
+    firstResults
       .filter((t) => t.status === 'failed' && t.error)
       .map((t) => [t.fullName, t.error]),
   );
-  if (firstErrors.size === 0) return;
+  // The discarded attempt's warnings (e.g. the app's own ANR dialog that led
+  // to the retry) are about this test too; the retry must not drop them.
+  const firstWarnings = new Map(
+    firstResults.filter((t) => t.warnings?.length).map((t) => [t.fullName, t.warnings!]),
+  );
+  if (firstErrors.size === 0 && firstWarnings.size === 0) return;
   const annotate = (suite: SuiteResult): void => {
     for (const t of suite.tests) {
       const firstError = firstErrors.get(t.fullName);
@@ -2657,6 +2729,8 @@ export function markFileRetryFlakes(firstAttempt: SuiteResult, retried: SuiteRes
         t.retry = t.retry ?? 1;
         t.firstAttemptError = t.firstAttemptError ?? firstError;
       }
+      const earlier = firstWarnings.get(t.fullName);
+      if (earlier) t.warnings = [...new Set([...earlier, ...(t.warnings ?? [])])];
     }
     suite.suites.forEach(annotate);
   };

@@ -1312,6 +1312,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
               tracePath: result.tracePath,
               videoPath: result.videoPath,
               projectName,
+              ...(result.warnings?.length ? { warnings: result.warnings } : {}),
             });
             break;
           }

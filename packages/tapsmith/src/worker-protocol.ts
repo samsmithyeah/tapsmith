@@ -464,6 +464,7 @@ export interface SerializedTestResult {
   retry?: number
   _willRetry?: boolean
   filePath?: string
+  warnings?: string[]
 }
 
 export interface SerializedSuiteResult {
@@ -496,6 +497,7 @@ export function serializeTestResult(result: TestResult, workerIndex: number): Se
     retry: result.retry,
     _willRetry: result._willRetry,
     filePath: result.filePath,
+    ...(result.warnings?.length ? { warnings: result.warnings } : {}),
   };
 }
 
@@ -529,6 +531,7 @@ export function deserializeTestResult(s: SerializedTestResult): TestResult & { w
     retry: s.retry,
     _willRetry: s._willRetry,
     filePath: s.filePath,
+    ...(s.warnings?.length ? { warnings: s.warnings } : {}),
   };
 }
 

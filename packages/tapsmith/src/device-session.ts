@@ -507,6 +507,7 @@ export async function openDeviceSession(
       deviceSerial: spec.serial,
       networkTracingEnabled,
       capabilities,
+      notices: [],
     },
     daemonProcess: opts.daemonProcess,
     agentPort: opts.agentPort,

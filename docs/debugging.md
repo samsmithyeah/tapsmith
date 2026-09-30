@@ -324,6 +324,31 @@ Error: 14 UNAVAILABLE: failed to connect to all addresses
 3. Check that no other process is using port 50051 (the default daemon port)
 4. If using a custom `daemonAddress`, verify the daemon is running at that address
 
+### A system dialog is blocking the device (Android)
+
+```
+session preflight failed during startup launch: A system dialog is blocking the device: "Pixel Launcher isn't responding" (com.google.android.apps.nexuslauncher). Tapsmith dismissed it 4 times and it kept coming back. …
+```
+
+**What happened:** Before the tests start, and before each test, Tapsmith checks that the app is on screen. When another package's "isn't responding" or "keeps stopping" dialog covers it, Tapsmith dismisses the dialog and checks again (you will see `Dismissing system dialog …` lines). This error means the dialog kept coming back. That usually happens on an overloaded emulator: a cold boot on a busy host can leave the launcher or Google Play services unresponsive for minutes.
+
+**Fixes:**
+
+- Close other emulators and heavy apps on the host, then run again
+- Give the AVD more CPU cores and RAM (Android Studio → Device Manager → Edit)
+- Cold-boot the emulator, or wipe its data if the dialog shows up on every boot
+
+When the dialog belongs to **the app under test**, your app hung or crashed, so Tapsmith does not treat it as noise. It logs `The app under test is showing a system dialog: …`, closes the dialog and relaunches the app, the same recovery it runs when the agent drops. In `tapsmith test` runs, a recovery before a test retries the file so `beforeAll` hooks run again. A dialog whose owner Tapsmith cannot read also goes to that recovery, which dismisses it however it can. If the dialog keeps coming back, the run fails with that message. Check `adb logcat` for the cause. `TAPSMITH_DEBUG=1` also logs the screen's hierarchy when a dialog is found.
+
+The affected test's result carries a warning, even when the test then passes. In a `tapsmith test` run the recovery retries the file, so the warning is printed under the attempt it interrupted and again in the run's flaky summary:
+
+```
+  ✗ [2] › tests/login.test.ts › signs in (6.4s)
+        ⚠ The app under test (com.example.app) showed "Example isn't responding"; Tapsmith dismissed it.
+```
+
+The warning is in the result's `warnings` (the JSON reporter, `merge-reports` and MCP `run_tests`/`list_results` show it too) and in the test's trace as a `systemDialog` step. Another package's dialog is not a warning on the test. It appears only as a `systemDialog` step in the trace, beside the `Dismissing system dialog …` log line.
+
 ### Tapsmith was loaded without `import.meta.dirname`
 
 ```

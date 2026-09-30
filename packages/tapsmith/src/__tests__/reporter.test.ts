@@ -348,6 +348,14 @@ describe('ListReporter', () => {
     expect(output).toContain('my passing test');
   });
 
+  it('prints a test warnings under its line (PILOT-398)', () => {
+    reporter.onRunStart!(makeConfig(), 1);
+    reporter.onTestEnd!(makeTestResult({ status: 'passed', fullName: 'warned test', warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it.'] }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('warned test');
+    expect(output).toContain('⚠ The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it.');
+  });
+
   it('prints error details for failed tests', () => {
     reporter.onRunStart!(makeConfig(), 1);
     reporter.onTestEnd!(makeTestResult({
@@ -708,6 +716,15 @@ describe('GitHubActionsReporter', () => {
     expect(output).toContain('Expected element to be visible');
   });
 
+  it('emits a ::warning for each test warning, with no location (PILOT-398)', async () => {
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({ status: 'passed', fullName: 'signs in', warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it.'] })],
+    }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('::warning title=warning: signs in::');
+    expect(output).toContain('Example keeps stopping');
+  });
+
   it('does not emit annotations for passing tests', async () => {
     await reporter.onRunEnd!(makeFullResult({
       tests: [makeTestResult({ status: 'passed' })],
@@ -820,6 +837,23 @@ describe('JsonReporter', () => {
     expect(report.suites[0].tests).toHaveLength(2);
 
     // Cleanup
+    fs.rmSync(tmpDir, { recursive: true });
+  });
+
+  it('writes a test warnings (PILOT-398)', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-json-'));
+    const outputFile = path.join(tmpDir, 'results.json');
+    const { JsonReporter } = await import('../reporters/json.js');
+    const reporter = new JsonReporter({ outputFile });
+    const warned = makeTestResult({ status: 'passed', fullName: 'test a', warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it.'] });
+    reporter.onRunStart!(makeConfig({ rootDir: '/' }), 1);
+    await reporter.onRunEnd!(makeFullResult({ tests: [warned], suites: [{ name: 'suite', durationMs: 1, tests: [warned], suites: [] }] }));
+
+    const report = JSON.parse(fs.readFileSync(outputFile, 'utf-8'));
+    expect(report.suites[0].tests[0].warnings).toEqual(['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it.']);
     fs.rmSync(tmpDir, { recursive: true });
   });
 
@@ -939,7 +973,7 @@ describe('HtmlReporter', () => {
     reporter.onRunStart!(makeConfig({ rootDir: '/' }), 1);
     await reporter.onRunEnd!(makeFullResult({
       tests: [
-        makeTestResult({ status: 'passed', fullName: 'test a' }),
+        makeTestResult({ status: 'passed', fullName: 'test a', warnings: ['The app under test (x) showed "X keeps stopping"; Tapsmith dismissed it.'] }),
         makeTestResult({ status: 'failed', fullName: 'test b', error: new Error('oops') }),
       ],
     }));
@@ -952,6 +986,9 @@ describe('HtmlReporter', () => {
     expect(html).toContain('Tapsmith Test Report');
     expect(html).toContain('test a');
     expect(html).toContain('test b');
+    // PILOT-398: warnings reach the report's data and its renderer.
+    expect(html).toContain('X keeps stopping');
+    expect(html).toContain('warning-msg');
 
     stderrSpy.mockRestore();
     fs.rmSync(tmpDir, { recursive: true });

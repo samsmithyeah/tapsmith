@@ -284,6 +284,14 @@ describe('BlobReporter output directory', () => {
     expect(mergeBlobs(outputDir).tests.map((t) => t.fullName)).toEqual(['run 1']);
   });
 
+  it('keeps a test warnings through merge-reports (PILOT-398)', async () => {
+    const outputDir = path.join(tmpDir, 'blob-report');
+    const reporter = new BlobReporter({ outputDir });
+    reporter.onRunStart(makeConfig(), 1);
+    await reporter.onRunEnd(makeResult([makeTest({ warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it.'] })]));
+    expect(mergeBlobs(outputDir).tests[0].warnings).toEqual(['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it.']);
+  });
+
   it('clears stale attachments from a previous run too', async () => {
     const outputDir = path.join(tmpDir, 'blob-report');
     fs.mkdirSync(outputDir);

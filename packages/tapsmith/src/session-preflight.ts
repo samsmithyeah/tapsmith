@@ -2,10 +2,10 @@ import { DEFAULT_APP_RESET_COLD_EVERY, type TapsmithConfig } from './config.js';
 import type { Device } from './device.js';
 import { appResetAction, parseHooksMarker, satisfies, type AppResetPolicy, type AppResetReport, type AppResetStep, type PreparedState, type ResetCapabilities } from './app-reset.js';
 import type { AppState, LaunchAppOptions, TapsmithGrpcClient } from './grpc-client.js';
-import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
+import { blockingDialogOwnersViaAdb, detectBlockingSystemDialog, dismissSystemDialogsViaAdb, formatBlockingDialog, isSystemDrawnDialog } from './emulator.js';
 import { withActionProgress, type ActionProgressHandle } from './action-progress.js';
 
-type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'restoreAppState' | 'openDeepLink' | 'getAppState' | '_resetApp'>
+type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'locator' | 'pressBack' | 'clearAppData' | 'restoreAppState' | 'openDeepLink' | 'getAppState' | '_resetApp'>
 type SessionClient = Pick<TapsmithGrpcClient, 'ping' | 'getUiHierarchy'>
 
 export interface SessionPreflightContext {
@@ -38,6 +38,30 @@ export interface SessionPreflightContext {
    * purpose — one context object is shared across a worker's files.
    */
   capabilities?: ResetCapabilities
+  /**
+   * System dialogs the preflight handled, oldest first, waiting for the runner
+   * to attach them to the affected test (a warning for the app under test's
+   * own, a trace row for every one) and empty the list. Required so every
+   * embedder hands the runner the same list it hands the preflight; shared by
+   * reference, like `capabilities`.
+   */
+  notices: PreflightNotice[]
+}
+
+/** A system ANR/crash dialog the Android preflight dealt with. */
+export interface PreflightNotice {
+  /** `app-dialog`: the app under test's own, or one whose owner could not be
+   *  read (dismissed, session recovered; its test gets a warning).
+   *  `foreign-dialog`: another package's (dismissed; trace row only). */
+  kind: 'app-dialog' | 'foreign-dialog'
+  /** The dialog's title, e.g. `Pixel Launcher isn't responding`. */
+  title: string
+  /** Owning process, when dumpsys named exactly one (or it is the app's). */
+  owner?: string
+  /** One line for the test result and the trace row. */
+  message: string
+  /** When it was handled (ms since epoch). */
+  timestamp: number
 }
 
 /**
@@ -160,7 +184,26 @@ interface IosForegroundProbeTiming {
   retryDelayMs: number
 }
 
+/** Another package's system dialog that kept coming back past the dismissal
+ *  budget. Terminal for {@link ensureSessionReady}: a recovery round cannot
+ *  clear a dialog the inline dismissals could not, and costs an agent restart. */
 class BlockingDialogError extends Error {}
+
+/** A dialog that is (or may be) the app under test's own: its ANR or crash
+ *  dialog, or one whose owner could not be read. Not handled inline, and not
+ *  terminal: {@link ensureSessionReady}'s recovery clears it, relaunches the
+ *  app and reports the recovery, which is what makes a before-test preflight
+ *  retry the file. */
+class AppUnderTestDialogError extends Error {}
+
+/** Dismissals of blocking system dialogs within one
+ *  {@link ensureSessionReady} call, so a dialog that keeps coming back ends
+ *  the preflight instead of spinning. */
+interface BlockingDialogTally {
+  dismissals: number
+  /** Times each dialog title has been dismissed, for the final message. */
+  seen: Map<string, number>
+}
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -256,6 +299,12 @@ const SYSTEM_DIALOG_DISMISS_LABELS = ['Not Now', 'Wait', 'Close app', 'OK'] as c
  *  reappearing fails fast instead of spinning. */
 const SYSTEM_DIALOG_DISMISS_ROUNDS = 4;
 
+/** Blocking-dialog dismissals one {@link ensureSessionReady} call may make
+ *  before it fails. A launcher that re-ANRs after each one would otherwise
+ *  hold the preflight until its deadline; a thrashing emulator queueing a few
+ *  distinct dialogs (GMS, then the launcher) still fits. */
+const MAX_BLOCKING_DIALOG_DISMISSALS = 4;
+
 
 export async function ensureSessionReady(
   ctx: SessionPreflightContext,
@@ -274,6 +323,7 @@ export async function ensureSessionReady(
     // {@link probeTimingForAttempt}.
     let budgetSpent = false;
     const tally: ProbeLatencyTally = { totalMs: 0, probes: 0 };
+    const dialogs: BlockingDialogTally = { dismissals: 0, seen: new Map() };
     const backoff = options.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -283,12 +333,12 @@ export async function ensureSessionReady(
         // agent), and a stale detail would then describe the wrong attempt on
         // the end event.
         progress.setDetail(undefined);
-        await verifySession(ctx, progress, probeTimingForAttempt(recovered && budgetSpent, options.iosForegroundProbe), tally);
+        await verifySession(ctx, progress, probeTimingForAttempt(recovered && budgetSpent, options.iosForegroundProbe), tally, dialogs);
         return;
       } catch (err) {
         lastError = err;
         budgetSpent = err instanceof ProbeBudgetExhaustedError;
-        if (attempt === maxAttempts) break;
+        if (attempt === maxAttempts || err instanceof BlockingDialogError) break;
         options.onRecovery?.(err);
         // Give a transient agent-connection drop time to clear before
         // recovering — the recovery RPCs go over the same channel and an
@@ -718,6 +768,7 @@ async function verifySession(
   progress?: ActionProgressHandle,
   iosForegroundProbe?: Partial<IosForegroundProbeTiming>,
   tally?: ProbeLatencyTally,
+  dialogs: BlockingDialogTally = { dismissals: 0, seen: new Map() },
 ): Promise<void> {
   const pong = await ctx.client.ping();
   if (!pong.agentConnected) {
@@ -762,11 +813,9 @@ async function verifySession(
 
   await ctx.device.waitForIdle(DEFAULT_READY_TIMEOUT_MS);
 
-  const hierarchy = await waitForHierarchy(ctx.client);
-
-  const blockingDialog = detectBlockingSystemDialog(hierarchy.hierarchyXml);
-  if (blockingDialog) {
-    throw new Error(`blocking system dialog detected (${blockingDialog})`);
+  let hierarchy = await waitForHierarchy(ctx.client);
+  while (await clearBlockingDialog(ctx, hierarchy.hierarchyXml, dialogs)) {
+    hierarchy = await waitForHierarchy(ctx.client);
   }
 
   if (ctx.config.package) {
@@ -787,13 +836,13 @@ async function verifySession(
         // the readiness wait below, and THAT propagates into real recovery.
         await ctx.device.launchApp(ctx.config.package);
         const relaunched = await waitForHierarchy(ctx.client);
-        await waitForAndroidAppHierarchy(ctx, relaunched.hierarchyXml, ctx.config.package);
+        await waitForAndroidAppHierarchy(ctx, relaunched.hierarchyXml, ctx.config.package, dialogs);
         return;
       }
       await ctx.device.pressBack();
       await ctx.device.waitForIdle(DEFAULT_READY_TIMEOUT_MS);
     } else {
-      await waitForAndroidAppHierarchy(ctx, hierarchy.hierarchyXml, ctx.config.package);
+      await waitForAndroidAppHierarchy(ctx, hierarchy.hierarchyXml, ctx.config.package, dialogs);
     }
   }
 }
@@ -916,15 +965,21 @@ async function waitForAndroidAppHierarchy(
   ctx: SessionPreflightContext,
   initialHierarchyXml: string,
   packageName: string,
+  dialogs: BlockingDialogTally,
 ): Promise<void> {
   let hierarchyXml = initialHierarchyXml;
-  if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
+  // A dialog is checked before the package: the app's nodes are still in the
+  // dump underneath one, so "app present" alone would let the tests start
+  // behind it.
+  if (!(await clearBlockingDialog(ctx, hierarchyXml, dialogs))) {
+    if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
 
-  if (isAndroidSystemOverlay(hierarchyXml)) {
-    const dismissedHierarchy = await dismissAndroidSystemOverlay(ctx, packageName);
-    if (dismissedHierarchy) {
-      hierarchyXml = dismissedHierarchy;
-      if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
+    if (isAndroidSystemOverlay(hierarchyXml)) {
+      const dismissedHierarchy = await dismissAndroidSystemOverlay(ctx, packageName);
+      if (dismissedHierarchy) {
+        hierarchyXml = dismissedHierarchy;
+        if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
+      }
     }
   }
 
@@ -933,11 +988,10 @@ async function waitForAndroidAppHierarchy(
     try {
       const h = await ctx.client.getUiHierarchy();
       hierarchyXml = h.hierarchyXml;
+      // The dialog can arrive after the launch (a launcher ANR on a cold
+      // emulator): clear it and keep waiting within the deadline.
+      if (await clearBlockingDialog(ctx, hierarchyXml, dialogs)) continue;
       if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
-      const blockingDialog = detectBlockingSystemDialog(hierarchyXml);
-      if (blockingDialog) {
-        throw new BlockingDialogError(`blocking system dialog detected (${blockingDialog})`);
-      }
       if (isAndroidSystemOverlay(hierarchyXml)) {
         const dismissedHierarchy = await dismissAndroidSystemOverlay(ctx, packageName);
         if (dismissedHierarchy) {
@@ -946,7 +1000,7 @@ async function waitForAndroidAppHierarchy(
         }
       }
     } catch (err) {
-      if (err instanceof BlockingDialogError) throw err;
+      if (err instanceof BlockingDialogError || err instanceof AppUnderTestDialogError) throw err;
     }
     await new Promise((resolve) => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
   }
@@ -1028,6 +1082,209 @@ function isAndroidSystemOverlay(hierarchyXml: string): boolean {
     hierarchyXml.includes('resource-id="com.android.systemui:id/quick_settings_container"') ||
     hierarchyXml.includes('resource-id="com.android.systemui:id/qs_frame"')
   );
+}
+
+/**
+ * Clear a system ANR/crash dialog found in `hierarchyXml`. Returns false when
+ * there is no system dialog; the caller re-reads the screen after a true.
+ * Throws
+ * {@link AppUnderTestDialogError} when the dialog is the app under test's own
+ * (after closing it) or its owner is unknown, and {@link BlockingDialogError} when other packages' dialogs keep
+ * coming back past {@link MAX_BLOCKING_DIALOG_DISMISSALS}.
+ *
+ * Handled inline rather than by `ensureSessionReady`'s recovery: that path's
+ * adb dismissal cannot read the screen while the agent holds UiAutomation, and
+ * each round pays an agent restart while a hung launcher re-ANRs within
+ * seconds of every app relaunch (PILOT-398).
+ */
+async function clearBlockingDialog(
+  ctx: SessionPreflightContext,
+  hierarchyXml: string,
+  dialogs: BlockingDialogTally,
+): Promise<boolean> {
+  const title = detectBlockingSystemDialog(hierarchyXml);
+  if (!title) return false;
+
+  // No system-drawn node with the phrase: the app under test is showing
+  // "… isn't responding" text of its own. Not ours to tap.
+  if (!isSystemDrawnDialog(hierarchyXml)) return false;
+  // The dialog's nodes all say package="android"; only the window title names
+  // the owner, and only adb can read it.
+  const owners = ctx.deviceSerial ? blockingDialogOwnersViaAdb(ctx.deviceSerial) : [];
+
+  const pkg = ctx.config.package;
+  const appOwnsIt = !!pkg && owners.includes(pkg);
+  // Named only when unambiguous: with several error windows listed, the
+  // window list cannot say which one the title belongs to.
+  const owner = appOwnsIt ? pkg : owners.length === 1 ? owners[0] : undefined;
+  const dialog = formatBlockingDialog(title, owner);
+  if (process.env.TAPSMITH_DEBUG) {
+    process.stderr.write(`[tapsmith] Blocking system dialog ${dialog}; hierarchy:\n${hierarchyXml}\n`);
+  }
+
+  if (appOwnsIt) {
+    // The app under test hung or crashed: not a dialog to wave away. Close it
+    // (left up, it would fail every later test on the device) and hand over
+    // to ensureSessionReady's recovery. That relaunches the app and reports
+    // the recovery, so a before-test preflight retries the file and beforeAll
+    // runs again; if the dialog keeps coming back, this message is the error.
+    const message = `The app under test is showing a system dialog: ${dialog}. `
+      + 'It stopped responding or crashed. Check the app\'s logs (adb logcat) for the cause.';
+    process.stderr.write(`[tapsmith] ${message} Closing it.\n`);
+    // Never "Close app" while system_server's ANR is up: the tap might land
+    // on its dialog, and killing it restarts the whole runtime.
+    const dismissed = await dismissDialogOnce(ctx, hierarchyXml, owners.includes(SYSTEM_SERVER_PROCESS) ? NEVER_CLOSE_LABELS : CLOSE_FIRST_LABELS);
+    ctx.notices.push({
+      kind: 'app-dialog',
+      title,
+      owner,
+      message: `The app under test (${pkg}) showed "${title}"; `
+        + (dismissed ? 'Tapsmith dismissed it.' : 'Tapsmith could not dismiss it.'),
+      timestamp: Date.now(),
+    });
+    throw new AppUnderTestDialogError(message);
+  }
+  if (owners.length === 0) {
+    // dumpsys named no owner, so this may be the app under test's own dialog:
+    // nothing inline may kill it or wait it out as a stranger's. The normal
+    // recovery clears it and reports the relaunch, as for any session fault.
+    // It may be the app's, and the recovery relaunches it: warn on the test.
+    ctx.notices.push({
+      kind: 'app-dialog',
+      title,
+      message: `A system dialog was on screen and its owner could not be read (it may be the app's own): "${title}".`,
+      timestamp: Date.now(),
+    });
+    throw new AppUnderTestDialogError(
+      `A system dialog is on screen and its owner could not be read: ${dialog}.`,
+    );
+  }
+  if (dialogs.dismissals >= MAX_BLOCKING_DIALOG_DISMISSALS) {
+    const times = dialogs.seen.get(title) ?? 0;
+    const history = times === dialogs.dismissals
+      ? `Tapsmith dismissed it ${times} times and it kept coming back.`
+      : `Tapsmith dismissed ${dialogs.dismissals} system dialogs in a row and they kept appearing.`;
+    throw new BlockingDialogError(
+      `A system dialog is blocking the device: ${dialog}. ${history} `
+      + 'This usually means the emulator is overloaded: close other emulators and heavy host apps, '
+      + 'give the AVD more CPU cores and RAM, or cold-boot it. '
+      + 'Set TAPSMITH_DEBUG=1 to log the screen\'s hierarchy.',
+    );
+  }
+
+  dialogs.seen.set(title, (dialogs.seen.get(title) ?? 0) + 1);
+  dialogs.dismissals++;
+  // Another package's dialog: "Close app" kills the hung process and the
+  // system restarts it clean, where "Wait" leaves it hung to re-ANR within
+  // seconds. Never for system_server ("Process system isn't responding"):
+  // killing it restarts the whole runtime, agent and app with it.
+  const order = owners.includes(SYSTEM_SERVER_PROCESS) ? NEVER_CLOSE_LABELS : CLOSE_FIRST_LABELS;
+  ctx.notices.push({
+    kind: 'foreign-dialog',
+    title,
+    owner,
+    message: `A system dialog from another app was on screen: ${dialog}.`,
+    timestamp: Date.now(),
+  });
+  process.stderr.write(
+    `[tapsmith] Dismissing system dialog ${dialog} `
+    + `(${dialogs.dismissals}/${MAX_BLOCKING_DIALOG_DISMISSALS})\n`,
+  );
+  await dismissDialogOnce(ctx, hierarchyXml, order);
+  await waitForDialogGone(ctx, title);
+  // No relaunch: another package's dialog leaves the app under test running
+  // underneath, and a launch with the configured activity is `am start -S`,
+  // which would silently drop beforeAll state without the recovery signal
+  // the before-test embedders retry the file on. The callers' own checks
+  // bring the app back to the front if it is not there.
+  return true;
+}
+
+/** Dismissal order for a dialog whose process may be killed. */
+const CLOSE_FIRST_LABELS = ['Close app', ...SYSTEM_DIALOG_DISMISS_LABELS.filter((l) => l !== 'Close app')];
+/** Dismissal order that never kills the dialog's process (BACK when no other button). */
+const NEVER_CLOSE_LABELS = SYSTEM_DIALOG_DISMISS_LABELS.filter((l) => l !== 'Close app');
+
+/** system_server's process name in an ANR dialog's window title. */
+const SYSTEM_SERVER_PROCESS = 'system';
+
+/** Resource ids of the ANR / crash dialog's buttons (AOSP `aerr_*`). */
+const SYSTEM_DIALOG_BUTTON_IDS: Partial<Record<string, string>> = {
+  'Close app': 'android:id/aerr_close',
+  'Wait': 'android:id/aerr_wait',
+};
+
+/** One tap on a dismissal button the dialog shows, or BACK when none is.
+ *  False when the tap itself failed. */
+async function dismissDialogOnce(
+  ctx: SessionPreflightContext,
+  hierarchyXml: string,
+  order: readonly string[],
+): Promise<boolean> {
+  // Only the dialog's own buttons: the app's nodes are in the dump underneath.
+  // The ANR/crash buttons are tapped by their system resource id, which no app
+  // control carries; `first()` because a thrashing emulator can stack two such
+  // dialogs, and closing either one is progress. Any other label is tapped by
+  // text only when the app shows no control with the same text.
+  // A label counts when the dump has its button id (even if the button's text
+  // differs from the English label) or a system node with its text.
+  const hasId = (l: string) => {
+    const buttonId = SYSTEM_DIALOG_BUTTON_IDS[l];
+    return !!buttonId && hierarchyXml.includes(`resource-id="${buttonId}"`);
+  };
+  const label = order.find((l) => hasId(l) || androidSystemNodeHasText(hierarchyXml, l));
+  const id = label && hasId(label) ? SYSTEM_DIALOG_BUTTON_IDS[label] : undefined;
+  try {
+    if (id) {
+      await ctx.device.locator({ id }).first().tap();
+    } else if (label && !androidAppNodeHasText(hierarchyXml, label)) {
+      await ctx.device.getByText(label, { exact: true }).tap();
+    } else {
+      await ctx.device.pressBack();
+    }
+    await ctx.device.waitForIdle(1_000);
+    return true;
+  } catch {
+    // The dialog may have gone on its own between the dump and the tap; the
+    // caller re-reads the screen either way.
+    return false;
+  }
+}
+
+/** True when a system-drawn (`package="android"`) node's text is exactly `text`. */
+function androidSystemNodeHasText(hierarchyXml: string, text: string): boolean {
+  return nodesWithText(hierarchyXml, text).some((node) => node.includes('package="android"'));
+}
+
+/** True when a node of any other package has text exactly `text`. */
+function androidAppNodeHasText(hierarchyXml: string, text: string): boolean {
+  return nodesWithText(hierarchyXml, text).some((node) => !node.includes('package="android"'));
+}
+
+function nodesWithText(hierarchyXml: string, text: string): string[] {
+  const attr = `text="${escapeXmlAttribute(text)}"`;
+  return [...hierarchyXml.matchAll(/<node\b[^>]*>/g)].map(([node]) => node).filter((node) => node.includes(attr));
+}
+
+/** How long a dismissed dialog gets to leave the screen before the preflight
+ *  reads it again. On an overloaded emulator it can linger past the tap, and
+ *  re-reading it would count as the dialog coming back. */
+const DIALOG_GONE_TIMEOUT_MS = 2_000;
+
+/** Poll until no dialog titled `title` is on screen, bounded; best effort. */
+async function waitForDialogGone(ctx: SessionPreflightContext, title: string): Promise<void> {
+  const deadline = Date.now() + DIALOG_GONE_TIMEOUT_MS;
+  for (;;) {
+    try {
+      const { hierarchyXml } = await ctx.client.getUiHierarchy(IOS_APP_READY_POLL_DEADLINE_MS);
+      // An empty dump proves nothing: the agent failed to read the screen.
+      if (hierarchyXml.trim() && detectBlockingSystemDialog(hierarchyXml) !== title) return;
+    } catch {
+      // A failed read proves nothing either; keep polling to the deadline.
+    }
+    if (Date.now() >= deadline) return;
+    await delay(HIERARCHY_POLL_INTERVAL_MS);
+  }
 }
 
 async function recoverSession(ctx: SessionPreflightContext): Promise<void> {

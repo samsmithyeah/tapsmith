@@ -48,6 +48,8 @@ export interface TestResultEntry {
   tracePath?: string
   videoPath?: string
   projectName?: string
+  /** The result's warnings (e.g. an app dialog the preflight closed), when any. */
+  warnings?: string[]
   /**
    * True for the synthetic entry standing in for a whole file that could not
    * run. It has no counterpart in the test tree, so consumers that join on the

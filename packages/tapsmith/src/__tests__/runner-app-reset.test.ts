@@ -93,6 +93,7 @@ function makeOpts(d: ReturnType<typeof makeDevice>, config: TapsmithConfig, extr
     config,
     device: d.device as unknown as SessionPreflightContext['device'],
     client: d.client as unknown as SessionPreflightContext['client'],
+    notices: [],
   };
   return {
     config,
@@ -722,5 +723,155 @@ describe('runner app reset (declared isolation)', () => {
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
+  });
+
+  describe('system dialogs the preflight handled (PILOT-398)', () => {
+    const appDialog = (message: string) => ({ kind: 'app-dialog' as const, title: 'Example isn\'t responding', owner: 'com.example.app', message, timestamp: Date.now() });
+    const foreignDialog = { kind: 'foreign-dialog' as const, title: 'Pixel Launcher isn\'t responding', owner: 'com.google.android.apps.nexuslauncher', message: 'Dismissed a system dialog from another app: "Pixel Launcher isn\'t responding" (com.google.android.apps.nexuslauncher).', timestamp: Date.now() };
+
+    it('warns on the test whose preflight closed the app\'s own dialog, and on no other', async () => {
+      const d = makeDevice();
+      pushContext();
+      tapsmithTest('one', async () => {});
+      tapsmithTest('two', async () => {});
+      const ctx = popContext();
+      const opts = makeOpts(d, makeConfig({ appReset: 'none' }));
+      let calls = 0;
+      opts.beforeEachTest = async () => {
+        calls++;
+        if (calls === 2) opts.devices[0].sessionContext!.notices.push(appDialog('The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it.'), foreignDialog);
+      };
+
+      const result = await runSuiteContext(ctx, '', [], [], opts);
+
+      const [one, two] = collectResults(result);
+      expect(one.warnings).toBeUndefined();
+      // Another app's dialog is not a warning on the test (trace row only).
+      expect(two.warnings).toEqual(['The app under test (com.example.app) showed "Example isn\'t responding"; Tapsmith dismissed it.']);
+      expect(opts.devices[0].sessionContext!.notices).toEqual([]);
+    });
+
+    it('keeps the warning when the preflight that closed the dialog then failed the test', async () => {
+      const d = makeDevice();
+      pushContext();
+      tapsmithTest('one', async () => {});
+      const ctx = popContext();
+      const opts = makeOpts(d, makeConfig({ appReset: 'none' }));
+      opts.beforeEachTest = async () => {
+        opts.devices[0].sessionContext!.notices.push(appDialog('closed it'));
+        throw new Error('session recovered during before test one; retrying file');
+      };
+
+      const result = await runSuiteContext(ctx, '', [], [], opts);
+
+      expect(result.tests[0]).toMatchObject({ status: 'failed', warnings: ['closed it'] });
+    });
+
+    it('puts a dialog closed by the scope-entry reset on the first test', async () => {
+      const d = makeDevice();
+      pushContext();
+      tapsmithTest('one', async () => {});
+      tapsmithTest('two', async () => {});
+      const ctx = popContext();
+      const opts = makeOpts(d, makeConfig());
+      d.device._resetApp.mockImplementation(async () => {
+        opts.devices[0].sessionContext!.notices.push(appDialog('closed at file entry'));
+        return { modeRequested: 'clear', modeUsed: 'clear', fellBack: false, coldLaunch: true, durationMs: 5, hooksDetected: false, steps: [] };
+      });
+
+      const result = await runSuiteContext(ctx, '', [], [], opts);
+
+      const [one, two] = collectResults(result);
+      expect(one.warnings).toEqual(['closed at file entry']);
+      expect(two.warnings).toBeUndefined();
+    });
+
+    it('keeps the warning on every test of a scope whose beforeAll then failed', async () => {
+      const d = makeDevice();
+      pushContext();
+      tapsmithBeforeAll(async () => { throw new Error('app never came back'); });
+      tapsmithTest('one', async () => {});
+      tapsmithTest('two', async () => {});
+      const ctx = popContext();
+      const opts = makeOpts(d, makeConfig());
+      d.device._resetApp.mockImplementation(async () => {
+        opts.devices[0].sessionContext!.notices.push(appDialog('closed at file entry'));
+        return { modeRequested: 'clear', modeUsed: 'clear', fellBack: false, coldLaunch: true, durationMs: 5, hooksDetected: false, steps: [] };
+      });
+
+      const result = await runSuiteContext(ctx, '', [], [], opts);
+
+      expect(collectResults(result).map((t) => [t.status, t.warnings])).toEqual([
+        ['failed', ['closed at file entry']],
+        ['failed', ['closed at file entry']],
+      ]);
+    });
+
+    it('keeps the warning when the entry reset that closed the dialog then failed', async () => {
+      const d = makeDevice();
+      pushContext();
+      tapsmithTest('one', async () => {});
+      const ctx = popContext();
+      const opts = makeOpts(d, makeConfig());
+      d.device._resetApp.mockImplementation(async () => {
+        opts.devices[0].sessionContext!.notices.push(appDialog('closed at file entry'));
+        throw new Error('App reset failed: RESET_FAILED');
+      });
+
+      const result = await runSuiteContext(ctx, '', [], [], opts);
+
+      expect(collectResults(result).map((t) => [t.status, t.warnings])).toEqual([['failed', ['closed at file entry']]]);
+    });
+
+    it('shows the warning on the attempt it interrupted as well as the final result', async () => {
+      const d = makeDevice();
+      let attempts = 0;
+      pushContext();
+      tapsmithTest('flaky', async () => { attempts++; if (attempts === 1) throw new Error('first attempt fails'); });
+      const ctx = popContext();
+      const ended: Array<{ willRetry?: boolean; warnings?: string[] }> = [];
+      const opts = makeOpts(d, makeConfig({ appReset: 'none', retries: 1 }), {
+        reporter: { onTestEnd: (r) => { ended.push({ willRetry: r._willRetry, warnings: r.warnings }); } },
+      });
+      let calls = 0;
+      opts.beforeEachTest = async () => {
+        if (++calls === 1) opts.devices[0].sessionContext!.notices.push(appDialog('closed it'));
+      };
+
+      await runSuiteContext(ctx, '', [], [], opts);
+
+      expect(ended).toEqual([
+        { willRetry: true, warnings: ['closed it'] },
+        { willRetry: undefined, warnings: ['closed it'] },
+      ]);
+    });
+
+    it('records a trace row for every handled dialog', async () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-dialog-'));
+      try {
+        const d = makeDevice();
+        pushContext();
+        tapsmithTest('one', async () => {});
+        const ctx = popContext();
+        const opts = makeOpts(d, makeConfig({
+          appReset: 'none',
+          rootDir: tempRoot,
+          trace: { mode: 'on', network: false, screenshots: false, snapshots: false, sources: false },
+        }));
+        opts.beforeEachTest = async () => {
+          opts.devices[0].sessionContext!.notices.push(appDialog('closed it'), foreignDialog);
+        };
+
+        const result = await runSuiteContext(ctx, '', [], [], opts);
+
+        const zip = unzipSync(fs.readFileSync(result.tests[0].tracePath!));
+        const rows = new TextDecoder().decode(zip['trace.json']).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l))
+          .filter((e) => e.type === 'action' && e.action === 'systemDialog');
+        expect(rows.map((r) => r.detail)).toEqual(['closed it', foreignDialog.message]);
+        expect(rows[0]).toMatchObject({ category: 'device', success: true });
+      } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    });
   });
 });

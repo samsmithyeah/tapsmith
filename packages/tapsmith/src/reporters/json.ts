@@ -25,6 +25,7 @@ interface JsonTestEntry {
   workerIndex?: number
   project?: string
   retry?: number
+  warnings?: string[]
 }
 
 interface JsonSuiteEntry {
@@ -109,6 +110,7 @@ function serializeSuite(suite: SuiteResult): JsonSuiteEntry {
       workerIndex: t.workerIndex,
       project: t.project,
       retry: t.retry,
+      warnings: t.warnings,
     })),
     suites: suite.suites.map((s) => serializeSuite(s)),
   };

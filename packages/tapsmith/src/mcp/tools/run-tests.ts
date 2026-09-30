@@ -135,6 +135,19 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
             }
           }
         };
+        // Warnings on any result of this run (e.g. the app under test showed
+        // an ANR dialog that the preflight closed before retrying) — a pass
+        // can carry one, so every branch below appends them.
+        const appendWarnings = (lines: string[]): void => {
+          const warned = dispatcher.getResults().filter((r) => r.warnings && r.warnings.length > 0);
+          if (warned.length === 0) return;
+          lines.push('');
+          lines.push('Warnings:');
+          for (const r of warned) {
+            const proj = r.projectName ? ` [${r.projectName}]` : '';
+            for (const w of r.warnings ?? []) lines.push(`  ${r.fullName}${proj}: ${w}`);
+          }
+        };
         const pushScreenshots = (): void => {
           for (const img of screenshots) {
             content.push({ type: 'image' as const, data: img.toString('base64'), mimeType: 'image/png' });
@@ -152,6 +165,7 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
               : `Run stopped by user — partial results: ${result.passed} passed, ${result.skipped} skipped${interrupted} (${result.duration}ms)`,
           ];
           appendFailureDetails(lines);
+          appendWarnings(lines);
           content.push({ type: 'text' as const, text: lines.join('\n') });
           pushScreenshots();
           return { content };
@@ -180,17 +194,17 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
             lines.push('');
             lines.push(`NOTE: ${configWarning}`);
           }
+          appendWarnings(lines);
           content.push({ type: 'text' as const, text: lines.join('\n') });
           pushScreenshots();
           return { content, isError: true };
         }
 
-        content.push({
-          type: 'text' as const,
-          text: testFilter
-            ? `All tests passed: ${result.passed} passed matching "${testFilter}" (${result.duration}ms)`
-            : `All tests passed: ${result.passed} passed, ${result.skipped} skipped (${result.duration}ms)`,
-        });
+        const passedLines = [testFilter
+          ? `All tests passed: ${result.passed} passed matching "${testFilter}" (${result.duration}ms)`
+          : `All tests passed: ${result.passed} passed, ${result.skipped} skipped (${result.duration}ms)`];
+        appendWarnings(passedLines);
+        content.push({ type: 'text' as const, text: passedLines.join('\n') });
         return { content };
       }
 
