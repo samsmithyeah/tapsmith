@@ -19,6 +19,7 @@ import { formatJson, jsonError, stripAnsi, type JsonCheck } from './cli-json.js'
 import { avdCaptureSupport, captureAvdFix, scanAvdImageTags, type AvdImageInfo } from './avd-images.js';
 import { androidStateBlocker, parseAdbDevicesOutput, parseSimctlDevicesJson, tryExec, type AdbDevice } from './env-scan.js';
 import type { TapsmithConfig } from './config.js';
+import { emulatorNotFoundMessage, resolveEmulatorBinary, type EmulatorBinary } from './emulator.js';
 
 // ─── ANSI helpers ───
 
@@ -233,7 +234,7 @@ function checkAndroidHome(report: Reporter): void {
 }
 
 export interface AndroidDevicesSummary {
-  status: 'pass' | 'warn';
+  status: 'pass' | 'warn' | 'fail';
   label: string;
   detail?: string;
   fix?: string;
@@ -317,6 +318,47 @@ function checkAppApk(report: Reporter, config: TapsmithConfig | undefined, requi
     }
   } catch {
     warn(report, 'app-apk', 'Could not check app APK path');
+  }
+}
+
+// ─── Emulator binary (PILOT-417) ───
+
+/** An Android scope's AVD and whether Tapsmith will launch it (`launchEmulators`, on by default with `avd`). */
+export interface AvdLaunch {
+  avd: string;
+  launch: boolean;
+}
+
+/**
+ * Judge the emulator binary for the configured AVDs. Missing is a failure
+ * when Tapsmith will launch one — the run would otherwise wait out the boot
+ * timeout for a process that never started — and a warning when only an
+ * already-running emulator is used (`launchEmulators: false`), or when this
+ * machine is not expected to run the Android projects (`required` false).
+ */
+export function summarizeEmulatorBinary(bin: EmulatorBinary, avds: AvdLaunch[], required: boolean): AndroidDevicesSummary {
+  if (bin.found) {
+    return { status: 'pass', label: 'Android emulator found', detail: path.isAbsolute(bin.command) ? bin.command : `${bin.command} (on PATH)` };
+  }
+  const launched = avds.filter((a) => a.launch).map((a) => a.avd);
+  const names = [...new Set((launched.length > 0 ? launched : avds.map((a) => a.avd)))].join(', ');
+  const detail = `tried: ${bin.tried.join(', ')}`;
+  const fix = emulatorNotFoundMessage(bin.tried);
+  if (launched.length === 0) {
+    return { status: 'warn', label: `Android emulator not found — only an already-running emulator of ${names} can be used (launchEmulators is off)`, detail, fix };
+  }
+  return { status: required ? 'fail' : 'warn', label: `Android emulator not found — Tapsmith cannot launch ${names}`, detail, fix };
+}
+
+function checkEmulatorBinary(report: Reporter, avds: AvdLaunch[], required: boolean): void {
+  if (avds.length === 0) return;
+  try {
+    const summary = summarizeEmulatorBinary(resolveEmulatorBinary(), avds, required);
+    if (summary.status === 'pass') pass(report, 'android-emulator', summary.label, summary.detail);
+    else if (summary.status === 'warn') warn(report, 'android-emulator', summary.label, summary.fix, summary.detail);
+    else fail(report, 'android-emulator', summary.label, summary.fix, summary.detail);
+  } catch {
+    warn(report, 'android-emulator', 'Could not check for the Android emulator');
   }
 }
 
@@ -927,7 +969,7 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
 
   // Load the config the way `tapsmith test` does; it decides which platforms
   // are judged and feeds the APK path and AVD image checks.
-  const { loadConfig, findConfigFile, configPathOf } = await import('./config.js');
+  const { loadConfig, findConfigFile, configPathOf, effectiveConfigForProject } = await import('./config.js');
   let config: TapsmithConfig | undefined;
   try {
     config = await loadConfig(undefined, configFile);
@@ -944,6 +986,16 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   const xcodeUsable = (): boolean => process.platform === 'darwin' && run(report, 'xcodebuild', ['-version']) !== undefined;
   const androidPlan = planPlatform('android', targets, process.platform, mixed && xcodeUsable());
   const iosPlan = planPlatform('ios', targets, process.platform, mixed && adbUsable());
+
+  // The AVDs each Android scope launches, with the runner's own merge of
+  // project `use` over the root (launchEmulators defaults on with an avd).
+  const avdLaunches: AvdLaunch[] = config && configPathOf(config)
+    ? (config.projects && config.projects.length > 0
+      ? config.projects.map((p) => effectiveConfigForProject(config!, p))
+      : [config])
+      .filter((scope) => scopePlatform(scope) === 'android' && !!scope.avd)
+      .map((scope) => ({ avd: scope.avd as string, launch: scope.launchEmulators !== false }))
+    : [];
 
   // AVDs can be configured top-level or per-project (projects[].use.avd).
   const configuredAvds = [
@@ -990,6 +1042,7 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
       checkAgentApks(report);
       // With adb here, Android runs on this machine, so its APK must exist.
       checkAppApk(report, config, androidPlan.required || (adbOk && !!targets));
+      checkEmulatorBinary(report, avdLaunches, androidPlan.required || adbOk);
     }
   }
 
@@ -1058,7 +1111,7 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   // reusing the checks' adb/simctl output where they already ran.
   const adbDevices = run(report, 'adb', ['devices']);
   const simctl = process.platform === 'darwin' ? run(report, 'xcrun', ['simctl', 'list', 'devices', 'available', '-j']) : undefined;
-  const avdList = tryExec('emulator', ['-list-avds']);
+  const avdList = tryExec(resolveEmulatorBinary().command, ['-list-avds']);
   const inventory: DoctorInventory = {
     avds: avdList ? avdList.split('\n').map((l) => l.trim()).filter(Boolean) : [],
     simulators: simctl ? parseSimctlDevicesJson(simctl) : [],

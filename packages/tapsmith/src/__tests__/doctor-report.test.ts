@@ -118,6 +118,8 @@ beforeEach(() => {
   delete process.env.ANDROID_SDK_ROOT;
   delete process.env.ANDROID_AVD_HOME;
   delete process.env.TAPSMITH_REDIRECTOR_APP;
+  // The emulator lookup scans PATH itself: keep the host's emulator out of it.
+  process.env.PATH = path.join(home, 'empty-bin');
   exec.table.clear();
   exec.calls.length = 0;
   exec.timeouts.clear();
@@ -128,7 +130,10 @@ beforeEach(() => {
 afterEach(() => {
   process.chdir(savedCwd);
   Object.defineProperty(process, 'platform', savedPlatform);
-  process.env = { ...savedEnv };
+  // Restore key by key: replacing process.env with a plain object would stop
+  // later writes reaching the real environment (os.homedir() reads that).
+  for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
+  Object.assign(process.env, savedEnv);
   fs.rmSync(path.dirname(dir), { recursive: true, force: true });
 });
 
@@ -531,6 +536,82 @@ describe('findMitmRedirector()', () => {
   it('does not count a Homebrew install without the cask\'s redirector tarball', () => {
     // A cask whose layout changed has no tarball where the daemon looks, so it cannot extract one.
     expect(find([], {}, ['11.0.2'])).toBeUndefined();
+  });
+});
+
+// ─── PILOT-417: the emulator binary ───
+
+describe('doctor android-emulator check (PILOT-417)', () => {
+  function sdkWithEmulator(): string {
+    const sdk = path.join(home, 'sdk');
+    fs.mkdirSync(path.join(sdk, 'emulator'), { recursive: true });
+    fs.writeFileSync(path.join(sdk, 'emulator', 'emulator'), '');
+    return sdk;
+  }
+
+  it('passes with the binary it found under ANDROID_HOME', async () => {
+    withAdb();
+    process.env.ANDROID_HOME = sdkWithEmulator();
+    writeConfig("export default { avd: 'Pixel_9' }\n");
+    const { json } = await doctorJson();
+    expect(check(json, 'android-emulator')).toEqual({
+      id: 'android-emulator', status: 'pass', label: 'Android emulator found',
+      detail: path.join(home, 'sdk', 'emulator', 'emulator'),
+    });
+  });
+
+  it('fails when an AVD is to be launched and no emulator binary exists, naming every path tried', async () => {
+    withAdb();
+    process.env.ANDROID_HOME = path.join(home, 'no-sdk');
+    writeConfig("export default { avd: 'Pixel_9' }\n");
+    const { code, json } = await doctorJson();
+    const c = check(json, 'android-emulator');
+    expect(c).toMatchObject({ status: 'fail', label: expect.stringContaining('Pixel_9') });
+    expect(c?.detail).toContain(path.join(home, 'no-sdk', 'emulator', 'emulator'));
+    expect(c?.detail).toContain(path.join(home, 'Library', 'Android', 'sdk', 'emulator', 'emulator'));
+    expect(c?.detail).toContain('on PATH');
+    expect(c?.fix).toMatch(/Android Emulator/);
+    expect(c?.fix).toMatch(/ANDROID_HOME/);
+    expect(code).toBe(1);
+
+    const { text } = await doctorText();
+    expect(text).toMatch(/✗ Android emulator not found[^\n]*\(tried: /);
+  });
+
+  it('only warns when Tapsmith will not launch emulators (launchEmulators: false)', async () => {
+    withAdb();
+    writeConfig("export default { avd: 'Pixel_9', launchEmulators: false }\n");
+    const { code, json } = await doctorJson();
+    expect(check(json, 'android-emulator')).toMatchObject({ status: 'warn', label: expect.stringContaining('launchEmulators') });
+    expect(code).toBe(0);
+  });
+
+  it('checks an AVD set on a project, and finds the emulator on PATH', async () => {
+    withAdb();
+    const bin = path.join(home, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'emulator'), '');
+    process.env.PATH = bin;
+    writeConfig("export default { projects: [{ name: 'a', use: { avd: 'Pixel_9' } }] }\n");
+    const { json } = await doctorJson();
+    expect(check(json, 'android-emulator')).toMatchObject({ status: 'pass', detail: 'emulator (on PATH)' });
+  });
+
+  it('is not run without an AVD, nor for iOS-only configs', async () => {
+    withAdb();
+    withXcode();
+    writeConfig('export default {}\n');
+    expect(ids((await doctorJson()).json)).not.toContain('android-emulator');
+    fs.rmSync(path.join(dir, 'tapsmith.config.mjs'));
+    writeConfig("export default { platform: 'ios', simulator: 'iPhone 17', projects: [{ name: 'i' }] }\n", 'tapsmith.config.mjs');
+    expect(ids((await doctorJson()).json)).not.toContain('android-emulator');
+  });
+
+  it('only warns in a mixed config on a machine that can run just the iOS projects', async () => {
+    withXcode();
+    writeConfig("export default { projects: [{ name: 'a', use: { avd: 'Pixel_9' } }, { name: 'i', use: { platform: 'ios' } }] }\n");
+    const { json } = await doctorJson();
+    expect(check(json, 'android-emulator')).toMatchObject({ status: 'warn' });
   });
 });
 
