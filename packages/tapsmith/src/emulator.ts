@@ -1675,7 +1675,11 @@ interface ProvisionDeps {
     signal?: AbortSignal,
   ) => Promise<DeviceHealthResult>
   killEmulator: (serial: string) => void
+  findEmulatorPid: (serial: string) => number | undefined
 }
+
+/** How long a launch that exited 0 gets to show a backgrounded emulator on its console port. */
+const CLEAN_EXIT_GRACE_MS = 5_000;
 
 /**
  * Ensure enough emulators are running to satisfy the requested worker count.
@@ -1716,6 +1720,7 @@ export async function provisionEmulators(opts: {
     probeDeviceHealth: deps.probeDeviceHealth ?? probeDeviceHealth,
     waitForDeviceStability: deps.waitForDeviceStability ?? waitForDeviceStability,
     killEmulator: deps.killEmulator ?? killEmulator,
+    findEmulatorPid: deps.findEmulatorPid ?? findEmulatorPid,
   };
   const needed = workers - existingSerials.length;
 
@@ -1803,12 +1808,21 @@ export async function provisionEmulators(opts: {
       const exitedDuringBoot = new Promise<never>((_resolve, reject) => {
         void emu.exited.then((exit) => {
           if (!booting) return;
-          // A clean exit may be a launcher that backgrounds the emulator
-          // (a PATH wrapper, say): keep waiting on adb, as before PILOT-417.
-          if (exit.kind === 'exited' && exit.code === 0) return;
-          // Abort first, so the boot branch cannot start another probe.
-          stopWaiting.abort();
-          reject(new EmulatorExitedError(describeEmulatorExit(exit, emu, emulator)));
+          const fail = () => {
+            // Abort first, so the boot branch cannot start another probe.
+            stopWaiting.abort();
+            reject(new EmulatorExitedError(describeEmulatorExit(exit, emu, emulator)));
+          };
+          if (exit.kind !== 'exited' || exit.code !== 0) {
+            fail();
+            return;
+          }
+          // A clean exit is either the emulator quitting (its window closed
+          // mid-boot) or a launcher that backgrounds it (a PATH wrapper).
+          // The backgrounded emulator holds its console port within seconds.
+          setTimeout(() => {
+            if (booting && resolvedDeps.findEmulatorPid(emu.serial) === undefined) fail();
+          }, CLEAN_EXIT_GRACE_MS);
         });
       });
       exitedDuringBoot.catch(() => { /* surfaced through the race below */ });

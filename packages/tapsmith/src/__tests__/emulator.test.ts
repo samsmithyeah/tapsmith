@@ -1596,9 +1596,43 @@ describe('provisionEmulators launch failures', () => {
         launchEmulator: () => emu,
         waitForBoot: async () => { await new Promise((resolve) => setTimeout(resolve, 20)); },
         killEmulator: vi.fn(),
+        findEmulatorPid: () => 777,
       },
     );
     expect(result.allSerials).toEqual(['emulator-5554']);
+  });
+
+  it('fails a clean exit during boot when nothing holds the console port (the window was closed)', async () => {
+    vi.useFakeTimers();
+    try {
+      const warnings: string[] = [];
+      const killEmulator = vi.fn();
+      const emu = makeLaunchedEmulator('Pixel', 5554, Promise.resolve({ kind: 'exited', code: 0, signal: null }));
+      const provision = provisionEmulators(
+        {
+          existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined,
+          onProgress: (message, level) => { if (level === 'warning') warnings.push(message); },
+        },
+        {
+          ...base,
+          resolveEmulatorBinary: foundEmulator,
+          launchEmulator: () => emu,
+          // Would run the whole boot timeout unless aborted.
+          waitForBoot: (_serial, _timeout, signal) => new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+          killEmulator,
+          findEmulatorPid: () => undefined,
+        },
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await provision;
+      expect(result.launched).toEqual([]);
+      expect(warnings[0]).toContain('The emulator exited during boot (exit code 0)');
+      expect(killEmulator).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps an emulator that boots, even if its process ends later', async () => {
