@@ -1792,7 +1792,7 @@ export async function provisionEmulators(opts: {
 
     if (!launchedEmulator) {
       logProgress(
-        `Unable to provision additional emulator ${i + 1}/${needed}; ${avd ? `AVD ${avd}` : 'all candidate AVDs'} failed health checks.`,
+        `Unable to provision additional emulator ${i + 1}/${needed}; ${avd ? `AVD ${avd}` : 'all candidate AVDs'} did not start healthy (see above).`,
         'warning',
       );
       break;
