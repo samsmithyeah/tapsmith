@@ -2682,7 +2682,9 @@ See [Using Tapsmith with AI coding agents](agents.md) for the non-interactive se
 
 Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, config file, ADB (Android), connected devices, agent APKs, AVD system image compatibility, Xcode (iOS), simulators, and network capture dependencies. Each check prints `✓`, `⚠` (warning) or `✗` (error); most warnings and errors are followed by a `↳` line with the fix, often the exact command to run. Exits with code 0 unless a check is an error.
 
-`--json` prints `{ ok, checks, inventory }`: the checks (with a `fix` wherever the text output has one) and the device inventory (AVDs, simulators, connected devices), described under [JSON output](#json-output---json). `-c` / `--config` loads a specific config file for the checks that read the config (AVDs, app paths); the "Config file found" line itself only looks for `tapsmith.config.ts` or `.mjs` in the current directory.
+Which platforms are checked follows the config. A platform the config targets (per project `use.platform`, else the root `platform`; Android when unset) is always checked, and a missing ADB or Xcode is an error — as is an iOS target on a non-Mac. A platform the config does not target is skipped, with a `– skipped: …` line saying so. With no config file (or one that cannot be loaded), doctor checks whatever is installed: a missing ADB or Xcode is a warning that the platform's checks were skipped, not an error. The mitmproxy and Network Extension checks run only when iOS is checked.
+
+`--json` prints `{ ok, checks, inventory }`: the checks (with a `fix` wherever the text output has one) and the device inventory (AVDs, simulators, connected devices), described under [JSON output](#json-output---json). A skipped platform has no checks in the JSON. `-c` / `--config` checks a specific config file; without it, doctor finds the config the same way `tapsmith test` does (`tapsmith.config.ts`, `.js` or `.mjs` in the current directory).
 
 ```bash
 npx tapsmith doctor
