@@ -708,6 +708,12 @@ describe('defineConfig()', () => {
     expect(bad({ args: ['-memory', 4096] })).toThrow('config: emulatorLaunchOptions.args must be an array of strings');
   });
 
+  it('refuses emulatorLaunchOptions in a project `use`: it is root-level only', () => {
+    const config = defineConfig({ avd: 'Pixel' });
+    expect(() => effectiveConfigForProject(config, { use: { emulatorLaunchOptions: { headless: true } } as never }))
+      .toThrow('config: emulatorLaunchOptions is a root-level option');
+  });
+
   it('refuses emulator args Tapsmith sets itself', () => {
     expect(() => defineConfig({ emulatorLaunchOptions: { args: ['-port', '5600', '-read-only'] } }))
       .toThrow('config: emulatorLaunchOptions.args must not include -port, -read-only: Tapsmith sets the AVD, console port and read-only mode itself');

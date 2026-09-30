@@ -1330,6 +1330,11 @@ describe('resolveEmulatorLaunchSettings', () => {
     expect(resolveEmulatorLaunchSettings({ headless: true }, local, 'darwin')).toEqual({ headless: true, args: [] });
   });
 
+  it('takes -no-window in args as a request for the whole headless profile', () => {
+    expect(resolveEmulatorLaunchSettings({ args: ['-no-window', '-memory', '4096'] }, local, 'darwin'))
+      .toEqual({ headless: true, args: ['-memory', '4096'] });
+  });
+
   it('is headless by default where no window can be shown, without a warning', () => {
     expect(resolveEmulatorLaunchSettings(undefined, { CI: 'true' }, 'darwin')).toEqual({ headless: true, args: [] });
     expect(resolveEmulatorLaunchSettings(undefined, {}, 'linux')).toEqual({ headless: true, args: [] });

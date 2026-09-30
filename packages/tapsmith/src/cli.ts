@@ -2054,17 +2054,25 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       // The dispatcher manages its own daemons — one per worker — each with
       // exclusive ADB access to its assigned device. No discovery daemon needed.
       const { runParallel } = await import('./dispatcher.js');
-      const fullResult = await runParallel({
-        config,
-        reporter,
-        testFiles,
-        workers: totalWorkers,
-        forceInstall: args.forceInstall,
-        workerCap: budgetCap,
-        projects: hasProjects ? projects : undefined,
-        projectWaves: hasProjects ? projectWaves : undefined,
-        launchProgress,
-      });
+      let fullResult: Awaited<ReturnType<typeof runParallel>>;
+      try {
+        fullResult = await runParallel({
+          config,
+          reporter,
+          testFiles,
+          workers: totalWorkers,
+          forceInstall: args.forceInstall,
+          workerCap: budgetCap,
+          projects: hasProjects ? projects : undefined,
+          projectWaves: hasProjects ? projectWaves : undefined,
+          launchProgress,
+        });
+      } catch (err) {
+        // A run that fails to start after booting emulators still leaves them
+        // running: name them before the error ends the process.
+        preserveEmulatorsForReuse(emulatorsLaunchedThisProcess());
+        throw err;
+      }
 
       await reporter.onRunEnd(fullResult);
       preserveEmulatorsForReuse(emulatorsLaunchedThisProcess());

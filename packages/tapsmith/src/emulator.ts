@@ -1036,8 +1036,8 @@ function emulatorWindowUnavailableReason(
 
 /**
  * Resolve `emulatorLaunchOptions`. Locally the default is a window (host GPU
- * and a snapshot quick-boot: measured ~8 s to boot against ~23 s for a
- * headless cold boot); `headless: true` opts out. Where no window can be
+ * and a snapshot quick-boot: measured ~10 s from launch to a healthy device
+ * against ~38 s for a headless cold boot); `headless: true` opts out. Where no window can be
  * shown — CI, SSH, Linux without a display — it is always headless, and
  * `windowUnavailable` says why when `headless: false` asked for one.
  */
@@ -1046,8 +1046,12 @@ export function resolveEmulatorLaunchSettings(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): EmulatorLaunchSettings & { windowUnavailable?: string } {
-  const args = options?.args ?? [];
-  if (options?.headless === true) return { headless: true, args };
+  // `-no-window` in args is a request for headless: honour it with the whole
+  // headless profile, not a windowed profile (snapshot load, host GPU) minus the window.
+  const userArgs = options?.args ?? [];
+  const askedHeadless = options?.headless === true || userArgs.includes('-no-window');
+  const args = userArgs.filter((arg) => arg !== '-no-window');
+  if (askedHeadless) return { headless: true, args };
   const windowUnavailable = emulatorWindowUnavailableReason(env, platform);
   if (!windowUnavailable) return { headless: false, args };
   // Only an explicit `headless: false` is worth a warning; the default just adapts.

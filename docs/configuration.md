@@ -433,7 +433,8 @@ there is nothing to show it on: Tapsmith launches headless and warns.
 `args` adds arguments after Tapsmith's own, for example
 `emulatorLaunchOptions: { args: ["-memory", "4096"] }`. Arguments that would change the
 AVD, the console port or read-only mode (`-avd`, `@name`, `-port`, `-ports`,
-`-read-only`) are refused there, because Tapsmith sets those itself.
+`-read-only`) are refused there, because Tapsmith sets those itself. `-no-window` in
+`args` counts as `headless: true`.
 
 These options apply when Tapsmith launches an emulator. An emulator left running by an
 earlier run is reused as it was launched, and the run says whether it is headless. To

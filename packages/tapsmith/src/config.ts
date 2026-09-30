@@ -411,6 +411,11 @@ export function effectiveConfigForProject(
   project: { use?: UseOptions } | undefined,
 ): TapsmithConfig {
   if (!project?.use) return config;
+  // Root-level only: projects on one device target share its emulators, so a
+  // per-project value could not be honoured consistently.
+  if ('emulatorLaunchOptions' in project.use) {
+    throw new Error('config: emulatorLaunchOptions is a root-level option; move it out of the project\'s `use`.');
+  }
   const merged = { ...config } as unknown as Record<string, unknown>;
   for (const [key, value] of Object.entries(project.use)) {
     if (value !== undefined) {
