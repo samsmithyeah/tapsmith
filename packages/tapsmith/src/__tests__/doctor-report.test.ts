@@ -358,6 +358,24 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     expect(text).toMatch(/iOS\n\s+– skipped: iOS testing needs macOS/);
   });
 
+  it('a project option the per-project merge rejects is a config-load failure, not a crash', async () => {
+    withAdb();
+    writeConfig("export default { projects: [{ name: 'a', use: { platform: 'android', emulatorLaunchOptions: { headless: true } } }] }\n");
+    const { code, json } = await doctorJson();
+    expect(check(json, 'config-load')).toMatchObject({ status: 'fail', label: expect.stringContaining('project a') });
+    expect(ids(json)).toContain('adb');
+    expect(code).toBe(1);
+  });
+
+  it('a mixed config on a Mac without Xcode still gets the iOS capture checks', async () => {
+    withAdb();
+    writeConfig("export default { projects: [{ name: 'a' }, { name: 'i', use: { platform: 'ios' } }] }\n");
+    const { json } = await doctorJson();
+    expect(check(json, 'xcode')).toMatchObject({ status: 'warn' });
+    expect(ids(json)).toContain('mitmproxy');
+    expect(ids(json)).toContain('network-extension');
+  });
+
   it('a config that cannot be loaded is judged like no config: by the tools found', async () => {
     withAdb();
     withXcode();

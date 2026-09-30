@@ -989,13 +989,27 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
 
   // The AVDs each Android scope launches, with the runner's own merge of
   // project `use` over the root (launchEmulators defaults on with an avd).
-  const avdLaunches: AvdLaunch[] = config && configPathOf(config)
-    ? (config.projects && config.projects.length > 0
-      ? config.projects.map((p) => effectiveConfigForProject(config!, p))
-      : [config])
-      .filter((scope) => scopePlatform(scope) === 'android' && !!scope.avd)
-      .map((scope) => ({ avd: scope.avd as string, launch: scope.launchEmulators !== false }))
-    : [];
+  // loadConfig validates only the root; a project's `use` is validated by
+  // this merge, which throws — report that as the config error it is (as
+  // `tapsmith test` does), not as doctor crashing.
+  const scopes: TapsmithConfig[] = [];
+  if (config && configPathOf(config)) {
+    if (config.projects && config.projects.length > 0) {
+      for (const project of config.projects) {
+        try {
+          scopes.push(effectiveConfigForProject(config, project));
+        } catch (err) {
+          fail(report, 'config-load', `Config file has errors: project ${project.name}: ${err instanceof Error ? err.message : String(err)}`,
+            'Fix the config error above; tapsmith test stops on it too');
+        }
+      }
+    } else {
+      scopes.push(config);
+    }
+  }
+  const avdLaunches: AvdLaunch[] = scopes
+    .filter((scope) => scopePlatform(scope) === 'android' && !!scope.avd)
+    .map((scope) => ({ avd: scope.avd as string, launch: scope.launchEmulators !== false }));
 
   // AVDs can be configured top-level or per-project (projects[].use.avd).
   const configuredAvds = [
@@ -1067,7 +1081,9 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
       checkSimctl(report, !!targets);
       await checkSimulatorXctestrun(report);
     } else {
-      iosChecked = iosPlan.required;
+      // A config that targets iOS still gets its capture guidance (mitmproxy,
+      // Network Extension), as a targeted Android keeps its APK/AVD checks.
+      iosChecked = iosPlan.required || !!targets;
     }
   }
 
