@@ -712,6 +712,15 @@ function isOnPath(
     .some((dir) => names.some((name) => exists(p.join(dir, name))));
 }
 
+/** A regular file — not a directory such as `<sdk>/emulator` when the SDK root is on PATH. */
+function isFile(file: string): boolean {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Locate the Android `emulator` binary: `$ANDROID_HOME/emulator/emulator`,
  * then `$ANDROID_SDK_ROOT/…`, then the default SDK location for the OS
@@ -724,7 +733,7 @@ export function resolveEmulatorBinary(
   platform: NodeJS.Platform = process.platform,
   deps: Partial<ResolveEmulatorDeps> = {},
 ): EmulatorBinary {
-  const exists = deps.exists ?? fs.existsSync;
+  const exists = deps.exists ?? isFile;
   const onPath = deps.onPath ?? ((command: string) => isOnPath(command, env, platform, exists));
   const home = (deps.homedir ?? os.homedir)();
   const p = platform === 'win32' ? path.win32 : path.posix;
@@ -1826,6 +1835,7 @@ export async function provisionEmulators(opts: {
 
   if (launched.length > 0) {
     recordLaunchedEmulators(launched);
+    for (const emu of launched) launchedThisProcess.set(emu.serial, emu);
     logProgress(`Provisioned ${launched.length} healthy emulator(s).`);
   }
 
@@ -1857,9 +1867,14 @@ export function preserveEmulatorsForReuse(
   for (const emu of launched) {
     // One that exited during the run (a closed window, a crash) is not left running.
     if (emu.process.exitCode != null || emu.process.signalCode != null) continue;
+    // Named once per process, however many teardown paths reach here.
+    if (announcedLeftRunning.has(emu.process)) continue;
+    announcedLeftRunning.add(emu.process);
     write(`${DIM}${leftRunningNotice(emu)}${RESET}\n`);
   }
 }
+
+const announcedLeftRunning = new WeakSet<ChildProcess>();
 
 /** The end-of-run line for an emulator Tapsmith leaves running (PILOT-402). */
 function leftRunningNotice(emu: Pick<LaunchedEmulator, 'serial' | 'avd' | 'headless'>): string {
@@ -1881,6 +1896,19 @@ export function forceCleanupEmulators(launched: LaunchedEmulator[]): void {
     }
   }
   unrecordLaunchedEmulators(launched);
+  for (const emu of launched) launchedThisProcess.delete(emu.serial);
+}
+
+/**
+ * Every emulator this process launched and has not force-killed, whatever
+ * became of the run that launched it — a target whose setup failed after the
+ * boot, a project switch. It is what the end-of-run notice names, so an
+ * emulator is never left running without one (PILOT-402).
+ */
+const launchedThisProcess = new Map<string, LaunchedEmulator>();
+
+export function emulatorsLaunchedThisProcess(): LaunchedEmulator[] {
+  return [...launchedThisProcess.values()];
 }
 
 function resolveLaunchCandidates(

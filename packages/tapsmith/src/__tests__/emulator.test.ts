@@ -45,6 +45,7 @@ import {
   launchEmulator,
   describeEmulatorExit,
   preserveEmulatorsForReuse,
+  emulatorsLaunchedThisProcess,
   waitForBoot,
   waitForSystemSettle,
 } from '../emulator.js';
@@ -1294,6 +1295,15 @@ describe('resolveEmulatorBinary', () => {
     expect(missing.found).toBe(false);
   });
 
+  it('does not take a directory for the binary (the SDK root on PATH has an emulator/ dir)', () => {
+    const sdk = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-'));
+    fs.mkdirSync(path.join(sdk, 'emulator'));
+    const bin = resolveEmulatorBinary({ PATH: sdk }, 'linux', { homedir: () => '/nonexistent-home' });
+    expect(bin.found).toBe(false);
+    fs.writeFileSync(path.join(sdk, 'emulator', 'emulator'), '');
+    expect(resolveEmulatorBinary({ ANDROID_HOME: sdk }, 'linux', { homedir: () => '/nonexistent-home' }).found).toBe(true);
+  });
+
   it('checks a location named twice only once', () => {
     const bin = resolveEmulatorBinary({ ANDROID_HOME: '/home/u/Android/Sdk' }, 'linux', none);
     expect(bin.tried).toEqual(['/home/u/Android/Sdk/emulator/emulator', '`emulator` on PATH']);
@@ -1561,6 +1571,25 @@ describe('provisionEmulators launch failures', () => {
     expect(bootSignal?.aborted).toBe(true); // the wait is released once it is no longer needed
   });
 
+  it('remembers every emulator it launched for the end-of-run notice, and none that failed', async () => {
+    const good = makeLaunchedEmulator('Pixel', 5570);
+    const bad = makeLaunchedEmulator('Pixel', 5572);
+    let launches = 0;
+    await provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined },
+      { ...base, resolveEmulatorBinary: foundEmulator, launchEmulator: () => (launches++ === 0 ? good : bad),
+        waitForBoot: async () => undefined, killEmulator: vi.fn() },
+    );
+    await provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined },
+      { ...base, resolveEmulatorBinary: foundEmulator, launchEmulator: () => bad,
+        waitForBoot: async () => { throw new Error('boot timed out'); }, killEmulator: vi.fn() },
+    );
+    const serials = emulatorsLaunchedThisProcess().map((emu) => emu.serial);
+    expect(serials).toContain('emulator-5570');
+    expect(serials).not.toContain('emulator-5572');
+  });
+
   it('passes the resolved launch settings and binary to the launch', async () => {
     const launches: Array<{ settings: unknown, emulator: string }> = [];
     await provisionEmulators(
@@ -1630,6 +1659,14 @@ describe('preserveEmulatorsForReuse', () => {
     preserveEmulatorsForReuse([closed, crashed, makeLaunchedEmulator('Pixel', 5558)], (text) => lines.push(text));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('emulator-5558');
+  });
+
+  it('names an emulator once, however many teardown paths reach it', () => {
+    const lines: string[] = [];
+    const emu = makeLaunchedEmulator('Pixel', 5560);
+    preserveEmulatorsForReuse([emu], (text) => lines.push(text));
+    preserveEmulatorsForReuse([emu], (text) => lines.push(text));
+    expect(lines).toHaveLength(1);
   });
 
   it('says nothing when it launched nothing', () => {

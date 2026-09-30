@@ -28,7 +28,6 @@ import { deserializeTestResult, deserializeSuiteResult, serializeConfig, seriali
 import {
   clearOfflineEmulatorTransports,
   provisionEmulators,
-  preserveEmulatorsForReuse,
   forceCleanupEmulators,
   filterHealthyDevices,
   getRunningAvdName,
@@ -2127,7 +2126,8 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
 
       // 4. Leave emulators running for reuse by the next run.
       // The PID manifest keeps them tracked. Only emergency cleanup kills them.
-      preserveEmulatorsForReuse(launchedEmulators);
+      // The CLI names them after the run summary (preserveEmulatorsForReuse):
+      // printed here, per bucket, it would land mid-run.
     }
   }
 

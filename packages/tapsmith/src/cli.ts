@@ -43,6 +43,7 @@ import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import {
   clearOfflineEmulatorTransports,
   preserveEmulatorsForReuse,
+  emulatorsLaunchedThisProcess,
   filterHealthyDevices,
   listAdbDevices,
   cleanupStaleEmulators,
@@ -935,13 +936,10 @@ function teardownSequentialDevice(state: SequentialDeviceState): void {
     try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
     spawnedDaemonProcess = undefined;
   }
-  // Left running for reuse, but named only at the end of the run: a notice
-  // here would read as if the run had ended.
-  emulatorsLeftBySwitches.push(...state.launchedEmulators);
+  // Its emulators are left running for reuse, and named at the end of the
+  // run (emulatorsLaunchedThisProcess): a notice here would read as if the
+  // run had ended.
 }
-
-/** Emulators launched for targets a multi-target run has switched away from. */
-const emulatorsLeftBySwitches: LaunchedEmulator[] = [];
 
 function listConnectedDeviceSerials(): string[] {
   return listAdbDevices()
@@ -2069,6 +2067,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       });
 
       await reporter.onRunEnd(fullResult);
+      preserveEmulatorsForReuse(emulatorsLaunchedThisProcess());
       const zeroMatch = selectionFilterActive
         && fullResult.tests.length > 0
         && fullResult.tests.every((t) => t.status === 'skipped');
@@ -2574,9 +2573,9 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     if (spawnedDaemonProcess) {
       try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
     }
-    // Leave emulators running for reuse by the next run, naming each once.
-    const leftRunning = new Map([...emulatorsLeftBySwitches, ...launchedEmulators].map((emu) => [emu.serial, emu]));
-    preserveEmulatorsForReuse([...leftRunning.values()]);
+    // Leave emulators running for reuse by the next run, naming every one this
+    // run launched — including a target whose setup failed after the boot.
+    preserveEmulatorsForReuse(emulatorsLaunchedThisProcess());
     // Defer process.exit so any pending error handlers (unhandledRejection
     // etc.) in the current microtask queue run first — process.exit() in a
     // finally block swallows them. Skipped when an error is escaping:

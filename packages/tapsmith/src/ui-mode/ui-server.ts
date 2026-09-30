@@ -37,7 +37,7 @@ import { LaunchSetupError } from '../dispatcher.js';
 import { STOPPED_BY_USER } from '../abort.js';
 import { classifyEntryStatus, isInterruptedEntry, uiDeviceChoiceError } from '../mcp/test-dispatcher.js';
 import type { LaunchedEmulator } from '../emulator.js';
-import { preserveEmulatorsForReuse, getRunningAvdName } from '../emulator.js';
+import { preserveEmulatorsForReuse, emulatorsLaunchedThisProcess, getRunningAvdName } from '../emulator.js';
 import { listSimulators, getSimulatorScreenScale } from '../ios-simulator.js';
 import { listPhysicalDevices } from '../ios-devicectl.js';
 import {
@@ -4627,7 +4627,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       wss.close();
       server.close();
 
-      preserveEmulatorsForReuse(ctx.launchedEmulators);
+      preserveEmulatorsForReuse(emulatorsLaunchedThisProcess());
     },
   };
 }
