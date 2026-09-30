@@ -590,6 +590,7 @@ import {
   isExplicitWorkers,
   loadConfig,
   configPathOf,
+  findConfigFile,
   normalizeGrep,
   EXPLICIT_ROOT_DIR,
 } from '../config.js';
@@ -970,5 +971,45 @@ describe('normalizeGrep()', () => {
   it('passes through arrays as-is', () => {
     const arr = [/foo/, /bar/i];
     expect(normalizeGrep(arr)).toBe(arr);
+  });
+});
+
+// doctor and verify used their own candidate lists (doctor ignored
+// `tapsmith.config.js` and `-c`), so they could report "no config" for a
+// config `tapsmith test` loads (PILOT-263). They share this with loadConfig.
+describe('findConfigFile', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-find-')));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('finds every supported extension', () => {
+    for (const name of ['tapsmith.config.ts', 'tapsmith.config.js', 'tapsmith.config.mjs']) {
+      const dir = path.join(root, name.replace(/\./g, '-'));
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, name), 'export default {}\n');
+      expect(findConfigFile(dir)).toBe(path.join(dir, name));
+    }
+  });
+
+  it('picks the candidate loadConfig reads when several exist', async () => {
+    fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'), 'export default { timeout: 1 }\n');
+    fs.writeFileSync(path.join(root, 'tapsmith.config.js'), 'export default { timeout: 2 }\n');
+    expect(findConfigFile(root)).toBe(path.join(root, 'tapsmith.config.js'));
+    expect(configPathOf(await loadConfig(root))).toBe(findConfigFile(root));
+  });
+
+  it('resolves an explicit file against the directory, whether or not it exists', () => {
+    expect(findConfigFile(root, 'configs/ci.config.ts')).toBe(path.join(root, 'configs', 'ci.config.ts'));
+    expect(findConfigFile(root, '/abs/x.config.ts')).toBe('/abs/x.config.ts');
+  });
+
+  it('returns undefined when the directory has no config', () => {
+    expect(findConfigFile(root)).toBeUndefined();
   });
 });

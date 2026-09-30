@@ -882,6 +882,18 @@ function resolveRootDir(raw: Partial<TapsmithConfig>, root: string): string {
 export const CONFIG_CANDIDATES = ['tapsmith.config.ts', 'tapsmith.config.js', 'tapsmith.config.mjs'];
 
 /**
+ * The config file `loadConfig(dir, configFile)` reads: `configFile` resolved
+ * against `dir` (whether or not it exists — loadConfig then reports it
+ * missing), else the first of `CONFIG_CANDIDATES` present in `dir`, else
+ * undefined (built-in defaults). Anything that reports on "the config"
+ * (doctor, verify) finds it here, so it cannot disagree with the runner.
+ */
+export function findConfigFile(dir: string, configFile?: string): string | undefined {
+  if (configFile) return path.resolve(dir, configFile);
+  return CONFIG_CANDIDATES.map((name) => path.resolve(dir, name)).find((p) => fs.existsSync(p));
+}
+
+/**
  * The config file `loadConfig(dir, configFile)` would read, or undefined when
  * it would fall back to built-in defaults. Callers that report which config
  * backs a session need this: `loadConfig` returns the merged config only, so
@@ -1167,24 +1179,22 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
     return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
   }
 
-  for (const name of CONFIG_CANDIDATES) {
-    const configPath = path.resolve(root, name);
-    if (fs.existsSync(configPath)) {
-      // The first candidate that exists is the config, loadable or not. A
-      // broken one is a hard error, never a reason to try the next candidate
-      // or fall back to the defaults: either would run the session under a
-      // config the user is not editing (PILOT-262).
-      const mod = await importConfigModule(configPath);
-      const original: Partial<TapsmithConfig> = (mod.default as Partial<TapsmithConfig>) ?? mod;
-      const raw = omitUndefined(original);
-      const merged = applyConfigDefaults(
-        { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, root) },
-        raw,
-      );
-      withExplicitRootDir(merged, rawHasExplicitRootDir(original));
-      withConfigPath(merged, configPath);
-      return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
-    }
+  const configPath = findConfigFile(root);
+  if (configPath) {
+    // The first candidate that exists is the config, loadable or not. A
+    // broken one is a hard error, never a reason to try the next candidate
+    // or fall back to the defaults: either would run the session under a
+    // config the user is not editing (PILOT-262).
+    const mod = await importConfigModule(configPath);
+    const original: Partial<TapsmithConfig> = (mod.default as Partial<TapsmithConfig>) ?? mod;
+    const raw = omitUndefined(original);
+    const merged = applyConfigDefaults(
+      { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, root) },
+      raw,
+    );
+    withExplicitRootDir(merged, rawHasExplicitRootDir(original));
+    withConfigPath(merged, configPath);
+    return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
   }
 
   const defaults: TapsmithConfig = { ...DEFAULT_CONFIG, rootDir: root };
