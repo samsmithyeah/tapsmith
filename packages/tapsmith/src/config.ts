@@ -469,13 +469,14 @@ export interface EmulatorLaunchOptions {
   headless?: boolean;
   /**
    * Extra arguments for the `emulator` command, added after Tapsmith's own.
-   * `-avd`, `-port` and `-read-only` are Tapsmith's and are refused here.
+   * `-avd`/`@name`, `-port`/`-ports` and `-read-only` are refused: Tapsmith
+   * sets the AVD, console port and read-only mode itself.
    */
   args?: string[];
 }
 
-/** Emulator flags Tapsmith sets itself and relies on to recognise its emulators. */
-const RESERVED_EMULATOR_ARGS = ['-avd', '-port', '-read-only'];
+/** Emulator flags that would change what Tapsmith sets and relies on: the AVD, console port, read-only mode. */
+const RESERVED_EMULATOR_ARGS = ['-avd', '-port', '-ports', '-read-only'];
 
 const DEFAULT_CONFIG: TapsmithConfig = {
   timeout: 30_000,
@@ -693,7 +694,6 @@ export function assignGroupMemberDevices(
   return serials;
 }
 
-/** Fail fast on malformed `ui` config values instead of silently ignoring them. */
 function validateEmulatorLaunchOptions(raw: Partial<TapsmithConfig>): void {
   const options = raw.emulatorLaunchOptions;
   if (options === undefined) return;
@@ -707,15 +707,17 @@ function validateEmulatorLaunchOptions(raw: Partial<TapsmithConfig>): void {
   if (!Array.isArray(options.args) || options.args.some((arg) => typeof arg !== 'string')) {
     throw new Error(`config: emulatorLaunchOptions.args must be an array of strings (got ${JSON.stringify(options.args)})`);
   }
-  const reserved = options.args.filter((arg) => RESERVED_EMULATOR_ARGS.includes(arg));
+  // `@Name` is the emulator's shorthand for `-avd Name`.
+  const reserved = options.args.filter((arg) => RESERVED_EMULATOR_ARGS.includes(arg) || arg.startsWith('@'));
   if (reserved.length > 0) {
     throw new Error(
-      `config: emulatorLaunchOptions.args must not include ${reserved.join(', ')}: Tapsmith sets `
-      + `${RESERVED_EMULATOR_ARGS.join(', ')} itself (use \`avd\` to choose the AVD).`,
+      `config: emulatorLaunchOptions.args must not include ${reserved.join(', ')}: Tapsmith sets the AVD, `
+      + 'console port and read-only mode itself (use `avd` to choose the AVD).',
     );
   }
 }
 
+/** Fail fast on malformed `ui` config values instead of silently ignoring them. */
 function validateUiOptions(raw: Partial<TapsmithConfig>): void {
   if (raw.telemetry !== undefined && typeof raw.telemetry !== 'boolean') {
     // A string `'false'` would read as opted-in; refuse rather than guess.

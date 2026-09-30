@@ -431,8 +431,13 @@ launches headless and warns if `headless: false` was asked for. With `--workers 
 each worker's emulator opens its own window.
 
 `args` adds arguments after Tapsmith's own, for example
-`emulatorLaunchOptions: { args: ["-memory", "4096"] }`. `-avd`, `-port` and `-read-only`
-are refused there, because Tapsmith sets them itself.
+`emulatorLaunchOptions: { args: ["-memory", "4096"] }`. Arguments that would change the
+AVD, the console port or read-only mode (`-avd`, `@name`, `-port`, `-ports`,
+`-read-only`) are refused there, because Tapsmith sets those itself.
+
+These options apply when Tapsmith launches an emulator. An emulator left running by an
+earlier run is reused as it was launched, and the run says whether it is headless. To
+switch it to other options, stop it with `adb -s <serial> emu kill` and run again.
 
 The emulator's output goes to `tapsmith-emulator-<port>.log` in the system temp
 directory. If the emulator exits while it is booting, the run reports why straight away,

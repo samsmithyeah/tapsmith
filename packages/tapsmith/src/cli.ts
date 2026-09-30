@@ -935,8 +935,13 @@ function teardownSequentialDevice(state: SequentialDeviceState): void {
     try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
     spawnedDaemonProcess = undefined;
   }
-  preserveEmulatorsForReuse(state.launchedEmulators);
+  // Left running for reuse, but named only at the end of the run: a notice
+  // here would read as if the run had ended.
+  emulatorsLeftBySwitches.push(...state.launchedEmulators);
 }
+
+/** Emulators launched for targets a multi-target run has switched away from. */
+const emulatorsLeftBySwitches: LaunchedEmulator[] = [];
 
 function listConnectedDeviceSerials(): string[] {
   return listAdbDevices()
@@ -2569,8 +2574,9 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     if (spawnedDaemonProcess) {
       try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
     }
-    // Leave emulators running for reuse by the next run.
-    preserveEmulatorsForReuse(launchedEmulators);
+    // Leave emulators running for reuse by the next run, naming each once.
+    const leftRunning = new Map([...emulatorsLeftBySwitches, ...launchedEmulators].map((emu) => [emu.serial, emu]));
+    preserveEmulatorsForReuse([...leftRunning.values()]);
     // Defer process.exit so any pending error handlers (unhandledRejection
     // etc.) in the current microtask queue run first — process.exit() in a
     // finally block swallows them. Skipped when an error is escaping:

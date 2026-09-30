@@ -710,7 +710,11 @@ describe('defineConfig()', () => {
 
   it('refuses emulator args Tapsmith sets itself', () => {
     expect(() => defineConfig({ emulatorLaunchOptions: { args: ['-port', '5600', '-read-only'] } }))
-      .toThrow('config: emulatorLaunchOptions.args must not include -port, -read-only: Tapsmith sets -avd, -port, -read-only itself');
+      .toThrow('config: emulatorLaunchOptions.args must not include -port, -read-only: Tapsmith sets the AVD, console port and read-only mode itself');
+    expect(() => defineConfig({ emulatorLaunchOptions: { args: ['-ports', '5600,5601'] } }))
+      .toThrow('must not include -ports');
+    expect(() => defineConfig({ emulatorLaunchOptions: { args: ['@Other_AVD'] } }))
+      .toThrow('must not include @Other_AVD');
   });
 
   it('overrides timeout while keeping other defaults', () => {

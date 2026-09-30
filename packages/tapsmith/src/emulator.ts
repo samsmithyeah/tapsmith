@@ -250,8 +250,12 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
     if (inAdb && inAdb.state === 'device') {
       const health = d.probeDeviceHealth(entry.serial);
       if (health.healthy) {
+        // Reused as launched: a changed `emulatorLaunchOptions` applies only
+        // to new launches, so say which kind this is and how to relaunch it.
+        const mode = argv.includes('-no-window') ? 'headless' : 'with a window';
         process.stderr.write(
-          `${DIM}Reusing emulator ${entry.serial} (AVD ${entry.avd}) from previous run.${RESET}\n`,
+          `${DIM}Reusing emulator ${entry.serial} (AVD ${entry.avd}, ${mode}) from previous run. `
+          + `Stop it (adb -s ${entry.serial} emu kill) to relaunch it with other emulatorLaunchOptions.${RESET}\n`,
         );
         reusable.push(entry.serial);
         surviving.push(entry);
@@ -690,16 +694,20 @@ interface ResolveEmulatorDeps {
   homedir: () => string
 }
 
-function isCommandOnPath(command: string): boolean {
-  try {
-    execFileSync(process.platform === 'win32' ? 'where' : 'which', [command], {
-      stdio: ['ignore', 'ignore', 'ignore'],
-      timeout: 5_000,
-    });
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * Whether `command` is on `env.PATH`, found by looking in each directory —
+ * not by running `which`, which slim images may not have.
+ */
+function isOnPath(
+  command: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  exists: (file: string) => boolean,
+): boolean {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const names = platform === 'win32' ? [`${command}.exe`, command] : [command];
+  return (env.PATH ?? env.Path ?? '').split(p.delimiter).filter((dir) => dir.length > 0)
+    .some((dir) => names.some((name) => exists(p.join(dir, name))));
 }
 
 /**
@@ -715,7 +723,7 @@ export function resolveEmulatorBinary(
   deps: Partial<ResolveEmulatorDeps> = {},
 ): EmulatorBinary {
   const exists = deps.exists ?? fs.existsSync;
-  const onPath = deps.onPath ?? isCommandOnPath;
+  const onPath = deps.onPath ?? ((command: string) => isOnPath(command, env, platform, exists));
   const home = (deps.homedir ?? os.homedir)();
   const p = platform === 'win32' ? path.win32 : path.posix;
   const binaryName = platform === 'win32' ? 'emulator.exe' : 'emulator';
@@ -1105,7 +1113,10 @@ export function launchEmulator(
   // and writing to a pipe nobody reads any more would kill it (SIGPIPE).
   let logFd: number | undefined;
   try {
-    logFd = fs.openSync(logPath, 'w');
+    // O_NOFOLLOW: the temp dir may be shared, so never write through a link
+    // someone planted at this predictable name.
+    const { O_WRONLY, O_CREAT, O_TRUNC, O_NOFOLLOW } = fs.constants;
+    logFd = fs.openSync(logPath, O_WRONLY | O_CREAT | O_TRUNC | (O_NOFOLLOW ?? 0), 0o600);
   } catch {
     // Unwritable tmpdir — launch without a log rather than not at all.
   }
@@ -1127,7 +1138,9 @@ export function launchEmulator(
   proc.unref();
 
   const exited = new Promise<EmulatorExit>((resolve) => {
-    proc.once('error', (error) => resolve({ kind: 'spawn-error', error }));
+    // `on`, not `once`: a ChildProcess also emits 'error' when a later
+    // kill() fails, and an 'error' with no listener would crash Tapsmith.
+    proc.on('error', (error) => resolve({ kind: 'spawn-error', error }));
     proc.once('exit', (code, signal) => resolve({ kind: 'exited', code, signal }));
   });
 
@@ -1456,6 +1469,7 @@ export async function waitForBoot(
         // the launcher/PM are still initializing.
         const remainingMs = Math.max(timeoutMs - (Date.now() - start), 10_000);
         await waitForSystemSettle(serial, remainingMs);
+        checkAborted();
         return;
       }
     } catch {
@@ -1753,6 +1767,8 @@ export async function provisionEmulators(opts: {
         await Promise.race([
           (async () => {
             await resolvedDeps.waitForBoot(emu.serial, undefined, stopWaiting.signal);
+            // The race may already have been lost to an exit: probe no further.
+            if (stopWaiting.signal.aborted) return;
             const health = await resolvedDeps.waitForDeviceStability(
               emu.serial,
               DEFAULT_DEVICE_STABILITY_TIMEOUT_MS,
