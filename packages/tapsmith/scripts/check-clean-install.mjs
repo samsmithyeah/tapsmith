@@ -50,7 +50,7 @@ const env = {
 function npm(args, cwd) {
   const result = spawnSync('npm', args, { cwd, env, encoding: 'utf8' });
   if (result.error) throw result.error;
-  return { status: result.status, output: `${result.stdout}${result.stderr}` };
+  return { status: result.status, stdout: result.stdout, output: `${result.stdout}${result.stderr}` };
 }
 
 let exitCode = 0;
@@ -60,7 +60,8 @@ try {
     console.error(pack.output);
     throw new Error('npm pack failed');
   }
-  const [{ filename }] = JSON.parse(pack.output.slice(pack.output.indexOf('[')));
+  // stdout only: npm writes the JSON there and any warnings to stderr.
+  const [{ filename }] = JSON.parse(pack.stdout);
   const tarball = path.join(scratch, filename);
 
   const install = npm(['install', '--ignore-scripts', tarball], projectDir);
