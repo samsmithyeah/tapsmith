@@ -552,7 +552,7 @@ npx tapsmith doctor
 npx tapsmith doctor -c tapsmith.config.android.mjs   # judge a specific config
 ```
 
-Doctor checks the platforms your config targets: an Android-only project is not failed for a missing Xcode, and an iOS-only one skips the Android checks, each with a `– skipped: …` line. Before there is a config, it checks whatever is installed and warns, rather than fails, about a missing ADB or Xcode.
+Doctor checks the platforms your config targets: an Android-only project is not failed for a missing Xcode, and an iOS-only one skips the Android checks, each with a `– skipped: …` line. A config with both Android and iOS projects warns, rather than fails, when this machine lacks one platform's tools (a Linux CI job running only the Android projects). Before there is a config, it checks whatever is installed and warns, rather than fails, about a missing ADB or Xcode.
 
 Config-dependent checks (app APK path, AVD system image) follow the loaded config: the AVD check verifies the AVD(s) your config actually names — top-level `avd` or per-project `use.avd` — and mentions other AVDs on the machine only as context.
 

@@ -179,14 +179,77 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     expect(code).toBe(1);
   });
 
-  it('a config that targets iOS on Linux fails: iOS needs macOS', async () => {
+  it('a config that targets only iOS fails on Linux: iOS needs macOS', async () => {
+    setPlatform('linux');
+    writeConfig("export default { platform: 'ios' }\n");
+    const { code, json } = await doctorJson();
+    expect(check(json, 'xcode')).toMatchObject({ status: 'fail', label: expect.stringContaining('macOS') });
+    expect(code).toBe(1);
+  });
+
+  it('a mixed Android + iOS config on Linux warns about the iOS projects but passes (Android CI)', async () => {
     setPlatform('linux');
     withAdb();
     writeConfig("export default { projects: [{ name: 'a' }, { name: 'i', use: { platform: 'ios' } }] }\n");
     const { code, json } = await doctorJson();
-    expect(check(json, 'xcode')).toMatchObject({ status: 'fail', label: expect.stringContaining('macOS') });
-    expect(ids(json)).toContain('adb');
+    expect(check(json, 'xcode')).toMatchObject({ status: 'warn', label: expect.stringContaining('macOS'), fix: expect.stringContaining('--project') });
+    expect(check(json, 'adb')).toMatchObject({ status: 'pass' });
+    expect(code).toBe(0);
+  });
+
+  it('a mixed config on a Mac without Xcode warns that iOS was skipped, and still checks Android', async () => {
+    withAdb();
+    writeConfig("export default { projects: [{ name: 'a' }, { name: 'i', use: { platform: 'ios' } }] }\n");
+    const { code, json } = await doctorJson();
+    expect(check(json, 'xcode')).toMatchObject({ status: 'warn', label: expect.stringContaining('iOS checks skipped') });
+    expect(ids(json)).toContain('android-devices');
+    expect(code).toBe(0);
+  });
+
+  it('a mixed config without adb warns that Android was skipped', async () => {
+    withXcode();
+    writeConfig("export default { projects: [{ name: 'a' }, { name: 'i', use: { platform: 'ios' } }] }\n");
+    const { code, json } = await doctorJson();
+    expect(check(json, 'adb')).toMatchObject({ status: 'warn', label: expect.stringContaining('Android checks skipped') });
+    expect(code).toBe(0);
+  });
+
+  it('with no config, a failing simctl beside a working Xcode is a warning, not exit 1', async () => {
+    withAdb();
+    exec.table.set('xcodebuild -version', XCODE_VERSION);
+    const { code, json } = await doctorJson();
+    expect(check(json, 'simctl')).toMatchObject({ status: 'warn', fix: expect.stringContaining('xcrun simctl list devices') });
+    expect(code).toBe(0);
+  });
+
+  it('a config that targets iOS fails on a failing simctl', async () => {
+    exec.table.set('xcodebuild -version', XCODE_VERSION);
+    writeConfig("export default { platform: 'ios' }\n");
+    const { code, json } = await doctorJson();
+    expect(check(json, 'simctl')).toMatchObject({ status: 'fail' });
     expect(code).toBe(1);
+  });
+
+  it('iOS-only fields without platform fail, as tapsmith test does', async () => {
+    withXcode();
+    writeConfig("export default { app: 'x.app', simulator: 'iPhone 16' }\n");
+    const { code, json } = await doctorJson();
+    expect(check(json, 'config-platform')).toMatchObject({
+      status: 'fail',
+      label: expect.stringContaining('app, simulator'),
+      fix: "Add platform: 'ios' to the config",
+    });
+    expect(code).toBe(1);
+  });
+
+  it('names the project that sets iOS-only fields without platform', async () => {
+    withAdb();
+    withXcode();
+    writeConfig("export default { projects: [{ name: 'droid' }, { name: 'phone', use: { app: 'x.app' } }, { name: 'ok', use: { platform: 'ios', app: 'y.app' } }] }\n");
+    const { json } = await doctorJson();
+    const rows = json.checks.filter((c) => c.id === 'config-platform');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ label: expect.stringContaining('Project phone'), fix: expect.stringContaining('phone') });
   });
 
   it('with no config, a missing adb is a warning that Android was skipped, not a silent skip', async () => {

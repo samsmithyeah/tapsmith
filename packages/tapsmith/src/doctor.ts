@@ -438,12 +438,17 @@ function checkXcode(report: Reporter, required: boolean): boolean {
   return false;
 }
 
-function checkSimctl(report: Reporter): void {
+function checkSimctl(report: Reporter, required: boolean): void {
   if (run(report, 'xcrun', ['simctl', 'list', 'devices', 'available', '-j']) !== undefined) {
     pass(report, 'simctl', 'iOS simulators available');
-  } else {
-    fail(report, 'simctl', 'xcrun simctl not available — install Xcode command-line tools', 'Run: xcode-select --install');
+    return;
   }
+  // It fails for a missing command-line tools install, but also for a slow or
+  // wedged CoreSimulator, so the fix starts with seeing the real error.
+  const label = 'xcrun simctl failed or timed out';
+  const fix = 'Run: xcrun simctl list devices to see the error (xcode-select --install if the command-line tools are missing)';
+  if (required) fail(report, 'simctl', label, fix);
+  else warn(report, 'simctl', label, fix);
 }
 
 async function checkSimulatorXctestrun(report: Reporter): Promise<void> {
@@ -804,6 +809,35 @@ type PlatformScope = Pick<TapsmithConfig, 'platform' | 'app' | 'simulator' | 'io
  * (the runner refuses that without `platform: 'ios'`, but the user clearly
  * means iOS), else Android — the runner's default.
  */
+/**
+ * iOS-only fields set without `platform` — the runner refuses those
+ * (`resolvePlatformFixture`), so doctor must too, rather than infer iOS and
+ * report a config healthy that `tapsmith test` rejects. One entry per scope:
+ * the project's name, or undefined for the root.
+ */
+export function platformlessIosFields(
+  config: PlatformScope & { projects?: Array<{ name?: string; use?: Partial<PlatformScope> }> },
+): Array<{ project?: string; fields: string[] }> {
+  const scopes = config.projects && config.projects.length > 0
+    ? config.projects.map((p) => ({
+      project: p.name,
+      scope: {
+        platform: p.use?.platform ?? config.platform,
+        app: p.use?.app ?? config.app,
+        simulator: p.use?.simulator ?? config.simulator,
+        iosXctestrun: p.use?.iosXctestrun ?? config.iosXctestrun,
+      } as PlatformScope,
+    }))
+    : [{ project: undefined, scope: config as PlatformScope }];
+  return scopes
+    .filter(({ scope }) => scope.platform == null)
+    .map(({ project, scope }) => ({
+      project,
+      fields: (['app', 'simulator', 'iosXctestrun'] as const).filter((f) => scope[f] != null),
+    }))
+    .filter((entry) => entry.fields.length > 0);
+}
+
 export function configPlatformTargets(config: PlatformScope & { projects?: Array<{ use?: Partial<PlatformScope> }> }): Set<DoctorPlatform> {
   const scopes: PlatformScope[] = config.projects && config.projects.length > 0
     ? config.projects.map((p) => ({
@@ -825,8 +859,12 @@ export function configPlatformTargets(config: PlatformScope & { projects?: Array
 /**
  * Whether a platform's section runs, and what a missing toolchain costs.
  *
- * - The config targets it: run, and a missing adb / Xcode is a failure —
- *   `tapsmith test` cannot run those tests. iOS on a non-Mac host too.
+ * - The config targets only it: run, and a missing adb / Xcode is a
+ *   failure — `tapsmith test` cannot run anything. iOS on a non-Mac too.
+ * - The config targets it and another platform: run, but a missing
+ *   toolchain is a warning — this machine can still run the other
+ *   platform's projects (`--project`), as a Linux Android CI job does with
+ *   a mixed config.
  * - A loaded config does not target it: skip, with a note saying why.
  * - No usable config (`targets` undefined): judge the machine. A missing
  *   toolchain is one warning ("… checks skipped") with its install fix,
@@ -845,7 +883,7 @@ export function planPlatform(platform: DoctorPlatform, targets: Set<DoctorPlatfo
   if (platform === 'ios' && host !== 'darwin' && !targets) {
     return { run: false, note: `skipped: ${name} testing needs macOS` };
   }
-  return { run: true, required: !!targets };
+  return { run: true, required: !!targets && targets.size === 1 };
 }
 
 async function doctorReport(opts: { json: boolean; config?: string }): Promise<DoctorJson> {
@@ -891,6 +929,13 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   checkNodeVersion(report);
   checkDaemonBin(report);
   checkConfigFile(report, configFile, findConfigFile);
+  if (config && configPathOf(config)) {
+    for (const { project, fields } of platformlessIosFields(config)) {
+      const where = project ? `Project ${project} sets` : 'Config sets';
+      fail(report, 'config-platform', `${where} iOS-only ${fields.join(', ')} but not \`platform\` — tapsmith test refuses it`,
+        project ? `Add platform: 'ios' to project ${project}'s use` : "Add platform: 'ios' to the config");
+    }
+  }
 
   // ─── Android ───
   if (printing) {
@@ -922,11 +967,15 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   if (!iosPlan.run) {
     note(report, iosPlan.note);
   } else if (process.platform !== 'darwin') {
-    fail(report, 'xcode', 'iOS testing needs macOS, and the config targets iOS', 'Run the iOS tests on a Mac with Xcode installed');
+    if (iosPlan.required) {
+      fail(report, 'xcode', 'iOS testing needs macOS, and the config targets iOS', 'Run the iOS tests on a Mac with Xcode installed');
+    } else {
+      warn(report, 'xcode', 'iOS testing needs macOS — the config\'s iOS projects cannot run on this machine', 'Run the iOS projects on a Mac with Xcode installed; select the others here with --project');
+    }
   } else {
     iosChecked = true;
     if (checkXcode(report, iosPlan.required)) {
-      checkSimctl(report);
+      checkSimctl(report, iosPlan.required);
       await checkSimulatorXctestrun(report);
     } else {
       iosChecked = iosPlan.required;
