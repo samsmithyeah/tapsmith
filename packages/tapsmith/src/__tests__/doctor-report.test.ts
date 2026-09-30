@@ -242,12 +242,15 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     fs.writeFileSync(path.join(dir, 'ok.apk'), '');
     writeConfig("export default { projects: [{ name: 'a', use: { platform: 'android', apk: 'missing.apk' } }, { name: 'b', use: { apk: 'ok.apk' } }, { name: 'i', use: { platform: 'ios', app: 'x.app' } }] }\n");
     const { code, json } = await doctorJson();
+    // One row per id: a consumer matching on `app-apk` must read the failure.
     const rows = json.checks.filter((c) => c.id === 'app-apk');
-    expect(rows).toEqual([
-      expect.objectContaining({ status: 'fail', label: expect.stringContaining('missing.apk') }),
-      expect.objectContaining({ status: 'pass', detail: 'ok.apk' }),
-    ]);
+    expect(rows).toEqual([expect.objectContaining({ status: 'fail', label: expect.stringContaining('missing.apk') })]);
+    expect(rows[0]!.label).not.toContain('ok.apk');
     expect(code).toBe(1);
+
+    fs.writeFileSync(path.join(dir, 'missing.apk'), '');
+    const again = (await doctorJson()).json.checks.filter((c) => c.id === 'app-apk');
+    expect(again).toEqual([expect.objectContaining({ status: 'pass', label: 'App APKs exist', detail: 'missing.apk, ok.apk' })]);
   });
 
   it('a mixed config on Linux without adb fails: none of its platforms can run', async () => {
@@ -302,7 +305,17 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     const { json } = await doctorJson();
     const rows = json.checks.filter((c) => c.id === 'config-platform');
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ label: expect.stringContaining('Project phone'), fix: expect.stringContaining('phone') });
+    expect(rows[0]).toMatchObject({ label: expect.stringContaining('project phone sets app'), fix: "Add platform: 'ios' to project phone's use" });
+  });
+
+  it('blames an iOS-only field inherited from the root on the root, once', async () => {
+    withAdb();
+    withXcode();
+    writeConfig("export default { app: 'x.app', projects: [{ name: 'a' }, { name: 'b' }] }\n");
+    const { json } = await doctorJson();
+    const rows = json.checks.filter((c) => c.id === 'config-platform');
+    expect(rows).toEqual([expect.objectContaining({ label: expect.stringContaining('the config sets app'), fix: "Add platform: 'ios' to the config" })]);
+    expect(rows[0]!.label).not.toMatch(/project a|project b/);
   });
 
   it('with no config, a missing adb is a warning that Android was skipped, not a silent skip', async () => {

@@ -301,21 +301,22 @@ function checkAgentApks(report: Reporter): void {
   }
 }
 
+/** One `app-apk` row for every APK the config installs, so a consumer matching on the id reads the verdict. */
 function checkAppApk(report: Reporter, config: TapsmithConfig | undefined, required: boolean): void {
   if (!config) return;
-  for (const apk of configAndroidApks(config)) {
-    try {
-      const resolvedApk = path.resolve(config.rootDir ?? process.cwd(), apk);
-      if (fs.existsSync(resolvedApk)) {
-        pass(report, 'app-apk', 'App APK exists', path.basename(resolvedApk));
-      } else {
-        // A mixed config's machine may run only its iOS projects (see planPlatform).
-        const mark = required ? fail : warn;
-        mark(report, 'app-apk', `App APK not found at ${resolvedApk}`, 'Build your app APK, or fix the apk path in your Tapsmith config');
-      }
-    } catch {
-      warn(report, 'app-apk', 'Could not check app APK path');
+  const apks = [...new Set(configAndroidApks(config).map((apk) => path.resolve(config.rootDir ?? process.cwd(), apk)))];
+  if (apks.length === 0) return;
+  try {
+    const missing = apks.filter((apk) => !fs.existsSync(apk));
+    if (missing.length === 0) {
+      pass(report, 'app-apk', `App APK${apks.length === 1 ? '' : 's'} exist${apks.length === 1 ? 's' : ''}`, apks.map((apk) => path.basename(apk)).join(', '));
+    } else {
+      // A mixed config's machine may run only its iOS projects (see planPlatform).
+      const mark = required ? fail : warn;
+      mark(report, 'app-apk', `App APK not found at ${missing.join(', ')}`, 'Build your app APK, or fix the apk path in your Tapsmith config');
     }
+  } catch {
+    warn(report, 'app-apk', 'Could not check app APK path');
   }
 }
 
@@ -849,13 +850,21 @@ export function configPlatformTargets(config: PlatformConfig): Set<DoctorPlatfor
  * the project's name, or undefined for the root.
  */
 export function platformlessIosFields(config: PlatformConfig): Array<{ project?: string; fields: string[] }> {
-  return platformScopes(config)
-    .filter(({ scope }) => scope.platform == null)
-    .map(({ project, scope }) => ({
-      project,
-      fields: (['app', 'simulator', 'iosXctestrun'] as const).filter((f) => scope[f] != null),
-    }))
-    .filter((entry) => entry.fields.length > 0);
+  const iosFields = ['app', 'simulator', 'iosXctestrun'] as const;
+  const byOwner = new Map<string | undefined, Set<string>>();
+  const projects = config.projects ?? [];
+  for (const { project, scope } of platformScopes(config)) {
+    if (scope.platform != null) continue;
+    for (const field of iosFields) {
+      if (scope[field] == null) continue;
+      // A field a project inherits is the root's to fix, reported once.
+      const own = projects.length === 0 || projects.find((p) => p.name === project)?.use?.[field] != null;
+      const owner = own ? project : undefined;
+      if (!byOwner.has(owner)) byOwner.set(owner, new Set());
+      byOwner.get(owner)!.add(field);
+    }
+  }
+  return [...byOwner].map(([project, fields]) => ({ project, fields: [...fields] }));
 }
 
 /** The app APKs the config's Android scopes install, each once (projects' `use.apk` included). */
@@ -951,10 +960,13 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   checkDaemonBin(report);
   checkConfigFile(report, configFile, findConfigFile);
   if (config && configPathOf(config)) {
-    for (const { project, fields } of platformlessIosFields(config)) {
-      const where = project ? `Project ${project} sets` : 'Config sets';
-      fail(report, 'config-platform', `${where} iOS-only ${fields.join(', ')} but not \`platform\` — tapsmith test refuses it`,
-        project ? `Add platform: 'ios' to project ${project}'s use` : "Add platform: 'ios' to the config");
+    // One row, so a consumer matching on the id sees every offending scope.
+    const platformless = platformlessIosFields(config);
+    if (platformless.length > 0) {
+      const where = platformless.map(({ project, fields }) => `${project ? `project ${project}` : 'the config'} sets ${fields.join(', ')}`);
+      const fixes = platformless.map(({ project }) => (project ? `project ${project}'s use` : 'the config'));
+      fail(report, 'config-platform', `iOS-only fields without \`platform\` — ${where.join('; ')} — tapsmith test refuses it`,
+        `Add platform: 'ios' to ${fixes.join(' and ')}`);
     }
   }
 

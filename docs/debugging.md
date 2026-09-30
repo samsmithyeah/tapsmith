@@ -558,7 +558,7 @@ Config-dependent checks (app APK path, AVD system image) follow the loaded confi
 
 Warnings and failures print a suggested fix on a `↳` line beneath them — where possible a ready-to-run command. For a config pointing at a Google Play AVD, the fix is never destructive: it names a capture-capable AVD you already have to set as `avd`, or else suggests `npx tapsmith create-avd` to create a new one beside it (your existing AVD and its data are left alone).
 
-Example output:
+Example output, for a config with both Android and iOS projects:
 
 ```
 Tapsmith Doctor

@@ -66,7 +66,7 @@ After setup, verify everything is working:
 npx tapsmith doctor
 ```
 
-`tapsmith doctor` runs a non-interactive health check and reports the status of each prerequisite, grouped by platform. For example, on a Mac set up for both platforms:
+`tapsmith doctor` runs a non-interactive health check and reports the status of each prerequisite, grouped by platform. It checks the platforms your config targets; a platform it does not target shows `– skipped: …` instead of its checks. For example, on a Mac set up for both platforms, with a config that tests both:
 
 ```
 Tapsmith Doctor
