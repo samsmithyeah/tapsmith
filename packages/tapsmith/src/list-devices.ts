@@ -23,6 +23,7 @@ import { findDaemonBin } from './daemon-bin.js';
 import { TapsmithGrpcClient, type DeviceInfoProto } from './grpc-client.js';
 import { pickFreePort } from './port-utils.js';
 import { formatJson, jsonError } from './cli-json.js';
+import { androidStateBlocker } from './env-scan.js';
 import {
   listPhysicalDevices,
   listUsbAttachedIosDevices,
@@ -180,14 +181,8 @@ function blockersFor(
   }
 
   if (device.platform === 'android' && device.state) {
-    // adb surfaces "unauthorized" when the device hasn't accepted the
-    // RSA key yet and "offline" when the connection is broken.
-    if (device.state === 'unauthorized') {
-      blockers.push('Accept the USB debugging prompt on the device');
-    }
-    if (device.state === 'offline') {
-      blockers.push('Reconnect cable or run `adb kill-server`');
-    }
+    const blocker = androidStateBlocker(device.state, device.serial);
+    if (blocker) blockers.push(blocker);
   }
 
   return blockers;

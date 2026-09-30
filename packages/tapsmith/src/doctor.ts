@@ -17,6 +17,9 @@ import { findDaemonBin } from './daemon-bin.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { formatJson, jsonError, stripAnsi, type JsonCheck } from './cli-json.js';
 import { avdCaptureSupport, captureAvdFix, scanAvdImageTags, type AvdImageInfo } from './avd-images.js';
+import { androidStateBlocker, parseAdbDevicesOutput, parseSimctlDevicesJson, tryExec, type AdbDevice } from './env-scan.js';
+import type { TapsmithConfig } from './config.js';
+import { emulatorNotFoundMessage, resolveEmulatorBinary, type EmulatorBinary } from './emulator.js';
 
 // ─── ANSI helpers ───
 
@@ -77,6 +80,35 @@ export function buildDoctorJson(checks: CheckList, inventory: DoctorInventory): 
 interface Reporter {
   checks: CheckList;
   print: boolean;
+  /** Output of each command `run` has executed, null when it failed. */
+  cache: Map<string, string | null>;
+}
+
+/**
+ * Runs a command once per report: the planning, the checks and the inventory
+ * all read the same `adb devices` / `simctl` output instead of re-executing
+ * it. Undefined when the command failed or is not installed.
+ */
+const RUN_TIMEOUT_MS = 30_000;
+
+function run(report: Reporter, cmd: string, args: string[]): string | undefined {
+  const key = [cmd, ...args].join('\0');
+  if (!report.cache.has(key)) {
+    let out: string | null;
+    try {
+      // Bounded: a wedged adb server or CoreSimulator must not hang doctor.
+      out = execFileSync(cmd, args, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: RUN_TIMEOUT_MS });
+    } catch {
+      out = null;
+    }
+    report.cache.set(key, out);
+  }
+  return report.cache.get(key) ?? undefined;
+}
+
+/** A dimmed line under a section heading saying why its checks did not run. */
+function note(report: Reporter, text: string): void {
+  if (report.print) console.log(dim(`  – ${text}`));
 }
 
 /** A check's line in the text output: the label, then its detail dimmed in parentheses. */
@@ -107,10 +139,10 @@ function warn(report: Reporter, id: string, label: string, fix?: string, detail?
   }
 }
 
-function fail(report: Reporter, id: string, label: string, fix?: string): void {
-  record(report, { status: 'fail', id, label, fix });
+function fail(report: Reporter, id: string, label: string, fix?: string, detail?: string): void {
+  record(report, { status: 'fail', id, label, detail, fix });
   if (report.print) {
-    console.log(`  ${red('✗')} ${label}`);
+    console.log(`  ${red('✗')} ${checkLine(label, detail)}`);
     if (fix) console.log(dim(`    ↳ ${fix}`));
   }
 }
@@ -144,17 +176,18 @@ function checkDaemonBin(report: Reporter): void {
   }
 }
 
-function checkConfigFile(report: Reporter): void {
+/**
+ * Whether there is a config file, found exactly as `loadConfig` finds it:
+ * `-c` when given, else every supported name in the working directory. A
+ * `-c` path that does not exist is left to the `config-load` failure.
+ */
+function checkConfigFile(report: Reporter, configFile: string | undefined, findConfigFile: (dir: string, file?: string) => string | undefined): void {
   try {
-    const cwd = process.cwd();
-    const tsConfig = path.join(cwd, 'tapsmith.config.ts');
-    const mjsConfig = path.join(cwd, 'tapsmith.config.mjs');
-    if (fs.existsSync(tsConfig)) {
-      pass(report, 'config', 'Config file found', 'tapsmith.config.ts');
-    } else if (fs.existsSync(mjsConfig)) {
-      pass(report, 'config', 'Config file found', 'tapsmith.config.mjs');
-    } else {
-      warn(report, 'config', 'No tapsmith.config.ts found in current directory', 'Run: npx tapsmith init --yes (or npx tapsmith init for the wizard)');
+    const found = findConfigFile(process.cwd(), configFile);
+    if (found && fs.existsSync(found)) {
+      pass(report, 'config', 'Config file found', path.relative(process.cwd(), found) || found);
+    } else if (!configFile) {
+      warn(report, 'config', 'No tapsmith.config.ts (or .js, .mjs) found in current directory', 'Run: npx tapsmith init --yes (or npx tapsmith init for the wizard)');
     }
   } catch {
     warn(report, 'config', 'Could not check for config file');
@@ -163,20 +196,21 @@ function checkConfigFile(report: Reporter): void {
 
 // ─── Android checks ───
 
-function checkAdb(report: Reporter): boolean {
-  try {
-    const versionOutput = execFileSync('adb', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+const ADB_FIX = 'Install Android platform-tools (Android Studio → SDK Manager → SDK Tools) and add its platform-tools directory to PATH';
+
+/** Passes with the version, or reports the missing adb (see `planPlatforms`) and returns false. */
+function checkAdb(report: Reporter, required: boolean, targeted: boolean): boolean {
+  const versionOutput = run(report, 'adb', ['--version']);
+  if (versionOutput !== undefined) {
     const versionMatch = versionOutput.match(/Version\s+([\d.]+)/);
     const version = versionMatch ? versionMatch[1] : 'unknown';
     pass(report, 'adb', `ADB ${version}`);
     return true;
-  } catch {
-    fail(report, 'adb', 'ADB not found on PATH', 'Install Android platform-tools and ensure adb is on PATH');
-    return false;
   }
+  if (required) fail(report, 'adb', 'ADB not found on PATH', ADB_FIX);
+  else if (targeted) warn(report, 'adb', 'ADB not found on PATH — the config\'s Android projects cannot run on this machine', `${ADB_FIX}. Meanwhile, select the other projects with --project`);
+  else warn(report, 'adb', 'ADB not found on PATH — Android checks skipped', `To test on Android: ${ADB_FIX}`);
+  return false;
 }
 
 /** The Android SDK variable doctor reports: ANDROID_HOME, else the older ANDROID_SDK_ROOT. */
@@ -199,25 +233,57 @@ function checkAndroidHome(report: Reporter): void {
   }
 }
 
-function checkConnectedDevices(report: Reporter): void {
-  try {
-    const output = execFileSync('adb', ['devices'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const lines = output.trim().split('\n').slice(1);
-    const devices = lines
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && line.includes('\tdevice'));
-    if (devices.length > 0) {
-      const serials = devices.map((d) => d.split('\t')[0]).join(', ');
-      pass(report, 'android-devices', `${devices.length} device${devices.length === 1 ? '' : 's'} connected`, serials);
-    } else {
-      warn(report, 'android-devices', 'No Android devices connected', 'Start an emulator or connect a device with USB debugging enabled');
-    }
-  } catch {
-    warn(report, 'android-devices', 'Could not list Android devices');
+export interface AndroidDevicesSummary {
+  status: 'pass' | 'warn' | 'fail';
+  label: string;
+  detail?: string;
+  fix?: string;
+}
+
+/**
+ * Judge `adb devices`: a device adb lists but cannot use (unauthorized,
+ * offline, no permissions) is named with its state and the fix, never
+ * counted as "no devices" — the inventory lists it, so doctor must too.
+ */
+export function summarizeAndroidDevices(devices: AdbDevice[]): AndroidDevicesSummary {
+  const ready = devices.filter((d) => d.state === 'device');
+  const unusable = devices.filter((d) => d.state !== 'device');
+  const unusableList = unusable.map((d) => `${d.serial} (${d.state})`).join(', ');
+  const readyLabel = `${ready.length} device${ready.length === 1 ? '' : 's'} connected`;
+  if (ready.length > 0 && unusable.length === 0) {
+    return { status: 'pass', label: readyLabel, detail: ready.map((d) => d.serial).join(', ') };
   }
+  if (unusable.length > 0) {
+    const fix = unusable.map(unusableDeviceFix).filter((f, i, arr) => arr.indexOf(f) === i).join('; ');
+    // A usable device beside it keeps tests running, so still only a warning;
+    // but the broken one is named with its fix — it may be the one wanted.
+    return ready.length > 0
+      ? { status: 'warn', label: `${readyLabel}, ${unusable.length} not usable`, detail: `${ready.map((d) => d.serial).join(', ')}; not usable: ${unusableList}`, fix }
+      : {
+        status: 'warn',
+        label: `${unusable.length} Android device${unusable.length === 1 ? ' is' : 's are'} attached but not usable`,
+        detail: unusableList,
+        fix,
+      };
+  }
+  return { status: 'warn', label: 'No Android devices connected', fix: 'Start an emulator or connect a device with USB debugging enabled' };
+}
+
+function unusableDeviceFix(device: AdbDevice): string {
+  const shared = androidStateBlocker(device.state, device.serial);
+  if (shared) return shared;
+  return `${device.serial} is "${device.state}" to adb: reconnect it, or run \`adb kill-server\` and try again`;
+}
+
+function checkConnectedDevices(report: Reporter): void {
+  const output = run(report, 'adb', ['devices']);
+  if (output === undefined) {
+    warn(report, 'android-devices', 'Could not list Android devices', 'Run `adb devices` to see the error; `adb kill-server` restarts a stuck adb server');
+    return;
+  }
+  const summary = summarizeAndroidDevices(parseAdbDevicesOutput(output));
+  if (summary.status === 'pass') pass(report, 'android-devices', summary.label, summary.detail);
+  else warn(report, 'android-devices', summary.label, summary.fix, summary.detail);
 }
 
 function checkAgentApks(report: Reporter): void {
@@ -236,17 +302,63 @@ function checkAgentApks(report: Reporter): void {
   }
 }
 
-function checkAppApk(report: Reporter, config: { apk?: string; rootDir?: string } | undefined): void {
-  if (!config?.apk) return;
+/** One `app-apk` row for every APK the config installs, so a consumer matching on the id reads the verdict. */
+function checkAppApk(report: Reporter, config: TapsmithConfig | undefined, required: boolean): void {
+  if (!config) return;
   try {
-    const resolvedApk = path.resolve(config.rootDir ?? process.cwd(), config.apk);
-    if (fs.existsSync(resolvedApk)) {
-      pass(report, 'app-apk', 'App APK exists', path.basename(resolvedApk));
+    const apks = [...new Set(configAndroidApks(config).map((apk) => path.resolve(config.rootDir ?? process.cwd(), apk)))];
+    if (apks.length === 0) return;
+    const missing = apks.filter((apk) => !fs.existsSync(apk));
+    if (missing.length === 0) {
+      pass(report, 'app-apk', `App APK${apks.length === 1 ? '' : 's'} exist${apks.length === 1 ? 's' : ''}`, apks.map((apk) => path.basename(apk)).join(', '));
     } else {
-      fail(report, 'app-apk', `App APK not found at ${resolvedApk}`, 'Build your app APK or fix the apk path in tapsmith.config.ts');
+      // A mixed config's machine may run only its iOS projects (see planPlatform).
+      const mark = required ? fail : warn;
+      mark(report, 'app-apk', `App APK not found at ${missing.join(', ')}`, 'Build your app APK, or fix the apk path in your Tapsmith config');
     }
   } catch {
     warn(report, 'app-apk', 'Could not check app APK path');
+  }
+}
+
+// ─── Emulator binary (PILOT-417) ───
+
+/** An Android scope's AVD and whether Tapsmith will launch it (`launchEmulators`, on by default with `avd`). */
+export interface AvdLaunch {
+  avd: string;
+  launch: boolean;
+}
+
+/**
+ * Judge the emulator binary for the configured AVDs. Missing is a failure
+ * when Tapsmith will launch one — the run would otherwise wait out the boot
+ * timeout for a process that never started — and a warning when only an
+ * already-running emulator is used (`launchEmulators: false`), or when this
+ * machine is not expected to run the Android projects (`required` false).
+ */
+export function summarizeEmulatorBinary(bin: EmulatorBinary, avds: AvdLaunch[], required: boolean): AndroidDevicesSummary {
+  if (bin.found) {
+    return { status: 'pass', label: 'Android emulator found', detail: path.isAbsolute(bin.command) ? bin.command : `${bin.command} (on PATH)` };
+  }
+  const launched = avds.filter((a) => a.launch).map((a) => a.avd);
+  const names = [...new Set((launched.length > 0 ? launched : avds.map((a) => a.avd)))].join(', ');
+  const detail = `tried: ${bin.tried.join(', ')}`;
+  const fix = emulatorNotFoundMessage(bin.tried);
+  if (launched.length === 0) {
+    return { status: 'warn', label: `Android emulator not found — only an already-running emulator of ${names} can be used (launchEmulators is off)`, detail, fix };
+  }
+  return { status: required ? 'fail' : 'warn', label: `Android emulator not found — Tapsmith cannot launch ${names}`, detail, fix };
+}
+
+function checkEmulatorBinary(report: Reporter, avds: AvdLaunch[], required: boolean): void {
+  if (avds.length === 0) return;
+  try {
+    const summary = summarizeEmulatorBinary(resolveEmulatorBinary(), avds, required);
+    if (summary.status === 'pass') pass(report, 'android-emulator', summary.label, summary.detail);
+    else if (summary.status === 'warn') warn(report, 'android-emulator', summary.label, summary.fix, summary.detail);
+    else fail(report, 'android-emulator', summary.label, summary.fix, summary.detail);
+  } catch {
+    warn(report, 'android-emulator', 'Could not check for the Android emulator');
   }
 }
 
@@ -351,30 +463,34 @@ function checkAvdImages(report: Reporter, configuredAvd?: string | string[]): vo
 
 // ─── iOS checks ───
 
-function checkXcode(report: Reporter): void {
-  try {
-    const output = execFileSync('xcodebuild', ['-version'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+const XCODE_FIX = 'Install Xcode from the Mac App Store, open it once to finish setup, then run: sudo xcode-select -s /Applications/Xcode.app';
+
+/** Passes with the version, or reports the missing Xcode (see `planPlatforms`) and returns false. */
+function checkXcode(report: Reporter, required: boolean, targeted: boolean): boolean {
+  const output = run(report, 'xcodebuild', ['-version']);
+  if (output !== undefined) {
     const versionMatch = output.match(/Xcode\s+(\S+)/);
     const version = versionMatch ? versionMatch[1] : 'unknown';
     pass(report, 'xcode', `Xcode ${version}`);
-  } catch {
-    fail(report, 'xcode', 'Xcode not installed — install from the Mac App Store', 'Install Xcode from the Mac App Store');
+    return true;
   }
+  if (required) fail(report, 'xcode', 'Xcode not installed', XCODE_FIX);
+  else if (targeted) warn(report, 'xcode', 'Xcode not installed — the config\'s iOS projects cannot run on this machine', `${XCODE_FIX}. Meanwhile, select the other projects with --project`);
+  else warn(report, 'xcode', 'Xcode not installed — iOS checks skipped', `To test on iOS: ${XCODE_FIX}`);
+  return false;
 }
 
-function checkSimctl(report: Reporter): void {
-  try {
-    execFileSync('xcrun', ['simctl', 'list', 'devices', 'available', '-j'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+function checkSimctl(report: Reporter, required: boolean): void {
+  if (run(report, 'xcrun', ['simctl', 'list', 'devices', 'available', '-j']) !== undefined) {
     pass(report, 'simctl', 'iOS simulators available');
-  } catch {
-    fail(report, 'simctl', 'xcrun simctl not available — install Xcode command-line tools', 'Run: xcode-select --install');
+    return;
   }
+  // It fails for a missing command-line tools install, but also for a slow or
+  // wedged CoreSimulator, so the fix starts with seeing the real error.
+  const label = 'xcrun simctl failed or timed out';
+  const fix = 'Run: xcrun simctl list devices to see the error (xcode-select --install if the command-line tools are missing)';
+  if (required) fail(report, 'simctl', label, fix);
+  else warn(report, 'simctl', label, fix);
 }
 
 async function checkSimulatorXctestrun(report: Reporter): Promise<void> {
@@ -382,7 +498,10 @@ async function checkSimulatorXctestrun(report: Reporter): Promise<void> {
     const { findSimulatorXctestrun, extractSdkVersion, getInstalledSimulatorSdkVersion } = await import('./ios-device-resolve.js');
     const found = findSimulatorXctestrun();
     if (!found) {
-      warn(report, 'ios-sim-agent', 'No simulator xctestrun found — build with xcodebuild or install @tapsmith/agent-ios-simulator-arm64', 'Run: npx tapsmith init --yes (builds it) or install @tapsmith/agent-ios-simulator-arm64');
+      // The first simulator run builds it (ensureSimulatorAgent); the npm
+      // package is an optional dependency for this host's arch only.
+      const pkg = `@tapsmith/agent-ios-simulator-${process.arch}`;
+      warn(report, 'ios-sim-agent', 'No simulator xctestrun found', `Nothing to run now: your first iOS simulator test run builds it from source (a few minutes, needs Xcode). To skip the build: npm install ${pkg}`);
       return;
     }
 
@@ -413,22 +532,58 @@ function checkMitmCa(report: Reporter): void {
     if (fs.existsSync(caPath)) {
       pass(report, 'mitm-ca', 'MITM CA exists', '~/.tapsmith/ca.pem');
     } else {
-      warn(report, 'mitm-ca', 'MITM CA not found at ~/.tapsmith/ca.pem — run `tapsmith ios network setup-simulator` to generate', 'Run: npx tapsmith ios network setup-simulator');
+      // Nothing to do: the daemon creates ~/.tapsmith/ca.pem the first time
+      // it captures traffic, on either platform.
+      pass(report, 'mitm-ca', 'MITM CA not created yet', 'created automatically on the first run with network capture');
     }
   } catch {
     warn(report, 'mitm-ca', 'Could not check for MITM CA');
   }
 }
 
+/**
+ * Where the daemon will find mitmproxy's `Mitmproxy Redirector.app`, checked
+ * in the daemon's own order (`resolve_redirector_path` in ios_redirect.rs),
+ * so a pip/pipx install that unpacked the redirector is not reported
+ * missing. Undefined when none of them has it.
+ */
+export function findMitmRedirector(
+  env: NodeJS.ProcessEnv,
+  homedir: string,
+  exists: (p: string) => boolean,
+  listDir: (dir: string) => string[],
+): string | undefined {
+  if (env.TAPSMITH_REDIRECTOR_APP && exists(env.TAPSMITH_REDIRECTOR_APP)) return 'TAPSMITH_REDIRECTOR_APP';
+  const bin = path.join('Mitmproxy Redirector.app', 'Contents', 'MacOS', 'Mitmproxy Redirector');
+  if (exists(path.join('/Applications', bin))) return '/Applications';
+  if (exists(path.join(homedir, '.tapsmith', 'redirector', bin))) return '~/.tapsmith/redirector';
+  // The daemon extracts the redirector from the tarball inside the Homebrew
+  // cask on first use (`find_brew_tarball`), so look for that tarball rather
+  // than trusting `brew list`.
+  const tarball = path.join('mitmproxy.app', 'Contents', 'Resources', 'mitmproxy_macos', 'Mitmproxy Redirector.app.tar');
+  for (const caskroom of ['/opt/homebrew/Caskroom/mitmproxy', '/usr/local/Caskroom/mitmproxy']) {
+    if (listDir(caskroom).some((version) => exists(path.join(caskroom, version, tarball)))) return 'Homebrew cask';
+  }
+  return undefined;
+}
+
 function checkMitmproxy(report: Reporter): void {
   try {
-    execFileSync('brew', ['list', 'mitmproxy'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    pass(report, 'mitmproxy', 'mitmproxy installed');
+    const listDir = (dir: string): string[] => {
+      try {
+        return fs.readdirSync(dir);
+      } catch {
+        return [];
+      }
+    };
+    const source = findMitmRedirector(process.env, os.homedir(), fs.existsSync, listDir);
+    if (source) {
+      pass(report, 'mitmproxy', 'mitmproxy installed', source);
+    } else {
+      warn(report, 'mitmproxy', 'mitmproxy redirector not found — needed for iOS simulator network capture', 'Run: brew install mitmproxy');
+    }
   } catch {
-    warn(report, 'mitmproxy', 'mitmproxy not installed — install with `brew install mitmproxy`', 'Run: brew install mitmproxy');
+    warn(report, 'mitmproxy', 'Could not check for mitmproxy');
   }
 }
 
@@ -685,46 +840,184 @@ export async function runDoctor(opts: { json: boolean; config?: string }, overri
   return result.ok ? 0 : 1;
 }
 
+// ─── Platform gating ───
+
+export type DoctorPlatform = 'android' | 'ios';
+
+type PlatformScope = Pick<TapsmithConfig, 'platform' | 'app' | 'simulator' | 'iosXctestrun' | 'apk'>;
+type PlatformConfig = PlatformScope & { projects?: Array<{ name?: string; use?: Partial<PlatformScope> }> };
+
+/**
+ * What each test scope runs with: every project's `use` over the root, or
+ * the root alone when there are no projects (the root itself runs nothing
+ * then, as in the runner).
+ */
+function platformScopes(config: PlatformConfig): Array<{ project?: string; scope: PlatformScope; platform: DoctorPlatform }> {
+  const scopes = config.projects && config.projects.length > 0
+    ? config.projects.map((p) => ({
+      project: p.name,
+      scope: {
+        platform: p.use?.platform ?? config.platform,
+        app: p.use?.app ?? config.app,
+        simulator: p.use?.simulator ?? config.simulator,
+        iosXctestrun: p.use?.iosXctestrun ?? config.iosXctestrun,
+        apk: p.use?.apk ?? config.apk,
+      },
+    }))
+    : [{ project: undefined, scope: config as PlatformScope }];
+  return scopes.map(({ project, scope }) => ({ project, scope, platform: scopePlatform(scope) }));
+}
+
+/**
+ * A scope's platform: its `platform`, else iOS when it sets an iOS-only
+ * field (the runner refuses that without `platform: 'ios'` — see
+ * `platformlessIosFields` — but the user clearly means iOS), else Android,
+ * the runner's default.
+ */
+function scopePlatform(scope: PlatformScope): DoctorPlatform {
+  if (scope.platform) return scope.platform === 'ios' ? 'ios' : 'android';
+  if (scope.app != null || scope.simulator != null || scope.iosXctestrun != null) return 'ios';
+  return 'android';
+}
+
+/** The platforms a loaded config runs tests on. */
+export function configPlatformTargets(config: PlatformConfig): Set<DoctorPlatform> {
+  return new Set(platformScopes(config).map((s) => s.platform));
+}
+
+/**
+ * iOS-only fields set without `platform` — the runner refuses those
+ * (`resolvePlatformFixture`), so doctor must too, rather than infer iOS and
+ * report a config healthy that `tapsmith test` rejects. One entry per scope:
+ * the project's name, or undefined for the root.
+ */
+export function platformlessIosFields(config: PlatformConfig): Array<{ project?: string; fields: string[] }> {
+  const iosFields = ['app', 'simulator', 'iosXctestrun'] as const;
+  const byOwner = new Map<string | undefined, Set<string>>();
+  const projects = config.projects ?? [];
+  for (const { project, scope } of platformScopes(config)) {
+    if (scope.platform != null) continue;
+    for (const field of iosFields) {
+      if (scope[field] == null) continue;
+      // A field a project inherits is the root's to fix, reported once.
+      const own = projects.length === 0 || projects.find((p) => p.name === project)?.use?.[field] != null;
+      const owner = own ? project : undefined;
+      if (!byOwner.has(owner)) byOwner.set(owner, new Set());
+      byOwner.get(owner)!.add(field);
+    }
+  }
+  return [...byOwner].map(([project, fields]) => ({ project, fields: [...fields] }));
+}
+
+/** The app APKs the config's Android scopes install, each once (projects' `use.apk` included). */
+export function configAndroidApks(config: PlatformConfig): string[] {
+  const apks = platformScopes(config)
+    .filter((s) => s.platform === 'android' && s.scope.apk)
+    .map((s) => s.scope.apk as string);
+  return [...new Set(apks)];
+}
+
+/**
+ * Whether a platform's section runs, and what a missing toolchain costs.
+ *
+ * - The config targets only it: run, and a missing adb / Xcode is a
+ *   failure — `tapsmith test` cannot run anything. iOS on a non-Mac too.
+ * - The config targets it and another platform: run, but a missing
+ *   toolchain is a warning — this machine can still run the other
+ *   platform's projects (`--project`), as a Linux Android CI job does with
+ *   a mixed config — unless that other platform cannot run either.
+ * - A loaded config does not target it: skip, with a note saying why.
+ * - No usable config (`targets` undefined): judge the machine. A missing
+ *   toolchain is one warning ("… checks skipped") with its install fix,
+ *   never an exit 1 — nothing says the user wants that platform.
+ */
+export type PlatformPlan =
+  | { run: true; required: boolean }
+  | { run: false; note: string };
+
+export function planPlatform(
+  platform: DoctorPlatform,
+  targets: Set<DoctorPlatform> | undefined,
+  host: NodeJS.Platform,
+  /** Mixed configs only: whether the config's other platform can run here. */
+  otherUsable = false,
+): PlatformPlan {
+  const name = platform === 'android' ? 'Android' : 'iOS';
+  if (targets && !targets.has(platform)) {
+    const others = [...targets].map((t) => (t === 'android' ? 'Android' : 'iOS')).join(' and ');
+    return { run: false, note: `skipped: the config targets ${others} only` };
+  }
+  if (platform === 'ios' && host !== 'darwin' && !targets) {
+    return { run: false, note: `skipped: ${name} testing needs macOS` };
+  }
+  // A mixed config is only let off when the other platform can run: a
+  // machine that runs neither of its platforms must still fail.
+  return { run: true, required: !!targets && (targets.size === 1 || !otherUsable) };
+}
+
 async function doctorReport(opts: { json: boolean; config?: string }): Promise<DoctorJson> {
   const printing = !opts.json;
   const configFile = opts.config;
 
   const checks: CheckList = [];
-  const report: Reporter = { checks, print: printing };
+  const report: Reporter = { checks, print: printing, cache: new Map() };
 
   if (printing) {
     console.log();
     console.log(bold('Tapsmith Doctor'));
   }
 
-  // Try to load config for the APK path and AVD image checks
-  let config: { apk?: string; rootDir?: string; avd?: string; projects?: Array<{ use?: { avd?: string } }> } | undefined;
+  // Load the config the way `tapsmith test` does; it decides which platforms
+  // are judged and feeds the APK path and AVD image checks.
+  const { loadConfig, findConfigFile, configPathOf, effectiveConfigForProject } = await import('./config.js');
+  let config: TapsmithConfig | undefined;
   try {
-    const { loadConfig } = await import('./config.js');
     config = await loadConfig(undefined, configFile);
   } catch (err) {
     const failure = configLoadFailure(err instanceof Error ? err.message : String(err));
     fail(report, 'config-load', failure.message, failure.hint);
   }
 
-  // AVDs can be configured top-level or per-project (projects[].use.avd).
-  const configuredAvds = [
-    ...(config?.avd ? [config.avd] : []),
-    ...(config?.projects ?? []).map((p) => p.use?.avd).filter((avd): avd is string => !!avd),
-  ];
+  // Only a config file the user wrote says which platforms they test; the
+  // built-in defaults (no file) and a broken config say nothing.
+  const targets = config && configPathOf(config) ? configPlatformTargets(config) : undefined;
+  const mixed = !!targets && targets.size > 1;
+  const adbUsable = (): boolean => run(report, 'adb', ['--version']) !== undefined;
+  const xcodeUsable = (): boolean => process.platform === 'darwin' && run(report, 'xcodebuild', ['-version']) !== undefined;
+  const androidPlan = planPlatform('android', targets, process.platform, mixed && xcodeUsable());
+  const iosPlan = planPlatform('ios', targets, process.platform, mixed && adbUsable());
 
-  // Detect whether Android platform tools are available or config references an APK
-  const hasAndroid = (() => {
-    try {
-      execFileSync('adb', ['--version'], {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      return true;
-    } catch {
-      return false;
+  // The AVDs each Android scope launches, with the runner's own merge of
+  // project `use` over the root (launchEmulators defaults on with an avd).
+  // loadConfig validates only the root; a project's `use` is validated by
+  // this merge, which throws — report that as the config error it is (as
+  // `tapsmith test` does), not as doctor crashing.
+  const scopes: TapsmithConfig[] = [];
+  if (config && configPathOf(config)) {
+    if (config.projects && config.projects.length > 0) {
+      const projectErrors: string[] = [];
+      for (const project of config.projects) {
+        try {
+          scopes.push(effectiveConfigForProject(config, project));
+        } catch (err) {
+          projectErrors.push(`project ${project.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      // One row, so a consumer matching on the id sees every broken project.
+      if (projectErrors.length > 0) {
+        fail(report, 'config-load', `Config file has errors: ${projectErrors.join('; ')}`, 'Fix the config error above; tapsmith test stops on it too');
+      }
+    } else {
+      scopes.push(config);
     }
-  })() || !!config?.apk;
+  }
+  const avdLaunches: AvdLaunch[] = scopes
+    .filter((scope) => scopePlatform(scope) === 'android' && !!scope.avd)
+    .map((scope) => ({ avd: scope.avd as string, launch: scope.launchEmulators !== false }));
+
+  // The AVDs Android runs boot — the same list the emulator check judges,
+  // so the two never disagree about which AVDs the config uses.
+  const configuredAvds = [...new Set(avdLaunches.map((a) => a.avd))];
 
   // ─── Core ───
   if (printing) {
@@ -733,32 +1026,67 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   }
   checkNodeVersion(report);
   checkDaemonBin(report);
-  checkConfigFile(report);
+  checkConfigFile(report, configFile, findConfigFile);
+  if (config && configPathOf(config)) {
+    // One row, so a consumer matching on the id sees every offending scope.
+    const platformless = platformlessIosFields(config);
+    if (platformless.length > 0) {
+      const where = platformless.map(({ project, fields }) => `${project ? `project ${project}` : 'the config'} sets ${fields.join(', ')}`);
+      const fixes = platformless.map(({ project }) => (project ? `project ${project}'s use` : 'the config'));
+      fail(report, 'config-platform', `iOS-only fields without \`platform\` — ${where.join('; ')} — tapsmith test refuses it`,
+        `Add platform: 'ios' to ${fixes.join(' and ')}`);
+    }
+  }
 
   // ─── Android ───
-  if (hasAndroid) {
-    if (printing) {
-      console.log();
-      console.log(`  ${bold('Android')}`);
+  if (printing) {
+    console.log();
+    console.log(`  ${bold('Android')}`);
+  }
+  let androidChecked = false;
+  if (!androidPlan.run) {
+    note(report, androidPlan.note);
+  } else {
+    const adbOk = checkAdb(report, androidPlan.required, !!targets);
+    // Without a config asking for Android, a missing adb ends the section:
+    // its other checks only matter to someone testing Android. A config
+    // that targets Android (even alongside iOS) keeps its APK and AVD checks.
+    androidChecked = adbOk || !!targets;
+    if (androidChecked) {
+      checkAndroidHome(report);
+      if (adbOk) checkConnectedDevices(report);
+      checkAgentApks(report);
+      // With adb here, Android runs on this machine, so its APK must exist.
+      checkAppApk(report, config, androidPlan.required || (adbOk && !!targets));
+      checkEmulatorBinary(report, avdLaunches, androidPlan.required || adbOk);
     }
-    const adbOk = checkAdb(report);
-    checkAndroidHome(report);
-    if (adbOk) {
-      checkConnectedDevices(report);
-    }
-    checkAgentApks(report);
-    checkAppApk(report, config);
   }
 
   // ─── iOS ───
-  if (process.platform === 'darwin') {
-    if (printing) {
-      console.log();
-      console.log(`  ${bold('iOS')}`);
+  if (printing) {
+    console.log();
+    console.log(`  ${bold('iOS')}`);
+  }
+  let iosChecked = false;
+  if (!iosPlan.run) {
+    note(report, iosPlan.note);
+  } else if (process.platform !== 'darwin') {
+    if (iosPlan.required) {
+      fail(report, 'xcode', 'iOS testing needs macOS, and the config targets iOS', 'Run the iOS tests on a Mac with Xcode installed');
+    } else {
+      warn(report, 'xcode', 'iOS testing needs macOS — the config\'s iOS projects cannot run on this machine', 'Run the iOS projects on a Mac with Xcode installed; select the others here with --project');
     }
-    checkXcode(report);
-    checkSimctl(report);
-    await checkSimulatorXctestrun(report);
+  } else {
+    iosChecked = true;
+    if (checkXcode(report, iosPlan.required, !!targets)) {
+      // With Xcode here, the config's iOS projects run on this machine.
+      checkSimctl(report, !!targets);
+      await checkSimulatorXctestrun(report);
+    } else {
+      // A config that targets iOS still gets its capture guidance (mitmproxy,
+      // Network Extension), as a targeted Android keeps its APK/AVD checks.
+      iosChecked = iosPlan.required || !!targets;
+    }
   }
 
   // ─── Network Capture ───
@@ -767,14 +1095,18 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
     console.log(`  ${bold('Network Capture')}`);
   }
   checkMitmCa(report);
-  // Filesystem-only check — run whenever the config names AVDs, even if
-  // adb isn't installed (the missing/Play-image diagnosis is still useful).
-  if (hasAndroid || configuredAvds.length > 0) {
+  if (androidChecked) {
+    // Filesystem-only, so it runs even when adb is missing: the
+    // missing/Play-image diagnosis is still useful.
     checkAvdImages(report, configuredAvds);
   }
   if (process.platform === 'darwin') {
-    checkMitmproxy(report);
-    checkNetworkExtension(report);
+    // mitmproxy and its Network Extension capture iOS simulator traffic only.
+    if (iosChecked) {
+      checkMitmproxy(report);
+      checkNetworkExtension(report);
+    }
+    // Host health: a left-behind proxy breaks the whole Mac, whatever the project.
     checkSystemProxy(report);
   }
 
@@ -793,12 +1125,15 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
     console.log();
   }
 
-  const { scanEnvironment, listConnectedAndroidDevices } = await import('./env-scan.js');
-  const env = scanEnvironment();
+  // The inventory lists what is on the machine whatever the config targets,
+  // reusing the checks' adb/simctl output where they already ran.
+  const adbDevices = run(report, 'adb', ['devices']);
+  const simctl = process.platform === 'darwin' ? run(report, 'xcrun', ['simctl', 'list', 'devices', 'available', '-j']) : undefined;
+  const avdList = tryExec(resolveEmulatorBinary().command, ['-list-avds']);
   const inventory: DoctorInventory = {
-    avds: env.avds,
-    simulators: env.simulators,
-    connectedDevices: listConnectedAndroidDevices(),
+    avds: avdList ? avdList.split('\n').map((l) => l.trim()).filter(Boolean) : [],
+    simulators: simctl ? parseSimctlDevicesJson(simctl) : [],
+    connectedDevices: adbDevices ? parseAdbDevicesOutput(adbDevices) : [],
   };
 
   return buildDoctorJson(checks, inventory);

@@ -7,6 +7,9 @@ import {
   buildDoctorJson,
   androidSdkVariable,
   checkLine,
+  configAndroidApks,
+  configPlatformTargets,
+  planPlatform,
   runDoctor,
   configLoadFailure,
   isSupportedNodeVersion,
@@ -433,5 +436,60 @@ describe('configLoadFailure', () => {
 
   it('points a missing --config file at the flag', () => {
     expect(configLoadFailure('Config file not found: /p/ci.config.ts').hint).toBe('Check the -c/--config path');
+  });
+});
+
+describe('configPlatformTargets() (PILOT-263)', () => {
+  const t = (c: Parameters<typeof configPlatformTargets>[0]) => [...configPlatformTargets(c)].sort();
+
+  it('defaults to Android, like the runner', () => {
+    expect(t({})).toEqual(['android']);
+  });
+
+  it('reads the root platform, or an iOS-only field when platform is unset', () => {
+    expect(t({ platform: 'ios' })).toEqual(['ios']);
+    expect(t({ app: 'x.app' })).toEqual(['ios']);
+    expect(t({ simulator: 'iPhone 16' })).toEqual(['ios']);
+  });
+
+  it('with projects, reads each project over the root, and ignores the root itself', () => {
+    expect(t({ platform: 'ios', projects: [{ use: { platform: 'android' } }] })).toEqual(['android']);
+    expect(t({ platform: 'ios', projects: [{}, { use: { platform: 'android' } }] })).toEqual(['android', 'ios']);
+    expect(t({ projects: [{ use: { app: 'x.app' } }, {}] })).toEqual(['android', 'ios']);
+  });
+});
+
+describe('planPlatform() (PILOT-263)', () => {
+  it('the only platform a config targets runs and its toolchain is required, on any host', () => {
+    expect(planPlatform('ios', new Set(['ios']), 'linux')).toEqual({ run: true, required: true });
+    expect(planPlatform('android', new Set(['android']), 'darwin')).toEqual({ run: true, required: true });
+  });
+
+  it('with several targeted platforms, one is only required when the other cannot run here', () => {
+    expect(planPlatform('android', new Set(['android', 'ios']), 'darwin', true)).toEqual({ run: true, required: false });
+    expect(planPlatform('ios', new Set(['android', 'ios']), 'linux', true)).toEqual({ run: true, required: false });
+    expect(planPlatform('ios', new Set(['android', 'ios']), 'linux', false)).toEqual({ run: true, required: true });
+  });
+
+  it('a platform the config does not target is skipped with the reason', () => {
+    expect(planPlatform('ios', new Set(['android']), 'darwin')).toEqual({ run: false, note: 'skipped: the config targets Android only' });
+    expect(planPlatform('android', new Set(['ios']), 'darwin')).toEqual({ run: false, note: 'skipped: the config targets iOS only' });
+  });
+
+  it('without a config, the machine decides and nothing is required', () => {
+    expect(planPlatform('android', undefined, 'linux')).toEqual({ run: true, required: false });
+    expect(planPlatform('ios', undefined, 'darwin')).toEqual({ run: true, required: false });
+    expect(planPlatform('ios', undefined, 'linux')).toEqual({ run: false, note: 'skipped: iOS testing needs macOS' });
+  });
+});
+
+describe('configAndroidApks() (PILOT-263)', () => {
+  it('lists the root apk without projects, and each Android project\'s apk (inherited or its own) once', () => {
+    expect(configAndroidApks({ apk: 'a.apk' })).toEqual(['a.apk']);
+    expect(configAndroidApks({ platform: 'ios', apk: 'a.apk' })).toEqual([]);
+    expect(configAndroidApks({
+      apk: 'root.apk',
+      projects: [{ use: {} }, { use: { apk: 'b.apk' } }, { use: { apk: 'b.apk' } }, { use: { platform: 'ios' } }],
+    })).toEqual(['root.apk', 'b.apk']);
   });
 });

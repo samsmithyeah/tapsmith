@@ -121,17 +121,14 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
     // Fast-fail when no config file exists and no explicit --config was provided.
     // loadConfig falls back to defaults, so without this guard verify would launch
     // a full 10-minute run against an unconfigured project.
-    if (!args.config) {
-      const configNames = ['tapsmith.config.ts', 'tapsmith.config.mjs', 'tapsmith.config.js'];
-      const found = configNames.find((name) => fs.existsSync(path.join(process.cwd(), name)));
-      if (!found) {
-        emitError(args.json, 'NO_CONFIG', 'No tapsmith.config.{ts,mjs,js} found in the current directory',
-          'Run: npx tapsmith init --yes');
-        return;
-      }
+    // Found the same way loadConfig finds it (PILOT-263).
+    const { loadConfig, findConfigFile } = await import('./config.js');
+    if (!args.config && !findConfigFile(process.cwd())) {
+      emitError(args.json, 'NO_CONFIG', 'No tapsmith.config.{ts,js,mjs} found in the current directory',
+        'Run: npx tapsmith init --yes');
+      return;
     }
 
-    const { loadConfig } = await import('./config.js');
     let config;
     try {
       config = await loadConfig(undefined, args.config);
