@@ -1035,9 +1035,11 @@ function emulatorWindowUnavailableReason(
 }
 
 /**
- * Resolve `emulatorLaunchOptions`. Headless is the default everywhere; a
- * window (`headless: false`) is used only where one can be shown —
- * `windowUnavailable` says why a requested window was not.
+ * Resolve `emulatorLaunchOptions`. Locally the default is a window (host GPU
+ * and a snapshot quick-boot: measured ~8 s to boot against ~23 s for a
+ * headless cold boot); `headless: true` opts out. Where no window can be
+ * shown — CI, SSH, Linux without a display — it is always headless, and
+ * `windowUnavailable` says why when `headless: false` asked for one.
  */
 export function resolveEmulatorLaunchSettings(
   options: EmulatorLaunchOptions | undefined,
@@ -1045,19 +1047,21 @@ export function resolveEmulatorLaunchSettings(
   platform: NodeJS.Platform = process.platform,
 ): EmulatorLaunchSettings & { windowUnavailable?: string } {
   const args = options?.args ?? [];
-  if (options?.headless !== false) return { headless: true, args };
+  if (options?.headless === true) return { headless: true, args };
   const windowUnavailable = emulatorWindowUnavailableReason(env, platform);
-  return windowUnavailable ? { headless: true, args, windowUnavailable } : { headless: false, args };
+  if (!windowUnavailable) return { headless: false, args };
+  // Only an explicit `headless: false` is worth a warning; the default just adapts.
+  return options?.headless === false ? { headless: true, args, windowUnavailable } : { headless: true, args };
 }
 
 /**
  * The exact argv `launchEmulator` passes to the `emulator` binary.
  *
- * - **Headless** (the default, and always in CI): no window, SwiftShader,
+ * - **Headless** (`headless: true`, and always in CI): no window, SwiftShader,
  *   cold boot. Loading the AVD's snapshot headless fails anyway — the
  *   snapshot was saved by a windowed emulator with another renderer — and
  *   the failed attempt still rewrites the AVD's snapshot metadata.
- * - **Window** (`headless: false`): the host GPU (`-gpu auto`) and a
+ * - **Window** (the local default): the host GPU (`-gpu auto`) and a
  *   quick-boot from the AVD's default snapshot. `-read-only` means nothing
  *   is saved back to the AVD (`-no-snapshot-save` says so explicitly).
  */

@@ -1320,10 +1320,19 @@ describe('resolveEmulatorBinary', () => {
 describe('resolveEmulatorLaunchSettings', () => {
   const local = {} as NodeJS.ProcessEnv;
 
-  it('is headless by default, locally too', () => {
-    expect(resolveEmulatorLaunchSettings(undefined, local, 'darwin')).toEqual({ headless: true, args: [] });
-    expect(resolveEmulatorLaunchSettings({ args: ['-memory', '4096'] }, local, 'darwin'))
-      .toEqual({ headless: true, args: ['-memory', '4096'] });
+  it('opens a window by default where one can be shown', () => {
+    expect(resolveEmulatorLaunchSettings(undefined, local, 'darwin')).toEqual({ headless: false, args: [] });
+    expect(resolveEmulatorLaunchSettings({ args: ['-memory', '4096'] }, { DISPLAY: ':0' }, 'linux'))
+      .toEqual({ headless: false, args: ['-memory', '4096'] });
+  });
+
+  it('runs headless when asked, locally too', () => {
+    expect(resolveEmulatorLaunchSettings({ headless: true }, local, 'darwin')).toEqual({ headless: true, args: [] });
+  });
+
+  it('is headless by default where no window can be shown, without a warning', () => {
+    expect(resolveEmulatorLaunchSettings(undefined, { CI: 'true' }, 'darwin')).toEqual({ headless: true, args: [] });
+    expect(resolveEmulatorLaunchSettings(undefined, {}, 'linux')).toEqual({ headless: true, args: [] });
   });
 
   it('opens a window when asked and one can be shown', () => {
@@ -1593,7 +1602,7 @@ describe('provisionEmulators launch failures', () => {
   it('passes the resolved launch settings and binary to the launch', async () => {
     const launches: Array<{ settings: unknown, emulator: string }> = [];
     await provisionEmulators(
-      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: { args: ['-memory', '4096'] } },
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: { headless: true, args: ['-memory', '4096'] } },
       {
         ...base,
         resolveEmulatorBinary: foundEmulator,

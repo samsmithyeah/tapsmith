@@ -167,9 +167,10 @@ When `avd` is set, Tapsmith defaults to using that AVD for provisioned emulator
 capacity. Set `deviceStrategy: "prefer-connected"` if you want connected
 devices to win instead.
 
-Tapsmith launches these emulators headless by default. On your own machine,
-`emulatorLaunchOptions: { headless: false }` shows each emulator's window and
-quick-boots it from the AVD's snapshot, which is much faster. Emulators Tapsmith
+On your own machine, each emulator Tapsmith launches opens a window and
+quick-boots from the AVD's snapshot. In CI it runs headless, and
+`emulatorLaunchOptions: { headless: true }` does the same locally, at the cost
+of a slower cold boot. Emulators Tapsmith
 launches keep running after the run so the next one can reuse them. The run
 names each one and says how to stop it. See
 [How Tapsmith launches emulators](./configuration.md#how-tapsmith-launches-emulators).

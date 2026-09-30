@@ -2023,7 +2023,7 @@ emulators it boots for `avd`. Mirrors Playwright's `launchOptions`.
 
 | Field      | Type       | Default | Description |
 | ---------- | ---------- | ------- | ----------- |
-| `headless` | `boolean`  | `true`  | `false` opens the emulator's window, uses the host GPU and quick-boots from the AVD's snapshot. Always headless in CI, over SSH, or on Linux with no display. |
+| `headless` | `boolean`  | `false` locally | `true` runs the emulator without a window (software GPU, cold boot). By default it opens a window, uses the host GPU and quick-boots from the AVD's snapshot. Always headless in CI, over SSH, or on Linux with no display. |
 | `args`     | `string[]` | `[]`    | Extra `emulator` arguments, after Tapsmith's own. `-avd`, `@name`, `-port`, `-ports` and `-read-only` are refused. |
 
 See [How Tapsmith launches emulators](configuration.md#how-tapsmith-launches-emulators).
