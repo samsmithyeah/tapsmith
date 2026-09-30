@@ -467,9 +467,9 @@ export interface ProjectConfig {
 export interface EmulatorLaunchOptions {
   /**
    * Run without a window. Defaults to `false` locally: the emulator opens a
-   * window, uses the host GPU and quick-boots from the AVD's snapshot, which
+   * window, keeps the AVD's GPU setting and quick-boots from the AVD's snapshot, which
    * is much faster than a headless cold boot. `true` runs it headless (no
-   * window, software GPU, cold boot). Always headless in CI (`CI` set), over
+   * window, software GPU, cold boot). Always headless in CI, over
    * SSH, or on Linux with no display.
    */
   headless?: boolean;

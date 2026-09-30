@@ -14,6 +14,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { promisify } from 'node:util';
+import { isCI as runningInCi } from 'ci-info';
 import type { DeviceStrategy, EmulatorLaunchOptions } from './config.js';
 import { xmlUnescape } from './app-reset.js';
 
@@ -253,10 +254,10 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
         // Reused as launched: a changed `emulatorLaunchOptions` applies only
         // to new launches, so say which kind this is and how to relaunch it.
         const mode = argv.includes('-no-window') ? 'headless' : 'with a window';
-        process.stderr.write(
-          `${DIM}Reusing emulator ${entry.serial} (AVD ${entry.avd}, ${mode}) from previous run. `
-          + `Stop it (adb -s ${entry.serial} emu kill) to relaunch it with other emulatorLaunchOptions.${RESET}\n`,
-        );
+        process.stderr.write(launchedThisProcess.has(entry.serial)
+          ? `${DIM}Reusing emulator ${entry.serial} (AVD ${entry.avd}, ${mode}), launched earlier in this run.${RESET}\n`
+          : `${DIM}Reusing emulator ${entry.serial} (AVD ${entry.avd}, ${mode}) from previous run. `
+            + `Stop it (adb -s ${entry.serial} emu kill) to relaunch it with other emulatorLaunchOptions.${RESET}\n`);
         reusable.push(entry.serial);
         surviving.push(entry);
         continue;
@@ -1025,17 +1026,20 @@ const HEADLESS_LAUNCH: EmulatorLaunchSettings = { headless: true, args: [] };
  * where there is nothing to show it on.
  */
 function emulatorWindowUnavailableReason(
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  isCi: boolean,
 ): string | undefined {
-  if (env.CI && env.CI !== 'false') return 'CI is set';
+  // `ci-info` knows the CI systems that do not set CI (Jenkins, Azure
+  // Pipelines, TeamCity, …); CI=… is checked too, for callers passing an env.
+  if (isCi || (env.CI && env.CI !== 'false')) return 'this is a CI build';
   if (env.SSH_CONNECTION || env.SSH_TTY) return 'this is an SSH session';
   if (platform === 'linux' && !env.DISPLAY && !env.WAYLAND_DISPLAY) return 'no display is available';
   return undefined;
 }
 
 /**
- * Resolve `emulatorLaunchOptions`. Locally the default is a window (host GPU
+ * Resolve `emulatorLaunchOptions`. Locally the default is a window (AVD GPU mode
  * and a snapshot quick-boot: measured ~10 s from launch to a healthy device
  * against ~38 s for a headless cold boot); `headless: true` opts out. Where no window can be
  * shown — CI, SSH, Linux without a display — it is always headless, and
@@ -1045,14 +1049,17 @@ export function resolveEmulatorLaunchSettings(
   options: EmulatorLaunchOptions | undefined,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  /** From `ci-info` for the real environment; a caller's own `env` is judged by itself. */
+  isCi: boolean = env === process.env && runningInCi,
 ): EmulatorLaunchSettings & { windowUnavailable?: string } {
   // `-no-window` in args is a request for headless: honour it with the whole
   // headless profile, not a windowed profile (snapshot load, host GPU) minus the window.
   const userArgs = options?.args ?? [];
-  const askedHeadless = options?.headless === true || userArgs.includes('-no-window');
-  const args = userArgs.filter((arg) => arg !== '-no-window');
+  const isNoWindow = (arg: string) => arg === '-no-window' || arg === '--no-window';
+  const askedHeadless = options?.headless === true || userArgs.some(isNoWindow);
+  const args = userArgs.filter((arg) => !isNoWindow(arg));
   if (askedHeadless) return { headless: true, args };
-  const windowUnavailable = emulatorWindowUnavailableReason(env, platform);
+  const windowUnavailable = emulatorWindowUnavailableReason(env, platform, isCi);
   if (!windowUnavailable) return { headless: false, args };
   // Only an explicit `headless: false` is worth a warning; the default just adapts.
   return options?.headless === false ? { headless: true, args, windowUnavailable } : { headless: true, args };
@@ -1065,8 +1072,9 @@ export function resolveEmulatorLaunchSettings(
  *   cold boot. Loading the AVD's snapshot headless fails anyway — the
  *   snapshot was saved by a windowed emulator with another renderer — and
  *   the failed attempt still rewrites the AVD's snapshot metadata.
- * - **Window** (the local default): the host GPU (`-gpu auto`) and a
- *   quick-boot from the AVD's default snapshot. `-read-only` means nothing
+ * - **Window** (the local default): the AVD's own GPU mode (no `-gpu`, so
+ *   it matches the renderer its snapshot was saved with — normally the host
+ *   GPU) and a quick-boot from the AVD's default snapshot. `-read-only` means nothing
  *   is saved back to the AVD (`-no-snapshot-save` says so explicitly).
  */
 export function emulatorLaunchArgs(
@@ -1076,7 +1084,7 @@ export function emulatorLaunchArgs(
 ): string[] {
   const profile = settings.headless
     ? ['-no-snapshot-load', '-no-snapshot-save', '-no-boot-anim', '-no-audio', '-gpu', 'swiftshader_indirect', '-no-window']
-    : ['-no-snapshot-save', '-no-boot-anim', '-no-audio', '-gpu', 'auto'];
+    : ['-no-snapshot-save', '-no-boot-anim', '-no-audio'];
   return [
     '-avd', avd,
     '-port', String(port),
@@ -1169,7 +1177,7 @@ export function launchEmulator(
 }
 
 /** The emulator refusing a `-read-only` instance beside a writable one of the same AVD. */
-const WRITABLE_INSTANCE_RUNNING = /another emulator instance is running|running multiple emulators with the same avd/i;
+const WRITABLE_INSTANCE_RUNNING = /^(?:ERROR|FATAL)\b.*another emulator instance is running/im;
 
 /** How many lines of the emulator's output an early-exit message quotes. */
 const EXIT_OUTPUT_LINES = 3;
@@ -1783,7 +1791,10 @@ export async function provisionEmulators(opts: {
       let booting = true;
       const exitedDuringBoot = new Promise<never>((_resolve, reject) => {
         void emu.exited.then((exit) => {
-          if (booting) reject(new EmulatorExitedError(describeEmulatorExit(exit, emu, emulator)));
+          if (!booting) return;
+          // Abort first, so the boot branch cannot start another probe.
+          stopWaiting.abort();
+          reject(new EmulatorExitedError(describeEmulatorExit(exit, emu, emulator)));
         });
       });
       exitedDuringBoot.catch(() => { /* surfaced through the race below */ });
@@ -1844,6 +1855,7 @@ export async function provisionEmulators(opts: {
   if (launched.length > 0) {
     recordLaunchedEmulators(launched);
     for (const emu of launched) launchedThisProcess.set(emu.serial, emu);
+    nameEmulatorsOnInterrupt();
     logProgress(`Provisioned ${launched.length} healthy emulator(s).`);
   }
 
@@ -1917,6 +1929,41 @@ const launchedThisProcess = new Map<string, LaunchedEmulator>();
 
 export function emulatorsLaunchedThisProcess(): LaunchedEmulator[] {
   return [...launchedThisProcess.values()];
+}
+
+let interruptHookInstalled = false;
+
+/**
+ * Name the launched emulators when the run is interrupted (Ctrl+C) — they
+ * are detached and survive it. The notice waits a turn, so a mode's own
+ * SIGINT handler (which may kill them, or print the notice itself) runs
+ * first. When this is the only SIGINT listener, the signal is then re-raised
+ * so the process ends exactly as it would have without the hook.
+ */
+function nameEmulatorsOnInterrupt(): void {
+  if (interruptHookInstalled) return;
+  interruptHookInstalled = true;
+  process.once('SIGINT', createInterruptNotice({
+    listenerCount: () => process.listenerCount('SIGINT'),
+    notify: () => preserveEmulatorsForReuse(emulatorsLaunchedThisProcess()),
+    reraise: () => process.kill(process.pid, 'SIGINT'),
+  }));
+}
+
+/** The SIGINT listener `nameEmulatorsOnInterrupt` installs, with its effects injectable for tests. */
+export function createInterruptNotice(deps: {
+  listenerCount: () => number
+  notify: () => void
+  reraise: () => void
+}): () => void {
+  return () => {
+    // A `once` listener is already removed when it runs: any count left is another handler.
+    const alone = deps.listenerCount() === 0;
+    setImmediate(() => {
+      deps.notify();
+      if (alone) deps.reraise();
+    });
+  };
 }
 
 function resolveLaunchCandidates(

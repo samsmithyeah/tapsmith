@@ -46,6 +46,7 @@ import {
   describeEmulatorExit,
   preserveEmulatorsForReuse,
   emulatorsLaunchedThisProcess,
+  createInterruptNotice,
   waitForBoot,
   waitForSystemSettle,
 } from '../emulator.js';
@@ -1333,6 +1334,8 @@ describe('resolveEmulatorLaunchSettings', () => {
   it('takes -no-window in args as a request for the whole headless profile', () => {
     expect(resolveEmulatorLaunchSettings({ args: ['-no-window', '-memory', '4096'] }, local, 'darwin'))
       .toEqual({ headless: true, args: ['-memory', '4096'] });
+    expect(resolveEmulatorLaunchSettings({ args: ['--no-window'] }, local, 'darwin'))
+      .toEqual({ headless: true, args: [] });
   });
 
   it('is headless by default where no window can be shown, without a warning', () => {
@@ -1349,7 +1352,10 @@ describe('resolveEmulatorLaunchSettings', () => {
 
   it('never forces a window where there is nothing to show it on', () => {
     expect(resolveEmulatorLaunchSettings({ headless: false }, { CI: 'true' }, 'darwin'))
-      .toEqual({ headless: true, args: [], windowUnavailable: 'CI is set' });
+      .toEqual({ headless: true, args: [], windowUnavailable: 'this is a CI build' });
+    // CI systems that do not set CI (Jenkins, Azure Pipelines…), as ci-info reports them.
+    expect(resolveEmulatorLaunchSettings({ headless: false }, {}, 'darwin', true).windowUnavailable).toBe('this is a CI build');
+    expect(resolveEmulatorLaunchSettings(undefined, {}, 'darwin', true)).toEqual({ headless: true, args: [] });
     expect(resolveEmulatorLaunchSettings({ headless: false }, { SSH_CONNECTION: '1.2.3.4 5 6.7.8.9 22' }, 'darwin').windowUnavailable)
       .toBe('this is an SSH session');
     expect(resolveEmulatorLaunchSettings({ headless: false }, {}, 'linux').windowUnavailable)
@@ -1366,12 +1372,13 @@ describe('emulatorLaunchArgs profiles', () => {
     ]);
   });
 
-  it('uses the host GPU and the AVD snapshot, saving nothing, with a window', () => {
+  it('keeps the AVD’s own GPU mode and loads its snapshot, saving nothing, with a window', () => {
     const args = emulatorLaunchArgs('Pixel', 5554, { headless: false, args: [] });
     expect(args).toEqual([
       '-avd', 'Pixel', '-port', '5554', '-read-only',
-      '-no-snapshot-save', '-no-boot-anim', '-no-audio', '-gpu', 'auto',
+      '-no-snapshot-save', '-no-boot-anim', '-no-audio',
     ]);
+    expect(args).not.toContain('-gpu');
     expect(args).not.toContain('-no-window');
     expect(args).not.toContain('-no-snapshot-load');
   });
@@ -1464,6 +1471,15 @@ describe('describeEmulatorExit', () => {
       'The emulator exited during boot (exit code 1): Unknown AVD name [Pixel], use -list-avds to see valid list. / '
       + 'HOME is defined but there is no file Pixel.ini in $HOME/.android/avd. Full output: /tmp/tapsmith-emulator-5554.log',
     );
+  });
+
+  it('does not take the multi-instance warning for the writable-instance refusal', () => {
+    const log = [
+      'WARNING      | Running multiple emulators with the same AVD is an experimental feature.',
+      'ERROR        | Not enough memory to start the emulator.',
+    ].join('\n');
+    expect(describeEmulatorExit(exited, emu, bin, () => log))
+      .toBe('The emulator exited during boot (exit code 1): Not enough memory to start the emulator.. Full output: /tmp/tapsmith-emulator-5554.log');
   });
 
   it('falls back to the last lines, or to the exit alone', () => {
@@ -1604,6 +1620,28 @@ describe('provisionEmulators launch failures', () => {
     expect(serials).not.toContain('emulator-5572');
   });
 
+  it('does not call an emulator from this run one "from previous run"', () => {
+    // emulator-5570 was launched by this process in the test above.
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const result = reclaimOrphanedEmulators({
+        readManifest: () => [{ serial: 'emulator-5570', pid: 4242, avd: 'Pixel', port: 5570, launchedAt: '' }],
+        writeManifest: () => undefined,
+        listAdbDevices: () => [{ serial: 'emulator-5570', state: 'device' }],
+        isProcessAlive: () => true,
+        readProcessArgs: () => ['/sdk/qemu', ...emulatorLaunchArgs('Pixel', 5570, { headless: false, args: [] })],
+        findEmulatorPid: () => 4242,
+        probeDeviceHealth: (serial) => ({ serial, healthy: true }),
+        killEmulator: vi.fn(),
+        killProcess: vi.fn(),
+      });
+      expect(result.reusable).toEqual(['emulator-5570']);
+      expect(String(write.mock.calls[0]?.[0])).toContain('Reusing emulator emulator-5570 (AVD Pixel, with a window), launched earlier in this run.');
+    } finally {
+      write.mockRestore();
+    }
+  });
+
   it('passes the resolved launch settings and binary to the launch', async () => {
     const launches: Array<{ settings: unknown, emulator: string }> = [];
     await provisionEmulators(
@@ -1644,7 +1682,7 @@ describe('provisionEmulators launch failures', () => {
         },
       );
       expect(headless).toEqual([true]);
-      expect(warnings).toEqual(['Launching emulators headless although emulatorLaunchOptions.headless is false: CI is set.']);
+      expect(warnings).toEqual(['Launching emulators headless although emulatorLaunchOptions.headless is false: this is a CI build.']);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -1713,5 +1751,31 @@ describe('boot waits stop when aborted', () => {
     const probe = vi.fn((serial: string) => ({ serial, healthy: true }));
     await waitForDeviceStability('emulator-5998', 20_000, probe, AbortSignal.abort());
     expect(probe).not.toHaveBeenCalled();
+  });
+});
+
+describe('createInterruptNotice', () => {
+  it('names the emulators after the other handlers ran, and re-raises when it was alone', async () => {
+    const calls: string[] = [];
+    const listener = createInterruptNotice({
+      listenerCount: () => 0,
+      notify: () => calls.push('notify'),
+      reraise: () => calls.push('reraise'),
+    });
+    listener();
+    expect(calls).toEqual([]);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(calls).toEqual(['notify', 'reraise']);
+  });
+
+  it('leaves exiting to another SIGINT handler when there is one', async () => {
+    const calls: string[] = [];
+    createInterruptNotice({
+      listenerCount: () => 1,
+      notify: () => calls.push('notify'),
+      reraise: () => calls.push('reraise'),
+    })();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(calls).toEqual(['notify']);
   });
 });

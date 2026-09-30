@@ -410,11 +410,11 @@ or set `ANDROID_HOME`.
 
 Every emulator is launched `-read-only`, so several can run from one AVD and nothing is
 written back to it. On a machine with a display, the emulator opens a **window**, uses the
-host GPU, and quick-boots from the AVD's saved snapshot (the one Android Studio saves when
+AVD's own GPU setting (the host GPU by default), and quick-boots from the AVD's saved snapshot (the one Android Studio saves when
 you close it), without saving anything back. With `--workers N`, each worker's emulator
 opens its own window.
 
-In CI (`CI` set), over SSH, and on Linux with no display, it runs **headless** instead: no
+In CI (`CI` set, or a CI system such as Jenkins or Azure Pipelines), over SSH, and on Linux with no display, it runs **headless** instead: no
 window, a software GPU and a cold boot. You can choose that locally too:
 
 ```typescript
