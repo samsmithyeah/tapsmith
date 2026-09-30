@@ -305,9 +305,9 @@ function checkAgentApks(report: Reporter): void {
 /** One `app-apk` row for every APK the config installs, so a consumer matching on the id reads the verdict. */
 function checkAppApk(report: Reporter, config: TapsmithConfig | undefined, required: boolean): void {
   if (!config) return;
-  const apks = [...new Set(configAndroidApks(config).map((apk) => path.resolve(config.rootDir ?? process.cwd(), apk)))];
-  if (apks.length === 0) return;
   try {
+    const apks = [...new Set(configAndroidApks(config).map((apk) => path.resolve(config.rootDir ?? process.cwd(), apk)))];
+    if (apks.length === 0) return;
     const missing = apks.filter((apk) => !fs.existsSync(apk));
     if (missing.length === 0) {
       pass(report, 'app-apk', `App APK${apks.length === 1 ? '' : 's'} exist${apks.length === 1 ? 's' : ''}`, apks.map((apk) => path.basename(apk)).join(', '));
@@ -475,7 +475,7 @@ function checkXcode(report: Reporter, required: boolean, targeted: boolean): boo
     return true;
   }
   if (required) fail(report, 'xcode', 'Xcode not installed', XCODE_FIX);
-  else if (targeted) warn(report, 'xcode', 'Xcode not installed — iOS checks skipped; the config\'s iOS projects cannot run on this machine', `${XCODE_FIX}. Meanwhile, select the other projects with --project`);
+  else if (targeted) warn(report, 'xcode', 'Xcode not installed — the config\'s iOS projects cannot run on this machine', `${XCODE_FIX}. Meanwhile, select the other projects with --project`);
   else warn(report, 'xcode', 'Xcode not installed — iOS checks skipped', `To test on iOS: ${XCODE_FIX}`);
   return false;
 }

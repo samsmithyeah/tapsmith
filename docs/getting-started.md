@@ -91,7 +91,7 @@ Tapsmith Doctor
   Network Capture
   ✓ MITM CA exists (~/.tapsmith/ca.pem)
   ✓ AVD system images support HTTPS capture (1 AVD checked)
-  ✓ mitmproxy installed
+  ✓ mitmproxy installed (Homebrew cask)
   ✓ Network Extension enabled
   ✓ macOS system proxy not set by Tapsmith
 

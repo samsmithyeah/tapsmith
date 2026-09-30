@@ -377,6 +377,13 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     expect(rows[0]!.label).toMatch(/project a:.*project b:/);
   });
 
+  it('a malformed apk value is a warning row, not a crash', async () => {
+    withAdb();
+    writeConfig("export default { projects: [{ name: 'a', use: { apk: 123 } }] }\n");
+    const { json } = await doctorJson();
+    expect(check(json, 'app-apk')).toMatchObject({ status: 'warn', label: 'Could not check app APK path' });
+  });
+
   it('a project option the per-project merge rejects is a config-load failure, not a crash', async () => {
     withAdb();
     writeConfig("export default { projects: [{ name: 'a', use: { platform: 'android', emulatorLaunchOptions: { headless: true } } }] }\n");

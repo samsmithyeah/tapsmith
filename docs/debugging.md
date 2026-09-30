@@ -583,8 +583,8 @@ Tapsmith Doctor
 
   Network Capture
   ✓ MITM CA exists (~/.tapsmith/ca.pem)
-  ✓ AVD system images support HTTPS capture (2 AVDs checked)
-  ✓ mitmproxy installed
+  ✓ Configured AVD Pixel_7 supports HTTPS capture (google_apis)
+  ✓ mitmproxy installed (Homebrew cask)
   ✓ Network Extension enabled
   ✓ macOS system proxy not set by Tapsmith
 
