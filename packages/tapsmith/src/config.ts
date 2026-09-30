@@ -706,6 +706,10 @@ function validateEmulatorLaunchOptions(raw: Partial<TapsmithConfig>): void {
   if (options === null || typeof options !== 'object' || Array.isArray(options)) {
     throw new Error(`config: emulatorLaunchOptions must be an object (got ${JSON.stringify(options)})`);
   }
+  const unknown = Object.keys(options).filter((key) => key !== 'headless' && key !== 'args');
+  if (unknown.length > 0) {
+    throw new Error(`config: emulatorLaunchOptions has unknown ${unknown.length === 1 ? 'key' : 'keys'} ${unknown.join(', ')} (expected headless, args)`);
+  }
   if (options.headless !== undefined && typeof options.headless !== 'boolean') {
     throw new Error(`config: emulatorLaunchOptions.headless must be a boolean (got ${JSON.stringify(options.headless)})`);
   }

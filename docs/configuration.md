@@ -437,8 +437,9 @@ AVD, the console port or read-only mode (`-avd`, `@name`, `-port`, `-ports`,
 `args` counts as `headless: true`.
 
 These options apply when Tapsmith launches an emulator. An emulator left running by an
-earlier run is reused as it was launched, and the run says whether it is headless. To
-switch it to other options, stop it with `adb -s <serial> emu kill` and run again.
+earlier run is reused as it was launched. When it is headless and this run would open a
+window (or the other way round), the run says so. To relaunch it with the current
+options, stop it with `adb -s <serial> emu kill` and run again.
 
 The emulator's output goes to `tapsmith-emulator-<port>.log` in the system temp
 directory. If the emulator exits while it is booting, the run reports why straight away,
@@ -446,8 +447,9 @@ instead of waiting for the boot timeout. The most common case is an AVD that is 
 open writable, from Android Studio for example: the emulator will not start a read-only
 instance beside it, so close that emulator or point `avd` at another AVD.
 
-At the end of a run, Tapsmith names each emulator it launched and left running for the
-next run, with the command to stop it, such as `adb -s emulator-5554 emu kill`.
+When Tapsmith launches an emulator, and again at the end of the run, it says that the
+emulator stays running for the next run and gives the command to stop it, such as
+`adb -s emulator-5554 emu kill`.
 
 ### Explicit Device Override
 

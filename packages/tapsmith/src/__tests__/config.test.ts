@@ -706,6 +706,7 @@ describe('defineConfig()', () => {
     expect(bad({ headless: 'false' })).toThrow('config: emulatorLaunchOptions.headless must be a boolean (got "false")');
     expect(bad({ args: '-memory 4096' })).toThrow('config: emulatorLaunchOptions.args must be an array of strings');
     expect(bad({ args: ['-memory', 4096] })).toThrow('config: emulatorLaunchOptions.args must be an array of strings');
+    expect(bad({ headles: true })).toThrow('config: emulatorLaunchOptions has unknown key headles (expected headless, args)');
   });
 
   it('refuses emulatorLaunchOptions in a project `use`: it is root-level only', () => {

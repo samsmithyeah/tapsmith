@@ -32,6 +32,7 @@ import {
   filterHealthyDevices,
   getRunningAvdName,
   cleanupStaleEmulators,
+  resolveEmulatorLaunchSettings,
   prefilterDevicesForStrategy,
   selectDevicesForStrategy,
   filterPreferInstalledApp,
@@ -1106,7 +1107,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       else process.stderr.write(`${YELLOW}Cleared stale offline emulator transport ${serial} before device discovery.${RESET}\n`);
     }
 
-    const staleResult = cleanupStaleEmulators(config.avd);
+    const staleResult = cleanupStaleEmulators(config.avd, {}, resolveEmulatorLaunchSettings(config.emulatorLaunchOptions).headless);
     if (staleResult.killed.length > 0) {
       note(`Cleaned up ${staleResult.killed.length} stale emulator(s).`);
     }

@@ -47,6 +47,7 @@ import {
   filterHealthyDevices,
   listAdbDevices,
   cleanupStaleEmulators,
+  resolveEmulatorLaunchSettings,
   prefilterDevicesForStrategy,
   probeDeviceHealth,
   provisionEmulators,
@@ -1033,7 +1034,7 @@ async function ensureSequentialTargetDevice(
 
   // Reclaim healthy emulators from previous runs, kill unhealthy ones.
   // cleanupStaleEmulators logs details about each action internally.
-  const staleResult = cleanupStaleEmulators(config.avd);
+  const staleResult = cleanupStaleEmulators(config.avd, {}, resolveEmulatorLaunchSettings(config.emulatorLaunchOptions).headless);
   if (staleResult.killed.length > 0) {
     const message = `Cleaned up ${staleResult.killed.length} stale emulator(s).`;
     if (progress) progress.note(message);

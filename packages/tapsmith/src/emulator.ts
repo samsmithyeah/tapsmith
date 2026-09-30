@@ -188,7 +188,11 @@ function killProcess(pid: number): void {
  * This is what makes back-to-back `npx tapsmith test` fast — emulators survive
  * between runs and get reused instead of relaunched.
  */
-export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): ReclaimResult {
+export function reclaimOrphanedEmulators(
+  deps: Partial<ReclaimDeps> = {},
+  /** Whether this run would launch headless — to say when a reused emulator differs. */
+  wantedHeadless?: boolean,
+): ReclaimResult {
   const d = resolveReclaimDeps(deps);
   const entries = d.readManifest();
   if (entries.length === 0) return { reusable: [], killed: [], undetermined: [] };
@@ -253,11 +257,16 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
       if (health.healthy) {
         // Reused as launched: a changed `emulatorLaunchOptions` applies only
         // to new launches, so say which kind this is and how to relaunch it.
-        const mode = argv.includes('-no-window') ? 'headless' : 'with a window';
+        const reusedHeadless = argv.includes('-no-window');
+        const mode = reusedHeadless ? 'headless' : 'with a window';
+        const differs = wantedHeadless !== undefined && wantedHeadless !== reusedHeadless;
         process.stderr.write(launchedThisProcess.has(entry.serial)
           ? `${DIM}Reusing emulator ${entry.serial} (AVD ${entry.avd}, ${mode}), launched earlier in this run.${RESET}\n`
-          : `${DIM}Reusing emulator ${entry.serial} (AVD ${entry.avd}, ${mode}) from previous run. `
-            + `Stop it (adb -s ${entry.serial} emu kill) to relaunch it with other emulatorLaunchOptions.${RESET}\n`);
+          : `${DIM}Reusing emulator ${entry.serial} (AVD ${entry.avd}, ${mode}) from previous run.`
+            + (differs
+              ? ` This run would launch it ${wantedHeadless ? 'headless' : 'with a window'}: stop it (adb -s ${entry.serial} emu kill) to relaunch it that way.`
+              : '')
+            + `${RESET}\n`);
         reusable.push(entry.serial);
         surviving.push(entry);
         continue;
@@ -438,13 +447,15 @@ export interface CleanupStaleResult {
 export function cleanupStaleEmulators(
   targetAvd?: string,
   deps: Partial<CleanupDeps> = {},
+  /** Whether this run would launch headless (`resolveEmulatorLaunchSettings`). */
+  wantedHeadless?: boolean,
 ): CleanupStaleResult {
   const d = resolveReclaimDeps(deps);
   const resolveAvdName = deps.resolveAvdName ?? getRunningAvdName;
   const settle = deps.waitForAdbSettle ?? waitForAdbSettle;
 
   // Phase 1: manifest-based reclaim/kill (precise)
-  const reclaim = reclaimOrphanedEmulators(d);
+  const reclaim = reclaimOrphanedEmulators(d, wantedHeadless);
   const handled = new Set([...reclaim.reusable, ...reclaim.killed, ...reclaim.undetermined]);
 
   // Phase 2: heuristic cleanup for Tapsmith emulators the manifest missed
@@ -1060,9 +1071,7 @@ export function resolveEmulatorLaunchSettings(
   const args = userArgs.filter((arg) => !isNoWindow(arg));
   if (askedHeadless) return { headless: true, args };
   const windowUnavailable = emulatorWindowUnavailableReason(env, platform, isCi);
-  if (!windowUnavailable) return { headless: false, args };
-  // Only an explicit `headless: false` is worth a warning; the default just adapts.
-  return options?.headless === false ? { headless: true, args, windowUnavailable } : { headless: true, args };
+  return windowUnavailable ? { headless: true, args, windowUnavailable } : { headless: false, args };
 }
 
 /**
@@ -1450,7 +1459,7 @@ export function filterPreferInstalledApp(
  * another emulator) regularly needs more than the two minutes that suffice
  * on a developer machine.
  */
-export const EMULATOR_BOOT_TIMEOUT_MS = process.env.CI ? 300_000 : 120_000;
+export const EMULATOR_BOOT_TIMEOUT_MS = runningInCi ? 300_000 : 120_000;
 
 const execFileAsync = promisify(execFile);
 
@@ -1764,7 +1773,9 @@ export async function provisionEmulators(opts: {
     ? ` (${existingCount} already connected, need ${workers} total)`
     : '';
   const settings = resolveEmulatorLaunchSettings(opts.launchOptions);
-  if (settings.windowUnavailable) {
+  // Only an explicit `headless: false` is worth a warning; the default just
+  // adapts, and the Starting line below says why.
+  if (settings.windowUnavailable && opts.launchOptions?.headless === false) {
     logProgress(`Launching emulators headless although emulatorLaunchOptions.headless is false: ${settings.windowUnavailable}.`, 'warning');
   }
   if (avd) {
@@ -1782,7 +1793,7 @@ export async function provisionEmulators(opts: {
       const port = findAvailablePort(usedPorts);
       usedPorts.add(port);
       const emu = resolvedDeps.launchEmulator(candidateAvd, port, settings, emulator.command);
-      logProgress(`Starting ${emu.serial} (port ${port}, AVD ${candidateAvd}, ${settings.headless ? 'headless' : 'with a window'})`);
+      logProgress(`Starting ${emu.serial} (port ${port}, AVD ${candidateAvd}, ${settings.headless ? `headless${settings.windowUnavailable ? `: ${settings.windowUnavailable}` : ''}` : 'with a window'})`);
 
       // Race the boot against the process ending: an emulator that fails to
       // spawn or exits during boot is reported with its own reason at once,
@@ -1855,8 +1866,12 @@ export async function provisionEmulators(opts: {
   if (launched.length > 0) {
     recordLaunchedEmulators(launched);
     for (const emu of launched) launchedThisProcess.set(emu.serial, emu);
-    nameEmulatorsOnInterrupt();
     logProgress(`Provisioned ${launched.length} healthy emulator(s).`);
+    // Said now as well as at the end: a run that is interrupted (Ctrl+C)
+    // never reaches its end-of-run notice, and the emulator survives it.
+    for (const emu of launched) {
+      logProgress(`${emu.serial} stays running after the run for faster reruns. Stop it with: adb -s ${emu.serial} emu kill`, 'warning');
+    }
   }
 
   const allSerials = [
@@ -1931,40 +1946,6 @@ export function emulatorsLaunchedThisProcess(): LaunchedEmulator[] {
   return [...launchedThisProcess.values()];
 }
 
-let interruptHookInstalled = false;
-
-/**
- * Name the launched emulators when the run is interrupted (Ctrl+C) — they
- * are detached and survive it. The notice waits a turn, so a mode's own
- * SIGINT handler (which may kill them, or print the notice itself) runs
- * first. When this is the only SIGINT listener, the signal is then re-raised
- * so the process ends exactly as it would have without the hook.
- */
-function nameEmulatorsOnInterrupt(): void {
-  if (interruptHookInstalled) return;
-  interruptHookInstalled = true;
-  process.once('SIGINT', createInterruptNotice({
-    listenerCount: () => process.listenerCount('SIGINT'),
-    notify: () => preserveEmulatorsForReuse(emulatorsLaunchedThisProcess()),
-    reraise: () => process.kill(process.pid, 'SIGINT'),
-  }));
-}
-
-/** The SIGINT listener `nameEmulatorsOnInterrupt` installs, with its effects injectable for tests. */
-export function createInterruptNotice(deps: {
-  listenerCount: () => number
-  notify: () => void
-  reraise: () => void
-}): () => void {
-  return () => {
-    // A `once` listener is already removed when it runs: any count left is another handler.
-    const alone = deps.listenerCount() === 0;
-    setImmediate(() => {
-      deps.notify();
-      if (alone) deps.reraise();
-    });
-  };
-}
 
 function resolveLaunchCandidates(
   avds: string[],

@@ -46,7 +46,6 @@ import {
   describeEmulatorExit,
   preserveEmulatorsForReuse,
   emulatorsLaunchedThisProcess,
-  createInterruptNotice,
   waitForBoot,
   waitForSystemSettle,
 } from '../emulator.js';
@@ -706,7 +705,7 @@ describe('emulator utilities', () => {
       vi.restoreAllMocks();
     });
 
-    it('says whether a reused emulator is headless, and how to relaunch it with other options', () => {
+    it('says whether a reused emulator is headless, and how to relaunch it only when this run wants the other kind', () => {
       for (const [headless, mode] of [[true, 'headless'], [false, 'with a window']] as const) {
         const h = harness({
           entries: [entry()],
@@ -717,10 +716,14 @@ describe('emulator utilities', () => {
         });
         const writes = vi.mocked(process.stderr.write);
         writes.mockClear();
-        expect(reclaimOrphanedEmulators(h.deps).reusable).toEqual(['emulator-5554']);
+        expect(reclaimOrphanedEmulators(h.deps, headless).reusable).toEqual(['emulator-5554']);
+        const same = String(writes.mock.calls[0]?.[0]);
+        expect(same).toContain(`Reusing emulator emulator-5554 (AVD Pixel_API_36, ${mode}) from previous run.`);
+        expect(same).not.toContain('emu kill');
+        writes.mockClear();
+        reclaimOrphanedEmulators(h.deps, !headless);
         expect(String(writes.mock.calls[0]?.[0])).toContain(
-          `Reusing emulator emulator-5554 (AVD Pixel_API_36, ${mode}) from previous run. `
-          + 'Stop it (adb -s emulator-5554 emu kill) to relaunch it with other emulatorLaunchOptions.',
+          `This run would launch it ${headless ? 'with a window' : 'headless'}: stop it (adb -s emulator-5554 emu kill) to relaunch it that way.`,
         );
       }
     });
@@ -1338,9 +1341,11 @@ describe('resolveEmulatorLaunchSettings', () => {
       .toEqual({ headless: true, args: [] });
   });
 
-  it('is headless by default where no window can be shown, without a warning', () => {
-    expect(resolveEmulatorLaunchSettings(undefined, { CI: 'true' }, 'darwin')).toEqual({ headless: true, args: [] });
-    expect(resolveEmulatorLaunchSettings(undefined, {}, 'linux')).toEqual({ headless: true, args: [] });
+  it('is headless by default where no window can be shown, and says why', () => {
+    expect(resolveEmulatorLaunchSettings(undefined, { CI: 'true' }, 'darwin'))
+      .toEqual({ headless: true, args: [], windowUnavailable: 'this is a CI build' });
+    expect(resolveEmulatorLaunchSettings(undefined, {}, 'linux'))
+      .toEqual({ headless: true, args: [], windowUnavailable: 'no display is available' });
   });
 
   it('opens a window when asked and one can be shown', () => {
@@ -1355,7 +1360,7 @@ describe('resolveEmulatorLaunchSettings', () => {
       .toEqual({ headless: true, args: [], windowUnavailable: 'this is a CI build' });
     // CI systems that do not set CI (Jenkins, Azure Pipelines…), as ci-info reports them.
     expect(resolveEmulatorLaunchSettings({ headless: false }, {}, 'darwin', true).windowUnavailable).toBe('this is a CI build');
-    expect(resolveEmulatorLaunchSettings(undefined, {}, 'darwin', true)).toEqual({ headless: true, args: [] });
+    expect(resolveEmulatorLaunchSettings(undefined, {}, 'darwin', true).headless).toBe(true);
     expect(resolveEmulatorLaunchSettings({ headless: false }, { SSH_CONNECTION: '1.2.3.4 5 6.7.8.9 22' }, 'darwin').windowUnavailable)
       .toBe('this is an SSH session');
     expect(resolveEmulatorLaunchSettings({ headless: false }, {}, 'linux').windowUnavailable)
@@ -1660,6 +1665,31 @@ describe('provisionEmulators launch failures', () => {
     expect(launches).toEqual([{ settings: { headless: true, args: ['-memory', '4096'] }, emulator: '/sdk/emulator/emulator' }]);
   });
 
+  it('says why the default launch is headless, without a warning about it', async () => {
+    vi.stubEnv('CI', 'true');
+    try {
+      const warnings: string[] = [];
+      const info: string[] = [];
+      await provisionEmulators(
+        {
+          existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined,
+          onProgress: (message, level) => { (level === 'warning' ? warnings : info).push(message); },
+        },
+        {
+          ...base,
+          resolveEmulatorBinary: foundEmulator,
+          launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port),
+          waitForBoot: async () => undefined,
+          killEmulator: vi.fn(),
+        },
+      );
+      expect(info).toContain('Starting emulator-5554 (port 5554, AVD Pixel, headless: this is a CI build)');
+      expect(warnings).toEqual(['emulator-5554 stays running after the run for faster reruns. Stop it with: adb -s emulator-5554 emu kill']);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('warns when a requested window cannot be shown, and launches headless', async () => {
     vi.stubEnv('CI', 'true');
     try {
@@ -1682,7 +1712,10 @@ describe('provisionEmulators launch failures', () => {
         },
       );
       expect(headless).toEqual([true]);
-      expect(warnings).toEqual(['Launching emulators headless although emulatorLaunchOptions.headless is false: this is a CI build.']);
+      expect(warnings).toEqual([
+        'Launching emulators headless although emulatorLaunchOptions.headless is false: this is a CI build.',
+        'emulator-5554 stays running after the run for faster reruns. Stop it with: adb -s emulator-5554 emu kill',
+      ]);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -1754,28 +1787,3 @@ describe('boot waits stop when aborted', () => {
   });
 });
 
-describe('createInterruptNotice', () => {
-  it('names the emulators after the other handlers ran, and re-raises when it was alone', async () => {
-    const calls: string[] = [];
-    const listener = createInterruptNotice({
-      listenerCount: () => 0,
-      notify: () => calls.push('notify'),
-      reraise: () => calls.push('reraise'),
-    });
-    listener();
-    expect(calls).toEqual([]);
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(calls).toEqual(['notify', 'reraise']);
-  });
-
-  it('leaves exiting to another SIGINT handler when there is one', async () => {
-    const calls: string[] = [];
-    createInterruptNotice({
-      listenerCount: () => 1,
-      notify: () => calls.push('notify'),
-      reraise: () => calls.push('reraise'),
-    })();
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(calls).toEqual(['notify']);
-  });
-});
