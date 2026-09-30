@@ -27,14 +27,21 @@ fs.writeFileSync(
   path.join(projectDir, 'package.json'),
   JSON.stringify({ name: 'clean-install-check', version: '0.0.0', private: true }, null, 2) + '\n',
 );
-// A fresh cache and an empty user config, so the result matches a first-time
-// user's machine rather than whatever this one has cached or configured.
-const userConfig = path.join(scratch, 'npmrc');
+// A fresh cache and empty user and global configs, so the result matches a
+// first-time user's machine rather than whatever this one has cached or
+// configured. The loglevel is pinned because the check reads warn lines: an
+// inherited `npm run -s`, NPM_CONFIG_LOGLEVEL=error or a quiet npmrc would
+// otherwise hide every deprecation and let the check pass vacuously.
+const userConfig = path.join(scratch, 'user-npmrc');
+const globalConfig = path.join(scratch, 'global-npmrc');
 fs.writeFileSync(userConfig, '');
+fs.writeFileSync(globalConfig, '');
 const env = {
   ...process.env,
   npm_config_cache: path.join(scratch, 'cache'),
   npm_config_userconfig: userConfig,
+  npm_config_globalconfig: globalConfig,
+  npm_config_loglevel: 'warn',
   npm_config_update_notifier: 'false',
   npm_config_fund: 'false',
   npm_config_audit: 'false',
