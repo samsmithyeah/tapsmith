@@ -71,6 +71,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Packs the SDK and installs the tarball into an empty project with a
+      # fresh npm cache, failing on any `npm warn deprecated` line: that is the
+      # first output every new user sees (PILOT-405). It runs here rather than
+      # in release.yml so the release PR catches it before the tag, and without
+      # racing registry propagation of the just-published platform packages.
+      - name: Clean-install deprecation check
+        run: npm run check:clean-install
+
       # The E2E helper scripts (trace-archive content checks, xctestrun
       # discovery) are plain Node with their own node:test suites and need no
       # device. They ran nowhere before; the trace-archive checks in particular
