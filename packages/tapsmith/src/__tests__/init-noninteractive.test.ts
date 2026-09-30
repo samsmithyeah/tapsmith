@@ -302,19 +302,19 @@ describe('resolveInitPlan() AVD choice with network capture', () => {
     expect(plan.warnings[0]).not.toContain('Android Studio');
   });
 
-  it('says emulator must be on PATH, writing no avd, when only the AVD home lists AVDs', () => {
-    // Stock Android Studio: AVDs exist but `emulator` is not on PATH, so Tapsmith can't launch them.
+  it('says the emulator was not found, writing no avd, when only the AVD home lists AVDs', () => {
+    // AVDs exist but the emulator binary was not found, so Tapsmith can't launch them.
     const plan = resolveInitPlan(android({ networkCapture: true }), { ...studioEnv, avds: [] }, detectStubs);
     expect(plan.android?.avd).toBeUndefined();
     expect(plan.warnings).toHaveLength(1);
-    expect(plan.warnings[0]).toContain('`emulator` command is not on PATH');
+    expect(plan.warnings[0]).toContain('the Android emulator is not installed where Tapsmith looks');
   });
 
-  it('warns about PATH for an explicit --avd too, when emulator lists nothing', () => {
+  it('warns about the emulator for an explicit --avd too, when emulator lists nothing', () => {
     const plan = resolveInitPlan(android({ avd: 'Tapsmith_Phone_API_36' }), { ...studioEnv, avds: [] }, detectStubs);
     expect(plan.android?.avd).toBe('Tapsmith_Phone_API_36');
     expect(plan.warnings).toHaveLength(1);
-    expect(plan.warnings[0]).toContain('`emulator` command is not on PATH');
+    expect(plan.warnings[0]).toContain('the Android emulator is not installed where Tapsmith looks');
     // The config already names the AVD, so re-running init is not the fix.
     expect(plan.warnings[0]).toContain('so Tapsmith can launch Tapsmith_Phone_API_36');
     expect(plan.warnings[0]).not.toContain('re-run');

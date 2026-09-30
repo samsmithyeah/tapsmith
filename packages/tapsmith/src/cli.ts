@@ -43,9 +43,11 @@ import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import {
   clearOfflineEmulatorTransports,
   preserveEmulatorsForReuse,
+  emulatorsLaunchedThisProcess,
   filterHealthyDevices,
   listAdbDevices,
   cleanupStaleEmulators,
+  resolveEmulatorLaunchSettings,
   prefilterDevicesForStrategy,
   probeDeviceHealth,
   provisionEmulators,
@@ -935,7 +937,9 @@ function teardownSequentialDevice(state: SequentialDeviceState): void {
     try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
     spawnedDaemonProcess = undefined;
   }
-  preserveEmulatorsForReuse(state.launchedEmulators);
+  // Its emulators are left running for reuse, and named at the end of the
+  // run (emulatorsLaunchedThisProcess): a notice here would read as if the
+  // run had ended.
 }
 
 function listConnectedDeviceSerials(): string[] {
@@ -1030,7 +1034,7 @@ async function ensureSequentialTargetDevice(
 
   // Reclaim healthy emulators from previous runs, kill unhealthy ones.
   // cleanupStaleEmulators logs details about each action internally.
-  const staleResult = cleanupStaleEmulators(config.avd);
+  const staleResult = cleanupStaleEmulators(config.avd, {}, resolveEmulatorLaunchSettings(config.emulatorLaunchOptions).headless);
   if (staleResult.killed.length > 0) {
     const message = `Cleaned up ${staleResult.killed.length} stale emulator(s).`;
     if (progress) progress.note(message);
@@ -1073,8 +1077,14 @@ async function ensureSequentialTargetDevice(
     occupiedSerials: onlineSerials,
     workers: 1,
     avd: config.avd,
+    launchOptions: config.emulatorLaunchOptions,
     onProgress: (message, level) => {
-      if (!progress) return;
+      // Without a progress display a warning (an emulator's early-exit reason,
+      // how to stop it) still has to reach the user.
+      if (!progress) {
+        if (level === 'warning') process.stderr.write(`${YELLOW}${message}${RESET}\n`);
+        return;
+      }
       if (level === 'warning') progress.note(message);
       else progress.update('primary-device', { state: 'running', detail: message });
     },
@@ -1187,8 +1197,14 @@ async function provisionMultiWorkerDevices(
         occupiedSerials: allConnected,
         workers: wanted,
         avd: config.avd,
+        launchOptions: config.emulatorLaunchOptions,
         onProgress: (message, level) => {
-          if (!opts?.progress) return;
+          // Without a progress display a warning (an emulator's early-exit reason,
+          // how to stop it) still has to reach the user.
+          if (!opts?.progress) {
+            if (level === 'warning') process.stderr.write(`${YELLOW}${message}${RESET}\n`);
+            return;
+          }
           if (level === 'warning') opts.progress.note(message);
           else opts.progress.update('worker-devices', { state: 'running', detail: message });
         },
@@ -1408,8 +1424,14 @@ async function provisionDevicesForBucket(
     occupiedSerials: allConnected,
     workers: desiredWorkers,
     avd: effectiveConfig.avd,
+    launchOptions: effectiveConfig.emulatorLaunchOptions,
     onProgress: (message, level) => {
-      if (!progress) return;
+      // Without a progress display a warning (an emulator's early-exit reason,
+      // how to stop it) still has to reach the user.
+      if (!progress) {
+        if (level === 'warning') process.stderr.write(`${YELLOW}${message}${RESET}\n`);
+        return;
+      }
       if (level === 'warning') progress.note(message);
       else progress.update('worker-devices', { state: 'running', detail: message });
     },
@@ -2048,19 +2070,28 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       // The dispatcher manages its own daemons — one per worker — each with
       // exclusive ADB access to its assigned device. No discovery daemon needed.
       const { runParallel } = await import('./dispatcher.js');
-      const fullResult = await runParallel({
-        config,
-        reporter,
-        testFiles,
-        workers: totalWorkers,
-        forceInstall: args.forceInstall,
-        workerCap: budgetCap,
-        projects: hasProjects ? projects : undefined,
-        projectWaves: hasProjects ? projectWaves : undefined,
-        launchProgress,
-      });
+      let fullResult: Awaited<ReturnType<typeof runParallel>>;
+      try {
+        fullResult = await runParallel({
+          config,
+          reporter,
+          testFiles,
+          workers: totalWorkers,
+          forceInstall: args.forceInstall,
+          workerCap: budgetCap,
+          projects: hasProjects ? projects : undefined,
+          projectWaves: hasProjects ? projectWaves : undefined,
+          launchProgress,
+        });
+      } catch (err) {
+        // A run that fails to start after booting emulators still leaves them
+        // running: name them before the error ends the process.
+        preserveEmulatorsForReuse(emulatorsLaunchedThisProcess());
+        throw err;
+      }
 
       await reporter.onRunEnd(fullResult);
+      preserveEmulatorsForReuse(emulatorsLaunchedThisProcess());
       const zeroMatch = selectionFilterActive
         && fullResult.tests.length > 0
         && fullResult.tests.every((t) => t.status === 'skipped');
@@ -2566,8 +2597,9 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     if (spawnedDaemonProcess) {
       try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
     }
-    // Leave emulators running for reuse by the next run.
-    preserveEmulatorsForReuse(launchedEmulators);
+    // Leave emulators running for reuse by the next run, naming every one this
+    // run launched — including a target whose setup failed after the boot.
+    preserveEmulatorsForReuse(emulatorsLaunchedThisProcess());
     // Defer process.exit so any pending error handlers (unhandledRejection
     // etc.) in the current microtask queue run first — process.exit() in a
     // finally block swallows them. Skipped when an error is escaping:

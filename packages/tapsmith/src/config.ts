@@ -275,6 +275,13 @@ export interface TapsmithConfig {
   avd?: string;
 
   /**
+   * How Tapsmith launches the emulators it boots for `avd` (Android). Only
+   * applies to emulators Tapsmith launches, not ones you start yourself.
+   * Root-level only: projects on one device target share its emulators.
+   */
+  emulatorLaunchOptions?: EmulatorLaunchOptions;
+
+  /**
    * Trace recording configuration.
    *
    * Can be a mode string ('off', 'on', 'retain-on-failure', etc.) or an
@@ -404,6 +411,11 @@ export function effectiveConfigForProject(
   project: { use?: UseOptions } | undefined,
 ): TapsmithConfig {
   if (!project?.use) return config;
+  // Root-level only: projects on one device target share its emulators, so a
+  // per-project value could not be honoured consistently.
+  if ('emulatorLaunchOptions' in project.use) {
+    throw new Error('config: emulatorLaunchOptions is a root-level option; move it out of the project\'s `use`.');
+  }
   const merged = { ...config } as unknown as Record<string, unknown>;
   for (const [key, value] of Object.entries(project.use)) {
     if (value !== undefined) {
@@ -451,6 +463,27 @@ export interface ProjectConfig {
   grepInvert?: RegExp | RegExp[];
 }
 
+/** `emulatorLaunchOptions` in the config — mirrors Playwright's `launchOptions`. */
+export interface EmulatorLaunchOptions {
+  /**
+   * Run without a window. Defaults to `false` locally: the emulator opens a
+   * window, keeps the AVD's GPU setting and quick-boots from the AVD's snapshot, which
+   * is much faster than a headless cold boot. `true` runs it headless (no
+   * window, software GPU, cold boot). Always headless in CI, over
+   * SSH, or on Linux with no display.
+   */
+  headless?: boolean;
+  /**
+   * Extra arguments for the `emulator` command, added after Tapsmith's own.
+   * `-avd`/`@name`, `-port`/`-ports` and `-read-only` are refused: Tapsmith
+   * sets the AVD, console port and read-only mode itself.
+   */
+  args?: string[];
+}
+
+/** Emulator flags that would change what Tapsmith sets and relies on: the AVD, console port, read-only mode. */
+const RESERVED_EMULATOR_ARGS = ['-avd', '-port', '-ports', '-read-only'];
+
 const DEFAULT_CONFIG: TapsmithConfig = {
   timeout: 30_000,
   retries: 0,
@@ -496,6 +529,7 @@ function applyConfigDefaults(
   validateAppResetOptions(raw);
   validateRecordingModes(raw);
   validateUiOptions(raw);
+  validateEmulatorLaunchOptions(raw);
   validateDevicesOption(raw);
   return config;
 }
@@ -664,6 +698,33 @@ export function assignGroupMemberDevices(
     serials.push(serial);
   }
   return serials;
+}
+
+function validateEmulatorLaunchOptions(raw: Partial<TapsmithConfig>): void {
+  const options = raw.emulatorLaunchOptions;
+  if (options === undefined) return;
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error(`config: emulatorLaunchOptions must be an object (got ${JSON.stringify(options)})`);
+  }
+  const unknown = Object.keys(options).filter((key) => key !== 'headless' && key !== 'args');
+  if (unknown.length > 0) {
+    throw new Error(`config: emulatorLaunchOptions has unknown ${unknown.length === 1 ? 'key' : 'keys'} ${unknown.join(', ')} (expected headless, args)`);
+  }
+  if (options.headless !== undefined && typeof options.headless !== 'boolean') {
+    throw new Error(`config: emulatorLaunchOptions.headless must be a boolean (got ${JSON.stringify(options.headless)})`);
+  }
+  if (options.args === undefined) return;
+  if (!Array.isArray(options.args) || options.args.some((arg) => typeof arg !== 'string')) {
+    throw new Error(`config: emulatorLaunchOptions.args must be an array of strings (got ${JSON.stringify(options.args)})`);
+  }
+  // `@Name` is the emulator's shorthand for `-avd Name`, and it reads `--flag` as `-flag`.
+  const reserved = options.args.filter((arg) => RESERVED_EMULATOR_ARGS.includes(arg.replace(/^--/, '-')) || arg.startsWith('@'));
+  if (reserved.length > 0) {
+    throw new Error(
+      `config: emulatorLaunchOptions.args must not include ${reserved.join(', ')}: Tapsmith sets the AVD, `
+      + 'console port and read-only mode itself (use `avd` to choose the AVD).',
+    );
+  }
 }
 
 /** Fail fast on malformed `ui` config values instead of silently ignoring them. */

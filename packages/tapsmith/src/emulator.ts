@@ -9,11 +9,13 @@
  */
 
 import { createHash } from 'node:crypto';
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import type { DeviceStrategy } from './config.js';
+import { promisify } from 'node:util';
+import { isCI as runningInCi } from 'ci-info';
+import type { DeviceStrategy, EmulatorLaunchOptions } from './config.js';
 import { xmlUnescape } from './app-reset.js';
 
 const DIM = '\x1b[2m';
@@ -186,7 +188,11 @@ function killProcess(pid: number): void {
  * This is what makes back-to-back `npx tapsmith test` fast — emulators survive
  * between runs and get reused instead of relaunched.
  */
-export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): ReclaimResult {
+export function reclaimOrphanedEmulators(
+  deps: Partial<ReclaimDeps> = {},
+  /** Whether this run would launch headless — to say when a reused emulator differs. */
+  wantedHeadless?: boolean,
+): ReclaimResult {
   const d = resolveReclaimDeps(deps);
   const entries = d.readManifest();
   if (entries.length === 0) return { reusable: [], killed: [], undetermined: [] };
@@ -249,9 +255,18 @@ export function reclaimOrphanedEmulators(deps: Partial<ReclaimDeps> = {}): Recla
     if (inAdb && inAdb.state === 'device') {
       const health = d.probeDeviceHealth(entry.serial);
       if (health.healthy) {
-        process.stderr.write(
-          `${DIM}Reusing emulator ${entry.serial} (AVD ${entry.avd}) from previous run.${RESET}\n`,
-        );
+        // Reused as launched: a changed `emulatorLaunchOptions` applies only
+        // to new launches, so say which kind this is and how to relaunch it.
+        const reusedHeadless = argv.includes('-no-window');
+        const mode = reusedHeadless ? 'headless' : 'with a window';
+        const differs = wantedHeadless !== undefined && wantedHeadless !== reusedHeadless;
+        process.stderr.write(launchedThisProcess.has(entry.serial)
+          ? `${DIM}Reusing emulator ${entry.serial} (AVD ${entry.avd}, ${mode}), launched earlier in this run.${RESET}\n`
+          : `${DIM}Reusing emulator ${entry.serial} (AVD ${entry.avd}, ${mode}) from previous run.`
+            + (differs
+              ? ` This run would launch it ${wantedHeadless ? 'headless' : 'with a window'}: stop it (adb -s ${entry.serial} emu kill) to relaunch it that way.`
+              : '')
+            + `${RESET}\n`);
         reusable.push(entry.serial);
         surviving.push(entry);
         continue;
@@ -432,13 +447,15 @@ export interface CleanupStaleResult {
 export function cleanupStaleEmulators(
   targetAvd?: string,
   deps: Partial<CleanupDeps> = {},
+  /** Whether this run would launch headless (`resolveEmulatorLaunchSettings`). */
+  wantedHeadless?: boolean,
 ): CleanupStaleResult {
   const d = resolveReclaimDeps(deps);
   const resolveAvdName = deps.resolveAvdName ?? getRunningAvdName;
   const settle = deps.waitForAdbSettle ?? waitForAdbSettle;
 
   // Phase 1: manifest-based reclaim/kill (precise)
-  const reclaim = reclaimOrphanedEmulators(d);
+  const reclaim = reclaimOrphanedEmulators(d, wantedHeadless);
   const handled = new Set([...reclaim.reusable, ...reclaim.killed, ...reclaim.undetermined]);
 
   // Phase 2: heuristic cleanup for Tapsmith emulators the manifest missed
@@ -614,6 +631,8 @@ export async function waitForSystemSettle(
   serial: string,
   timeoutMs = POST_BOOT_SETTLE_TIMEOUT_MS,
   exec: ExecFileSyncLike = execFileSync,
+  /** Stops the settle loop — e.g. the emulator exited, so there is nothing to settle. */
+  signal?: AbortSignal,
 ): Promise<void> {
   const start = Date.now();
 
@@ -625,7 +644,7 @@ export async function waitForSystemSettle(
     }));
   };
 
-  while (Date.now() - start < timeoutMs) {
+  while (Date.now() - start < timeoutMs && !signal?.aborted) {
     // Dismiss any ANR dialogs that pop up during boot settling
     dismissSystemDialogsViaAdb(serial, exec);
 
@@ -668,16 +687,103 @@ export async function waitForSystemSettle(
   }
 
   // Timeout — still do one last dismissal attempt
-  dismissSystemDialogsViaAdb(serial, exec);
+  if (!signal?.aborted) dismissSystemDialogsViaAdb(serial, exec);
+}
+
+// ─── Emulator binary ───
+
+/** Where the Android `emulator` binary is, as `resolveEmulatorBinary` found it. */
+export interface EmulatorBinary {
+  /** What to spawn: an absolute path, or the bare command for a PATH lookup. */
+  command: string
+  /** True when `command` exists (a file found in an SDK, or the command resolves on PATH). */
+  found: boolean
+  /** Every location checked, in order — for the not-found message. */
+  tried: string[]
+}
+
+interface ResolveEmulatorDeps {
+  exists: (file: string) => boolean
+  onPath: (command: string) => boolean
+  homedir: () => string
+}
+
+/**
+ * Whether `command` is on `env.PATH`, found by looking in each directory —
+ * not by running `which`, which slim images may not have.
+ */
+function isOnPath(
+  command: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  exists: (file: string) => boolean,
+): boolean {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const names = platform === 'win32' ? [`${command}.exe`, command] : [command];
+  return (env.PATH ?? env.Path ?? '').split(p.delimiter).filter((dir) => dir.length > 0)
+    .some((dir) => names.some((name) => exists(p.join(dir, name))));
+}
+
+/** A regular file — not a directory such as `<sdk>/emulator` when the SDK root is on PATH. */
+function isFile(file: string): boolean {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Locate the Android `emulator` binary: `$ANDROID_HOME/emulator/emulator`,
+ * then `$ANDROID_SDK_ROOT/…`, then the default SDK location for the OS
+ * (where Android Studio installs it), then PATH. A stock Android Studio setup
+ * puts `platform-tools` on PATH but not `emulator`, so PATH comes last
+ * (PILOT-417).
+ */
+export function resolveEmulatorBinary(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  deps: Partial<ResolveEmulatorDeps> = {},
+): EmulatorBinary {
+  const exists = deps.exists ?? isFile;
+  const onPath = deps.onPath ?? ((command: string) => isOnPath(command, env, platform, exists));
+  const home = (deps.homedir ?? os.homedir)();
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const binaryName = platform === 'win32' ? 'emulator.exe' : 'emulator';
+
+  const sdkRoots: string[] = [];
+  if (env.ANDROID_HOME) sdkRoots.push(env.ANDROID_HOME);
+  if (env.ANDROID_SDK_ROOT) sdkRoots.push(env.ANDROID_SDK_ROOT);
+  if (platform === 'darwin') sdkRoots.push(p.join(home, 'Library', 'Android', 'sdk'));
+  else if (platform === 'win32') {
+    if (env.LOCALAPPDATA) sdkRoots.push(p.join(env.LOCALAPPDATA, 'Android', 'Sdk'));
+  } else sdkRoots.push(p.join(home, 'Android', 'Sdk'));
+
+  const tried: string[] = [];
+  for (const root of sdkRoots) {
+    const candidate = p.join(root, 'emulator', binaryName);
+    if (tried.includes(candidate)) continue;
+    tried.push(candidate);
+    if (exists(candidate)) return { command: candidate, found: true, tried };
+  }
+  tried.push('`emulator` on PATH');
+  return { command: 'emulator', found: onPath('emulator'), tried };
+}
+
+/** The error for an emulator binary `resolveEmulatorBinary` could not find. */
+export function emulatorNotFoundMessage(tried: readonly string[]): string {
+  return `The Android emulator is not installed where Tapsmith looks (${tried.join(', ')}). `
+    + 'Install "Android Emulator" from Android Studio (Settings → Languages & Frameworks → Android SDK → SDK Tools), '
+    + 'or set ANDROID_HOME to the Android SDK that has it.';
 }
 
 /**
  * List available Android Virtual Devices (AVDs).
  * Runs `emulator -list-avds` and returns the AVD names.
  */
-export function listAvds(): string[] {
+export function listAvds(emulator: string = resolveEmulatorBinary().command): string[] {
   try {
-    const output = execFileSync('emulator', ['-list-avds'], {
+    const output = execFileSync(emulator, ['-list-avds'], {
       encoding: 'utf-8',
       timeout: 10_000,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -741,7 +847,21 @@ export interface LaunchedEmulator {
   port: number
   serial: string
   avd: string
+  /** Whether it was launched without a window (`EmulatorLaunchSettings.headless`). */
+  headless: boolean
+  /** The file the emulator's stdout and stderr go to; undefined when it could not be opened. */
+  logPath: string | undefined
+  /**
+   * Settles when the process fails to spawn or exits — whenever that is.
+   * During boot it means the launch failed (`describeEmulatorExit`).
+   */
+  exited: Promise<EmulatorExit>
 }
+
+/** How a launched emulator process ended. */
+export type EmulatorExit =
+  | { kind: 'spawn-error', error: NodeJS.ErrnoException }
+  | { kind: 'exited', code: number | null, signal: NodeJS.Signals | null }
 
 export interface DeviceHealthResult {
   serial: string
@@ -898,18 +1018,88 @@ export function readUiHierarchyViaAdb(
  */
 export const TAPSMITH_EMULATOR_IDENTITY_FLAGS = ['-read-only'] as const;
 
-/** The exact argv `launchEmulator` passes to the `emulator` binary. */
-export function emulatorLaunchArgs(avd: string, port: number): string[] {
+/**
+ * How `launchEmulator` starts an emulator, resolved from
+ * `emulatorLaunchOptions` and the environment (`resolveEmulatorLaunchSettings`).
+ */
+export interface EmulatorLaunchSettings {
+  /** No window: software GPU and a cold boot (the CI profile). */
+  headless: boolean
+  /** Extra user arguments, appended after Tapsmith's own. */
+  args: readonly string[]
+}
+
+const HEADLESS_LAUNCH: EmulatorLaunchSettings = { headless: true, args: [] };
+
+/**
+ * Why a window cannot be shown here, or `undefined` when it can: in CI, over
+ * SSH, or on Linux with no X11/Wayland display. A window is never forced
+ * where there is nothing to show it on.
+ */
+function emulatorWindowUnavailableReason(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  isCi: boolean,
+): string | undefined {
+  // `ci-info` knows the CI systems that do not set CI (Jenkins, Azure
+  // Pipelines, TeamCity, …); CI=… is checked too, for callers passing an env.
+  if (isCi || (env.CI && env.CI !== 'false')) return 'this is a CI build';
+  if (env.SSH_CONNECTION || env.SSH_TTY) return 'this is an SSH session';
+  if (platform === 'linux' && !env.DISPLAY && !env.WAYLAND_DISPLAY) return 'no display is available';
+  return undefined;
+}
+
+/**
+ * Resolve `emulatorLaunchOptions`. Locally the default is a window (AVD GPU mode
+ * and a snapshot quick-boot: measured ~10 s from launch to a healthy device
+ * against ~38 s for a headless cold boot); `headless: true` opts out. Where no window can be
+ * shown — CI, SSH, Linux without a display — it is always headless, and
+ * `windowUnavailable` says why when `headless: false` asked for one.
+ */
+export function resolveEmulatorLaunchSettings(
+  options: EmulatorLaunchOptions | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  /** From `ci-info` for the real environment; a caller's own `env` is judged by itself. */
+  isCi: boolean = env === process.env && runningInCi,
+): EmulatorLaunchSettings & { windowUnavailable?: string } {
+  // `-no-window` in args is a request for headless: honour it with the whole
+  // headless profile, not a windowed profile (snapshot load, host GPU) minus the window.
+  const userArgs = options?.args ?? [];
+  const isNoWindow = (arg: string) => arg === '-no-window' || arg === '--no-window';
+  const askedHeadless = options?.headless === true || userArgs.some(isNoWindow);
+  const args = userArgs.filter((arg) => !isNoWindow(arg));
+  if (askedHeadless) return { headless: true, args };
+  const windowUnavailable = emulatorWindowUnavailableReason(env, platform, isCi);
+  return windowUnavailable ? { headless: true, args, windowUnavailable } : { headless: false, args };
+}
+
+/**
+ * The exact argv `launchEmulator` passes to the `emulator` binary.
+ *
+ * - **Headless** (`headless: true`, and always in CI): no window, SwiftShader,
+ *   cold boot. Loading the AVD's snapshot headless fails anyway — the
+ *   snapshot was saved by a windowed emulator with another renderer — and
+ *   the failed attempt still rewrites the AVD's snapshot metadata.
+ * - **Window** (the local default): the AVD's own GPU mode (no `-gpu`, so
+ *   it matches the renderer its snapshot was saved with — normally the host
+ *   GPU) and a quick-boot from the AVD's default snapshot. `-read-only` means nothing
+ *   is saved back to the AVD (`-no-snapshot-save` says so explicitly).
+ */
+export function emulatorLaunchArgs(
+  avd: string,
+  port: number,
+  settings: EmulatorLaunchSettings = HEADLESS_LAUNCH,
+): string[] {
+  const profile = settings.headless
+    ? ['-no-snapshot-load', '-no-snapshot-save', '-no-boot-anim', '-no-audio', '-gpu', 'swiftshader_indirect', '-no-window']
+    : ['-no-snapshot-save', '-no-boot-anim', '-no-audio'];
   return [
     '-avd', avd,
     '-port', String(port),
     ...TAPSMITH_EMULATOR_IDENTITY_FLAGS,
-    '-no-snapshot-load',
-    '-no-snapshot-save',
-    '-no-boot-anim',
-    '-no-audio',
-    '-gpu', 'swiftshader_indirect',
-    '-no-window',
+    ...profile,
+    ...settings.args,
   ];
 }
 
@@ -936,28 +1126,105 @@ export function isTapsmithLaunchedEmulator(
   return TAPSMITH_EMULATOR_IDENTITY_FLAGS.every((flag) => argv.includes(flag));
 }
 
+/** Where a launched emulator's output goes: one file per console port, overwritten per launch. */
+function emulatorLogPath(port: number): string {
+  return path.join(os.tmpdir(), `tapsmith-emulator-${port}.log`);
+}
+
 /**
  * Launch an emulator instance for the given AVD on the specified port.
- * Returns immediately — use `waitForBoot` to wait until the device is ready.
+ * Returns immediately — use `waitForBoot` to wait until the device is ready,
+ * racing it against `exited` so a launch that dies is reported at once.
  */
-export function launchEmulator(avd: string, port: number): LaunchedEmulator {
+export function launchEmulator(
+  avd: string,
+  port: number,
+  settings: EmulatorLaunchSettings,
+  emulator: string = resolveEmulatorBinary().command,
+): LaunchedEmulator {
   const serial = serialForPort(port);
+  const logPath = emulatorLogPath(port);
 
-  const proc = spawn('emulator', emulatorLaunchArgs(avd, port), {
-    // Detach so emulators survive parent exit — they're expensive to boot and
-    // the next run will reuse them. The PID manifest tracks ownership so
-    // orphans from crashes get cleaned up on the next startup.
-    detached: true,
-    stdio: 'ignore',
-  });
+  // Output goes to a file, not a pipe: the emulator outlives this process,
+  // and writing to a pipe nobody reads any more would kill it (SIGPIPE).
+  let logFd: number | undefined;
+  try {
+    // O_NOFOLLOW: the temp dir may be shared, so never write through a link
+    // someone planted at this predictable name.
+    const { O_WRONLY, O_CREAT, O_TRUNC, O_NOFOLLOW } = fs.constants;
+    logFd = fs.openSync(logPath, O_WRONLY | O_CREAT | O_TRUNC | (O_NOFOLLOW ?? 0), 0o600);
+  } catch {
+    // Unwritable tmpdir — launch without a log rather than not at all.
+  }
+  const output = logFd ?? 'ignore';
 
+  let proc: ChildProcess;
+  try {
+    proc = spawn(emulator, emulatorLaunchArgs(avd, port, settings), {
+      // Detach so emulators survive parent exit — they're expensive to boot and
+      // the next run will reuse them. The PID manifest tracks ownership so
+      // orphans from crashes get cleaned up on the next startup.
+      detached: true,
+      stdio: ['ignore', output, output],
+    });
+  } finally {
+    // The child has its own copy of the descriptor.
+    if (logFd !== undefined) fs.closeSync(logFd);
+  }
   proc.unref();
 
-  proc.on('error', () => {
-    // Handled by waitForBoot timeout
+  const exited = new Promise<EmulatorExit>((resolve) => {
+    // `on`, not `once`: a ChildProcess also emits 'error' when a later
+    // kill() fails, and an 'error' with no listener would crash Tapsmith.
+    proc.on('error', (error) => resolve({ kind: 'spawn-error', error }));
+    proc.once('exit', (code, signal) => resolve({ kind: 'exited', code, signal }));
   });
 
-  return { process: proc, port, serial, avd };
+  // Report the log only when this launch opened it: after a failed open the
+  // path may be a planted link or someone else's file, not this output.
+  return { process: proc, port, serial, avd, headless: settings.headless, logPath: logFd !== undefined ? logPath : undefined, exited };
+}
+
+/** The emulator refusing a `-read-only` instance beside a writable one of the same AVD. */
+const WRITABLE_INSTANCE_RUNNING = /^(?:ERROR|FATAL)\b.*another emulator instance is running/im;
+
+/** How many lines of the emulator's output an early-exit message quotes. */
+const EXIT_OUTPUT_LINES = 3;
+
+/**
+ * Why a launched emulator failed to boot, from how its process ended and
+ * what it wrote to its log (PILOT-417) — so the user sees the emulator's own
+ * reason at once instead of a boot timeout minutes later.
+ */
+export function describeEmulatorExit(
+  exit: EmulatorExit,
+  emu: { avd: string, logPath: string | undefined },
+  emulator: EmulatorBinary,
+  readLog: (file: string) => string = (file) => fs.readFileSync(file, 'utf-8'),
+): string {
+  if (exit.kind === 'spawn-error') {
+    if (exit.error.code === 'ENOENT') return emulatorNotFoundMessage(emulator.tried);
+    return `Could not start the Android emulator (${emulator.command}): ${exit.error.message}`;
+  }
+  let log = '';
+  try {
+    if (emu.logPath !== undefined) log = readLog(emu.logPath);
+  } catch {
+    // No log (unwritable tmpdir) — describe the exit alone.
+  }
+  if (WRITABLE_INSTANCE_RUNNING.test(log)) {
+    return `AVD ${emu.avd} is already running without -read-only (opened from Android Studio, for example), `
+      + 'and the emulator will not start a second instance beside it. '
+      + 'Close that emulator, or point `avd` at another AVD.';
+  }
+  const lines = log.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+  const errors = lines.filter((line) => /^(ERROR|FATAL)\b/.test(line));
+  const quoted = (errors.length > 0 ? errors : lines).slice(-EXIT_OUTPUT_LINES)
+    .map((line) => line.replace(/^[A-Z_]+\s*\|\s*/, '').replace(/\.+$/, ''));
+  const how = exit.code !== null ? `exit code ${exit.code}` : `signal ${exit.signal ?? 'unknown'}`;
+  const detail = quoted.length > 0 ? `: ${quoted.join(' / ')}` : '';
+  const where = emu.logPath !== undefined ? ` Full output: ${emu.logPath}` : '';
+  return `The emulator exited during boot (${how})${detail}.${where}`;
 }
 
 /**
@@ -1187,53 +1454,67 @@ export function filterPreferInstalledApp(
 }
 
 /**
- * Wait for an emulator to finish booting.
- * Polls `adb -s <serial> shell getprop sys.boot_completed` until it returns "1".
- */
-/**
  * How long a launched emulator gets to reach `sys.boot_completed`. A cold
  * boot on a hosted CI runner (software GPU, shared cores, often beside
  * another emulator) regularly needs more than the two minutes that suffice
  * on a developer machine.
  */
-export const EMULATOR_BOOT_TIMEOUT_MS = process.env.CI ? 300_000 : 120_000;
+export const EMULATOR_BOOT_TIMEOUT_MS = runningInCi ? 300_000 : 120_000;
 
-export async function waitForBoot(serial: string, timeoutMs = EMULATOR_BOOT_TIMEOUT_MS): Promise<void> {
+const execFileAsync = promisify(execFile);
+
+/** Thrown by `waitForBoot` when its `signal` aborts the wait. */
+class BootWaitAborted extends Error {}
+
+/**
+ * Wait for an emulator to finish booting.
+ * Polls `adb -s <serial> shell getprop sys.boot_completed` until it returns "1".
+ */
+export async function waitForBoot(
+  serial: string,
+  timeoutMs = EMULATOR_BOOT_TIMEOUT_MS,
+  signal?: AbortSignal,
+): Promise<void> {
   const start = Date.now();
   const pollInterval = 2_000;
+  // Asynchronous, so an emulator that dies mid-wait (`LaunchedEmulator.exited`)
+  // is noticed at once instead of after a blocking adb call returns.
+  const adb = (args: string[], timeout: number) =>
+    execFileAsync('adb', ['-s', serial, ...args], { encoding: 'utf-8', timeout, signal });
+  const checkAborted = () => {
+    if (signal?.aborted) throw new BootWaitAborted(`Stopped waiting for ${serial} to boot`);
+  };
 
   // First wait for the device to appear in ADB
   while (Date.now() - start < timeoutMs) {
+    checkAborted();
     try {
-      execFileSync('adb', ['-s', serial, 'wait-for-device'], {
-        timeout: 10_000,
-        stdio: 'ignore',
-      });
+      await adb(['wait-for-device'], 10_000);
       break;
     } catch {
+      checkAborted();
       await sleep(pollInterval);
     }
   }
 
   // Then wait for boot_completed
   while (Date.now() - start < timeoutMs) {
+    checkAborted();
     try {
-      const result = execFileSync(
-        'adb',
-        ['-s', serial, 'shell', 'getprop', 'sys.boot_completed'],
-        { encoding: 'utf-8', timeout: 5_000, stdio: ['ignore', 'pipe', 'pipe'] },
-      );
-      if (result.trim() === '1') {
+      const { stdout } = await adb(['shell', 'getprop', 'sys.boot_completed'], 5_000);
+      if (stdout.trim() === '1') {
         // Boot flag is set — now wait for system services to actually settle.
         // This prevents the "passes health check then stalls" pattern where
         // the launcher/PM are still initializing.
         const remainingMs = Math.max(timeoutMs - (Date.now() - start), 10_000);
-        await waitForSystemSettle(serial, remainingMs);
+        await waitForSystemSettle(serial, remainingMs, execFileSync, signal);
+        checkAborted();
         return;
       }
     } catch {
       // Device not ready yet
     }
+    checkAborted();
     await sleep(pollInterval);
   }
 
@@ -1244,6 +1525,8 @@ export async function waitForDeviceStability(
   serial: string,
   timeoutMs = DEFAULT_DEVICE_STABILITY_TIMEOUT_MS,
   probe: (serial: string) => DeviceHealthResult = probeDeviceHealth,
+  /** Stops probing — e.g. the emulator exited, so it can never become stable. */
+  signal?: AbortSignal,
 ): Promise<DeviceHealthResult> {
   const start = Date.now();
   let consecutiveHealthy = 0;
@@ -1253,7 +1536,7 @@ export async function waitForDeviceStability(
     reason: 'device stability checks did not complete',
   };
 
-  while (Date.now() - start < timeoutMs) {
+  while (Date.now() - start < timeoutMs && !signal?.aborted) {
     const result = probe(serial);
     lastResult = result;
 
@@ -1378,19 +1661,25 @@ export interface ProvisionResult {
 }
 
 interface ProvisionDeps {
-  listAvds: () => string[]
+  resolveEmulatorBinary: () => EmulatorBinary
+  listAvds: (emulator: string) => string[]
   listAdbDevices: () => AdbDeviceEntry[]
   getRunningAvdName: (serial: string) => string | undefined
-  launchEmulator: (avd: string, port: number) => LaunchedEmulator
-  waitForBoot: (serial: string, timeoutMs?: number) => Promise<void>
+  launchEmulator: (avd: string, port: number, settings: EmulatorLaunchSettings, emulator: string) => LaunchedEmulator
+  waitForBoot: (serial: string, timeoutMs?: number, signal?: AbortSignal) => Promise<void>
   probeDeviceHealth: (serial: string) => DeviceHealthResult
   waitForDeviceStability: (
     serial: string,
     timeoutMs?: number,
     probe?: (serial: string) => DeviceHealthResult,
+    signal?: AbortSignal,
   ) => Promise<DeviceHealthResult>
   killEmulator: (serial: string) => void
+  findEmulatorPid: (serial: string) => number | undefined
 }
+
+/** How long a launch that exited 0 gets to show a backgrounded emulator on its console port. */
+const CLEAN_EXIT_GRACE_MS = 5_000;
 
 /**
  * Ensure enough emulators are running to satisfy the requested worker count.
@@ -1404,6 +1693,11 @@ export async function provisionEmulators(opts: {
   occupiedSerials?: string[]
   workers: number
   avd?: string
+  /**
+   * The config's `emulatorLaunchOptions`. Required (though it may be
+   * undefined) so no caller can forget to pass it.
+   */
+  launchOptions: EmulatorLaunchOptions | undefined
   onProgress?: (message: string, level?: 'info' | 'warning') => void
 }, deps: Partial<ProvisionDeps> = {}): Promise<ProvisionResult> {
   const { existingSerials, occupiedSerials = existingSerials, workers, avd, onProgress } = opts;
@@ -1417,6 +1711,7 @@ export async function provisionEmulators(opts: {
     }
   };
   const resolvedDeps: ProvisionDeps = {
+    resolveEmulatorBinary: deps.resolveEmulatorBinary ?? resolveEmulatorBinary,
     listAvds: deps.listAvds ?? listAvds,
     listAdbDevices: deps.listAdbDevices ?? listAdbDevices,
     getRunningAvdName: deps.getRunningAvdName ?? getRunningAvdName,
@@ -1425,6 +1720,7 @@ export async function provisionEmulators(opts: {
     probeDeviceHealth: deps.probeDeviceHealth ?? probeDeviceHealth,
     waitForDeviceStability: deps.waitForDeviceStability ?? waitForDeviceStability,
     killEmulator: deps.killEmulator ?? killEmulator,
+    findEmulatorPid: deps.findEmulatorPid ?? findEmulatorPid,
   };
   const needed = workers - existingSerials.length;
 
@@ -1432,7 +1728,14 @@ export async function provisionEmulators(opts: {
     return { launched: [], allSerials: existingSerials.slice(0, workers) };
   }
 
-  const avds = resolvedDeps.listAvds();
+  // Without the binary nothing below can work: say so now, not after a boot
+  // timeout (PILOT-417).
+  const emulator = resolvedDeps.resolveEmulatorBinary();
+  if (!emulator.found) {
+    throw new Error(emulatorNotFoundMessage(emulator.tried));
+  }
+
+  const avds = resolvedDeps.listAvds(emulator.command);
   if (avds.length === 0) {
     throw new Error(
       `Need ${needed} more emulator(s) but no AVDs found. ` +
@@ -1474,6 +1777,12 @@ export async function provisionEmulators(opts: {
   const existingNote = existingCount > 0
     ? ` (${existingCount} already connected, need ${workers} total)`
     : '';
+  const settings = resolveEmulatorLaunchSettings(opts.launchOptions);
+  // Only an explicit `headless: false` is worth a warning; the default just
+  // adapts, and the Starting line below says why.
+  if (settings.windowUnavailable && opts.launchOptions?.headless === false) {
+    logProgress(`Launching emulators headless although emulatorLaunchOptions.headless is false: ${settings.windowUnavailable}.`, 'warning');
+  }
   if (avd) {
     logProgress(`Launching ${needed} emulator(s) using AVD ${avd}${existingNote}...`);
   } else {
@@ -1488,40 +1797,83 @@ export async function provisionEmulators(opts: {
 
       const port = findAvailablePort(usedPorts);
       usedPorts.add(port);
-      const emu = resolvedDeps.launchEmulator(candidateAvd, port);
-      logProgress(`Starting ${emu.serial} (port ${port}, AVD ${candidateAvd})`);
+      const emu = resolvedDeps.launchEmulator(candidateAvd, port, settings, emulator.command);
+      logProgress(`Starting ${emu.serial} (port ${port}, AVD ${candidateAvd}, ${settings.headless ? `headless${settings.windowUnavailable ? `: ${settings.windowUnavailable}` : ''}` : 'with a window'})`);
+
+      // Race the boot against the process ending: an emulator that fails to
+      // spawn or exits during boot is reported with its own reason at once,
+      // not after the full boot timeout (PILOT-417).
+      const stopWaiting = new AbortController();
+      let booting = true;
+      const exitedDuringBoot = new Promise<never>((_resolve, reject) => {
+        void emu.exited.then((exit) => {
+          if (!booting) return;
+          const fail = () => {
+            // Abort first, so the boot branch cannot start another probe.
+            stopWaiting.abort();
+            reject(new EmulatorExitedError(describeEmulatorExit(exit, emu, emulator)));
+          };
+          if (exit.kind !== 'exited' || exit.code !== 0) {
+            fail();
+            return;
+          }
+          // A clean exit is either the emulator quitting (its window closed
+          // mid-boot) or a launcher that backgrounds it (a PATH wrapper).
+          // The backgrounded emulator holds its console port within seconds.
+          setTimeout(() => {
+            if (booting && resolvedDeps.findEmulatorPid(emu.serial) === undefined) fail();
+          }, CLEAN_EXIT_GRACE_MS);
+        });
+      });
+      exitedDuringBoot.catch(() => { /* surfaced through the race below */ });
 
       try {
-        await resolvedDeps.waitForBoot(emu.serial);
-        const health = await resolvedDeps.waitForDeviceStability(
-          emu.serial,
-          DEFAULT_DEVICE_STABILITY_TIMEOUT_MS,
-          resolvedDeps.probeDeviceHealth,
-        );
-        if (!health.healthy) {
-          throw new Error(health.reason ?? 'device health probe failed');
-        }
+        await Promise.race([
+          (async () => {
+            await resolvedDeps.waitForBoot(emu.serial, undefined, stopWaiting.signal);
+            // The race may already have been lost to an exit: probe no further.
+            if (stopWaiting.signal.aborted) return;
+            const health = await resolvedDeps.waitForDeviceStability(
+              emu.serial,
+              DEFAULT_DEVICE_STABILITY_TIMEOUT_MS,
+              resolvedDeps.probeDeviceHealth,
+              stopWaiting.signal,
+            );
+            if (!health.healthy) {
+              throw new Error(health.reason ?? 'device health probe failed');
+            }
+          })(),
+          exitedDuringBoot,
+        ]);
         launchedEmulator = emu;
         launched.push(emu);
         break;
       } catch (err) {
         badAvds.add(candidateAvd);
+        const message = err instanceof Error ? err.message : String(err);
         logProgress(
-          `Skipping launched emulator ${emu.serial} (${candidateAvd}): ${err instanceof Error ? err.message : err}.`,
+          `Skipping launched emulator ${emu.serial} (${candidateAvd}): ${message.replace(/\.$/, '')}.`,
           'warning',
         );
-        resolvedDeps.killEmulator(emu.serial);
-        try {
-          emu.process.kill();
-        } catch {
-          // Already dead
+        // A process that already ended holds nothing to stop — and its port
+        // may be someone else's by now, so never kill by serial then.
+        if (!(err instanceof EmulatorExitedError)) {
+          resolvedDeps.killEmulator(emu.serial);
+          try {
+            emu.process.kill();
+          } catch {
+            // Already dead
+          }
         }
+      } finally {
+        booting = false;
+        stopWaiting.abort();
       }
     }
 
     if (!launchedEmulator) {
       logProgress(
-        `Unable to provision additional emulator ${i + 1}/${needed}; ${avd ? `AVD ${avd}` : 'all candidate AVDs'} failed health checks.`,
+        `Unable to provision additional emulator ${i + 1}/${needed}; ${avd ? `AVD ${avd}` : 'all candidate AVDs'} did not start healthy (see above).`,
         'warning',
       );
       break;
@@ -1530,7 +1882,13 @@ export async function provisionEmulators(opts: {
 
   if (launched.length > 0) {
     recordLaunchedEmulators(launched);
+    for (const emu of launched) launchedThisProcess.set(emu.serial, emu);
     logProgress(`Provisioned ${launched.length} healthy emulator(s).`);
+    // Said now as well as at the end: a run that is interrupted (Ctrl+C)
+    // never reaches its end-of-run notice, and the emulator survives it.
+    for (const emu of launched) {
+      logProgress(`${emu.serial} stays running after the run for faster reruns. Stop it with: adb -s ${emu.serial} emu kill`, 'warning');
+    }
   }
 
   const allSerials = [
@@ -1551,9 +1909,29 @@ export async function provisionEmulators(opts: {
  * Only ADB port forwards (created by per-worker daemons) are cleaned up,
  * since stale forwards break subsequent runs.
  */
-export function preserveEmulatorsForReuse(_launched: LaunchedEmulator[]): void {
-  // Intentionally a no-op. Emulators stay alive and in the PID manifest so
-  // the next run can reuse them via reclaimOrphanedEmulators().
+export function preserveEmulatorsForReuse(
+  launched: LaunchedEmulator[],
+  write: (text: string) => void = (text) => { process.stderr.write(text); },
+): void {
+  // Emulators stay alive and in the PID manifest so the next run can reuse
+  // them via reclaimOrphanedEmulators(). Say so: a headless emulator has no
+  // window or Dock icon, so otherwise nothing shows it is still running.
+  for (const emu of launched) {
+    // One that exited during the run (a closed window, a crash) is not left running.
+    if (emu.process.exitCode != null || emu.process.signalCode != null) continue;
+    // Named once per process, however many teardown paths reach here.
+    if (announcedLeftRunning.has(emu.process)) continue;
+    announcedLeftRunning.add(emu.process);
+    write(`${DIM}${leftRunningNotice(emu)}${RESET}\n`);
+  }
+}
+
+const announcedLeftRunning = new WeakSet<ChildProcess>();
+
+/** The end-of-run line for an emulator Tapsmith leaves running (PILOT-402). */
+function leftRunningNotice(emu: Pick<LaunchedEmulator, 'serial' | 'avd' | 'headless'>): string {
+  return `Left ${emu.serial} (AVD ${emu.avd}${emu.headless ? ', headless' : ''}) running for faster reruns. `
+    + `Stop it with: adb -s ${emu.serial} emu kill`;
 }
 
 /**
@@ -1570,7 +1948,21 @@ export function forceCleanupEmulators(launched: LaunchedEmulator[]): void {
     }
   }
   unrecordLaunchedEmulators(launched);
+  for (const emu of launched) launchedThisProcess.delete(emu.serial);
 }
+
+/**
+ * Every emulator this process launched and has not force-killed, whatever
+ * became of the run that launched it — a target whose setup failed after the
+ * boot, a project switch. It is what the end-of-run notice names, so an
+ * emulator is never left running without one (PILOT-402).
+ */
+const launchedThisProcess = new Map<string, LaunchedEmulator>();
+
+export function emulatorsLaunchedThisProcess(): LaunchedEmulator[] {
+  return [...launchedThisProcess.values()];
+}
+
 
 function resolveLaunchCandidates(
   avds: string[],
@@ -1602,6 +1994,9 @@ function resolveLaunchCandidates(
 }
 
 // ─── Helpers ───
+
+/** A launched emulator's process ended before it finished booting. */
+class EmulatorExitedError extends Error {}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

@@ -28,11 +28,11 @@ import { deserializeTestResult, deserializeSuiteResult, serializeConfig, seriali
 import {
   clearOfflineEmulatorTransports,
   provisionEmulators,
-  preserveEmulatorsForReuse,
   forceCleanupEmulators,
   filterHealthyDevices,
   getRunningAvdName,
   cleanupStaleEmulators,
+  resolveEmulatorLaunchSettings,
   prefilterDevicesForStrategy,
   selectDevicesForStrategy,
   filterPreferInstalledApp,
@@ -1107,7 +1107,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       else process.stderr.write(`${YELLOW}Cleared stale offline emulator transport ${serial} before device discovery.${RESET}\n`);
     }
 
-    const staleResult = cleanupStaleEmulators(config.avd);
+    const staleResult = cleanupStaleEmulators(config.avd, {}, resolveEmulatorLaunchSettings(config.emulatorLaunchOptions).headless);
     if (staleResult.killed.length > 0) {
       note(`Cleaned up ${staleResult.killed.length} stale emulator(s).`);
     }
@@ -1430,8 +1430,14 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           occupiedSerials: androidDevices.map((d) => d.serial),
           workers: maxUsefulWorkers * groupSize,
           avd: config.avd,
+          launchOptions: config.emulatorLaunchOptions,
           onProgress: (message, level) => {
-            if (!launchProgress) return;
+            // Without a progress display a warning (an emulator's early-exit reason,
+            // how to stop it) still has to reach the user.
+            if (!launchProgress) {
+              if (level === 'warning') process.stderr.write(`${YELLOW}${message}${RESET}\n`);
+              return;
+            }
             if (level === 'warning') launchProgress.note(message);
             else launchProgress.update('worker-devices', { state: 'running', detail: message });
           },
@@ -2126,7 +2132,8 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
 
       // 4. Leave emulators running for reuse by the next run.
       // The PID manifest keeps them tracked. Only emergency cleanup kills them.
-      preserveEmulatorsForReuse(launchedEmulators);
+      // The CLI names them after the run summary (preserveEmulatorsForReuse):
+      // printed here, per bucket, it would land mid-run.
     }
   }
 

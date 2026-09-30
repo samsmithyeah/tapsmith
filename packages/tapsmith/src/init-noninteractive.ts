@@ -198,7 +198,7 @@ export function resolveInitPlan(
       avd = capable ?? env.avds[0];
     }
     // Nothing listed: either there are no AVDs, or `emulator` (which Tapsmith
-    // launches AVDs with) isn't on PATH — the latter matters for an explicit
+    // launches AVDs with) was not found — the latter matters for an explicit
     // --avd too.
     if (useEmulators && env.avds.length === 0 && (!avd || env.avdImages.length > 0)) {
       warnings.push(noAvdsListedMessage(env.avdImages, avd));

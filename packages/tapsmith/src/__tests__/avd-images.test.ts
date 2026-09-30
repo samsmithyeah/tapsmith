@@ -178,10 +178,11 @@ describe('noAvdsListedMessage()', () => {
     expect(noAvdsListedMessage([])).toBe("No Android AVDs found. Create a capture-capable AVD — run: npx tapsmith create-avd, then set avd: 'Tapsmith_Phone_API_36' in your Tapsmith config");
   });
 
-  it('blames PATH, not the AVDs, when the AVD home has AVDs the emulator did not list', () => {
+  it('blames the emulator install, not the AVDs, when the AVD home has AVDs the emulator did not list', () => {
     const message = noAvdsListedMessage([good, play]);
     expect(message).toContain('Found AVDs (Medium_Phone_API_36, Tapsmith_Phone_API_36)');
-    expect(message).toContain('`emulator` command is not on PATH');
+    expect(message).toContain('the Android emulator is not installed where Tapsmith looks');
+    expect(message).toContain('set ANDROID_HOME');
     expect(message).not.toContain('No Android AVDs found');
     expect(message).not.toContain('create-avd');
   });
