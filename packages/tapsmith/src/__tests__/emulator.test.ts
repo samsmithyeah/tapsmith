@@ -1586,6 +1586,21 @@ describe('provisionEmulators launch failures', () => {
     expect(waitForDeviceStability).not.toHaveBeenCalled();
   });
 
+  it('keeps waiting when the launcher exits cleanly during boot (a wrapper that backgrounds the emulator)', async () => {
+    const emu = makeLaunchedEmulator('Pixel', 5554, Promise.resolve({ kind: 'exited', code: 0, signal: null }));
+    const result = await provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined },
+      {
+        ...base,
+        resolveEmulatorBinary: foundEmulator,
+        launchEmulator: () => emu,
+        waitForBoot: async () => { await new Promise((resolve) => setTimeout(resolve, 20)); },
+        killEmulator: vi.fn(),
+      },
+    );
+    expect(result.allSerials).toEqual(['emulator-5554']);
+  });
+
   it('keeps an emulator that boots, even if its process ends later', async () => {
     let exit!: (value: import('../emulator.js').EmulatorExit) => void;
     const emu = makeLaunchedEmulator('Pixel', 5554, new Promise((resolve) => { exit = resolve; }));

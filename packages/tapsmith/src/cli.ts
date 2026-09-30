@@ -1079,7 +1079,12 @@ async function ensureSequentialTargetDevice(
     avd: config.avd,
     launchOptions: config.emulatorLaunchOptions,
     onProgress: (message, level) => {
-      if (!progress) return;
+      // Without a progress display a warning (an emulator's early-exit reason,
+      // how to stop it) still has to reach the user.
+      if (!progress) {
+        if (level === 'warning') process.stderr.write(`${YELLOW}${message}${RESET}\n`);
+        return;
+      }
       if (level === 'warning') progress.note(message);
       else progress.update('primary-device', { state: 'running', detail: message });
     },
@@ -1194,7 +1199,12 @@ async function provisionMultiWorkerDevices(
         avd: config.avd,
         launchOptions: config.emulatorLaunchOptions,
         onProgress: (message, level) => {
-          if (!opts?.progress) return;
+          // Without a progress display a warning (an emulator's early-exit reason,
+          // how to stop it) still has to reach the user.
+          if (!opts?.progress) {
+            if (level === 'warning') process.stderr.write(`${YELLOW}${message}${RESET}\n`);
+            return;
+          }
           if (level === 'warning') opts.progress.note(message);
           else opts.progress.update('worker-devices', { state: 'running', detail: message });
         },
@@ -1416,7 +1426,12 @@ async function provisionDevicesForBucket(
     avd: effectiveConfig.avd,
     launchOptions: effectiveConfig.emulatorLaunchOptions,
     onProgress: (message, level) => {
-      if (!progress) return;
+      // Without a progress display a warning (an emulator's early-exit reason,
+      // how to stop it) still has to reach the user.
+      if (!progress) {
+        if (level === 'warning') process.stderr.write(`${YELLOW}${message}${RESET}\n`);
+        return;
+      }
       if (level === 'warning') progress.note(message);
       else progress.update('worker-devices', { state: 'running', detail: message });
     },

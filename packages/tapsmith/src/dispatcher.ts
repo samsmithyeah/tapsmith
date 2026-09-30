@@ -1432,7 +1432,12 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           avd: config.avd,
           launchOptions: config.emulatorLaunchOptions,
           onProgress: (message, level) => {
-            if (!launchProgress) return;
+            // Without a progress display a warning (an emulator's early-exit reason,
+            // how to stop it) still has to reach the user.
+            if (!launchProgress) {
+              if (level === 'warning') process.stderr.write(`${YELLOW}${message}${RESET}\n`);
+              return;
+            }
             if (level === 'warning') launchProgress.note(message);
             else launchProgress.update('worker-devices', { state: 'running', detail: message });
           },

@@ -1803,6 +1803,9 @@ export async function provisionEmulators(opts: {
       const exitedDuringBoot = new Promise<never>((_resolve, reject) => {
         void emu.exited.then((exit) => {
           if (!booting) return;
+          // A clean exit may be a launcher that backgrounds the emulator
+          // (a PATH wrapper, say): keep waiting on adb, as before PILOT-417.
+          if (exit.kind === 'exited' && exit.code === 0) return;
           // Abort first, so the boot branch cannot start another probe.
           stopWaiting.abort();
           reject(new EmulatorExitedError(describeEmulatorExit(exit, emu, emulator)));
