@@ -206,12 +206,30 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     expect(code).toBe(0);
   });
 
-  it('a mixed config without adb warns that Android was skipped', async () => {
+  it('a mixed config without adb warns, and still checks its Android APK and AVD', async () => {
     withXcode();
+    writeConfig("export default { projects: [{ name: 'a', use: { apk: 'missing.apk', avd: 'Pixel_9' } }, { name: 'i', use: { platform: 'ios' } }] }\n");
+    const { json } = await doctorJson();
+    expect(check(json, 'adb')).toMatchObject({ status: 'warn', label: expect.stringContaining('Android projects cannot run on this machine') });
+    expect(check(json, 'avd-images')).toMatchObject({ status: 'warn', label: expect.stringContaining('Pixel_9 not found') });
+    expect(ids(json)).toContain('android-agent');
+  });
+
+  it('a mixed config on Linux without adb fails: none of its platforms can run', async () => {
+    setPlatform('linux');
     writeConfig("export default { projects: [{ name: 'a' }, { name: 'i', use: { platform: 'ios' } }] }\n");
     const { code, json } = await doctorJson();
-    expect(check(json, 'adb')).toMatchObject({ status: 'warn', label: expect.stringContaining('Android checks skipped') });
-    expect(code).toBe(0);
+    expect(check(json, 'adb')).toMatchObject({ status: 'fail' });
+    expect(check(json, 'xcode')).toMatchObject({ status: 'fail' });
+    expect(code).toBe(1);
+  });
+
+  it('a mixed config on a Mac with neither adb nor Xcode fails', async () => {
+    writeConfig("export default { projects: [{ name: 'a' }, { name: 'i', use: { platform: 'ios' } }] }\n");
+    const { code, json } = await doctorJson();
+    expect(check(json, 'adb')).toMatchObject({ status: 'fail' });
+    expect(check(json, 'xcode')).toMatchObject({ status: 'fail' });
+    expect(code).toBe(1);
   });
 
   it('with no config, a failing simctl beside a working Xcode is a warning, not exit 1', async () => {
@@ -374,7 +392,7 @@ describe('doctor Android devices (PILOT-263 item 4)', () => {
     withAdb('List of devices attached\nemulator-5556\toffline\n0123ABC\tno permissions (user in plugdev group; are your udev rules wrong?); see [http://developer.android.com/tools/device.html]\n');
     const { json } = await doctorJson();
     const fix = check(json, 'android-devices')?.fix ?? '';
-    expect(fix).toMatch(/emulator-5556 is still booting/);
+    expect(fix).toMatch(/Wait for the emulator to finish booting/);
     expect(fix).not.toMatch(/Reconnect cable/);
     expect(fix).toMatch(/udev rule/);
   });

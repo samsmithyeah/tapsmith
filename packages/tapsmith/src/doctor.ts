@@ -198,7 +198,7 @@ function checkConfigFile(report: Reporter, configFile: string | undefined, findC
 const ADB_FIX = 'Install Android platform-tools (Android Studio → SDK Manager → SDK Tools) and add its platform-tools directory to PATH';
 
 /** Passes with the version, or reports the missing adb (see `planPlatforms`) and returns false. */
-function checkAdb(report: Reporter, required: boolean): boolean {
+function checkAdb(report: Reporter, required: boolean, targeted: boolean): boolean {
   const versionOutput = run(report, 'adb', ['--version']);
   if (versionOutput !== undefined) {
     const versionMatch = versionOutput.match(/Version\s+([\d.]+)/);
@@ -207,6 +207,7 @@ function checkAdb(report: Reporter, required: boolean): boolean {
     return true;
   }
   if (required) fail(report, 'adb', 'ADB not found on PATH', ADB_FIX);
+  else if (targeted) warn(report, 'adb', 'ADB not found on PATH — the config\'s Android projects cannot run on this machine', ADB_FIX);
   else warn(report, 'adb', 'ADB not found on PATH — Android checks skipped', `To test on Android: ${ADB_FIX}`);
   return false;
 }
@@ -268,15 +269,8 @@ export function summarizeAndroidDevices(devices: AdbDevice[]): AndroidDevicesSum
 }
 
 function unusableDeviceFix(device: AdbDevice): string {
-  // An emulator reads "offline" while it boots; a cable has nothing to do with it.
-  if (device.state === 'offline' && device.serial.startsWith('emulator-')) {
-    return `${device.serial} is still booting or stuck: wait for it, or restart it`;
-  }
-  const shared = androidStateBlocker(device.state);
+  const shared = androidStateBlocker(device.state, device.serial);
   if (shared) return shared;
-  if (device.state.startsWith('no permissions')) {
-    return 'Give your user USB access to the device: add a udev rule for it and join the plugdev group (https://developer.android.com/studio/run/device)';
-  }
   return `${device.serial} is "${device.state}" to adb: reconnect it, or run \`adb kill-server\` and try again`;
 }
 
@@ -864,7 +858,7 @@ export function configPlatformTargets(config: PlatformScope & { projects?: Array
  * - The config targets it and another platform: run, but a missing
  *   toolchain is a warning — this machine can still run the other
  *   platform's projects (`--project`), as a Linux Android CI job does with
- *   a mixed config.
+ *   a mixed config — unless that other platform cannot run either.
  * - A loaded config does not target it: skip, with a note saying why.
  * - No usable config (`targets` undefined): judge the machine. A missing
  *   toolchain is one warning ("… checks skipped") with its install fix,
@@ -874,7 +868,13 @@ export type PlatformPlan =
   | { run: true; required: boolean }
   | { run: false; note: string };
 
-export function planPlatform(platform: DoctorPlatform, targets: Set<DoctorPlatform> | undefined, host: NodeJS.Platform): PlatformPlan {
+export function planPlatform(
+  platform: DoctorPlatform,
+  targets: Set<DoctorPlatform> | undefined,
+  host: NodeJS.Platform,
+  /** Mixed configs only: whether the config's other platform can run here. */
+  otherUsable = false,
+): PlatformPlan {
   const name = platform === 'android' ? 'Android' : 'iOS';
   if (targets && !targets.has(platform)) {
     const others = [...targets].map((t) => (t === 'android' ? 'Android' : 'iOS')).join(' and ');
@@ -883,7 +883,9 @@ export function planPlatform(platform: DoctorPlatform, targets: Set<DoctorPlatfo
   if (platform === 'ios' && host !== 'darwin' && !targets) {
     return { run: false, note: `skipped: ${name} testing needs macOS` };
   }
-  return { run: true, required: !!targets && targets.size === 1 };
+  // A mixed config is only let off when the other platform can run: a
+  // machine that runs neither of its platforms must still fail.
+  return { run: true, required: !!targets && (targets.size === 1 || !otherUsable) };
 }
 
 async function doctorReport(opts: { json: boolean; config?: string }): Promise<DoctorJson> {
@@ -912,8 +914,11 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   // Only a config file the user wrote says which platforms they test; the
   // built-in defaults (no file) and a broken config say nothing.
   const targets = config && configPathOf(config) ? configPlatformTargets(config) : undefined;
-  const androidPlan = planPlatform('android', targets, process.platform);
-  const iosPlan = planPlatform('ios', targets, process.platform);
+  const mixed = !!targets && targets.size > 1;
+  const adbUsable = (): boolean => run(report, 'adb', ['--version']) !== undefined;
+  const xcodeUsable = (): boolean => process.platform === 'darwin' && run(report, 'xcodebuild', ['-version']) !== undefined;
+  const androidPlan = planPlatform('android', targets, process.platform, mixed && xcodeUsable());
+  const iosPlan = planPlatform('ios', targets, process.platform, mixed && adbUsable());
 
   // AVDs can be configured top-level or per-project (projects[].use.avd).
   const configuredAvds = [
@@ -946,10 +951,11 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   if (!androidPlan.run) {
     note(report, androidPlan.note);
   } else {
-    const adbOk = checkAdb(report, androidPlan.required);
+    const adbOk = checkAdb(report, androidPlan.required, !!targets);
     // Without a config asking for Android, a missing adb ends the section:
-    // its other checks only matter to someone testing Android.
-    androidChecked = adbOk || androidPlan.required;
+    // its other checks only matter to someone testing Android. A config
+    // that targets Android (even alongside iOS) keeps its APK and AVD checks.
+    androidChecked = adbOk || !!targets;
     if (androidChecked) {
       checkAndroidHome(report);
       if (adbOk) checkConnectedDevices(report);

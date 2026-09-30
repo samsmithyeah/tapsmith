@@ -464,9 +464,10 @@ describe('planPlatform() (PILOT-263)', () => {
     expect(planPlatform('android', new Set(['android']), 'darwin')).toEqual({ run: true, required: true });
   });
 
-  it('with several targeted platforms, each runs but none is required: the host may run only one', () => {
-    expect(planPlatform('android', new Set(['android', 'ios']), 'darwin')).toEqual({ run: true, required: false });
-    expect(planPlatform('ios', new Set(['android', 'ios']), 'linux')).toEqual({ run: true, required: false });
+  it('with several targeted platforms, one is only required when the other cannot run here', () => {
+    expect(planPlatform('android', new Set(['android', 'ios']), 'darwin', true)).toEqual({ run: true, required: false });
+    expect(planPlatform('ios', new Set(['android', 'ios']), 'linux', true)).toEqual({ run: true, required: false });
+    expect(planPlatform('ios', new Set(['android', 'ios']), 'linux', false)).toEqual({ run: true, required: true });
   });
 
   it('a platform the config does not target is skipped with the reason', () => {

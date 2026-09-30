@@ -181,7 +181,7 @@ function blockersFor(
   }
 
   if (device.platform === 'android' && device.state) {
-    const blocker = androidStateBlocker(device.state);
+    const blocker = androidStateBlocker(device.state, device.serial);
     if (blocker) blockers.push(blocker);
   }
 

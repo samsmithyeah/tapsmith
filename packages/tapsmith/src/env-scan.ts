@@ -154,10 +154,16 @@ export function parseAdbDevicesOutput(output: string): AdbDevice[] {
  * `adb devices` state; undefined for a usable (`device`) or unknown state.
  * Shared by `list-devices` and `doctor` so they give the same advice.
  */
-export function androidStateBlocker(state: string): string | undefined {
+export function androidStateBlocker(state: string, serial: string): string | undefined {
   // adb surfaces "unauthorized" when the device hasn't accepted the RSA key
-  // yet and "offline" when the connection is broken.
+  // yet and "offline" when the connection is broken — or, for an emulator,
+  // while it is still booting.
   if (state === 'unauthorized') return 'Accept the USB debugging prompt on the device';
+  if (state === 'offline' && serial.startsWith('emulator-')) return 'Wait for the emulator to finish booting, or restart it if it stays offline';
   if (state === 'offline') return 'Reconnect cable or run `adb kill-server`';
+  // Linux without a udev rule: "no permissions (user … not in the plugdev group …)".
+  if (state.startsWith('no permissions')) {
+    return 'Give your user USB access to the device: add a udev rule for it and join the plugdev group (https://developer.android.com/studio/run/device)';
+  }
   return undefined;
 }
