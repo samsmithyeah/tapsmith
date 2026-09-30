@@ -1220,7 +1220,7 @@ export function describeEmulatorExit(
   const lines = log.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
   const errors = lines.filter((line) => /^(ERROR|FATAL)\b/.test(line));
   const quoted = (errors.length > 0 ? errors : lines).slice(-EXIT_OUTPUT_LINES)
-    .map((line) => line.replace(/^[A-Z_]+\s*\|\s*/, ''));
+    .map((line) => line.replace(/^[A-Z_]+\s*\|\s*/, '').replace(/\.+$/, ''));
   const how = exit.code !== null ? `exit code ${exit.code}` : `signal ${exit.signal ?? 'unknown'}`;
   const detail = quoted.length > 0 ? `: ${quoted.join(' / ')}` : '';
   const where = emu.logPath !== undefined ? ` Full output: ${emu.logPath}` : '';

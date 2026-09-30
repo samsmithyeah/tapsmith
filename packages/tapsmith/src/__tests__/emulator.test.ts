@@ -1473,7 +1473,7 @@ describe('describeEmulatorExit', () => {
       'INFO         | done',
     ].join('\n');
     expect(describeEmulatorExit(exited, emu, bin, () => log)).toBe(
-      'The emulator exited during boot (exit code 1): Unknown AVD name [Pixel], use -list-avds to see valid list. / '
+      'The emulator exited during boot (exit code 1): Unknown AVD name [Pixel], use -list-avds to see valid list / '
       + 'HOME is defined but there is no file Pixel.ini in $HOME/.android/avd. Full output: /tmp/tapsmith-emulator-5554.log',
     );
   });
@@ -1484,7 +1484,7 @@ describe('describeEmulatorExit', () => {
       'ERROR        | Not enough memory to start the emulator.',
     ].join('\n');
     expect(describeEmulatorExit(exited, emu, bin, () => log))
-      .toBe('The emulator exited during boot (exit code 1): Not enough memory to start the emulator.. Full output: /tmp/tapsmith-emulator-5554.log');
+      .toBe('The emulator exited during boot (exit code 1): Not enough memory to start the emulator. Full output: /tmp/tapsmith-emulator-5554.log');
   });
 
   it('falls back to the last lines, or to the exit alone', () => {
