@@ -1430,6 +1430,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           occupiedSerials: androidDevices.map((d) => d.serial),
           workers: maxUsefulWorkers * groupSize,
           avd: config.avd,
+          launchOptions: config.emulatorLaunchOptions,
           onProgress: (message, level) => {
             if (!launchProgress) return;
             if (level === 'warning') launchProgress.note(message);

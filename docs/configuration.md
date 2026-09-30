@@ -56,6 +56,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `shard` | `{ current: number; total: number }` | `undefined` | Shard specification for splitting a run across multiple machines. Usually set via `--shard=x/y`. |
 | `launchEmulators` | `boolean` | `false` | Automatically launch Android emulators to fill the requested worker count. |
 | `avd` | `string` | `undefined` | AVD name to use for `launchEmulators` (Android). When set, Tapsmith launches repeated instances of this AVD. |
+| `emulatorLaunchOptions` | `{ headless?: boolean; args?: string[] }` | `{ headless: true }` | How Tapsmith launches the emulators it boots (Android). `headless: false` opens a window and quick-boots from the AVD's snapshot — much faster locally. `args` are extra `emulator` arguments. Root config only. See [How Tapsmith launches emulators](#how-tapsmith-launches-emulators). |
 | `trace` | `TraceMode \| Partial<TraceConfig>` | `"off"` | Trace recording mode. See [TraceMode](#tracemode) below. |
 | `video` | `VideoMode \| Partial<VideoConfig>` | `"off"` | Continuous video recording of the device screen. See [VideoMode](#videomode) below. |
 | `grep` | `RegExp \| RegExp[]` | `undefined` | Run only tests whose fullName (`describe > test`) matches at least one of these regular expressions. Mirrors Playwright's `grep` and the `--grep` / `-g` CLI flag. |
@@ -397,6 +398,50 @@ Tapsmith launches its own emulator on a free port.
 If you want the opposite behavior, set `deviceStrategy: "prefer-connected"` to
 let Tapsmith reuse unrelated healthy connected devices first even when `avd` is
 configured.
+
+### How Tapsmith launches emulators
+
+Tapsmith starts the `emulator` binary from your Android SDK: `$ANDROID_HOME/emulator`,
+then `$ANDROID_SDK_ROOT/emulator`, then the default SDK location (`~/Library/Android/sdk`
+on macOS, `~/Android/Sdk` on Linux, `%LOCALAPPDATA%\Android\Sdk` on Windows), then
+`PATH`. If it is not in any of them, the run stops at once and names the places it
+looked. Install **Android Emulator** from Android Studio's SDK Manager (SDK Tools tab),
+or set `ANDROID_HOME`.
+
+Every emulator is launched `-read-only`, so several can run from one AVD and nothing is
+written back to it. By default it runs **headless**: no window, a software GPU and a cold
+boot. That is what CI needs, and it works everywhere, but every launch is a full cold
+boot.
+
+On a machine with a display, `headless: false` is much faster. The emulator opens a
+window, uses the host GPU, and quick-boots from the AVD's saved snapshot (the one Android
+Studio saves when you close it), without saving anything back:
+
+```typescript
+export default defineConfig({
+  avd: "Pixel_9_API_35",
+  emulatorLaunchOptions: { headless: false },
+});
+```
+
+The speed-up needs the window. A headless emulator cannot load the snapshot Android
+Studio saved, because that snapshot was taken with the windowed renderer, so it cold-boots
+instead. In CI (`CI` set), over SSH, and on Linux with no display, Tapsmith always
+launches headless and warns if `headless: false` was asked for. With `--workers N`,
+each worker's emulator opens its own window.
+
+`args` adds arguments after Tapsmith's own, for example
+`emulatorLaunchOptions: { args: ["-memory", "4096"] }`. `-avd`, `-port` and `-read-only`
+are refused there, because Tapsmith sets them itself.
+
+The emulator's output goes to `tapsmith-emulator-<port>.log` in the system temp
+directory. If the emulator exits while it is booting, the run reports why straight away,
+instead of waiting for the boot timeout. The most common case is an AVD that is already
+open writable, from Android Studio for example: the emulator will not start a read-only
+instance beside it, so close that emulator or point `avd` at another AVD.
+
+At the end of a run, Tapsmith names each emulator it launched and left running for the
+next run, with the command to stop it, such as `adb -s emulator-5554 emu kill`.
 
 ### Explicit Device Override
 

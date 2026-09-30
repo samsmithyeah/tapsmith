@@ -39,6 +39,12 @@ import {
   isTapsmithLaunchedEmulator,
   readProcessArgs,
   TAPSMITH_EMULATOR_IDENTITY_FLAGS,
+  resolveEmulatorBinary,
+  emulatorNotFoundMessage,
+  resolveEmulatorLaunchSettings,
+  launchEmulator,
+  describeEmulatorExit,
+  preserveEmulatorsForReuse,
 } from '../emulator.js';
 
 const manifestFile = path.join(os.tmpdir(), 'tapsmith-emulators.json');
@@ -1012,8 +1018,9 @@ describe('emulator utilities', () => {
     it('never launches on the port of an offline emulator it left running', async () => {
       const ports: number[] = [];
       await provisionEmulators(
-        { existingSerials: [], workers: 1, avd: 'Pixel' },
+        { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined },
         {
+          resolveEmulatorBinary: foundEmulator,
           listAdbDevices: () => [{ serial: 'emulator-5554', state: 'offline' }],
           listAvds: () => ['Pixel'],
           getRunningAvdName: () => undefined,
@@ -1039,8 +1046,10 @@ describe('emulator utilities', () => {
           existingSerials: [],
           workers: 1,
           avd: 'Broken_API_35',
+          launchOptions: undefined,
         },
         {
+          resolveEmulatorBinary: foundEmulator,
           listAdbDevices: () => [],
           listAvds: () => ['Broken_API_35', 'Pixel_9_API_35'],
           getRunningAvdName: () => undefined,
@@ -1071,8 +1080,10 @@ describe('emulator utilities', () => {
           existingSerials: ['emulator-5554'],
           workers: 2,
           avd: 'Broken_API_35',
+          launchOptions: undefined,
         },
         {
+          resolveEmulatorBinary: foundEmulator,
           listAdbDevices: () => [],
           listAvds: () => ['Broken_API_35'],
           getRunningAvdName: () => undefined,
@@ -1098,8 +1109,10 @@ describe('emulator utilities', () => {
           existingSerials: ['emulator-5554'],
           workers: 2,
           avd: 'Pixel_9_API_35',
+          launchOptions: undefined,
         },
         {
+          resolveEmulatorBinary: foundEmulator,
           listAdbDevices: () => [],
           listAvds: () => ['Pixel_9_API_35', 'Small_Phone_API_35'],
           getRunningAvdName: (serial) => serial === 'emulator-5554' ? 'Pixel_9_API_35' : undefined,
@@ -1128,8 +1141,10 @@ describe('emulator utilities', () => {
           occupiedSerials: ['emulator-5554'],
           workers: 1,
           avd: 'Pixel_9_API_35',
+          launchOptions: undefined,
         },
         {
+          resolveEmulatorBinary: foundEmulator,
           listAdbDevices: () => [],
           listAvds: () => ['Pixel_9_API_35'],
           getRunningAvdName: () => 'Small_Phone_API_35',
@@ -1179,13 +1194,355 @@ function makePermissiveExec(responses: Record<string, string | Error>) {
   }) as unknown as typeof import('node:child_process').execFileSync;
 }
 
-function makeLaunchedEmulator(avd: string, port: number) {
+function makeLaunchedEmulator(
+  avd: string,
+  port: number,
+  exited: Promise<import('../emulator.js').EmulatorExit> = new Promise(() => { /* never exits */ }),
+) {
   return {
     avd,
     port,
     serial: serialForPort(port),
+    headless: true,
+    logPath: path.join(os.tmpdir(), `tapsmith-emulator-${port}.log`),
+    exited,
     process: {
       kill: vi.fn(),
     },
   } as unknown as import('../emulator.js').LaunchedEmulator;
 }
+
+function foundEmulator(): import('../emulator.js').EmulatorBinary {
+  return { command: '/sdk/emulator/emulator', found: true, tried: ['/sdk/emulator/emulator'] };
+}
+
+// ─── Launch profiles, binary resolution and early exit (PILOT-402, PILOT-417) ───
+
+describe('resolveEmulatorBinary', () => {
+  const none = { exists: () => false, onPath: () => false, homedir: () => '/home/u' };
+
+  it('prefers $ANDROID_HOME/emulator/emulator', () => {
+    const bin = resolveEmulatorBinary(
+      { ANDROID_HOME: '/sdk', ANDROID_SDK_ROOT: '/old-sdk' },
+      'darwin',
+      { ...none, exists: (file) => file === '/sdk/emulator/emulator' || file === '/old-sdk/emulator/emulator' },
+    );
+    expect(bin).toEqual({ command: '/sdk/emulator/emulator', found: true, tried: ['/sdk/emulator/emulator'] });
+  });
+
+  it('falls back to ANDROID_SDK_ROOT, then the default SDK location for the OS', () => {
+    expect(resolveEmulatorBinary(
+      { ANDROID_HOME: '/sdk', ANDROID_SDK_ROOT: '/old-sdk' }, 'darwin',
+      { ...none, exists: (file) => file === '/old-sdk/emulator/emulator' },
+    ).command).toBe('/old-sdk/emulator/emulator');
+    expect(resolveEmulatorBinary({}, 'darwin', {
+      ...none, homedir: () => '/Users/u', exists: (file) => file === '/Users/u/Library/Android/sdk/emulator/emulator',
+    }).command).toBe('/Users/u/Library/Android/sdk/emulator/emulator');
+    expect(resolveEmulatorBinary({}, 'linux', {
+      ...none, exists: (file) => file === '/home/u/Android/Sdk/emulator/emulator',
+    }).command).toBe('/home/u/Android/Sdk/emulator/emulator');
+  });
+
+  it('looks for emulator.exe under %LOCALAPPDATA% on Windows', () => {
+    const want = 'C:\\Users\\u\\AppData\\Local\\Android\\Sdk\\emulator\\emulator.exe';
+    const bin = resolveEmulatorBinary({ LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }, 'win32', {
+      ...none, exists: (file) => file === want,
+    });
+    expect(bin.command).toBe(want);
+  });
+
+  it('falls back to PATH last, and lists every place it looked', () => {
+    const onPath = resolveEmulatorBinary({ ANDROID_HOME: '/sdk' }, 'linux', { ...none, onPath: () => true });
+    expect(onPath).toEqual({
+      command: 'emulator',
+      found: true,
+      tried: ['/sdk/emulator/emulator', '/home/u/Android/Sdk/emulator/emulator', '`emulator` on PATH'],
+    });
+    const missing = resolveEmulatorBinary({ ANDROID_HOME: '/sdk' }, 'linux', none);
+    expect(missing.found).toBe(false);
+  });
+
+  it('checks a location named twice only once', () => {
+    const bin = resolveEmulatorBinary({ ANDROID_HOME: '/home/u/Android/Sdk' }, 'linux', none);
+    expect(bin.tried).toEqual(['/home/u/Android/Sdk/emulator/emulator', '`emulator` on PATH']);
+  });
+
+  it('names the paths tried and the fix when nothing is found', () => {
+    const message = emulatorNotFoundMessage(['/sdk/emulator/emulator', '`emulator` on PATH']);
+    expect(message).toContain('/sdk/emulator/emulator, `emulator` on PATH');
+    expect(message).toContain('Install "Android Emulator"');
+    expect(message).toContain('set ANDROID_HOME');
+  });
+});
+
+describe('resolveEmulatorLaunchSettings', () => {
+  const local = {} as NodeJS.ProcessEnv;
+
+  it('is headless by default, locally too', () => {
+    expect(resolveEmulatorLaunchSettings(undefined, local, 'darwin')).toEqual({ headless: true, args: [] });
+    expect(resolveEmulatorLaunchSettings({ args: ['-memory', '4096'] }, local, 'darwin'))
+      .toEqual({ headless: true, args: ['-memory', '4096'] });
+  });
+
+  it('opens a window when asked and one can be shown', () => {
+    expect(resolveEmulatorLaunchSettings({ headless: false }, local, 'darwin')).toEqual({ headless: false, args: [] });
+    expect(resolveEmulatorLaunchSettings({ headless: false }, { DISPLAY: ':0' }, 'linux')).toEqual({ headless: false, args: [] });
+    expect(resolveEmulatorLaunchSettings({ headless: false }, { WAYLAND_DISPLAY: 'wayland-0' }, 'linux').headless).toBe(false);
+    expect(resolveEmulatorLaunchSettings({ headless: false }, { CI: 'false' }, 'darwin').headless).toBe(false);
+  });
+
+  it('never forces a window where there is nothing to show it on', () => {
+    expect(resolveEmulatorLaunchSettings({ headless: false }, { CI: 'true' }, 'darwin'))
+      .toEqual({ headless: true, args: [], windowUnavailable: 'CI is set' });
+    expect(resolveEmulatorLaunchSettings({ headless: false }, { SSH_CONNECTION: '1.2.3.4 5 6.7.8.9 22' }, 'darwin').windowUnavailable)
+      .toBe('this is an SSH session');
+    expect(resolveEmulatorLaunchSettings({ headless: false }, {}, 'linux').windowUnavailable)
+      .toBe('no display is available');
+  });
+});
+
+describe('emulatorLaunchArgs profiles', () => {
+  it('keeps the headless profile exactly as CI has always run it', () => {
+    expect(emulatorLaunchArgs('Pixel', 5554, { headless: true, args: [] })).toEqual([
+      '-avd', 'Pixel', '-port', '5554', '-read-only',
+      '-no-snapshot-load', '-no-snapshot-save', '-no-boot-anim', '-no-audio',
+      '-gpu', 'swiftshader_indirect', '-no-window',
+    ]);
+  });
+
+  it('uses the host GPU and the AVD snapshot, saving nothing, with a window', () => {
+    const args = emulatorLaunchArgs('Pixel', 5554, { headless: false, args: [] });
+    expect(args).toEqual([
+      '-avd', 'Pixel', '-port', '5554', '-read-only',
+      '-no-snapshot-save', '-no-boot-anim', '-no-audio', '-gpu', 'auto',
+    ]);
+    expect(args).not.toContain('-no-window');
+    expect(args).not.toContain('-no-snapshot-load');
+  });
+
+  it('appends the user args after Tapsmith’s own', () => {
+    const args = emulatorLaunchArgs('Pixel', 5554, { headless: false, args: ['-memory', '4096'] });
+    expect(args.slice(-2)).toEqual(['-memory', '4096']);
+  });
+
+  it('is recognised as Tapsmith’s in every profile, and so is the previous version’s argv', () => {
+    for (const headless of [true, false]) {
+      const argv = ['/sdk/qemu-system-aarch64', ...emulatorLaunchArgs('Pixel', 5554, { headless, args: ['-memory', '4096'] })];
+      expect(isTapsmithLaunchedEmulator(argv, { port: 5554, avd: 'Pixel' })).toBe(true);
+    }
+    const previousVersion = ['/sdk/qemu-system-aarch64-headless', '-avd', 'Pixel', '-port', '5554', '-read-only',
+      '-no-snapshot-load', '-no-snapshot-save', '-no-boot-anim', '-no-audio', '-gpu', 'swiftshader_indirect', '-no-window'];
+    expect(isTapsmithLaunchedEmulator(previousVersion, { port: 5554, avd: 'Pixel' })).toBe(true);
+  });
+});
+
+describe('launchEmulator process and early exit', () => {
+  const scripts: string[] = [];
+  afterAll(() => {
+    for (const file of scripts) fs.rmSync(file, { force: true });
+  });
+
+  /** A stand-in `emulator` that prints `output` and exits with `code`. */
+  function fakeEmulator(output: string, code: number): string {
+    const file = path.join(os.tmpdir(), `fake-emulator-${scripts.length}.sh`);
+    fs.writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(output)}\nexit ${code}\n`, { mode: 0o755 });
+    scripts.push(file);
+    return file;
+  }
+
+  it.skipIf(process.platform === 'win32')('captures the output and reports the writable-instance refusal by name', async () => {
+    const emulator = fakeEmulator('ERROR        | Another emulator instance is running. Please close it or run all emulators with -read-only flag.', 1);
+    const emu = launchEmulator('Pixel', 5590, { headless: true, args: [] }, emulator);
+    const exit = await emu.exited;
+    expect(exit).toEqual({ kind: 'exited', code: 1, signal: null });
+    expect(fs.readFileSync(emu.logPath, 'utf-8')).toContain('Another emulator instance is running');
+    expect(describeEmulatorExit(exit, emu, { command: emulator, found: true, tried: [emulator] }))
+      .toBe('AVD Pixel is already running without -read-only (opened from Android Studio, for example), '
+        + 'and the emulator will not start a second instance beside it. Close that emulator, or point `avd` at another AVD.');
+  });
+
+  it('reports a binary that cannot be spawned as not found, with the paths tried', async () => {
+    const missing = path.join(os.tmpdir(), 'no-such-dir', 'emulator');
+    const emu = launchEmulator('Pixel', 5592, { headless: true, args: [] }, missing);
+    const exit = await emu.exited;
+    expect(exit.kind).toBe('spawn-error');
+    expect(describeEmulatorExit(exit, emu, { command: missing, found: false, tried: [missing, '`emulator` on PATH'] }))
+      .toBe(emulatorNotFoundMessage([missing, '`emulator` on PATH']));
+  });
+});
+
+describe('describeEmulatorExit', () => {
+  const emu = { avd: 'Pixel', logPath: '/tmp/tapsmith-emulator-5554.log' };
+  const bin = { command: '/sdk/emulator/emulator', found: true, tried: ['/sdk/emulator/emulator'] };
+  const exited = { kind: 'exited', code: 1, signal: null } as const;
+
+  it('quotes the emulator’s ERROR lines without their level prefix, and points at the log', () => {
+    const log = [
+      'INFO         | Android emulator version 36.6.11.0',
+      'ERROR        | Unknown AVD name [Pixel], use -list-avds to see valid list.',
+      'ERROR        | HOME is defined but there is no file Pixel.ini in $HOME/.android/avd',
+      'INFO         | done',
+    ].join('\n');
+    expect(describeEmulatorExit(exited, emu, bin, () => log)).toBe(
+      'The emulator exited during boot (exit code 1): Unknown AVD name [Pixel], use -list-avds to see valid list. / '
+      + 'HOME is defined but there is no file Pixel.ini in $HOME/.android/avd. Full output: /tmp/tapsmith-emulator-5554.log',
+    );
+  });
+
+  it('falls back to the last lines, or to the exit alone', () => {
+    const log = 'one\ntwo\nthree\nfour\n';
+    expect(describeEmulatorExit({ kind: 'exited', code: null, signal: 'SIGKILL' }, emu, bin, () => log))
+      .toBe('The emulator exited during boot (signal SIGKILL): two / three / four. Full output: /tmp/tapsmith-emulator-5554.log');
+    expect(describeEmulatorExit(exited, emu, bin, () => { throw new Error('ENOENT'); }))
+      .toBe('The emulator exited during boot (exit code 1). Full output: /tmp/tapsmith-emulator-5554.log');
+  });
+
+  it('names a spawn failure other than not-found', () => {
+    const error = Object.assign(new Error('spawn EACCES'), { code: 'EACCES' });
+    expect(describeEmulatorExit({ kind: 'spawn-error', error }, emu, bin))
+      .toBe('Could not start the Android emulator (/sdk/emulator/emulator): spawn EACCES');
+  });
+});
+
+describe('provisionEmulators launch failures', () => {
+  const base = {
+    listAdbDevices: () => [],
+    listAvds: () => ['Pixel'],
+    getRunningAvdName: () => undefined,
+    probeDeviceHealth: (serial: string) => ({ serial, healthy: true }),
+    waitForDeviceStability: async (serial: string) => ({ serial, healthy: true }),
+  };
+
+  it('stops before listing AVDs when the emulator binary is not found', async () => {
+    const listAvds = vi.fn(() => ['Pixel']);
+    const launch = vi.fn();
+    await expect(provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined },
+      {
+        ...base,
+        resolveEmulatorBinary: () => ({ command: 'emulator', found: false, tried: ['/sdk/emulator/emulator', '`emulator` on PATH'] }),
+        listAvds,
+        launchEmulator: launch,
+      },
+    )).rejects.toThrow(emulatorNotFoundMessage(['/sdk/emulator/emulator', '`emulator` on PATH']));
+    expect(listAvds).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('fails an emulator that exits during boot at once, with its reason, without killing by serial', async () => {
+    const warnings: string[] = [];
+    const killEmulator = vi.fn();
+    let bootSignal: AbortSignal | undefined;
+    const emu = makeLaunchedEmulator('Pixel', 5554, Promise.resolve({ kind: 'spawn-error', error: Object.assign(new Error('spawn emulator ENOENT'), { code: 'ENOENT' }) }));
+    const started = Date.now();
+    const result = await provisionEmulators(
+      {
+        existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined,
+        onProgress: (message, level) => { if (level === 'warning') warnings.push(message); },
+      },
+      {
+        ...base,
+        resolveEmulatorBinary: () => ({ command: '/sdk/emulator/emulator', found: true, tried: ['/sdk/emulator/emulator'] }),
+        launchEmulator: () => emu,
+        // A boot wait that would run for the whole timeout unless aborted.
+        waitForBoot: (_serial, _timeout, signal) => new Promise((_resolve, reject) => {
+          bootSignal = signal;
+          signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+        killEmulator,
+      },
+    );
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(result.launched).toEqual([]);
+    expect(warnings[0]).toBe(`Skipping launched emulator emulator-5554 (Pixel): ${emulatorNotFoundMessage(['/sdk/emulator/emulator']).replace(/\.$/, '')}.`);
+    expect(bootSignal?.aborted).toBe(true);
+    expect(killEmulator).not.toHaveBeenCalled();
+    expect(emu.process.kill).not.toHaveBeenCalled();
+  });
+
+  it('keeps an emulator that boots, even if its process ends later', async () => {
+    let exit!: (value: import('../emulator.js').EmulatorExit) => void;
+    const emu = makeLaunchedEmulator('Pixel', 5554, new Promise((resolve) => { exit = resolve; }));
+    let bootSignal: AbortSignal | undefined;
+    const result = await provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined },
+      {
+        ...base,
+        resolveEmulatorBinary: foundEmulator,
+        launchEmulator: () => emu,
+        waitForBoot: async (_serial, _timeout, signal) => { bootSignal = signal; },
+        killEmulator: vi.fn(),
+      },
+    );
+    exit({ kind: 'exited', code: 0, signal: null });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(result.allSerials).toEqual(['emulator-5554']);
+    expect(bootSignal?.aborted).toBe(true); // the wait is released once it is no longer needed
+  });
+
+  it('passes the resolved launch settings and binary to the launch', async () => {
+    const launches: Array<{ settings: unknown, emulator: string }> = [];
+    await provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: { args: ['-memory', '4096'] } },
+      {
+        ...base,
+        resolveEmulatorBinary: foundEmulator,
+        launchEmulator: (avd, port, settings, emulator) => {
+          launches.push({ settings, emulator });
+          return makeLaunchedEmulator(avd, port);
+        },
+        waitForBoot: async () => undefined,
+        killEmulator: vi.fn(),
+      },
+    );
+    expect(launches).toEqual([{ settings: { headless: true, args: ['-memory', '4096'] }, emulator: '/sdk/emulator/emulator' }]);
+  });
+
+  it('warns when a requested window cannot be shown, and launches headless', async () => {
+    vi.stubEnv('CI', 'true');
+    try {
+      const warnings: string[] = [];
+      const headless: boolean[] = [];
+      await provisionEmulators(
+        {
+          existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: { headless: false },
+          onProgress: (message, level) => { if (level === 'warning') warnings.push(message); },
+        },
+        {
+          ...base,
+          resolveEmulatorBinary: foundEmulator,
+          launchEmulator: (avd, port, settings) => {
+            headless.push(settings.headless);
+            return makeLaunchedEmulator(avd, port);
+          },
+          waitForBoot: async () => undefined,
+          killEmulator: vi.fn(),
+        },
+      );
+      expect(headless).toEqual([true]);
+      expect(warnings).toEqual(['Launching emulators headless although emulatorLaunchOptions.headless is false: CI is set.']);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe('preserveEmulatorsForReuse', () => {
+  it('names each emulator it leaves running, and how to stop it', () => {
+    const lines: string[] = [];
+    preserveEmulatorsForReuse(
+      [makeLaunchedEmulator('Medium_Phone_API_36', 5554), { ...makeLaunchedEmulator('Pixel', 5556), headless: false }],
+      (text) => lines.push(text),
+    );
+    expect(lines.map((line) => line.replace(/\x1b\[\d+m/g, ''))).toEqual([
+      'Left emulator-5554 (AVD Medium_Phone_API_36, headless) running for faster reruns. Stop it with: adb -s emulator-5554 emu kill\n',
+      'Left emulator-5556 (AVD Pixel) running for faster reruns. Stop it with: adb -s emulator-5556 emu kill\n',
+    ]);
+  });
+
+  it('says nothing when it launched nothing', () => {
+    const write = vi.fn();
+    preserveEmulatorsForReuse([], write);
+    expect(write).not.toHaveBeenCalled();
+  });
+});

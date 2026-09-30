@@ -694,6 +694,25 @@ describe('defineConfig()', () => {
     expect(config.launchEmulators).toBe(false);
   });
 
+  it('accepts emulatorLaunchOptions and leaves it unset by default', () => {
+    expect(defineConfig({}).emulatorLaunchOptions).toBeUndefined();
+    const options = { headless: false, args: ['-memory', '4096'] };
+    expect(defineConfig({ avd: 'Pixel', emulatorLaunchOptions: options }).emulatorLaunchOptions).toEqual(options);
+  });
+
+  it('refuses malformed emulatorLaunchOptions, naming the field', () => {
+    const bad = (value: unknown) => () => defineConfig({ emulatorLaunchOptions: value as never });
+    expect(bad('headless')).toThrow('config: emulatorLaunchOptions must be an object (got "headless")');
+    expect(bad({ headless: 'false' })).toThrow('config: emulatorLaunchOptions.headless must be a boolean (got "false")');
+    expect(bad({ args: '-memory 4096' })).toThrow('config: emulatorLaunchOptions.args must be an array of strings');
+    expect(bad({ args: ['-memory', 4096] })).toThrow('config: emulatorLaunchOptions.args must be an array of strings');
+  });
+
+  it('refuses emulator args Tapsmith sets itself', () => {
+    expect(() => defineConfig({ emulatorLaunchOptions: { args: ['-port', '5600', '-read-only'] } }))
+      .toThrow('config: emulatorLaunchOptions.args must not include -port, -read-only: Tapsmith sets -avd, -port, -read-only itself');
+  });
+
   it('overrides timeout while keeping other defaults', () => {
     const config = defineConfig({ timeout: 15_000 });
     expect(config.timeout).toBe(15_000);

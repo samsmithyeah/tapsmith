@@ -275,6 +275,13 @@ export interface TapsmithConfig {
   avd?: string;
 
   /**
+   * How Tapsmith launches the emulators it boots for `avd` (Android). Only
+   * applies to emulators Tapsmith launches, not ones you start yourself.
+   * Root-level only: projects on one device target share its emulators.
+   */
+  emulatorLaunchOptions?: EmulatorLaunchOptions;
+
+  /**
    * Trace recording configuration.
    *
    * Can be a mode string ('off', 'on', 'retain-on-failure', etc.) or an
@@ -451,6 +458,25 @@ export interface ProjectConfig {
   grepInvert?: RegExp | RegExp[];
 }
 
+/** `emulatorLaunchOptions` in the config — mirrors Playwright's `launchOptions`. */
+export interface EmulatorLaunchOptions {
+  /**
+   * Run without a window. Defaults to `true`. `false` opens the emulator's
+   * window with the host GPU and quick-boots from the AVD's snapshot (much
+   * faster than a headless cold boot). Ignored — always headless — in CI
+   * (`CI` set), over SSH, or on Linux with no display.
+   */
+  headless?: boolean;
+  /**
+   * Extra arguments for the `emulator` command, added after Tapsmith's own.
+   * `-avd`, `-port` and `-read-only` are Tapsmith's and are refused here.
+   */
+  args?: string[];
+}
+
+/** Emulator flags Tapsmith sets itself and relies on to recognise its emulators. */
+const RESERVED_EMULATOR_ARGS = ['-avd', '-port', '-read-only'];
+
 const DEFAULT_CONFIG: TapsmithConfig = {
   timeout: 30_000,
   retries: 0,
@@ -496,6 +522,7 @@ function applyConfigDefaults(
   validateAppResetOptions(raw);
   validateRecordingModes(raw);
   validateUiOptions(raw);
+  validateEmulatorLaunchOptions(raw);
   validateDevicesOption(raw);
   return config;
 }
@@ -667,6 +694,28 @@ export function assignGroupMemberDevices(
 }
 
 /** Fail fast on malformed `ui` config values instead of silently ignoring them. */
+function validateEmulatorLaunchOptions(raw: Partial<TapsmithConfig>): void {
+  const options = raw.emulatorLaunchOptions;
+  if (options === undefined) return;
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error(`config: emulatorLaunchOptions must be an object (got ${JSON.stringify(options)})`);
+  }
+  if (options.headless !== undefined && typeof options.headless !== 'boolean') {
+    throw new Error(`config: emulatorLaunchOptions.headless must be a boolean (got ${JSON.stringify(options.headless)})`);
+  }
+  if (options.args === undefined) return;
+  if (!Array.isArray(options.args) || options.args.some((arg) => typeof arg !== 'string')) {
+    throw new Error(`config: emulatorLaunchOptions.args must be an array of strings (got ${JSON.stringify(options.args)})`);
+  }
+  const reserved = options.args.filter((arg) => RESERVED_EMULATOR_ARGS.includes(arg));
+  if (reserved.length > 0) {
+    throw new Error(
+      `config: emulatorLaunchOptions.args must not include ${reserved.join(', ')}: Tapsmith sets `
+      + `${RESERVED_EMULATOR_ARGS.join(', ')} itself (use \`avd\` to choose the AVD).`,
+    );
+  }
+}
+
 function validateUiOptions(raw: Partial<TapsmithConfig>): void {
   if (raw.telemetry !== undefined && typeof raw.telemetry !== 'boolean') {
     // A string `'false'` would read as opted-in; refuse rather than guess.

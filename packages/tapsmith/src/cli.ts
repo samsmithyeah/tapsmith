@@ -1073,6 +1073,7 @@ async function ensureSequentialTargetDevice(
     occupiedSerials: onlineSerials,
     workers: 1,
     avd: config.avd,
+    launchOptions: config.emulatorLaunchOptions,
     onProgress: (message, level) => {
       if (!progress) return;
       if (level === 'warning') progress.note(message);
@@ -1187,6 +1188,7 @@ async function provisionMultiWorkerDevices(
         occupiedSerials: allConnected,
         workers: wanted,
         avd: config.avd,
+        launchOptions: config.emulatorLaunchOptions,
         onProgress: (message, level) => {
           if (!opts?.progress) return;
           if (level === 'warning') opts.progress.note(message);
@@ -1408,6 +1410,7 @@ async function provisionDevicesForBucket(
     occupiedSerials: allConnected,
     workers: desiredWorkers,
     avd: effectiveConfig.avd,
+    launchOptions: effectiveConfig.emulatorLaunchOptions,
     onProgress: (message, level) => {
       if (!progress) return;
       if (level === 'warning') progress.note(message);

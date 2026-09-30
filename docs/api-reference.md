@@ -2016,6 +2016,18 @@ export default defineConfig({
 
 See the [Configuration](configuration.md) guide for all options.
 
+### `EmulatorLaunchOptions`
+
+The type of the root config's `emulatorLaunchOptions`: how Tapsmith launches the Android
+emulators it boots for `avd`. Mirrors Playwright's `launchOptions`.
+
+| Field      | Type       | Default | Description |
+| ---------- | ---------- | ------- | ----------- |
+| `headless` | `boolean`  | `true`  | `false` opens the emulator's window, uses the host GPU and quick-boots from the AVD's snapshot. Always headless in CI, over SSH, or on Linux with no display. |
+| `args`     | `string[]` | `[]`    | Extra `emulator` arguments, after Tapsmith's own. `-avd`, `-port` and `-read-only` are refused. |
+
+See [How Tapsmith launches emulators](configuration.md#how-tapsmith-launches-emulators).
+
 ### Projects
 
 Projects group test files with shared options and dependency ordering, mirroring Playwright's project concept. Each project can target its own device by overriding device-shaping fields under `use:`. Setup projects run first; dependent projects run after their dependencies complete.
