@@ -183,17 +183,19 @@ export function avdCaptureWarning(name: string, avds: AvdImageInfo[]): string | 
 
 /**
  * What init says when `emulator -list-avds` lists no AVDs. If the AVD home
- * has some, the `emulator` command is missing from PATH (a stock Android
- * Studio install doesn't add it) — Tapsmith launches AVDs with it, so the
- * fix is PATH, not a new AVD.
+ * has some, the emulator binary was not found (Tapsmith looks in the SDK and
+ * then PATH, `resolveEmulatorBinary`) or failed — Tapsmith launches AVDs with
+ * it, so the fix is the emulator install, not a new AVD.
  */
 export function noAvdsListedMessage(avdImages: AvdImageInfo[], chosenAvd?: string): string {
   if (avdImages.length === 0) return `No Android AVDs found. ${captureAvdFix([])}`;
   const names = avdImages.map((a) => a.name).sort((a, b) => a.localeCompare(b)).join(', ');
   // With an AVD already chosen (explicit --avd) the config is complete; only PATH needs fixing.
   const next = chosenAvd
-    ? `Add $ANDROID_HOME/emulator to PATH so Tapsmith can launch ${chosenAvd}`
-    : 'Add $ANDROID_HOME/emulator to PATH, then re-run npx tapsmith init';
-  return `Found AVDs (${names}), but \`emulator -list-avds\` listed none: the Android \`emulator\` command is not on PATH, or failed. `
-    + `Tapsmith needs it to launch AVDs. ${next}`;
+    ? `so Tapsmith can launch ${chosenAvd}`
+    : 'then re-run npx tapsmith init';
+  return `Found AVDs (${names}), but \`emulator -list-avds\` listed none: the Android emulator is not installed where Tapsmith looks `
+    + '($ANDROID_HOME/emulator, $ANDROID_SDK_ROOT/emulator, the default SDK location, then PATH), or it failed. '
+    + 'Tapsmith needs it to launch AVDs. Install "Android Emulator" from Android Studio\'s SDK Manager (SDK Tools), '
+    + `or set ANDROID_HOME to the SDK that has it, ${next}`;
 }

@@ -40,7 +40,7 @@ import type {
   UIWorkerChildMessage,
 } from './ui-mode/ui-protocol.js';
 import { RunQueue, mapKeyToAction } from './watch-queue.js';
-import { preserveEmulatorsForReuse, type LaunchedEmulator } from './emulator.js';
+import { preserveEmulatorsForReuse, emulatorsLaunchedThisProcess, type LaunchedEmulator } from './emulator.js';
 
 // ─── ANSI helpers ───
 
@@ -1217,7 +1217,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     ctx.client.close();
     ctx.closePrimaryDaemon();
 
-    preserveEmulatorsForReuse(ctx.launchedEmulators);
+    preserveEmulatorsForReuse(emulatorsLaunchedThisProcess());
 
     process.exit(0);
   }

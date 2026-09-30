@@ -694,6 +694,38 @@ describe('defineConfig()', () => {
     expect(config.launchEmulators).toBe(false);
   });
 
+  it('accepts emulatorLaunchOptions and leaves it unset by default', () => {
+    expect(defineConfig({}).emulatorLaunchOptions).toBeUndefined();
+    const options = { headless: false, args: ['-memory', '4096'] };
+    expect(defineConfig({ avd: 'Pixel', emulatorLaunchOptions: options }).emulatorLaunchOptions).toEqual(options);
+  });
+
+  it('refuses malformed emulatorLaunchOptions, naming the field', () => {
+    const bad = (value: unknown) => () => defineConfig({ emulatorLaunchOptions: value as never });
+    expect(bad('headless')).toThrow('config: emulatorLaunchOptions must be an object (got "headless")');
+    expect(bad({ headless: 'false' })).toThrow('config: emulatorLaunchOptions.headless must be a boolean (got "false")');
+    expect(bad({ args: '-memory 4096' })).toThrow('config: emulatorLaunchOptions.args must be an array of strings');
+    expect(bad({ args: ['-memory', 4096] })).toThrow('config: emulatorLaunchOptions.args must be an array of strings');
+    expect(bad({ headles: true })).toThrow('config: emulatorLaunchOptions has unknown key headles (expected headless, args)');
+  });
+
+  it('refuses emulatorLaunchOptions in a project `use`: it is root-level only', () => {
+    const config = defineConfig({ avd: 'Pixel' });
+    expect(() => effectiveConfigForProject(config, { use: { emulatorLaunchOptions: { headless: true } } as never }))
+      .toThrow('config: emulatorLaunchOptions is a root-level option');
+  });
+
+  it('refuses emulator args Tapsmith sets itself', () => {
+    expect(() => defineConfig({ emulatorLaunchOptions: { args: ['-port', '5600', '-read-only'] } }))
+      .toThrow('config: emulatorLaunchOptions.args must not include -port, -read-only: Tapsmith sets the AVD, console port and read-only mode itself');
+    expect(() => defineConfig({ emulatorLaunchOptions: { args: ['-ports', '5600,5601'] } }))
+      .toThrow('must not include -ports');
+    expect(() => defineConfig({ emulatorLaunchOptions: { args: ['@Other_AVD'] } }))
+      .toThrow('must not include @Other_AVD');
+    expect(() => defineConfig({ emulatorLaunchOptions: { args: ['--port', '5600'] } }))
+      .toThrow('must not include --port');
+  });
+
   it('overrides timeout while keeping other defaults', () => {
     const config = defineConfig({ timeout: 15_000 });
     expect(config.timeout).toBe(15_000);
