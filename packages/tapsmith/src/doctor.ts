@@ -88,12 +88,15 @@ interface Reporter {
  * all read the same `adb devices` / `simctl` output instead of re-executing
  * it. Undefined when the command failed or is not installed.
  */
+const RUN_TIMEOUT_MS = 30_000;
+
 function run(report: Reporter, cmd: string, args: string[]): string | undefined {
   const key = [cmd, ...args].join('\0');
   if (!report.cache.has(key)) {
     let out: string | null;
     try {
-      out = execFileSync(cmd, args, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+      // Bounded: a wedged adb server or CoreSimulator must not hang doctor.
+      out = execFileSync(cmd, args, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: RUN_TIMEOUT_MS });
     } catch {
       out = null;
     }
@@ -244,25 +247,37 @@ export function summarizeAndroidDevices(devices: AdbDevice[]): AndroidDevicesSum
   const ready = devices.filter((d) => d.state === 'device');
   const unusable = devices.filter((d) => d.state !== 'device');
   const unusableList = unusable.map((d) => `${d.serial} (${d.state})`).join(', ');
-  if (ready.length > 0) {
-    return {
-      status: 'pass',
-      label: `${ready.length} device${ready.length === 1 ? '' : 's'} connected`,
-      detail: ready.map((d) => d.serial).join(', ') + (unusable.length > 0 ? `; not usable: ${unusableList}` : ''),
-    };
+  const readyLabel = `${ready.length} device${ready.length === 1 ? '' : 's'} connected`;
+  if (ready.length > 0 && unusable.length === 0) {
+    return { status: 'pass', label: readyLabel, detail: ready.map((d) => d.serial).join(', ') };
   }
   if (unusable.length > 0) {
-    const fixes = unusable
-      .map((d) => androidStateBlocker(d.state) ?? `${d.serial} is "${d.state}" to adb: reconnect it, or run \`adb kill-server\` and try again`)
-      .filter((f, i, arr) => arr.indexOf(f) === i);
-    return {
-      status: 'warn',
-      label: `${unusable.length} Android device${unusable.length === 1 ? ' is' : 's are'} attached but not usable`,
-      detail: unusableList,
-      fix: fixes.join('; '),
-    };
+    const fix = unusable.map(unusableDeviceFix).filter((f, i, arr) => arr.indexOf(f) === i).join('; ');
+    // A usable device beside it keeps tests running, so still only a warning;
+    // but the broken one is named with its fix — it may be the one wanted.
+    return ready.length > 0
+      ? { status: 'warn', label: `${readyLabel}, ${unusable.length} not usable`, detail: `${ready.map((d) => d.serial).join(', ')}; not usable: ${unusableList}`, fix }
+      : {
+        status: 'warn',
+        label: `${unusable.length} Android device${unusable.length === 1 ? ' is' : 's are'} attached but not usable`,
+        detail: unusableList,
+        fix,
+      };
   }
   return { status: 'warn', label: 'No Android devices connected', fix: 'Start an emulator or connect a device with USB debugging enabled' };
+}
+
+function unusableDeviceFix(device: AdbDevice): string {
+  // An emulator reads "offline" while it boots; a cable has nothing to do with it.
+  if (device.state === 'offline' && device.serial.startsWith('emulator-')) {
+    return `${device.serial} is still booting or stuck: wait for it, or restart it`;
+  }
+  const shared = androidStateBlocker(device.state);
+  if (shared) return shared;
+  if (device.state.startsWith('no permissions')) {
+    return 'Give your user USB access to the device: add a udev rule for it and join the plugdev group (https://developer.android.com/studio/run/device)';
+  }
+  return `${device.serial} is "${device.state}" to adb: reconnect it, or run \`adb kill-server\` and try again`;
 }
 
 function checkConnectedDevices(report: Reporter): void {
@@ -489,24 +504,35 @@ export function findMitmRedirector(
   env: NodeJS.ProcessEnv,
   homedir: string,
   exists: (p: string) => boolean,
-  brewHasMitmproxy: () => boolean,
+  listDir: (dir: string) => string[],
 ): string | undefined {
   if (env.TAPSMITH_REDIRECTOR_APP && exists(env.TAPSMITH_REDIRECTOR_APP)) return 'TAPSMITH_REDIRECTOR_APP';
   const bin = path.join('Mitmproxy Redirector.app', 'Contents', 'MacOS', 'Mitmproxy Redirector');
   if (exists(path.join('/Applications', bin))) return '/Applications';
   if (exists(path.join(homedir, '.tapsmith', 'redirector', bin))) return '~/.tapsmith/redirector';
-  // The daemon extracts the redirector from the Homebrew cask on first use.
-  if (brewHasMitmproxy()) return 'Homebrew';
+  // The daemon extracts the redirector from the Homebrew *cask*'s tarball on
+  // first use (`find_brew_tarball`); the formula has no such tarball.
+  const tarball = path.join('mitmproxy.app', 'Contents', 'Resources', 'mitmproxy_macos', 'Mitmproxy Redirector.app.tar');
+  for (const caskroom of ['/opt/homebrew/Caskroom/mitmproxy', '/usr/local/Caskroom/mitmproxy']) {
+    if (listDir(caskroom).some((version) => exists(path.join(caskroom, version, tarball)))) return 'Homebrew cask';
+  }
   return undefined;
 }
 
 function checkMitmproxy(report: Reporter): void {
   try {
-    const source = findMitmRedirector(process.env, os.homedir(), fs.existsSync, () => tryExec('brew', ['list', 'mitmproxy']) !== undefined);
+    const listDir = (dir: string): string[] => {
+      try {
+        return fs.readdirSync(dir);
+      } catch {
+        return [];
+      }
+    };
+    const source = findMitmRedirector(process.env, os.homedir(), fs.existsSync, listDir);
     if (source) {
       pass(report, 'mitmproxy', 'mitmproxy installed', source);
     } else {
-      warn(report, 'mitmproxy', 'mitmproxy not installed — needed for iOS simulator network capture', 'Run: brew install mitmproxy');
+      warn(report, 'mitmproxy', 'mitmproxy redirector not found — needed for iOS simulator network capture', 'Run: brew install --cask mitmproxy');
     }
   } catch {
     warn(report, 'mitmproxy', 'Could not check for mitmproxy');

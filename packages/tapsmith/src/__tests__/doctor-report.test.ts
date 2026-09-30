@@ -13,15 +13,17 @@ import * as path from 'node:path';
 const exec = vi.hoisted(() => ({
   table: new Map<string, string>(),
   calls: [] as string[],
+  timeouts: new Map<string, number | undefined>(),
 }));
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
     ...actual,
-    execFileSync: vi.fn((cmd: string, args: readonly string[] = []) => {
+    execFileSync: vi.fn((cmd: string, args: readonly string[] = [], opts?: { timeout?: number }) => {
       const key = [cmd, ...args].join(' ');
       exec.calls.push(key);
+      exec.timeouts.set(key, opts?.timeout);
       const out = exec.table.get(key);
       if (out === undefined) {
         const err = new Error(`spawn ${cmd} ENOENT`) as NodeJS.ErrnoException;
@@ -118,6 +120,7 @@ beforeEach(() => {
   delete process.env.TAPSMITH_REDIRECTOR_APP;
   exec.table.clear();
   exec.calls.length = 0;
+  exec.timeouts.clear();
   xctestrun.found = '/h/.tapsmith/ios-simulator-agent/x_iphonesimulator26.0.xctestrun';
   setPlatform('darwin');
 });
@@ -280,20 +283,37 @@ describe('doctor Android devices (PILOT-263 item 4)', () => {
     expect(json.inventory.connectedDevices).toEqual([{ serial: 'R58N123', state: 'unauthorized' }]);
   });
 
-  it('an offline device gets the reconnect fix', async () => {
-    withAdb('List of devices attached\nemulator-5556\toffline\n');
+  it('an offline phone gets the reconnect fix', async () => {
+    withAdb('List of devices attached\nR58N123\toffline\n');
     const { json } = await doctorJson();
     expect(check(json, 'android-devices')).toMatchObject({ status: 'warn', fix: expect.stringContaining('adb kill-server') });
   });
 
-  it('a usable device passes, and an unusable one beside it is mentioned', async () => {
+  it('a usable device with an unusable one beside it warns, with the unusable one\'s fix', async () => {
     withAdb('List of devices attached\nemulator-5554\tdevice\nR58N123\tunauthorized\n');
-    const { json } = await doctorJson();
+    const { code, json } = await doctorJson();
     expect(check(json, 'android-devices')).toMatchObject({
-      status: 'pass',
-      label: '1 device connected',
+      status: 'warn',
+      label: '1 device connected, 1 not usable',
       detail: 'emulator-5554; not usable: R58N123 (unauthorized)',
+      fix: expect.stringContaining('USB debugging prompt'),
     });
+    expect(code).toBe(0);
+  });
+
+  it('only usable devices pass', async () => {
+    withAdb('List of devices attached\nemulator-5554\tdevice\n');
+    const { json } = await doctorJson();
+    expect(check(json, 'android-devices')).toEqual({ id: 'android-devices', status: 'pass', label: '1 device connected', detail: 'emulator-5554' });
+  });
+
+  it('an offline emulator is told to wait for boot, and "no permissions" gets the udev fix', async () => {
+    withAdb('List of devices attached\nemulator-5556\toffline\n0123ABC\tno permissions (user in plugdev group; are your udev rules wrong?); see [http://developer.android.com/tools/device.html]\n');
+    const { json } = await doctorJson();
+    const fix = check(json, 'android-devices')?.fix ?? '';
+    expect(fix).toMatch(/emulator-5556 is still booting/);
+    expect(fix).not.toMatch(/Reconnect cable/);
+    expect(fix).toMatch(/udev rule/);
   });
 
   it('nothing attached is still "No Android devices connected"', async () => {
@@ -313,6 +333,19 @@ describe('doctor Android devices (PILOT-263 item 4)', () => {
     expect(exec.calls.filter((c) => c === 'adb --version')).toHaveLength(1);
     expect(exec.calls.filter((c) => c === 'xcrun simctl list devices available -j')).toHaveLength(1);
     expect(exec.calls.filter((c) => c === 'xcodebuild -version')).toHaveLength(1);
+  });
+
+  it('lists a skipped platform\'s devices in the inventory too, with a bounded command', async () => {
+    withAdb();
+    withXcode();
+    writeConfig('export default {}\n');
+    const { json } = await doctorJson();
+    expect(ids(json)).not.toContain('simctl');
+    expect(json.inventory.simulators).toEqual([{ name: 'iPhone 17', udid: 'SIM-1', state: 'Shutdown', runtime: 'iOS 26 0' }]);
+    // A wedged CoreSimulator or adb server must not hang doctor.
+    for (const key of ['xcrun simctl list devices available -j', 'adb devices', 'adb --version']) {
+      expect(exec.timeouts.get(key), key).toBeGreaterThan(0);
+    }
   });
 });
 
@@ -353,15 +386,22 @@ describe('doctor fixes (PILOT-263 items 2, 3)', () => {
 
 describe('findMitmRedirector()', () => {
   const bin = path.join('Mitmproxy Redirector.app', 'Contents', 'MacOS', 'Mitmproxy Redirector');
-  const find = (present: string[], env: NodeJS.ProcessEnv = {}, brew = false) =>
-    findMitmRedirector(env, '/h', (p) => present.includes(p), () => brew);
+  const tar = path.join('mitmproxy.app', 'Contents', 'Resources', 'mitmproxy_macos', 'Mitmproxy Redirector.app.tar');
+  const caskTar = path.join('/opt/homebrew/Caskroom/mitmproxy', '11.0.2', tar);
+  const find = (present: string[], env: NodeJS.ProcessEnv = {}, caskVersions: string[] = []) =>
+    findMitmRedirector(env, '/h', (p) => present.includes(p), (dir) => (dir === '/opt/homebrew/Caskroom/mitmproxy' ? caskVersions : []));
 
-  it('checks the daemon\'s locations in the daemon\'s order, then Homebrew', () => {
-    expect(find(['/x'], { TAPSMITH_REDIRECTOR_APP: '/x' }, true)).toBe('TAPSMITH_REDIRECTOR_APP');
-    expect(find([path.join('/Applications', bin)], { TAPSMITH_REDIRECTOR_APP: '/gone' }, true)).toBe('/Applications');
-    expect(find([path.join('/h', '.tapsmith', 'redirector', bin)], {}, true)).toBe('~/.tapsmith/redirector');
-    expect(find([], {}, true)).toBe('Homebrew');
+  it('checks the daemon\'s locations in the daemon\'s order', () => {
+    expect(find(['/x', caskTar], { TAPSMITH_REDIRECTOR_APP: '/x' }, ['11.0.2'])).toBe('TAPSMITH_REDIRECTOR_APP');
+    expect(find([path.join('/Applications', bin), caskTar], { TAPSMITH_REDIRECTOR_APP: '/gone' }, ['11.0.2'])).toBe('/Applications');
+    expect(find([path.join('/h', '.tapsmith', 'redirector', bin), caskTar], {}, ['11.0.2'])).toBe('~/.tapsmith/redirector');
+    expect(find([caskTar], {}, ['11.0.2'])).toBe('Homebrew cask');
     expect(find([])).toBeUndefined();
+  });
+
+  it('does not count a Homebrew install without the cask\'s redirector tarball', () => {
+    // The formula (or a cask whose layout changed) has no tarball, so the daemon cannot extract one.
+    expect(find([], {}, ['11.0.2'])).toBeUndefined();
   });
 });
 
