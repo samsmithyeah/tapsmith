@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  discoverTestFiles,
   getTestDiscoveryWatchRoots,
   matchesTestIgnore,
   matchesTestFile,
@@ -63,5 +64,63 @@ describe('test-file-discovery helpers', () => {
     expect(getTestDiscoveryWatchRoots(['e2e/missing/**/*.test.ts'], rootDir)).toEqual([
       path.join(rootDir, 'e2e'),
     ]);
+  });
+
+  describe('discoverTestFiles', () => {
+    const touch = (rel: string): void => {
+      const file = path.join(rootDir, rel);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, '');
+    };
+
+    beforeEach(() => {
+      for (const rel of [
+        'tests/b.test.ts',
+        'tests/a.test.ts',
+        'tests/nested/deep/c.test.ts',
+        'tests/smoke-login.test.ts',
+        'tests/helper.ts',
+        'top.test.ts',
+        '.hidden/dot.test.ts',
+        'tests/.cache/dot.test.ts',
+        'node_modules/pkg/dep.test.ts',
+        'dist/built.test.ts',
+        'packages/app/node_modules/pkg/nested-dep.test.ts',
+      ]) {
+        touch(rel);
+      }
+    });
+
+    it('returns sorted absolute paths and skips dot-dirs, node_modules and dist', async () => {
+      await expect(discoverTestFiles(['**/*.test.ts'], rootDir)).resolves.toEqual([
+        path.join(rootDir, 'tests', 'a.test.ts'),
+        path.join(rootDir, 'tests', 'b.test.ts'),
+        path.join(rootDir, 'tests', 'nested', 'deep', 'c.test.ts'),
+        path.join(rootDir, 'tests', 'smoke-login.test.ts'),
+        path.join(rootDir, 'top.test.ts'),
+      ]);
+    });
+
+    it('dedupes files matched by several patterns and applies project ignores', async () => {
+      await expect(
+        discoverTestFiles(['tests/**/*.test.ts', 'tests/*.test.ts', './top.test.ts'], rootDir, undefined, ['**/smoke-*.test.ts']),
+      ).resolves.toEqual([
+        path.join(rootDir, 'tests', 'a.test.ts'),
+        path.join(rootDir, 'tests', 'b.test.ts'),
+        path.join(rootDir, 'tests', 'nested', 'deep', 'c.test.ts'),
+        path.join(rootDir, 'top.test.ts'),
+      ]);
+    });
+
+    it('returns nothing when no file matches', async () => {
+      await expect(discoverTestFiles(['missing/**/*.test.ts'], rootDir)).resolves.toEqual([]);
+    });
+
+    it('returns explicit files resolved against rootDir without globbing', async () => {
+      await expect(discoverTestFiles(['**/*.test.ts'], rootDir, ['tests/a.test.ts', 'tests/a.test.ts', 'nope.ts'])).resolves.toEqual([
+        path.join(rootDir, 'tests', 'a.test.ts'),
+        path.join(rootDir, 'nope.ts'),
+      ]);
+    });
   });
 });
