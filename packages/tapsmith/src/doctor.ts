@@ -207,7 +207,7 @@ function checkAdb(report: Reporter, required: boolean, targeted: boolean): boole
     return true;
   }
   if (required) fail(report, 'adb', 'ADB not found on PATH', ADB_FIX);
-  else if (targeted) warn(report, 'adb', 'ADB not found on PATH — the config\'s Android projects cannot run on this machine', ADB_FIX);
+  else if (targeted) warn(report, 'adb', 'ADB not found on PATH — the config\'s Android projects cannot run on this machine', `${ADB_FIX}. Meanwhile, select the other projects with --project`);
   else warn(report, 'adb', 'ADB not found on PATH — Android checks skipped', `To test on Android: ${ADB_FIX}`);
   return false;
 }
@@ -301,14 +301,16 @@ function checkAgentApks(report: Reporter): void {
   }
 }
 
-function checkAppApk(report: Reporter, config: { apk?: string; rootDir?: string } | undefined): void {
+function checkAppApk(report: Reporter, config: { apk?: string; rootDir?: string } | undefined, required: boolean): void {
   if (!config?.apk) return;
   try {
     const resolvedApk = path.resolve(config.rootDir ?? process.cwd(), config.apk);
     if (fs.existsSync(resolvedApk)) {
       pass(report, 'app-apk', 'App APK exists', path.basename(resolvedApk));
     } else {
-      fail(report, 'app-apk', `App APK not found at ${resolvedApk}`, 'Build your app APK, or fix the apk path in your Tapsmith config');
+      // A mixed config's machine may run only its iOS projects (see planPlatform).
+      const mark = required ? fail : warn;
+      mark(report, 'app-apk', `App APK not found at ${resolvedApk}`, 'Build your app APK, or fix the apk path in your Tapsmith config');
     }
   } catch {
     warn(report, 'app-apk', 'Could not check app APK path');
@@ -419,7 +421,7 @@ function checkAvdImages(report: Reporter, configuredAvd?: string | string[]): vo
 const XCODE_FIX = 'Install Xcode from the Mac App Store, open it once to finish setup, then run: sudo xcode-select -s /Applications/Xcode.app';
 
 /** Passes with the version, or reports the missing Xcode (see `planPlatforms`) and returns false. */
-function checkXcode(report: Reporter, required: boolean): boolean {
+function checkXcode(report: Reporter, required: boolean, targeted: boolean): boolean {
   const output = run(report, 'xcodebuild', ['-version']);
   if (output !== undefined) {
     const versionMatch = output.match(/Xcode\s+(\S+)/);
@@ -428,6 +430,7 @@ function checkXcode(report: Reporter, required: boolean): boolean {
     return true;
   }
   if (required) fail(report, 'xcode', 'Xcode not installed', XCODE_FIX);
+  else if (targeted) warn(report, 'xcode', 'Xcode not installed — iOS checks skipped; the config\'s iOS projects cannot run on this machine', `${XCODE_FIX}. Meanwhile, select the other projects with --project`);
   else warn(report, 'xcode', 'Xcode not installed — iOS checks skipped', `To test on iOS: ${XCODE_FIX}`);
   return false;
 }
@@ -960,7 +963,7 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
       checkAndroidHome(report);
       if (adbOk) checkConnectedDevices(report);
       checkAgentApks(report);
-      checkAppApk(report, config);
+      checkAppApk(report, config, androidPlan.required);
     }
   }
 
@@ -980,7 +983,7 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
     }
   } else {
     iosChecked = true;
-    if (checkXcode(report, iosPlan.required)) {
+    if (checkXcode(report, iosPlan.required, !!targets)) {
       checkSimctl(report, iosPlan.required);
       await checkSimulatorXctestrun(report);
     } else {

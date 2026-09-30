@@ -164,6 +164,14 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     expect(text).toMatch(/Android\n\s+– skipped: the config targets iOS only/);
   });
 
+  it('an Android-only config fails on a missing app APK', async () => {
+    withAdb();
+    writeConfig("export default { apk: 'missing.apk' }\n");
+    const { code, json } = await doctorJson();
+    expect(check(json, 'app-apk')).toMatchObject({ status: 'fail' });
+    expect(code).toBe(1);
+  });
+
   it('a config that targets Android fails when adb is missing', async () => {
     writeConfig('export default {}\n');
     const { code, json } = await doctorJson();
@@ -201,18 +209,21 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     withAdb();
     writeConfig("export default { projects: [{ name: 'a' }, { name: 'i', use: { platform: 'ios' } }] }\n");
     const { code, json } = await doctorJson();
-    expect(check(json, 'xcode')).toMatchObject({ status: 'warn', label: expect.stringContaining('iOS checks skipped') });
+    expect(check(json, 'xcode')).toMatchObject({ status: 'warn', label: expect.stringContaining('iOS projects cannot run on this machine'), fix: expect.stringContaining('--project') });
     expect(ids(json)).toContain('android-devices');
     expect(code).toBe(0);
   });
 
   it('a mixed config without adb warns, and still checks its Android APK and AVD', async () => {
     withXcode();
-    writeConfig("export default { projects: [{ name: 'a', use: { apk: 'missing.apk', avd: 'Pixel_9' } }, { name: 'i', use: { platform: 'ios' } }] }\n");
-    const { json } = await doctorJson();
-    expect(check(json, 'adb')).toMatchObject({ status: 'warn', label: expect.stringContaining('Android projects cannot run on this machine') });
+    writeConfig("export default { apk: 'missing.apk', projects: [{ name: 'a', use: { avd: 'Pixel_9' } }, { name: 'i', use: { platform: 'ios' } }] }\n");
+    const { code, json } = await doctorJson();
+    expect(check(json, 'adb')).toMatchObject({ status: 'warn', label: expect.stringContaining('Android projects cannot run on this machine'), fix: expect.stringContaining('--project') });
     expect(check(json, 'avd-images')).toMatchObject({ status: 'warn', label: expect.stringContaining('Pixel_9 not found') });
+    // Still reported, but not an error: this machine may run only the iOS projects.
+    expect(check(json, 'app-apk')).toMatchObject({ status: 'warn', label: expect.stringContaining('missing.apk') });
     expect(ids(json)).toContain('android-agent');
+    expect(code).toBe(0);
   });
 
   it('a mixed config on Linux without adb fails: none of its platforms can run', async () => {

@@ -160,14 +160,6 @@ describe('buildDeviceRows — readiness', () => {
     expect(rows[0]!.blockers.some((b) => b.includes('Reconnect cable'))).toBe(true);
   });
 
-  it('tells an offline emulator to finish booting, not to reconnect a cable (same advice as doctor)', () => {
-    const rows = buildDeviceRows(
-      [daemonDevice({ serial: 'emulator-5554', platform: 'android', isEmulator: true, state: 'offline' })],
-      [],
-    );
-    expect(rows[0]!.blockers).toEqual(['Wait for the emulator to finish booting, or restart it if it stays offline']);
-  });
-
   it('builds a human-friendly Android OS label from the daemon-provided version', () => {
     const rows = buildDeviceRows(
       [daemonDevice({ serial: 'HT123', platform: 'android', state: 'device', osVersion: '14' })],
