@@ -8,7 +8,7 @@ name: Promo Video
 #
 # Screen recordings (clip-*.mp4) are committed; they need simulators and are
 # re-recorded locally (see tools/promo/README.md). Voiceover mp3s are committed
-# too (edge-tts output is not reproducible enough to regenerate blindly).
+# too (ElevenLabs TTS needs an API key and is not reproducible enough to regenerate blindly).
 on:
   workflow_dispatch:
     inputs:
