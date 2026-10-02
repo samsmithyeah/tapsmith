@@ -19,9 +19,9 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { listPhysicalDevices, type PhysicalDeviceInfo } from './ios-devicectl.js';
+import { findDeviceXctestrun, staleNpmDeviceBuild } from './ios-device-resolve.js';
+import { displayPath } from './ios-agent-paths.js';
 import { parseCodesignIdentities, readXcodeRegisteredTeams } from './build-ios-agent.js';
 import { getProfileExpiryInfo, formatExpiryWarning, EXPIRY_WARNING_DAYS } from './ios-profile-expiry.js';
 import { formatJson, jsonError, type JsonCheck } from './cli-json.js';
@@ -263,27 +263,9 @@ export function checkSudoTruePasswordless(): CheckResult {
  * caught separately by `checkIosAgentBuilt`) or when the profile is
  * outside the warning window.
  */
-export function checkProfileExpiry(): CheckResult {
-  const candidates = [
-    path.resolve(process.cwd(), 'ios-agent/.build-device/Build/Products'),
-    path.resolve(process.cwd(), '../ios-agent/.build-device/Build/Products'),
-    path.resolve(process.cwd(), '../../ios-agent/.build-device/Build/Products'),
-  ];
-  let xctestrunPath: string | undefined;
-  for (const dir of candidates) {
-    if (!fs.existsSync(dir)) continue;
-    try {
-      const entry = fs.readdirSync(dir).find(
-        (e) => e.endsWith('.xctestrun') && e.includes('iphoneos') && !e.endsWith('.patched.xctestrun'),
-      );
-      if (entry) {
-        xctestrunPath = path.join(dir, entry);
-        break;
-      }
-    } catch {
-      // skip
-    }
-  }
+export function checkProfileExpiry(startDir: string = process.cwd()): CheckResult {
+  // The same runner `tapsmith test` would pick (PILOT-264).
+  const xctestrunPath = findDeviceXctestrun(startDir);
   if (!xctestrunPath) {
     return { label: 'Provisioning profile expiry', ok: true, detail: 'no signed runner yet (build first)' };
   }
@@ -309,39 +291,33 @@ export function checkProfileExpiry(): CheckResult {
 
 /**
  * Check whether the signed TapsmithAgent runner has been built for physical
- * devices. This is a cheap cache lookup under `ios-agent/.build-device`
+ * devices. This is a cheap cache lookup (a checkout's `ios-agent/.build-device`,
+ * or the npm install's under `~/.tapsmith/ios-agent`)
  * that saves the user from having to remember to run `tapsmith ios build-agent`
  * separately. Advisory because the check isn't strictly required — users
  * can run `tapsmith ios build-agent` any time — but surfacing its state here
  * means one less step in the "next steps" list when it's already done.
  */
-export function checkIosAgentBuilt(): CheckResult {
-  // Search for an iphoneos xctestrun under the monorepo's standard
-  // ios-agent/.build-device path, starting from cwd and walking up to
-  // find a repo root. We don't know where the user runs setup from, so
-  // we try a few reasonable candidates.
-  const candidates = [
-    path.resolve(process.cwd(), 'ios-agent/.build-device/Build/Products'),
-    path.resolve(process.cwd(), '../ios-agent/.build-device/Build/Products'),
-    path.resolve(process.cwd(), '../../ios-agent/.build-device/Build/Products'),
-  ];
-  for (const dir of candidates) {
-    if (!fs.existsSync(dir)) continue;
-    try {
-      const entries = fs.readdirSync(dir);
-      const xctestrun = entries.find(
-        (e) => e.endsWith('.xctestrun') && e.includes('iphoneos') && !e.endsWith('.patched.xctestrun'),
-      );
-      if (xctestrun) {
-        return {
-          label: 'Signed iOS agent runner',
-          ok: true,
-          detail: `${path.basename(dir)}/${xctestrun}`,
-        };
-      }
-    } catch {
-      // Unreadable dir — skip.
-    }
+export function checkIosAgentBuilt(startDir: string = process.cwd()): CheckResult {
+  // The same lookup `tapsmith test` uses: a checkout's ios-agent/.build-device
+  // in or above startDir, then the npm install's ~/.tapsmith/ios-agent build
+  // (PILOT-264).
+  const xctestrun = findDeviceXctestrun(startDir);
+  if (xctestrun) {
+    return { label: 'Signed iOS agent runner', ok: true, detail: displayPath(xctestrun) };
+  }
+  const stale = staleNpmDeviceBuild();
+  if (stale) {
+    return {
+      label: 'Signed iOS agent runner',
+      ok: false,
+      advisory: true,
+      fix: [
+        `The runner under ~/.tapsmith/ios-agent was built by ${stale.builtBy ? `Tapsmith ${stale.builtBy}` : 'another Tapsmith version'} (this is ${stale.current}).`,
+        'Rebuild it for this version:',
+        '  tapsmith ios build-agent',
+      ],
+    };
   }
   return {
     label: 'Signed iOS agent runner',
@@ -407,14 +383,21 @@ function printDeviceStatus(devices: PhysicalDeviceInfo[]): void {
     // healthy devices (observed: real iPhone that successfully runs
     // 119/119 tests but shows `ddiServicesAvailable: false` when idle).
 
-    const color = unpaired ? red : green;
-    const marker = unpaired ? '✗' : '✓';
+    const devModeOff = developerModeOff(device);
+    const blocked = unpaired || devModeOff;
+    const color = blocked ? red : green;
+    const marker = blocked ? '✗' : '✓';
     console.log(`  ${color(marker)} ${device.name} ${dim(`(${device.udid})`)}`);
     console.log(`      ${dim(`iOS ${device.osVersion || '?'}`)}`);
     if (unpaired) {
       console.log(`      ${red('not paired')} — open Xcode → Window → Devices and Simulators,`);
       console.log(`        ${dim('wait for the device to appear, then click "Use for Development".')}`);
-    } else {
+    }
+    if (devModeOff) {
+      console.log(`      ${red('Developer Mode off')} — on the device: Settings → Privacy & Security → Developer Mode → On`);
+      console.log(`        ${dim('(the device restarts, then asks you to confirm)')}`);
+    }
+    if (!blocked) {
       console.log(`      ${green('ready for tapsmith test')}`);
     }
   }
@@ -459,6 +442,23 @@ export interface SetupDeviceJson {
 }
 
 const UNPAIRED_FIX = 'Open Xcode → Window → Devices and Simulators, wait for the device to appear, then click "Use for Development".';
+const DEVELOPER_MODE_FIX = 'On the device: Settings → Privacy & Security → Developer Mode → On (the device restarts, then asks you to confirm).';
+
+/**
+ * Developer Mode is reported off. `unknown` (devices before iOS 16, which have
+ * no Developer Mode, or a status devicectl did not report) is not a failure.
+ */
+function developerModeOff(d: PhysicalDeviceInfo): boolean {
+  return d.developerModeStatus === 'disabled';
+}
+
+/** The fixes a listed device needs before it can run tests, in order. */
+function deviceFixes(d: PhysicalDeviceInfo): string[] {
+  const fixes: string[] = [];
+  if (!d.isPaired) fixes.push(UNPAIRED_FIX);
+  if (developerModeOff(d)) fixes.push(DEVELOPER_MODE_FIX);
+  return fixes;
+}
 
 function jsonCheck(id: string, result: { label: string; ok: boolean; detail?: string; fix?: string[]; advisory?: boolean }): JsonCheck {
   const check: JsonCheck = {
@@ -474,24 +474,37 @@ function jsonCheck(id: string, result: { label: string; ok: boolean; detail?: st
 
 /**
  * The device row of the checklist. It fails when no device is listed and when
- * a listed device is unpaired, so a failing `ok` always has a failing check
- * to explain it.
+ * a listed device is unpaired or has Developer Mode off, so a failing `ok`
+ * always has a failing check to explain it.
  */
 function deviceConnectedCheck(deviceCheck: DeviceConnectionCheck): JsonCheck {
   const unpaired = deviceCheck.devices.filter((d) => !d.isPaired);
-  if (!deviceCheck.ok || unpaired.length === 0) return jsonCheck('device-connected', deviceCheck);
+  const devModeOff = deviceCheck.devices.filter(developerModeOff);
+  if (!deviceCheck.ok || (unpaired.length === 0 && devModeOff.length === 0)) return jsonCheck('device-connected', deviceCheck);
+  const names = (list: PhysicalDeviceInfo[]) => list.map((d) => `${d.name} (${d.udid})`).join(', ');
+  const detail: string[] = [];
+  const fix: string[] = [];
+  if (unpaired.length > 0) {
+    detail.push(`not paired: ${names(unpaired)}`);
+    fix.push(UNPAIRED_FIX);
+  }
+  if (devModeOff.length > 0) {
+    detail.push(`Developer Mode off: ${names(devModeOff)}`);
+    fix.push(DEVELOPER_MODE_FIX);
+  }
   return {
     id: 'device-connected',
     status: 'fail',
     label: deviceCheck.label,
-    detail: `not paired: ${unpaired.map((d) => `${d.name} (${d.udid})`).join(', ')}`,
-    fix: UNPAIRED_FIX,
+    detail: detail.join('; '),
+    fix: fix.join('\n'),
   };
 }
 
 /**
  * Hard-fail criteria, shared by the text and JSON output: any non-advisory
- * check failed, or no device listed, or a listed device is unpaired.
+ * check failed, or no device listed, or a listed device is unpaired or has
+ * Developer Mode off.
  * Advisory checks (agent not yet built, profile near expiry, no passwordless
  * sudo) print a ⚠ hint but don't block. We intentionally don't require
  * `ddiServicesAvailable` either; it's an unreliable "is Xcode currently
@@ -500,7 +513,7 @@ function deviceConnectedCheck(deviceCheck: DeviceConnectionCheck): JsonCheck {
  */
 function requiredChecksPass(results: CheckResult[], deviceCheck: DeviceConnectionCheck): boolean {
   return results.every((r) => r.ok || r.advisory === true)
-    && deviceCheck.ok && deviceCheck.devices.every((d) => d.isPaired);
+    && deviceCheck.ok && deviceCheck.devices.every((d) => deviceFixes(d).length === 0);
 }
 
 /** The `--json` report. Exported for the schema tests. */
@@ -523,7 +536,8 @@ export function buildSetupDeviceJson(
         developerMode: d.developerModeStatus,
         transport: d.transportType,
       };
-      if (!d.isPaired) entry.fix = UNPAIRED_FIX;
+      const fixes = deviceFixes(d);
+      if (fixes.length > 0) entry.fix = fixes.join('\n');
       return entry;
     }),
   };
@@ -655,9 +669,10 @@ function printSetupIosDevice(deps: SetupDeviceDeps): number {
   console.log(`    ${dim('Restore your normal setting after the test session.')}`);
   console.log();
   console.log(bold('To run a test:'));
-  console.log(`  ${dim('1.')} Point your Tapsmith config at the device UDID above and the signed`);
-  console.log(`     ${bold('iosXctestrun')} under ${bold('ios-agent/.build-device')}. Example:`);
-  console.log(dim('       { platform: \'ios\', device: \'<UDID>\', iosXctestrun: \'<path>\', app: \'<signed .app>\' }'));
+  console.log(`  ${dim('1.')} In your Tapsmith config, set ${bold('platform: \'ios\'')} and ${bold('app')} to your device-signed .app`);
+  console.log(`     ${dim('(no')} ${dim('simulator')}${dim(').')} Tapsmith finds the device and the signed agent runner itself:`);
+  console.log(`     ${dim('set')} ${bold('device')} ${dim('only when more than one device is paired, and')} ${bold('iosXctestrun')}`);
+  console.log(`     ${dim('only to pin a runner built somewhere else.')}`);
   console.log(`  ${dim('2.')} ${bold('tapsmith test --config <your-config>')}`);
   console.log();
   for (const line of networkCaptureNextSteps()) console.log(line);
