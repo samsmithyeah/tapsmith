@@ -237,6 +237,30 @@ jobs:
             chmod +x npm-packages/${{ matrix.pkg }}/tapsmith-ios-hid
           fi
 
+      # The postinstall chmod is gone (PILOT-437): npm keeps the tarball's
+      # file modes on install, so the `chmod +x` above is the only thing that
+      # makes the daemon runnable. download-artifact drops modes, so verify
+      # what will actually be packed.
+      - name: Verify package contents
+        working-directory: npm-packages/${{ matrix.pkg }}
+        run: |
+          npm pack --dry-run --json --ignore-scripts > /tmp/pack.json
+          node --input-type=module -e "
+            import * as fs from 'node:fs';
+            import { installScriptsOf, nonExecutableFiles, packEntry } from '../../packages/tapsmith/scripts/clean-install-checks.mjs';
+            const entry = packEntry(fs.readFileSync('/tmp/pack.json', 'utf8'));
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const problems = [
+              ...nonExecutableFiles(entry.files, pkg.files),
+              ...installScriptsOf(pkg).map((script) => 'package.json declares ' + script),
+            ];
+            if (problems.length) {
+              console.error('Packed tarball is not installable as-is: ' + problems.join('; '));
+              process.exit(1);
+            }
+            console.log('Tarball OK: ' + entry.files.map((f) => f.path + ' ' + (f.mode & 0o777).toString(8)).join(', '));
+          "
+
       - name: Set version from tag
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -508,6 +532,8 @@ jobs:
           test -f dist/proto/tapsmith.proto || (echo "Missing dist/proto/tapsmith.proto" && exit 1)
           # Public export `tapsmith/trace-format.schema.json` (docs/trace-format.md)
           test -f dist/schema/trace-format.schema.json || (echo "Missing dist/schema/trace-format.schema.json" && exit 1)
+          # Compiled unit tests must not ship (PILOT-438)
+          test ! -e dist/__tests__ || (echo "dist/__tests__ must not be published" && exit 1)
 
       - name: Check if tapsmith version already exists
         id: tapsmith_exists

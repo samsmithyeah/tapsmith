@@ -1,0 +1,8 @@
+{
+  // The emitting config for `npm run build`. tsconfig.json also covers
+  // src/__tests__ so the editor and `tsc --noEmit` type-check the tests; this
+  // one leaves them out so the published dist/ holds only what ships
+  // (PILOT-438).
+  "extends": "./tsconfig.json",
+  "exclude": ["node_modules", "dist", "src/__tests__"]
+}

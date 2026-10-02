@@ -60,7 +60,7 @@ jobs:
       # is needed; the full build stays below so a broken web-app build does
       # not hide the unit-test results.
       - name: Build SDK for the unit tests
-        run: npx tsc
+        run: npx tsc -p tsconfig.build.json
 
       - name: Unit tests
         run: npx vitest run
@@ -71,12 +71,24 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Packs the SDK and installs the tarball into an empty project with a
-      # fresh npm cache, failing on any `npm warn deprecated` line: that is the
-      # first output every new user sees (PILOT-405). It runs here rather than
-      # in release.yml so the release PR catches it before the tag, and without
-      # racing registry propagation of the just-published platform packages.
-      - name: Clean-install deprecation check
+      # Packs the SDK (and this platform's @tapsmith/core-* package, with stub
+      # binaries) and installs them into an empty project with a fresh npm
+      # cache, failing on what every new user would see on their first
+      # install: `npm warn deprecated` lines (PILOT-405), an install-scripts
+      # warning naming a Tapsmith or unvetted package, a daemon binary that is
+      # not executable without scripts (PILOT-437), and compiled tests in the
+      # tarball (PILOT-438). It runs here rather than in release.yml so the
+      # release PR catches it before the tag, and without racing registry
+      # propagation of the just-published platform packages.
+      #
+      # npm 11.17.0 is the first npm that reports install scripts; the check
+      # fails under CI on anything older, so pin it rather than depend on
+      # whichever npm the runner's Node 24 bundles (the E2E helper tests below
+      # run on it too).
+      - name: Pin npm for the clean-install check
+        run: npm install -g npm@11.17.0
+
+      - name: Clean-install check
         run: npm run check:clean-install
 
       # The E2E helper scripts (trace-archive content checks, xctestrun

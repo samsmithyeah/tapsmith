@@ -8,8 +8,8 @@
  * drive the *built* package through it: the CLI's tsx re-exec, the discovery
  * child every UI-mode and MCP session forks, and config loading.
  *
- * They test `dist/`, so rebuild (`npm run build`, or `npx tsc` for the SDK
- * alone) after changing the code they cover — a stale dist is tested as-is.
+ * They test `dist/`, so rebuild (`npm run build`, or `npx tsc -p tsconfig.build.json`
+ * for the SDK alone) after changing the code they cover — a stale dist is tested as-is.
  * CI compiles dist/ before the unit tests; a local run with no build skips them.
  */
 
