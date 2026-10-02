@@ -2246,6 +2246,9 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
 
   try {
     for (const candidate of primaryCandidates) {
+      // The setup writes the device it picks onto the config before steps
+      // that can still fail; a failed target must not stay pinned to it.
+      const deviceBefore = candidate.effectiveConfig.device;
       try {
         currentSequentialState = await setupSequentialDevice(
           candidate.effectiveConfig,
@@ -2267,6 +2270,9 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
           sequentialExitCode = 1;
           return;
         }
+        // A Tapsmith bug is not a device that cannot start: surface it now,
+        // not after setting up the next target.
+        if ((args.ui || args.watch) && isProgrammingError(err)) throw err;
         const failedDaemon = spawnedDaemonProcess;
         // Whether the others still run is known only once one starts.
         noteFailedTarget(candidate.deviceSignature, err, !(args.ui || args.watch));
@@ -2279,10 +2285,10 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
             failedDaemon.once('exit', () => { clearTimeout(timer); resolve(); });
           });
         }
-        // A `use`-less project's config is the root config, which the failed
-        // setup may have pinned to its device: the next target must not
-        // inherit it (as at a sequential project switch).
-        if (candidate.effectiveConfig === config) config.device = rootDeviceBeforeSetup;
+        // The failed setup may have pinned the config to the device it picked
+        // — the root config, for a `use`-less project — so neither the next
+        // target nor a later retry of this one inherits it.
+        candidate.effectiveConfig.device = deviceBefore;
       }
     }
     if (args.ui || args.watch) {

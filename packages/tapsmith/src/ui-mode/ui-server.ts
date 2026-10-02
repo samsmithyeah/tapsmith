@@ -265,6 +265,8 @@ interface UIWorkerMemberHandle {
 
 interface UIWorkerHandle {
   id: number
+  /** Tests the worker reported for its current file this dispatch (fullName). */
+  reportedInFile?: Set<string>
   process: ChildProcess
   /** The group's primary device. */
   deviceSerial: string
@@ -1748,6 +1750,12 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         ),
       );
     }
+    // A retry of a target later must not force-install these again (nor the
+    // CLI's primary, which it already did).
+    if (ctx.forceInstall) {
+      for (const serial of workerSerials.slice(0, numWorkers)) forceInstalledSerials.add(serial);
+      if (ctx.deviceSerial) forceInstalledSerials.add(ctx.deviceSerial);
+    }
 
     const results = await Promise.allSettled(initPromises);
     for (let i = 0; i < results.length; i++) {
@@ -2242,12 +2250,10 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
   function failUnservableFile(
     file: TaggedFile,
     reason: string,
-    /** The file was partway through on a worker that died: tests it already reported keep their result. */
-    keepReported = false,
+    /** The file was partway through on a worker that died: these tests (fullName) already reported and keep their result. */
+    reported?: ReadonlySet<string>,
   ): number {
-    const tests = treeTestsOf(file).filter((t) => !keepReported || !testResults.has(resultEntryKey({
-      projectName: file.projectName, filePath: file.filePath, fullName: t.fullName,
-    })));
+    const tests = treeTestsOf(file).filter((t) => !reported?.has(t.fullName));
     if (tests.length === 0) {
       recordFileFailure(file.filePath, file.projectName, new Error(reason));
     } else {
@@ -2497,6 +2503,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         worker.busy = true;
         worker.currentFile = next;
         worker.currentTest = undefined;
+        worker.reportedInFile = new Set();
         worker.lastRun = { file: next.filePath, projectName: next.projectName };
         lastRunProject = next.projectName ?? lastRunProject;
         // Hand over a background preparation that satisfies this file's policy;
@@ -2557,6 +2564,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         worker.retired = true;
         const inFlightFile = worker.currentFile;
         const inFlightTest = worker.currentTest;
+        const inFlightReported = worker.reportedInFile;
         worker.currentFile = undefined;
         worker.currentTest = undefined;
         worker.busy = false;
@@ -2605,7 +2613,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
           // results and the status board showed nothing — the failure existed
           // only in the number. It carries the reason the worker gave, which
           // is the actual cause (an import error, say) rather than the drain.
-          failed += failUnservableFile(f, `No worker could run this file: ${reason}`, f === inFlightFile);
+          failed += failUnservableFile(f, `No worker could run this file: ${reason}`, f === inFlightFile ? inFlightReported : undefined);
           anyFailed = true;
           if (f.projectName) failedProjectsInDispatch.add(f.projectName);
         }
@@ -2673,6 +2681,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
                 worker.currentFile?.projectName,
                 result.warnings,
               );
+              worker.reportedInFile?.add(result.fullName);
               if (result.status === 'passed') worker.passed++;
               else if (result.status === 'failed') worker.failed++;
               else if (result.status === 'skipped') worker.skipped++;
