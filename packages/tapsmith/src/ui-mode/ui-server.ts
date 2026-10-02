@@ -1750,18 +1750,16 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         ),
       );
     }
-    // A retry of a target later must not force-install these again (nor the
-    // CLI's primary, which it already did).
-    if (ctx.forceInstall) {
-      for (const serial of workerSerials.slice(0, numWorkers)) forceInstalledSerials.add(serial);
-      if (ctx.deviceSerial) forceInstalledSerials.add(ctx.deviceSerial);
-    }
+    // A retry of a target later must not force-install again where a worker
+    // got through its setup (nor on the CLI's primary, which it already did).
+    if (ctx.forceInstall && ctx.deviceSerial) forceInstalledSerials.add(ctx.deviceSerial);
 
     const results = await Promise.allSettled(initPromises);
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
       if (result.status === 'fulfilled' && result.value) {
         uiWorkers.push(result.value);
+        if (ctx.forceInstall) forceInstalledSerials.add(result.value.deviceSerial);
       } else {
         const reason = result.status === 'rejected' ? result.reason : 'null result';
         const serial = workerSerials[i];
@@ -2149,7 +2147,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         child.send(initMsg);
       });
     } catch (err) {
-      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      // SIGTERM, as close() does: a tsx wrapper forwards it to the worker, not SIGKILL.
+      try { child.kill('SIGTERM'); } catch { /* already gone */ }
       for (const m of members) {
         m.screenClient?.close();
         if (m.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
@@ -2335,8 +2334,12 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       // The flag applies to a device's first setup this session, as at
       // startup — not again on every retry of a target that keeps failing.
       ctx.forceInstall && !forceInstalledSerials.has(group[0]),
-    ).then((worker) => { uiWorkers.push(worker); return worker; })));
-    if (ctx.forceInstall) for (const { group } of slots) forceInstalledSerials.add(group[0]);
+    ).then((worker) => {
+      uiWorkers.push(worker);
+      // Ready means its setup, the install included, went through.
+      if (ctx.forceInstall) forceInstalledSerials.add(worker.deviceSerial);
+      return worker;
+    })));
     const started = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
     if (started.length === 0) {
       // Every slot failed, and a failed worker cleans its processes up: give

@@ -504,6 +504,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
           clearTimeout(timeout);
           child.removeListener('message', onMessage);
           child.removeListener('exit', onExit);
+          // Ready means its setup, the install included, went through.
+          if (ctx.forceInstall) forceInstalledSerials.add(deviceSerial);
           resolve();
         } else if (msg.type === 'progress' && msg.workerId === id) {
           process.stderr.write(`${DIM}  Worker ${id} (${deviceSerial}): ${msg.message}${RESET}\n`);
@@ -524,7 +526,6 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       child.on('exit', onExit);
 
       const forceInstall = ctx.forceInstall && deviceSerial !== ctx.deviceSerial && !forceInstalledSerials.has(deviceSerial);
-      forceInstalledSerials.add(deviceSerial);
       child.send({
         type: 'init',
         workerId: id,
