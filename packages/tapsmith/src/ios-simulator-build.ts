@@ -44,20 +44,6 @@ interface XcodebuildOutcome {
   spawnError?: Error;
 }
 
-/**
- * Run `xcodebuild` with its output streamed to `logPath` instead of
- * buffered. A from-scratch build can print megabytes, and a child whose
- * output is buffered is killed at the buffer cap (ENOBUFS) mid-build
- * (PILOT-393). Only a bounded excerpt stays in memory for the error.
- *
- * Rejects with a message naming the exit code, signal, timeout or spawn
- * failure, followed by the excerpt and the log path. The log is per process
- * (two sessions may build at once); buildSimulatorAgent removes it once the
- * build is cached, so only failed builds leave one behind (the next build
- * removes those of processes that have exited). The messages never say
- * "xcodebuild exited with": that is the daemon's agent-launch failure text,
- * which worker-protocol.ts retries as an infrastructure error.
- */
 /** Remove build logs left by processes that have exited (failed builds). */
 function pruneStaleBuildLogs(): void {
   let entries: string[];
@@ -78,9 +64,24 @@ function processAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Run `xcodebuild` with its output streamed to `logPath` instead of
+ * buffered. A from-scratch build can print megabytes, and a child whose
+ * output is buffered is killed at the buffer cap (ENOBUFS) mid-build
+ * (PILOT-393). Only a bounded excerpt stays in memory for the error.
+ *
+ * Rejects with a message naming the exit code, signal, timeout or spawn
+ * failure, followed by the excerpt and the log path. The log is per process
+ * (two sessions may build at once); buildSimulatorAgent removes it once the
+ * build is cached, so only failed builds leave one behind (the next build
+ * removes those of processes that have exited). The messages never say
+ * "xcodebuild exited with": that is the daemon's agent-launch failure text,
+ * which worker-protocol.ts retries as an infrastructure error.
+ */
 async function runXcodebuild(args: string[], logPath: string, timeoutMs: number | undefined): Promise<void> {
   const log = fs.createWriteStream(logPath);
   let logWritable = true;
+  let exited = false;
   const sources: NodeJS.ReadableStream[] = [];
   // A log that cannot be written (disk full, unwritable path) must not stall
   // the build: stop writing to it and keep reading the pipes, or xcodebuild
@@ -155,6 +156,8 @@ async function runXcodebuild(args: string[], logPath: string, timeoutMs: number 
     child.on('exit', () => {
       // Exited in time: the drain below must not turn it into a timeout.
       if (timer) clearTimeout(timer);
+      exited = true;
+      for (const source of sources) source.resume();
       setTimeout(() => {
         child.stdout?.destroy();
         child.stderr?.destroy();
@@ -171,7 +174,9 @@ async function runXcodebuild(args: string[], logPath: string, timeoutMs: number 
       // Written by hand rather than pipe(): pipe() pauses the source for good
       // when the log errors.
       stream.on('data', (chunk: Buffer) => {
-        if (logWritable && !log.write(chunk)) {
+        // After exit, read the pipes dry within the drain window rather
+        // than wait on the log: what is left is the end of the output.
+        if (logWritable && !log.write(chunk) && !exited) {
           stream.pause();
           log.once('drain', () => stream.resume());
         }
@@ -326,9 +331,10 @@ export async function ensureSimulatorAgent(
       }
     }
     throw new Error(
-      'No iOS simulator agent xctestrun found. Install the @tapsmith/agent-ios-simulator package, ' +
-        'or build from source: cd ios-agent && xcodebuild build-for-testing ' +
-        '-destination \'platform=iOS Simulator,name=iPhone 16\'',
+      'No iOS simulator agent build was found, and it cannot be built here: the iOS Simulator SDK ' +
+        'could not be detected (`xcrun --sdk iphonesimulator --show-sdk-version` failed). ' +
+        'Install Xcode and select it (`sudo xcode-select -s /Applications/Xcode.app`), ' +
+        `or install the prebuilt agent: npm install @tapsmith/agent-ios-simulator-${process.arch}`,
     );
   }
 

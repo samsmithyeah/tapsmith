@@ -17,10 +17,12 @@ vi.mock('../build-ios-agent.js', () => ({
 
 // By default no existing build and a detectable SDK, so ensureSimulatorAgent()
 // builds; a test can hand it a build for another SDK instead.
-const { existingBuild } = vi.hoisted(() => ({ existingBuild: { path: undefined as string | undefined } }));
+const { existingBuild } = vi.hoisted(() => ({
+  existingBuild: { path: undefined as string | undefined, sdk: '27.0' as string | undefined },
+}));
 vi.mock('../ios-device-resolve.js', () => ({
   findSimulatorXctestrun: () => existingBuild.path,
-  getInstalledSimulatorSdkVersion: () => '27.0',
+  getInstalledSimulatorSdkVersion: () => existingBuild.sdk,
   extractSdkVersion: (p: string) => /iphonesimulator(\d+\.\d+)/.exec(p)?.[1],
 }));
 
@@ -115,6 +117,7 @@ afterEach(() => {
   process.env.PATH = saved.PATH;
   delete process.env.FAKE_XCB_MODE;
   existingBuild.path = undefined;
+  existingBuild.sdk = '27.0';
 });
 
 const cacheDir = (): string => path.join(home, '.tapsmith', 'ios-simulator-agent');
@@ -280,6 +283,16 @@ describe('ensureSimulatorAgent() options', () => {
     } finally {
       log.mockRestore();
     }
+  });
+
+  it('says why it cannot build when the simulator SDK cannot be detected', async () => {
+    existingBuild.sdk = undefined;
+    const { ensureSimulatorAgent } = await import('../ios-simulator-build.js');
+    const message = await ensureSimulatorAgent({ quiet: true }).then(() => '', (err: unknown) => (err as Error).message);
+    expect(message).toContain('the iOS Simulator SDK could not be detected');
+    expect(message).toContain('xcode-select');
+    expect(message).toContain(`@tapsmith/agent-ios-simulator-${process.arch}`);
+    expect(message).not.toContain('name=iPhone');
   });
 
   it('passes its timeout to the build and names the build failure', async () => {
