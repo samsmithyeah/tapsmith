@@ -150,7 +150,12 @@ export async function waitForPinnedDeviceAuthorization(
   const now = deps.now ?? Date.now;
   const timeoutMs = deps.timeoutMs ?? 30_000;
   const pollMs = deps.pollMs ?? 1_000;
-  const deadline = now() + timeoutMs;
+  const start = now();
+  const deadline = start + timeoutMs;
+  // The pinned path makes no adb call before this one, so it often starts the
+  // adb server, which can list a just-plugged phone (or show it `offline`) a
+  // moment late: give that a few seconds before handing over to recovery.
+  const graceEnd = start + Math.min(5_000, timeoutMs);
   let noted = false;
   for (;;) {
     const devices = deps.listAdbDevices();
@@ -163,14 +168,15 @@ export async function waitForPinnedDeviceAuthorization(
     // reconnects, is still pending — replugging the cable is how the prompt
     // is brought back.
     const pending = !usable && (mine.some((d) => d.state === 'unauthorized' || d.state === 'authorizing')
-      || (noted && mine.every((d) => d.state === 'offline')));
+      || ((noted || now() < graceEnd) && mine.every((d) => d.state === 'offline')));
     if (!pending) return blocked;
     if (now() >= deadline) {
-      return mine.length === 0
+      return noted && mine.length === 0
         ? `Device ${serial} is no longer listed by adb. Reconnect it, then accept the USB debugging prompt on the device.`
         : blocked;
     }
-    if (!noted) {
+    const prompting = mine.some((d) => d.state === 'unauthorized' || d.state === 'authorizing');
+    if (!noted && prompting) {
       noted = true;
       const seconds = Math.round(timeoutMs / 1000);
       deps.onWaiting(`Waiting up to ${seconds} s for ${serial} to be authorized: accept the USB debugging prompt on the device.`);

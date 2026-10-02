@@ -192,11 +192,17 @@ describe('waitForPinnedDeviceAuthorization()', () => {
     };
   };
 
-  it('returns at once, without waiting or a note, for a usable or unlisted pin', async () => {
+  it('returns at once, without waiting or a note, for a usable pin', async () => {
     const run = deps(sequence('device'));
     expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
-    expect(await waitForPinnedDeviceAuthorization('OTHER', run.deps)).toBeUndefined();
     expect(run.sleeps).toEqual([]);
+    expect(run.notes).toEqual([]);
+  });
+
+  it('gives an unlisted pin only the short grace, with no note', async () => {
+    const run = deps(sequence('device'));
+    expect(await waitForPinnedDeviceAuthorization('OTHER', run.deps)).toBeUndefined();
+    expect(run.sleeps.reduce((x, y) => x + y, 0)).toBeLessThanOrEqual(5_000);
     expect(run.notes).toEqual([]);
   });
 
@@ -280,9 +286,23 @@ describe('waitForPinnedDeviceAuthorization()', () => {
     }
   });
 
-  it('leaves offline to the restart recovery', async () => {
+  it('leaves offline to the restart recovery after a short grace', async () => {
     const run = deps(sequence('offline'));
     expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
-    expect(run.sleeps).toEqual([]);
+    expect(run.sleeps.reduce((x, y) => x + y, 0)).toBeLessThanOrEqual(5_000);
+    expect(run.notes).toEqual([]);
+  });
+
+  // The pinned path makes no adb call before this one, so it often starts the
+  // adb server, which lists a just-plugged phone a moment later.
+  it('waits a moment for a pin adb does not list yet, then for its prompt', async () => {
+    let call = 0;
+    const states = [undefined, undefined, 'unauthorized', 'device'];
+    const run = deps(() => {
+      const state = states[Math.min(call++, states.length - 1)];
+      return state ? [{ serial: 'R5C', state }] : [];
+    });
+    expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
+    expect(run.notes).toHaveLength(1);
   });
 });

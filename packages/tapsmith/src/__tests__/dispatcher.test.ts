@@ -567,6 +567,15 @@ describe('pinnedWorkerDevices', () => {
     )).toThrow(/^Pinned device R5C is attached, but adb reports it unauthorized\. Accept the USB debugging prompt on the device\.$/);
   });
 
+  it('still lists the connected devices when every missing pin is attached but unusable', () => {
+    expect(() => pinnedWorkerDevices(
+      [{ name: 'device-1', device: 'R5C' }],
+      ['emulator-5554'],
+      false,
+      [{ serial: 'R5C', state: 'unauthorized' }],
+    )).toThrow(/Accept the USB debugging prompt on the device\. Connected: emulator-5554\.$/);
+  });
+
   it('never calls a pin adb lists as usable "attached but unusable" (it came online between two adb calls)', () => {
     expect(() => pinnedWorkerDevices(
       [{ name: 'device-1', device: 'emulator-5560' }],
