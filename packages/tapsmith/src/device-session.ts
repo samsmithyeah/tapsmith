@@ -10,6 +10,7 @@
  * devices and daemons to hand it.
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawn, execFileSync, type ChildProcess, type StdioOptions } from 'node:child_process';
 import { TapsmithGrpcClient } from './grpc-client.js';
@@ -255,7 +256,8 @@ export async function startDaemon(
 /**
  * Resolve agent APK / xctestrun / device-signed .app paths for a device. The
  * xctestrun is auto-detected like every embedder did: the device slice under
- * `ios-agent/.build-device` for physical devices; for simulators
+ * `ios-agent/.build-device` (a checkout's, or the npm install's under
+ * `~/.tapsmith/ios-agent`) for physical devices; for simulators
  * `ensureSimulatorAgent` also rebuilds on SDK mismatch instead of handing the
  * daemon a stale xctestrun that xcodebuild rejects at startup.
  */
@@ -288,17 +290,27 @@ export async function resolveAgentArtifacts(
   let iosXctestrunPath = config.iosXctestrun
     ? path.resolve(config.rootDir, config.iosXctestrun)
     : process.env.TAPSMITH_IOS_XCTESTRUN || undefined;
+  if (iosXctestrunPath && options.requireXctestrun) {
+    // A path to nothing would only fail later, deep inside xcodebuild. Name
+    // it here, with the likely cause (PILOT-264).
+    const resolve = await import('./ios-device-resolve.js');
+    if (!fs.existsSync(iosXctestrunPath)) {
+      const source = config.iosXctestrun
+        ? `\`iosXctestrun\` (resolved against rootDir ${config.rootDir})`
+        : 'TAPSMITH_IOS_XCTESTRUN';
+      throw new Error(resolve.describeMissingExplicitXctestrun(iosXctestrunPath, source));
+    }
+    const stale = resolve.staleExplicitXctestrunWarning(iosXctestrunPath);
+    if (stale) process.stderr.write(`[tapsmith] ${stale}\n`);
+  }
   const { isPhysicalDevice } = await import('./ios-devicectl.js');
   const physical = isPhysicalDevice(serial);
   if (!iosXctestrunPath) {
     if (physical) {
-      const { findDeviceXctestrun } = await import('./ios-device-resolve.js');
+      const { findDeviceXctestrun, describeMissingDeviceXctestrun } = await import('./ios-device-resolve.js');
       iosXctestrunPath = findDeviceXctestrun(config.rootDir);
       if (!iosXctestrunPath && options.requireXctestrun) {
-        throw new Error(
-          'No device xctestrun found under ios-agent/.build-device. '
-          + 'Run `tapsmith ios build-agent` first, or set `iosXctestrun` explicitly.',
-        );
+        throw new Error(describeMissingDeviceXctestrun(config.rootDir));
       }
     } else {
       const { ensureSimulatorAgent } = await import('./ios-simulator-build.js');

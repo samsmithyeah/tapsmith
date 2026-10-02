@@ -30,10 +30,10 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { glob } from 'glob';
 import { getProfileExpiryInfo, formatExpiryWarning } from './ios-profile-expiry.js';
+import { npmIosAgentDir, npmIosAgentVersion, npmIosAgentVersionFile, tapsmithPackageVersion } from './ios-agent-paths.js';
 
 // ─── iOS agent source resolution ────────────────────────────────────────
 
@@ -45,25 +45,19 @@ import { getProfileExpiryInfo, formatExpiryWarning } from './ios-profile-expiry.
  *   2. `~/.tapsmith/ios-agent/` — previously extracted from the npm package
  *   3. Extract bundled source from the npm package to `~/.tapsmith/ios-agent/`
  */
-function getPackageVersion(): string {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '../package.json'), 'utf8'));
-    return pkg.version ?? '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
-
 export function resolveIosAgentDir(cwd?: string): string {
   // 1. Monorepo
   const monorepo = path.resolve(cwd ?? process.cwd(), 'ios-agent');
   if (fs.existsSync(path.join(monorepo, 'TapsmithAgent.xcodeproj'))) return monorepo;
 
-  // 2. Previously extracted — re-extract if version changed
-  const cached = path.join(os.homedir(), '.tapsmith', 'ios-agent');
-  const versionFile = path.join(cached, '.tapsmith-version');
-  const currentVersion = getPackageVersion();
-  const cachedVersion = fs.existsSync(versionFile) ? fs.readFileSync(versionFile, 'utf8').trim() : '';
+  // 2. Previously extracted — re-extract if version changed. Re-extracting
+  // also removes the device build under it (`.build-device`): that runner was
+  // built from the previous version's agent source. The device xctestrun
+  // lookup already refuses it and says to rebuild (PILOT-264).
+  const cached = npmIosAgentDir();
+  const versionFile = npmIosAgentVersionFile();
+  const currentVersion = tapsmithPackageVersion();
+  const cachedVersion = npmIosAgentVersion() ?? '';
 
   if (fs.existsSync(path.join(cached, 'TapsmithAgent.xcodeproj')) && cachedVersion === currentVersion) {
     return cached;
