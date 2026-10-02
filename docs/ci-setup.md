@@ -117,7 +117,9 @@ export default defineConfig({
 
 In CI, Tapsmith launches the emulator headless (no window, software GPU, cold boot) and waits up to
 5 minutes for it to boot. The emulator is left running after the run so a rerun on the same machine
-can reuse it; a hosted runner discards it with the job.
+can reuse it; a hosted runner discards it with the job. On a self-hosted runner that keeps its state
+between jobs, create the AVD once instead of in every run: `create-avd` refuses to overwrite an
+existing AVD unless you pass `--force`.
 
 Booting in the workflow (as above with `android-emulator-runner`) overlaps the boot with your other
 setup steps, so it is usually a little faster. Tapsmith's own CI covers both setups: its main suites
