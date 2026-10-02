@@ -755,6 +755,14 @@ const _issuedPorts = new Set<number>();
 const _startingDaemons = new Set<ChildProcess>();
 
 /**
+ * Bumped by `closeAllClients`. A tool call still in flight when the session
+ * closes keeps running its awaits; a `startDaemon` that began before the close
+ * must not spawn a daemon, or add one to the freshly reset connection list,
+ * after it.
+ */
+let _sessionGeneration = 0;
+
+/**
  * A free port this session has not already given out.
  *
  * `pickFreePort` binds `:0` and closes again, so two calls in a row can be
@@ -794,6 +802,8 @@ export function daemonSpawnArgs(port: string, agentPort: string, platform?: stri
 
 /** @internal — exported for unit testing. */
 export async function startDaemon(platform?: string): Promise<DaemonConnection | null> {
+  const generation = _sessionGeneration;
+  const sessionClosed = (): boolean => generation !== _sessionGeneration;
   log(platform ? `Starting a ${platform} daemon...` : 'No daemon found, starting one...');
   const port = String(await pickUnissuedPort());
   // Its own agent port, like every other daemon we spawn (see dispatcher.ts
@@ -805,6 +815,7 @@ export async function startDaemon(platform?: string): Promise<DaemonConnection |
   const agentPort = String(await pickUnissuedPort());
   const bin = findDaemonBin();
   const daemonArgs = daemonSpawnArgs(port, agentPort, platform);
+  if (sessionClosed()) return null;
 
   // `detached`, not just `unref`. A daemon may outlive the session that started
   // it — that is the whole point of the registry, and `closeAllClients`
@@ -860,6 +871,12 @@ export async function startDaemon(platform?: string): Promise<DaemonConnection |
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log(`Daemon started but did not respond: ${msg}${failureDetail()}`);
+      client.close();
+      daemonProcess.kill();
+      return null;
+    }
+
+    if (sessionClosed()) {
       client.close();
       daemonProcess.kill();
       return null;
@@ -2003,6 +2020,7 @@ function log(msg: string): void {
 }
 
 export function closeAllClients(): void {
+  _sessionGeneration++;
   // Never registered, so no peer can be using one: always ours to stop.
   for (const starting of _startingDaemons) {
     try { starting.kill(); } catch { /* already gone */ }

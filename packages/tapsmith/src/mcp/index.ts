@@ -303,20 +303,25 @@ export async function runMcpServer(
     // must not be the thing keeping a finished process alive.
     const exit = (): void => process.exit(0);
     setTimeout(exit, STDERR_FLUSH_DEADLINE_MS).unref();
+    // Cleanup took the signal handlers down; a signal in this window (a client
+    // that closed stdin and then sent SIGTERM, a second Ctrl-C) would
+    // otherwise end the process by signal instead of exit 0.
+    for (const signal of SHUTDOWN_SIGNALS) process.once(signal, exit);
     process.stderr.write('', exit);
   };
   // A client that died took the read ends of our pipes with it. Writing the
   // shutdown notes there fails with EPIPE, and an unhandled stream error would
   // turn a clean shutdown into a crash. Nothing is left to report it to.
-  const ignoreClosedPipe = (): void => {};
-  process.stdout.on('error', ignoreClosedPipe);
-  process.stderr.on('error', ignoreClosedPipe);
+  // A broken stdout means the client can no longer hear us even if stdin is
+  // still open (a wrapper that died half-way): that is a disconnect too.
+  process.stdout.on('error', () => onClientGone());
+  process.stderr.on('error', () => {});
   function cleanup(): void {
     if (cleanedUp) return;
     cleanedUp = true;
     for (const signal of SHUTDOWN_SIGNALS) process.off(signal, shutdown);
-    process.stdin.off('end', onStdinClosed);
-    process.stdin.off('close', onStdinClosed);
+    process.stdin.off('end', onClientGone);
+    process.stdin.off('close', onClientGone);
     stopActivityMonitor();
     dispatcher.dispose();
     closeAllClients();
@@ -338,11 +343,11 @@ export async function runMcpServer(
   // its client left, keeping the `--outlive-parent` daemon it started and that
   // daemon's device agent alive (PILOT-453). Closing the server runs `onclose`,
   // which reports the disconnect and cleans up like any other close.
-  function onStdinClosed(): void {
+  function onClientGone(): void {
     void server.close().catch(() => {}).finally(shutdown);
   }
-  process.stdin.once('end', onStdinClosed);
-  process.stdin.once('close', onStdinClosed);
+  process.stdin.once('end', onClientGone);
+  process.stdin.once('close', onClientGone);
 
   const transport = new StdioServerTransport();
   try {

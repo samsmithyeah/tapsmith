@@ -26,9 +26,10 @@ vi.mock('../grpc-client.js', () => ({
 vi.mock('../daemon-bin.js', () => ({ findDaemonBin: () => '/fake/tapsmith-core' }));
 
 let nextPort = 41000;
+let pickPort: () => Promise<number> = () => Promise.resolve(nextPort++);
 vi.mock('../port-utils.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../port-utils.js')>()),
-  pickFreePort: () => Promise.resolve(nextPort++),
+  pickFreePort: () => pickPort(),
 }));
 
 const { startDaemon, closeAllClients } = await import('../mcp/connection.js');
@@ -52,6 +53,7 @@ beforeEach(() => {
   process.env.HOME = tmpDir;
   delete process.env.TAPSMITH_DAEMON_LOG;
   spawnMock.mockReset();
+  pickPort = () => Promise.resolve(nextPort++);
   stderr = '';
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
     stderr += String(chunk);
@@ -135,5 +137,34 @@ describe('startDaemon', () => {
 
     ready(false);
     expect(await starting).toBeNull();
+  });
+
+  it('does not join a closed session when the daemon answers just after the close', async () => {
+    // The kill and a `waitForReady` that already succeeded race: the daemon
+    // answers, and the connection must not land in the list the close reset.
+    const daemon = new FakeDaemon();
+    spawnMock.mockImplementation(() => daemon);
+    let ready!: (ok: boolean) => void;
+    waitForReady = () => new Promise<boolean>((resolve) => { ready = resolve; });
+
+    const starting = startDaemon();
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+    closeAllClients();
+    ready(true);
+    expect(await starting).toBeNull();
+    expect(daemon.kill).toHaveBeenCalled();
+  });
+
+  it('never spawns a daemon for a session that closed while it was picking ports', async () => {
+    let releasePort!: () => void;
+    const portGate = new Promise<void>((resolve) => { releasePort = resolve; });
+    pickPort = async () => { await portGate; return nextPort++; };
+    waitForReady = () => Promise.resolve(true);
+
+    const starting = startDaemon();
+    closeAllClients();
+    releasePort();
+    expect(await starting).toBeNull();
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 });
