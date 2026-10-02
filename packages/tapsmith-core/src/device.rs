@@ -227,6 +227,15 @@ impl DeviceManager {
 
     /// Set the active device by serial.
     pub fn set_active(&mut self, serial: &str) -> Result<()> {
+        // Checked first: an active device that turned unauthorized is still in
+        // `devices` (kept as Disconnected), and must not be made Active again.
+        if let Some(unusable) = self.unusable.iter().find(|d| d.serial == serial) {
+            bail!(
+                "Device {serial} is attached but not usable: adb reports it \"{}\". \
+                 Run `tapsmith list-devices` to see how to fix it.",
+                unusable.state
+            );
+        }
         let device = self.devices.iter_mut().find(|d| d.serial == serial);
 
         match device {
@@ -246,13 +255,6 @@ impl DeviceManager {
                 Ok(())
             }
             None => {
-                if let Some(unusable) = self.unusable.iter().find(|d| d.serial == serial) {
-                    bail!(
-                        "Device {serial} is attached but not usable: adb reports it \"{}\". \
-                         Run `tapsmith list-devices` to see how to fix it.",
-                        unusable.state
-                    );
-                }
                 bail!(
                     "Device {serial} not found. Run ListDevices first to refresh the device list."
                 );
@@ -525,6 +527,14 @@ mod tests {
         // The inactive one is forgotten, as before.
         assert_eq!(dm.devices().len(), 1);
         assert_eq!(dm.unusable_devices()[0].serial, "HT123");
+
+        // Selecting it again is refused, rather than reviving the stale entry.
+        let msg = dm.set_active("HT123").unwrap_err().to_string();
+        assert!(msg.contains("not usable"), "{msg}");
+        assert_eq!(
+            dm.active_device().unwrap().state,
+            ConnectionState::Disconnected
+        );
     }
 
     #[test]

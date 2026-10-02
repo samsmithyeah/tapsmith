@@ -3440,14 +3440,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let unusable_devices = dm
             .unusable_devices()
             .iter()
-            .map(|d| proto::DeviceInfo {
-                serial: d.serial.clone(),
-                model: d.model.clone(),
-                state: d.state.clone(),
-                is_emulator: d.is_emulator,
-                platform: Platform::Android.as_str().to_string(),
-                os_version: String::new(),
-            })
+            .map(unusable_device_to_proto)
             .collect();
 
         Ok(Response::new(proto::ListDevicesResponse {
@@ -8162,6 +8155,19 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     }
 }
 
+/// A device adb lists but cannot use, as ListDevices reports it: adb's whole
+/// state string as `state`, always Android, no OS version (adb cannot ask it).
+fn unusable_device_to_proto(d: &crate::device::UnusableDevice) -> proto::DeviceInfo {
+    proto::DeviceInfo {
+        serial: d.serial.clone(),
+        model: d.model.clone(),
+        state: d.state.clone(),
+        is_emulator: d.is_emulator,
+        platform: Platform::Android.as_str().to_string(),
+        os_version: String::new(),
+    }
+}
+
 /// Extract port number from a WebSocket URL like `ws://localhost:9222/devtools/page/1`
 fn extract_port_from_ws_url(url: &str) -> Option<u16> {
     let url = url
@@ -8916,6 +8922,25 @@ fn capture_port_update(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn unusable_device_maps_to_proto_with_adb_state() {
+        let d = crate::device::UnusableDevice {
+            serial: "0123ABCD".into(),
+            state: "no permissions (missing udev rules?); see [http://x]".into(),
+            model: String::new(),
+            is_emulator: false,
+        };
+        let p = unusable_device_to_proto(&d);
+        assert_eq!(p.serial, "0123ABCD");
+        assert_eq!(
+            p.state,
+            "no permissions (missing udev rules?); see [http://x]"
+        );
+        assert_eq!(p.platform, "android");
+        assert_eq!(p.os_version, "");
+        assert!(!p.is_emulator);
+    }
 
     #[test]
     fn embedded_root_defaults_are_skipped_only_for_android() {
