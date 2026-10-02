@@ -6,6 +6,8 @@
  */
 
 import type { TapsmithConfig } from './config.js';
+import type { AdbDevice } from './adb-devices.js';
+import { androidStateBlocker } from './env-scan.js';
 
 type AdviceConfig = Pick<TapsmithConfig, 'avd' | 'launchEmulators'>;
 
@@ -39,4 +41,68 @@ export function moreDevicesAdvice(config: AdviceConfig & Pick<TapsmithConfig, 'p
 /** Advice for "devices were found, but no worker started on any of them". */
 export function workerStartAdvice(): string {
   return 'Fix the worker failure above, or run `tapsmith doctor` to check your setup.';
+}
+
+// ─── Attached but unusable Android devices (PILOT-457) ───
+
+/**
+ * An Android device and its adb state, from `adb devices` or the daemon's
+ * `ListDevicesResponse` (whose `unusable_devices` carry adb's state).
+ * `platform` lets daemon entries for other platforms be passed as they are.
+ */
+type AdbStateEntry = AdbDevice & { platform?: string };
+
+/** Usable by Tapsmith: adb's `device` state, or the daemon's names for it. */
+function isUsableAndroidState(state: string): boolean {
+  return state === 'device' || state === 'Discovered' || state === 'Active';
+}
+
+/**
+ * "`<serial>` is attached, but adb reports it unauthorized. Accept the USB
+ * debugging prompt on the device." — the advice `doctor` and `list-devices`
+ * give (`androidStateBlocker`), for the test-run paths' errors.
+ */
+export function describeUnusableAndroidDevice(device: AdbDevice): string {
+  const fix = androidStateBlocker(device.state, device.serial)
+    ?? 'Reconnect it, or run `adb kill-server` and try again';
+  return `${device.serial} is attached, but adb reports it ${device.state}. ${fix}.`;
+}
+
+function unusableAndroid(devices: readonly AdbStateEntry[]): AdbStateEntry[] {
+  return devices.filter((d) => (d.platform ?? 'android') === 'android' && !isUsableAndroidState(d.state));
+}
+
+/**
+ * {@link noDeviceAdvice}, preceded by every attached device adb cannot use —
+ * the phone whose USB-debugging prompt was never accepted is the likeliest
+ * reason a first run finds nothing.
+ */
+export function attachedDeviceAdvice(config: AdviceConfig, attached: readonly AdbStateEntry[]): string {
+  return [...unusableAndroid(attached).map(describeUnusableAndroidDevice), noDeviceAdvice(config)].join(' ');
+}
+
+/** "No online devices found." for an Android run, with {@link attachedDeviceAdvice}. */
+export function noOnlineDeviceMessage(config: AdviceConfig, attached: readonly AdbStateEntry[]): string {
+  return `No online devices found. ${attachedDeviceAdvice(config, attached)}`;
+}
+
+/**
+ * The error for a pinned Android device adb lists but cannot use, or
+ * undefined when it is usable or not listed. `preflight` (before any ADB
+ * server restart) reports only states a restart cannot fix — unauthorized
+ * and no-permissions — since `offline` (whose fix *is* a restart) and
+ * transient states such as `authorizing` may recover; `after-recovery`
+ * reports whatever state adb still gives.
+ */
+export function pinnedDeviceUnusableMessage(
+  serial: string,
+  devices: readonly AdbStateEntry[],
+  phase: 'preflight' | 'after-recovery',
+): string | undefined {
+  const device = unusableAndroid(devices).find((d) => d.serial === serial);
+  if (!device) return undefined;
+  if (phase === 'preflight' && device.state !== 'unauthorized' && !device.state.startsWith('no permissions')) {
+    return undefined;
+  }
+  return `Device ${describeUnusableAndroidDevice(device)}`;
 }

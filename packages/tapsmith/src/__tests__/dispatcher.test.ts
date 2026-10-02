@@ -512,19 +512,19 @@ describe('sendToWorkerProcess()', () => {
 describe('pinnedWorkerDevices', () => {
   it('returns every pin, primary first, when all are connected', () => {
     const group = [{ name: 'alice', device: 'emulator-5556' }, { name: 'bob', device: 'emulator-5554' }];
-    expect(pinnedWorkerDevices(group, ['emulator-5554', 'emulator-5556', 'emulator-5558'], false))
+    expect(pinnedWorkerDevices(group, ['emulator-5554', 'emulator-5556', 'emulator-5558'], false, []))
       .toEqual(['emulator-5556', 'emulator-5554']);
   });
 
   it('is undefined while any member is left to auto-pick', () => {
-    expect(pinnedWorkerDevices([{ name: 'alice', device: 'X' }, { name: 'bob' }], ['X', 'Y'], false)).toBeUndefined();
-    expect(pinnedWorkerDevices([{ name: 'device-1' }], ['X'], false)).toBeUndefined();
+    expect(pinnedWorkerDevices([{ name: 'alice', device: 'X' }, { name: 'bob' }], ['X', 'Y'], false, [])).toBeUndefined();
+    expect(pinnedWorkerDevices([{ name: 'device-1' }], ['X'], false, [])).toBeUndefined();
   });
 
   it('refuses an Android pin that is not connected, naming what is', () => {
     let error: unknown;
     try {
-      pinnedWorkerDevices([{ name: 'device-1', device: 'emulator-5560' }], ['emulator-5554'], false);
+      pinnedWorkerDevices([{ name: 'device-1', device: 'emulator-5560' }], ['emulator-5554'], false, []);
     } catch (err) {
       error = err;
     }
@@ -534,12 +534,32 @@ describe('pinnedWorkerDevices', () => {
   });
 
   it('says nothing is connected rather than listing an empty set', () => {
-    expect(() => pinnedWorkerDevices([{ name: 'device-1', device: 'emulator-5560' }], [], false))
+    expect(() => pinnedWorkerDevices([{ name: 'device-1', device: 'emulator-5560' }], [], false, []))
       .toThrow(/No Android devices are connected/);
   });
 
+  // PILOT-457: an unauthorized phone is attached, not missing.
+  it('names the adb state and fix of a pin adb lists but cannot use', () => {
+    let error: unknown;
+    try {
+      pinnedWorkerDevices(
+        [{ name: 'alice', device: 'R5CR1234XYZ' }, { name: 'bob', device: 'emulator-5560' }],
+        ['emulator-5554'],
+        false,
+        [{ serial: 'R5CR1234XYZ', state: 'unauthorized' }],
+      );
+    } catch (err) {
+      error = err;
+    }
+    expect(isLaunchSetupError(error)).toBe(true);
+    const message = (error as Error).message;
+    expect(message).toContain('R5CR1234XYZ is attached, but adb reports it unauthorized. Accept the USB debugging prompt on the device.');
+    expect(message).not.toMatch(/R5CR1234XYZ[^.]*not connected/);
+    expect(message).toContain('Pinned device emulator-5560 is not connected');
+  });
+
   it('takes iOS pins as given: the daemon lists only booted simulators, and the sequential path does not require one', () => {
-    expect(pinnedWorkerDevices([{ name: 'device-1', device: 'SIM-UDID' }], [], true)).toEqual(['SIM-UDID']);
+    expect(pinnedWorkerDevices([{ name: 'device-1', device: 'SIM-UDID' }], [], true, [])).toEqual(['SIM-UDID']);
   });
 });
 

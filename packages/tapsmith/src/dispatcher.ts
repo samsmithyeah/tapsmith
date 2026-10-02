@@ -50,7 +50,8 @@ import {
   type ClonedSimulator,
 } from './ios-simulator.js';
 import { freeStaleAgentPort, findPidsOnPort } from './port-utils.js';
-import { moreDevicesAdvice, noDeviceAdvice, workerStartAdvice } from './device-advice.js';
+import { describeUnusableAndroidDevice, moreDevicesAdvice, noOnlineDeviceMessage, workerStartAdvice } from './device-advice.js';
+import type { AdbDevice } from './adb-devices.js';
 import { notifyLegacySudoersIfPresent } from './legacy-cleanup.js';
 import {
   forkStdioForLaunchProgress,
@@ -269,16 +270,26 @@ export function pinnedWorkerDevices(
   group: DeviceGroupEntry[],
   onlineSerials: string[],
   isIos: boolean,
+  /**
+   * Devices adb lists but cannot use, with their adb state: a pin among them
+   * is attached, not missing, and is named with its fix (PILOT-457).
+   */
+  unusable: readonly AdbDevice[],
 ): string[] | undefined {
   if (!group.every((e) => e.device)) return undefined;
   const pins = group.map((e) => e.device!);
   if (isIos) return pins;
   const missing = pins.filter((p) => !onlineSerials.includes(p));
   if (missing.length > 0) {
-    throw new LaunchSetupError(
-      `Pinned device${missing.length === 1 ? '' : 's'} ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not connected. `
-      + (onlineSerials.length > 0 ? `Connected: ${onlineSerials.join(', ')}.` : 'No Android devices are connected.'),
-    );
+    const attached = missing.flatMap((p) => unusable.filter((d) => d.serial === p).slice(0, 1));
+    const absent = missing.filter((p) => !attached.some((d) => d.serial === p));
+    throw new LaunchSetupError([
+      ...attached.map((d) => `Pinned device ${describeUnusableAndroidDevice(d)}`),
+      ...(absent.length > 0
+        ? [`Pinned device${absent.length === 1 ? '' : 's'} ${absent.join(', ')} ${absent.length === 1 ? 'is' : 'are'} not connected.`]
+        : []),
+      onlineSerials.length > 0 ? `Connected: ${onlineSerials.join(', ')}.` : 'No Android devices are connected.',
+    ].join(' '));
   }
   return pins;
 }
@@ -1299,6 +1310,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       deviceGroup,
       onlineDevices.filter((d) => (d.platform === 'ios') === isIos).map((d) => d.serial),
       isIos,
+      deviceList.unusableDevices,
     );
     if (isIos && !config.simulator) {
       // ─── Physical iOS device bucket ───
@@ -1462,7 +1474,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       throw new LaunchSetupError(
         isIos
           ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
-          : `No online devices found. ${noDeviceAdvice(config)}`,
+          : noOnlineDeviceMessage(config, deviceList.unusableDevices),
       );
     }
 

@@ -133,7 +133,8 @@ export function scanEnvironment(): EnvScan {
 /**
  * What to do about an attached Android device adb cannot use, by its
  * `adb devices` state; undefined for a usable (`device`) or unknown state.
- * Shared by `list-devices` and `doctor` so they give the same advice.
+ * Shared by `list-devices`, `doctor` and the test-run paths' device errors
+ * (`device-advice.ts`) so they all give the same advice.
  */
 export function androidStateBlocker(state: string, serial: string): string | undefined {
   // adb surfaces "unauthorized" when the device hasn't accepted the RSA key

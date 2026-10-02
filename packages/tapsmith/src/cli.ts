@@ -60,7 +60,7 @@ import {
 import { isRecoverableInfrastructureError, serializeConfig } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort, pickFreePort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
-import { moreDevicesAdvice, noDeviceAdvice } from './device-advice.js';
+import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage, pinnedDeviceUnusableMessage } from './device-advice.js';
 import {
   createUiLaunchSteps,
   UiLaunchProgress,
@@ -192,6 +192,11 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
   const target = serial ?? 'any connected device';
 
   if (serial) {
+    // Attached but unauthorized (or, on Linux, no USB permission): no restart
+    // of the ADB server fixes that, so say what does (PILOT-457).
+    const blocked = pinnedDeviceUnusableMessage(serial, listAdbDevices(), 'preflight');
+    if (blocked) throw new Error(blocked);
+
     const stable = await waitForDeviceStability(serial, 20_000, probeDeviceHealth);
     if (stable.healthy) return;
 
@@ -246,6 +251,10 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
     console.log(dim('ADB recovered. Device is responsive.'));
     return;
   }
+
+  // Still unusable, and adb says why: that beats a list of possible causes.
+  const unusable = serial ? pinnedDeviceUnusableMessage(serial, listAdbDevices(), 'after-recovery') : undefined;
+  if (unusable) throw new Error(unusable);
 
   // Still unresponsive — give the user actionable guidance
   throw new Error([
@@ -537,9 +546,7 @@ async function setupSequentialDevice(
 
   if (!target.selectedSerial) {
     progress?.fail('primary-device', 'no online device found');
-    throw new Error(
-      `No online devices found. ${noDeviceAdvice(cfg)}`,
-    );
+    throw new Error(noOnlineDeviceMessage(cfg, listAdbDevices()));
   }
 
   cfg.device = target.selectedSerial;
@@ -1322,7 +1329,7 @@ async function provisionDevicesForBucket(
       // Every device named outright: the same pins-only group (and the same
       // refusal of an Android pin that is not connected) as the parallel path.
       const { pinnedWorkerDevices } = await import('./dispatcher.js');
-      const pins = pinnedWorkerDevices(group, listConnectedDeviceSerials(), effectiveConfig.platform === 'ios')!;
+      const pins = pinnedWorkerDevices(group, listConnectedDeviceSerials(), effectiveConfig.platform === 'ios', listAdbDevices())!;
       return { serials: pins, launched: [], reusedSimulatorCount: 0 };
     }
     const pool = await provisionDevicesForBucket({ ...effectiveConfig, devices: undefined, device: undefined }, group.length, progress);
@@ -1512,7 +1519,7 @@ async function provisionPerProjectDevices(
     if (provisioned.serials.length === 0) {
       throw new Error(
         `Failed to provision any devices for bucket "${signature.split('|').slice(0, 2).join(' ')}".`
-        + (bucketEffective.platform === 'ios' ? '' : ` ${noDeviceAdvice(bucketEffective)}`),
+        + (bucketEffective.platform === 'ios' ? '' : ` ${attachedDeviceAdvice(bucketEffective, listAdbDevices())}`),
       );
     }
     if (provisioned.serials.length < groupSize) {
