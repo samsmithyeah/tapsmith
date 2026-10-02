@@ -2445,7 +2445,7 @@ removing one, or changing what it means, is a breaking change.
 |---|---|
 | every command above | `BAD_ARGS` (a usage error), `UNEXPECTED_ERROR` (a bug or an environment failure the command did not anticipate; `init` and `verify` included) |
 | `init` | `UNKNOWN_FLAG`, `MISSING_FLAG_VALUE`, `INVALID_PLATFORM`, `INVALID_DEVICE_TYPE`, `NO_PLATFORM`, `NO_APK`, `AMBIGUOUS_APK`, `NO_PACKAGE`, `NO_IOS_APP`, `AMBIGUOUS_IOS_APP`, `NO_BUNDLE_ID`, `IOS_REQUIRES_MACOS`, `IOS_PHYSICAL_INTERACTIVE_ONLY`, `CONFIG_EXISTS`, `NON_INTERACTIVE_TTY` (no terminal and no `--yes`), `JSON_REQUIRES_YES` (`--json` in a terminal without `--yes` or a setup flag: the wizard has no JSON output) |
-| `verify` | `NO_CONFIG`, `CONFIG_ERROR`, `RUN_FAILED`, `PARSE_FAILED` |
+| `verify` | `NO_CONFIG`, `CONFIG_ERROR`, `RUN_FAILED`, `PARSE_FAILED`, `NO_TESTS_RAN` (the run executed no test: the file has none, every one was skipped, or a `grep` / `grepInvert` filtered them all out; a flaky test that passed on retry counts as having run) |
 | `doctor` | none of its own: a check that cannot run is reported in the result, usually as a `warn` (`Could not check …`) |
 | `list-devices` | `DAEMON_NOT_FOUND`, `DAEMON_START_FAILED`, `LIST_DEVICES_FAILED` |
 | `telemetry` | `TELEMETRY_WRITE_FAILED` (`enable` / `disable` could not write `~/.tapsmith/telemetry.json`) |
@@ -2713,7 +2713,7 @@ npx tapsmith doctor --json -c tapsmith.config.ci.mjs   # machine-readable, again
 
 ### `tapsmith verify [--json] [-c <path>]`
 
-Prove the setup works end to end: runs one test file through the real `tapsmith test` path (daemon, device or emulator launch, app install) and reports whether it passed. It picks `example.test.ts` if the project has one, otherwise the first test file; a project with no tests yet gets a throwaway smoke test, removed afterwards. Exits 1 when the run fails, when there is no `tapsmith.config.*` (unless `-c` names one), or when the config cannot be loaded.
+Prove the setup works end to end: runs one test file through the real `tapsmith test` path (daemon, device or emulator launch, app install) and reports whether it passed. It picks `example.test.ts` if the project has one, otherwise the first test file; a project with no tests yet gets a throwaway smoke test, removed afterwards. Exits 1 when the run fails, when no test ran (the file has none, every one was skipped, or a `grep` / `grepInvert` filtered them all out — a pass with nothing run proves nothing), when there is no `tapsmith.config.*` (unless `-c` names one), or when the config cannot be loaded.
 
 `--json` prints `{ ok, passed, failed, skipped, duration, failures, testFile }`, or the [JSON error envelope](#json-output---json). `-c` / `--config` uses a specific config file.
 
