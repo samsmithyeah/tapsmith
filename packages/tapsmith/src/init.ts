@@ -85,10 +85,12 @@ export interface AndroidConfig {
 }
 
 export interface IosConfig {
-  appPath: string;
+  /** Simulator build. Unset only when the user runs on physical devices alone. */
+  appPath?: string;
   bundleId?: string;
   simulator?: string;
   usePhysicalDevice: boolean;
+  /** Device-signed (iphoneos) build; set whenever `usePhysicalDevice` is. */
   deviceAppPath?: string;
 }
 
@@ -181,31 +183,11 @@ async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
   return { apkPath, packageName, useEmulators, usePhysicalDevices, avd };
 }
 
-async function configureIos(env: EnvScan): Promise<IosConfig> {
+export async function configureIos(env: EnvScan): Promise<IosConfig> {
   console.log(`  ${bold('iOS')}`);
 
-  const appPath = await ask<string>({
-    type: 'input',
-    message: 'Where is your iOS .app bundle? (simulator build)',
-    initial: './ios/build/Build/Products/Debug-iphonesimulator/MyApp.app',
-    validate: (val: string) => val.trim().length > 0 || '.app path is required',
-  });
-
-  let bundleId: string | undefined;
-  const detected = detectIosBundleId(appPath);
-  if (detected) {
-    bundleId = detected;
-    console.log(dim(`  Detected bundle ID: ${detected}`));
-  }
-  if (!bundleId) {
-    bundleId = await ask<string>({
-      type: 'input',
-      message: 'What is your app\'s bundle identifier?',
-      initial: 'com.example.myapp',
-      validate: (val: string) => val.trim().length > 0 || 'Bundle ID is required',
-    });
-  }
-
+  // Device type first: a physical-only user has no use for a simulator
+  // build, and the device build is what their config must point at.
   const deviceType = await ask<string>({
     type: 'select',
     message: 'How will you run iOS tests?',
@@ -215,9 +197,22 @@ async function configureIos(env: EnvScan): Promise<IosConfig> {
       { name: 'both', message: 'Both' },
     ],
   });
+  const useSimulators = deviceType === 'simulators' || deviceType === 'both';
+
+  let appPath: string | undefined;
+  let bundleId: string | undefined;
+  if (useSimulators) {
+    appPath = await ask<string>({
+      type: 'input',
+      message: 'Where is your iOS .app bundle? (simulator build)',
+      initial: './ios/build/Build/Products/Debug-iphonesimulator/MyApp.app',
+      validate: (val: string) => val.trim().length > 0 || '.app path is required',
+    });
+    bundleId = detectBundleId(appPath);
+  }
 
   let simulator: string | undefined;
-  if (deviceType === 'simulators' || deviceType === 'both') {
+  if (useSimulators) {
     if (env.simulators.length > 0) {
       const seen = new Map<string, SimulatorInfo>();
       for (const sim of env.simulators) {
@@ -305,9 +300,25 @@ async function configureIos(env: EnvScan): Promise<IosConfig> {
         return true;
       },
     });
+    bundleId ??= detectBundleId(deviceAppPath);
+  }
+
+  if (!bundleId) {
+    bundleId = await ask<string>({
+      type: 'input',
+      message: 'What is your app\'s bundle identifier?',
+      initial: 'com.example.myapp',
+      validate: (val: string) => val.trim().length > 0 || 'Bundle ID is required',
+    });
   }
 
   return { appPath, bundleId, simulator, usePhysicalDevice, deviceAppPath };
+}
+
+function detectBundleId(appPath: string): string | undefined {
+  const detected = detectIosBundleId(appPath);
+  if (detected) console.log(dim(`  Detected bundle ID: ${detected}`));
+  return detected;
 }
 
 // ─── Network capture setup ───
@@ -407,18 +418,64 @@ export function generateConfig(
 
   if (enableNetwork) lines.push("  trace: { mode: 'retain-on-failure' },");
 
-  if (platforms.length === 1) {
-    const pkg = android?.packageName ?? ios?.bundleId;
-    if (pkg) lines.push(`  package: '${esc(pkg)}',`);
-    if (android) {
-      lines.push(`  apk: '${esc(android.apkPath)}',`);
-      if (android.useEmulators && android.avd) {
-        lines.push(`  avd: '${esc(android.avd)}',`);
-      }
+  // The iOS targets the user picked. A scope with no `simulator` is a
+  // physical-device run (the runner auto-detects the paired device), so a
+  // simulator scope needs both the simulator build and a simulator, and the
+  // device scope must not inherit either.
+  const iosSim = ios?.appPath && ios.simulator ? { app: ios.appPath, simulator: ios.simulator } : undefined;
+  const iosDeviceApp = ios?.usePhysicalDevice ? ios.deviceAppPath : undefined;
+
+  const iosProjects = (out: string[], iosCfg: IosConfig): void => {
+    if (iosSim) {
+      out.push('    {');
+      out.push("      name: 'ios',");
+      out.push("      testMatch: ['**/*.test.ts'],");
+      out.push('      use: {');
+      out.push("        platform: 'ios',");
+      if (iosCfg.bundleId) out.push(`        package: '${esc(iosCfg.bundleId)}',`);
+      out.push(`        app: '${esc(iosSim.app)}',`);
+      out.push(`        simulator: '${esc(iosSim.simulator)}',`);
+      out.push('      },');
+      out.push('    },');
     }
-    if (ios) {
-      lines.push(`  app: '${esc(ios.appPath)}',`);
-      if (ios.simulator) lines.push(`  simulator: '${esc(ios.simulator)}',`);
+    if (iosDeviceApp) {
+      out.push('    {');
+      out.push("      name: 'ios-device',");
+      out.push("      testMatch: ['**/*.test.ts'],");
+      out.push('      workers: 1,');
+      out.push('      use: {');
+      out.push("        platform: 'ios',");
+      if (iosCfg.bundleId) out.push(`        package: '${esc(iosCfg.bundleId)}',`);
+      out.push(`        app: '${esc(iosDeviceApp)}',`);
+      out.push('      },');
+      out.push('    },');
+    }
+  };
+
+  if (platforms.length === 1 && android) {
+    if (android.packageName) lines.push(`  package: '${esc(android.packageName)}',`);
+    lines.push(`  apk: '${esc(android.apkPath)}',`);
+    if (android.useEmulators && android.avd) {
+      lines.push(`  avd: '${esc(android.avd)}',`);
+    }
+  }
+
+  if (platforms.length === 1 && ios) {
+    if (iosSim && iosDeviceApp) {
+      // Simulator and device: one project each, as in the multi-platform
+      // config and docs/ios-physical-devices.md.
+      lines.push('  projects: [');
+      iosProjects(lines, ios);
+      lines.push('  ],');
+    } else {
+      lines.push("  platform: 'ios',");
+      if (ios.bundleId) lines.push(`  package: '${esc(ios.bundleId)}',`);
+      if (iosDeviceApp) {
+        lines.push(`  app: '${esc(iosDeviceApp)}',`);
+      } else if (ios.appPath) {
+        lines.push(`  app: '${esc(ios.appPath)}',`);
+        if (ios.simulator) lines.push(`  simulator: '${esc(ios.simulator)}',`);
+      }
     }
   }
 
@@ -438,28 +495,7 @@ export function generateConfig(
     lines.push('      },');
     lines.push('    },');
 
-    lines.push('    {');
-    lines.push("      name: 'ios',");
-    lines.push("      testMatch: ['**/*.test.ts'],");
-    lines.push('      use: {');
-    lines.push("        platform: 'ios',");
-    if (ios.bundleId) lines.push(`        package: '${esc(ios.bundleId)}',`);
-    lines.push(`        app: '${esc(ios.appPath)}',`);
-    if (ios.simulator) lines.push(`        simulator: '${esc(ios.simulator)}',`);
-    lines.push('      },');
-    lines.push('    },');
-
-    if (ios.usePhysicalDevice && ios.deviceAppPath) {
-      lines.push('    {');
-      lines.push("      name: 'ios-device',");
-      lines.push("      testMatch: ['**/*.test.ts'],");
-      lines.push('      workers: 1,');
-      lines.push('      use: {');
-      lines.push("        platform: 'ios',");
-      lines.push(`        app: '${esc(ios.deviceAppPath)}',`);
-      lines.push('      },');
-      lines.push('    },');
-    }
+    iosProjects(lines, ios);
 
     lines.push('  ],');
   }
