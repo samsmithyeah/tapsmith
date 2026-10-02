@@ -106,7 +106,12 @@ sign-offs with individual remediation commits. Repository setup is in `.github/d
 Device E2E runs separately on every PR: `e2e-android.yml` (ubuntu + KVM emulator, 5 shards) and
 `e2e-ios.yml` (macOS simulators, 5 shards). `e2e-android-hookless.yml` covers the hook-less reset
 path (test app built without `EXPO_PUBLIC_TAPSMITH_HOOKS`) weekly, on manual dispatch, and on PRs
-touching the reset-path sources.
+touching the reset-path sources. `e2e-provisioning.yml` (same triggers, for the emulator/simulator
+provisioning sources) is the only place Tapsmith launches or boots its own devices — every other job
+pre-boots in the workflow. It starts with nothing booted and checks the host before and after
+(`e2e/verify-provisioning.mjs`, checks unit-tested in `e2e/utils/provisioning-checks.mjs`), so an
+adopted device or an untracked leftover emulator/simulator fails it. The Android `Multi-device` job
+also lets Tapsmith launch its second member and runs the same check.
 
 Shard 1 of each device workflow also runs `e2e/verify-trace-archive.mjs`, which records one trace
 with `--trace on` and then asserts what is *inside* the archive — screenshots that decode at the
