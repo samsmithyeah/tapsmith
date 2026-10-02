@@ -2267,8 +2267,18 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
           sequentialExitCode = 1;
           return;
         }
+        const failedDaemon = spawnedDaemonProcess;
         // Whether the others still run is known only once one starts.
         noteFailedTarget(candidate.deviceSignature, err, !(args.ui || args.watch));
+        // Let the failed target's daemon go before the next setup probes its
+        // port: one still answering reads as another live session there, and
+        // that skips the stale adb-forward sweep.
+        if (failedDaemon && failedDaemon.exitCode === null && failedDaemon.signalCode === null) {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 3_000);
+            failedDaemon.once('exit', () => { clearTimeout(timer); resolve(); });
+          });
+        }
         // A `use`-less project's config is the root config, which the failed
         // setup may have pinned to its device: the next target must not
         // inherit it (as at a sequential project switch).

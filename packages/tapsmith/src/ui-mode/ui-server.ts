@@ -352,6 +352,8 @@ export async function startUIServer(
   const MAX_MCP_BUFFER = 200;
   let traceBufferFull = false;
 
+  /** Devices a target retry already set up with `--force-install`. */
+  const forceInstalledSerials = new Set<string>();
   /** Worker ids a failed target retry gave back, for the next attempt. */
   const freeWorkerIds: number[] = [];
   /** Ends a run's wait on a device-target retry (Stop). */
@@ -1857,7 +1859,29 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     }
   }
 
+  /**
+   * Processes of workers still starting. Their handles reach `uiWorkers` only
+   * once the worker is ready, so `close()` kills these too: a session that
+   * ends during a slow start — a target tried again on a run, say — must not
+   * leave the new daemons and child behind (PILOT-415).
+   */
+  const startingWorkerProcesses = new Set<ChildProcess[]>();
+
   async function initializeOneWorker(
+    ...args: Parameters<typeof startOneWorker> extends [unknown, ...infer Rest] ? Rest : never
+  ): Promise<UIWorkerHandle> {
+    const spawned: ChildProcess[] = [];
+    startingWorkerProcesses.add(spawned);
+    try {
+      return await startOneWorker(spawned, ...args);
+    } finally {
+      startingWorkerProcesses.delete(spawned);
+    }
+  }
+
+  async function startOneWorker(
+    /** Every process this start spawns, for `close()` while it is still starting. */
+    spawned: ChildProcess[],
     id: number,
     deviceSerial: string,
     daemonPort: number,
@@ -1948,6 +1972,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         { stdio: 'ignore' },
       );
       daemonProcess.on('error', () => { /* handled by waitForReady */ });
+      spawned.push(daemonProcess);
 
       daemonClient = new TapsmithGrpcClient(`localhost:${daemonPort}`);
       const ready = await daemonClient.waitForReady(10_000);
@@ -1986,6 +2011,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
           daemonBin, port: ports.daemonPort, agentPort: ports.agentPort, platform: workerConfig.platform,
           describe: `daemon for ${name}`,
         });
+        spawned.push(daemon.process);
         members[m] = {
           name, deviceSerial: serial, ...ports, daemonProcess: daemon.process, ownsDaemon: true,
           screenClient: new TapsmithGrpcClient(`localhost:${ports.daemonPort}`),
@@ -2021,6 +2047,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         TAPSMITH_WORKER_ID: String(id),
       },
     });
+    spawned.push(child);
     pipeForkOutputForLaunchProgress(child, launchProgress);
     child.setMaxListeners(20);
     child.on('error', (err) => {
@@ -2290,9 +2317,11 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     const settled = await Promise.allSettled(slots.map(({ id, group, daemonPort, agentPort }) => initializeOneWorker(
       id, group[0], daemonPort, agentPort, daemonBin, stalePids.get(daemonPort), stalePids, undefined, undefined,
       false,
-      // The target's first setup this session: the flag applies, as at startup.
-      ctx.forceInstall,
+      // The flag applies to a device's first setup this session, as at
+      // startup — not again on every retry of a target that keeps failing.
+      ctx.forceInstall && !forceInstalledSerials.has(group[0]),
     )));
+    if (ctx.forceInstall) for (const { group } of slots) forceInstalledSerials.add(group[0]);
     const started = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
     if (started.length === 0) {
       // Every slot failed, and a failed worker cleans its processes up: give
@@ -4840,6 +4869,9 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         void terminateWorkerProcess(worker);
         try { worker.process.kill('SIGTERM'); } catch { /* already dead */ }
         releaseWorkerResources(worker);
+      }
+      for (const processes of startingWorkerProcesses) {
+        for (const p of processes) { try { p.kill('SIGTERM'); } catch { /* already dead */ } }
       }
       ctx.device?.close();
       ctx.client?.close();

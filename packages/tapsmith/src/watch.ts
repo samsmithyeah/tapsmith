@@ -336,6 +336,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
 
     for (let i = 0; i < numWorkers; i++) {
       const [deviceSerial, ...memberSerials] = workerGroups[i];
+      // A slot given up below (its target is unavailable; a retry provisions it afresh).
+      if (!deviceSerial) continue;
       const daemonPort = baseDaemonPort + 100 + i;
       const agentPort = baseAgentPort + 100 + i;
       try {
@@ -352,6 +354,22 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       }
     }
 
+    // A target none of whose workers started could not start: its files fail
+    // with the reason and a run of them tries it again, as in UI mode. Its
+    // groups are given up, so that retry cannot start a second worker on the
+    // same devices (PILOT-415).
+    if (multiTarget) {
+      for (const [i, err] of errors) {
+        const signature = ctx.bucketByDevice?.get(workerGroups[i][0]);
+        if (!signature || watchWorkers.some((w) => w.bucketSignature === signature)) continue;
+        if (!ctx.unavailableTargets.has(signature)) {
+          ctx.unavailableTargets.add(signature, err);
+          process.stderr.write(`${YELLOW}${ctx.unavailableTargets.reason(signature)}. Running its tests again retries it.${RESET}\n`);
+        }
+        workerGroups[i] = [];
+      }
+    }
+
     if (watchWorkers.length > 1 || (multiTarget && watchWorkers.length === 1)) {
       workersReady = true;
       process.stderr.write(`${DIM}${watchWorkers.length} watch worker(s) ready.${RESET}\n`);
@@ -363,6 +381,16 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     return errors;
   }
 
+  /**
+   * Processes of watch workers still starting: their handles reach
+   * `watchWorkers` only once ready, so `cleanup()` kills these too. A session
+   * quit during a slow start (a target tried again on a run) must not leave
+   * the new daemons and child behind (PILOT-415).
+   */
+  const startingWorkerProcesses = new Set<ChildProcess[]>();
+  /** Devices a watch worker already set up with `--force-install`. */
+  const forceInstalledSerials = new Set<string>();
+
   async function initOneWatchWorker(
     id: number,
     deviceSerial: string,
@@ -370,6 +398,24 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     agentPort: number,
     daemonBin: string,
     members: Array<{ serial: string; daemonPort: number; agentPort: number }> = [],
+  ): Promise<WatchWorkerHandle> {
+    const spawned: ChildProcess[] = [];
+    startingWorkerProcesses.add(spawned);
+    try {
+      return await startOneWatchWorker(spawned, id, deviceSerial, daemonPort, agentPort, daemonBin, members);
+    } finally {
+      startingWorkerProcesses.delete(spawned);
+    }
+  }
+
+  async function startOneWatchWorker(
+    spawned: ChildProcess[],
+    id: number,
+    deviceSerial: string,
+    daemonPort: number,
+    agentPort: number,
+    daemonBin: string,
+    members: Array<{ serial: string; daemonPort: number; agentPort: number }>,
   ): Promise<WatchWorkerHandle> {
     const workerConfig = ctx.configByDevice?.get(deviceSerial) ?? serializedConfig;
     const workerBucketSig = ctx.bucketByDevice?.get(deviceSerial);
@@ -384,6 +430,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       { stdio: 'ignore' },
     );
     daemonProcess.on('error', () => { /* handled by waitForReady */ });
+    spawned.push(daemonProcess);
 
     const daemonClient = new TapsmithGrpcClient(`localhost:${daemonPort}`);
     const ready = await daemonClient.waitForReady(10_000);
@@ -404,6 +451,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
           describe: `daemon for ${m.serial}`,
         });
         memberDaemons.push(daemon.process);
+        spawned.push(daemon.process);
       }
     } catch (err) {
       for (const d of memberDaemons) { try { d.kill(); } catch { /* already dead */ } }
@@ -416,6 +464,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       ...(tsxBin ? { execPath: tsxBin } : {}),
       env: { ...process.env, NODE_PATH: path.resolve(import.meta.dirname, '..'), TAPSMITH_WORKER_ID: String(id) },
     });
+    spawned.push(child);
     child.setMaxListeners(20);
 
     const worker: WatchWorkerHandle = {
@@ -474,6 +523,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       child.on('message', onMessage);
       child.on('exit', onExit);
 
+      const forceInstall = ctx.forceInstall && deviceSerial !== ctx.deviceSerial && !forceInstalledSerials.has(deviceSerial);
+      forceInstalledSerials.add(deviceSerial);
       child.send({
         type: 'init',
         workerId: id,
@@ -484,7 +535,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         screenshotDir: ctx.screenshotDir,
         // The worker on the CLI's own group sets it up afresh (it does not
         // adopt), but the CLI already force-installed there this session.
-        forceInstall: ctx.forceInstall && deviceSerial !== ctx.deviceSerial,
+        // Once per device: not again on every retry of a target that keeps failing.
+        forceInstall,
         ...(members.length > 0 ? {
           groupMembers: members.map((m, i) => ({ name: groupNames[i + 1].name, deviceSerial: m.serial, daemonPort: m.daemonPort })),
         } : {}),
@@ -1377,6 +1429,9 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     }
 
     cleanupWatchWorkers();
+    for (const processes of startingWorkerProcesses) {
+      for (const p of processes) { try { p.kill(); } catch { /* already dead */ } }
+    }
 
     if (state.watcher) {
       state.watcher.close();
