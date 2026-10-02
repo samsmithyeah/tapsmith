@@ -123,7 +123,10 @@ export function projectTag(project: string | undefined): string {
 
 export function formatError(error: Error, indent: string = '        '): string {
   const lines: string[] = [];
-  lines.push(`${indent}${red(error.message)}`);
+  // Every line under the indent: a multi-line message's later lines (a
+  // matcher's Expected/Received, a start error's detail) would otherwise
+  // start at column 0, under nothing.
+  for (const line of error.message.split('\n')) lines.push(line === '' ? '' : `${indent}${red(line)}`);
 
   if (error.stack) {
     const stackLines = error.stack.split('\n').slice(1);

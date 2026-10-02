@@ -1590,7 +1590,7 @@ async function provisionPerProjectDevices(
   const settled = await Promise.allSettled(bucketEntries.map((entry) => (alreadyFailed.has(entry.signature)
     ? Promise.reject(alreadyFailed.get(entry.signature))
     : provisionBucket(entry, progress))));
-  const { deviceTargetLabel, isProgrammingError, noTargetCouldStart, targetStartWarning } = await import('./dispatcher.js');
+  const { deviceTargetLabel, isProgrammingError, noTargetCouldStart, targetStartNotice, targetStartWarning } = await import('./dispatcher.js');
   const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
   // A bug in Tapsmith surfaces as itself, with its stack.
   const bug = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected' && isProgrammingError(r.reason));
@@ -1640,7 +1640,7 @@ async function provisionPerProjectDevices(
     // A target whose primary setup failed was announced then.
     for (const f of failures.filter((x) => !alreadyFailed.has(x.signature))) {
       const fileCount = bucketEntries.find((b) => b.signature === f.signature)!.projects.reduce((n, p) => n + p.testFiles.length, 0);
-      process.stderr.write(`${YELLOW}${targetStartWarning(f.label, fileCount, true)}\n${messageOf(f.err)}${RESET}\n`);
+      process.stderr.write(`${YELLOW}${targetStartNotice(targetStartWarning(f.label, fileCount, true), messageOf(f.err))}${RESET}\n`);
     }
   } else {
     progress?.complete('worker-devices', ready);

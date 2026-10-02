@@ -18,10 +18,13 @@ import {
   noTargetCouldStart,
   targetUnavailableMessage,
   targetStartWarning,
+  workerFailureMessage,
+  skippingDeviceNotice,
   type BucketRunner,
   type DispatcherOptions,
 } from '../dispatcher.js';
 import { serializeTestResult, serializeSuiteResult } from '../worker-protocol.js';
+import { withDetail } from '../error-detail.js';
 import type { ResolvedProject } from '../project.js';
 import type { TapsmithConfig } from '../config.js';
 import type { FullResult } from '../reporter.js';
@@ -712,8 +715,30 @@ describe('coordinateBuckets()', () => {
       ['android', 'b.test.ts', '/t/b.test.ts'],
     ]);
     // The whole reason: its later lines carry the hints.
-    expect(failed[0].error?.message).toBe('Device target "android Pixel_6" could not start: No worker could start: launcher ANR\ndetails');
+    expect(failed[0].error?.message).toBe('Device target "android Pixel_6" could not start: No worker could start: launcher ANR\n  details');
     expect(result.tests.filter((t) => t.status === 'passed').map((t) => t.name)).toEqual(['ios test']);
+  });
+
+  it('prints a failed target\'s whole reason indented under its warning', async () => {
+    const rec = recordingReporter();
+    let stderr = '';
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      stderr += String(chunk);
+      return true;
+    });
+    try {
+      await coordinateBuckets([
+        failingBucket('ios iPhone 17', [iosProject], new LaunchSetupError('iOS simulator agent build failed (exit 65)\nerror: x\nFull build log: /tmp/b.log')),
+        readyBucket('android Pixel_6', [androidProject], passing('android test', 'android')),
+      ], { ...coordination(rec), quiet: false });
+    } finally {
+      spy.mockRestore();
+    }
+    const plain = stderr.replace(/\x1b\[[0-9;]*m/g, '');
+    expect(plain).toContain(
+      'Device target ios iPhone 17 could not start; its 1 test file(s) are reported as failed. The other device targets still run.\n'
+      + '  iOS simulator agent build failed (exit 65)\n  error: x\n  Full build log: /tmp/b.log\n',
+    );
   });
 
   it('reports the failed files after onRunStart and before the ready bucket dispatches', async () => {
@@ -938,7 +963,7 @@ describe('targetStartFailureResults()', () => {
       ['b.test.ts', '/t/b.test.ts', 'failed', 'android'],
     ]);
     // The later lines carry the hints (a build excerpt, the log path).
-    expect(results[0].error?.message).toBe('Device target "android Pixel_6" could not start: No online devices found.\nConnect a device');
+    expect(results[0].error?.message).toBe('Device target "android Pixel_6" could not start: No online devices found.\n  Connect a device');
     expect(results[0].error?.stack).toBeUndefined();
   });
 
@@ -969,10 +994,57 @@ describe('noTargetCouldStart()', () => {
 });
 
 describe('targetUnavailableMessage()', () => {
-  it('names the target and keeps the whole reason, hint and log lines included', () => {
+  it('names the target and keeps the whole reason, its later lines indented under the headline', () => {
     expect(targetUnavailableMessage('android Pixel_6', new Error('No online devices found.\nhint')))
-      .toBe('Device target "android Pixel_6" could not start: No online devices found.\nhint');
+      .toBe('Device target "android Pixel_6" could not start: No online devices found.\n  hint');
     expect(targetUnavailableMessage('ios iPhone 17', 'boom')).toBe('Device target "ios iPhone 17" could not start: boom');
+  });
+
+  it('keeps an agent build failure\'s error lines and log path (PILOT-464)', () => {
+    const build = 'iOS simulator agent build failed (exit 65)\nerror: Signing requires a development team\nFull build log: /tmp/agent-build.log';
+    expect(targetUnavailableMessage('ios iPhone 17', new Error(build)).split('\n')).toEqual([
+      'Device target "ios iPhone 17" could not start: iOS simulator agent build failed (exit 65)',
+      '  error: Signing requires a development team',
+      '  Full build log: /tmp/agent-build.log',
+    ]);
+  });
+
+  it('bounds a runaway reason, keeping its tail', () => {
+    const lines = ['headline', ...Array.from({ length: 200 }, (_, i) => `noise ${i}`), 'Log: /tmp/last.log'];
+    const message = targetUnavailableMessage('ios iPhone 17', new Error(lines.join('\n')));
+    expect(message.split('\n').length).toBeLessThanOrEqual(41);
+    expect(message.endsWith('  Log: /tmp/last.log')).toBe(true);
+  });
+});
+
+describe('worker start failures', () => {
+  it('lists a worker\'s reason with its later lines indented', () => {
+    expect(workerFailureMessage('Worker 1 (sim-a)', 'iOS simulator agent build failed (exit 65)\nerror: x\nLog: /tmp/b.log'))
+      .toBe('Worker 1 (sim-a): iOS simulator agent build failed (exit 65)\n  error: x\n  Log: /tmp/b.log');
+  });
+
+  it('says which device it skips without punctuation after the reason\'s log path', () => {
+    const notice = skippingDeviceNotice('sim-a', 'build failed\nLog: /tmp/b.log');
+    expect(notice).toBe('Skipping device sim-a: build failed\n  Log: /tmp/b.log');
+  });
+
+  it('nests a daemon\'s own output through worker, target and run unchanged in substance (PILOT-463 through PILOT-464)', () => {
+    const daemon = 'Failed to start worker daemon\n  tapsmith-core exited with code 1 before answering\n  Recent daemon output:\n    Error: Address already in use (os error 48)';
+    // As runParallel builds it when its only worker fails.
+    const worker = new LaunchSetupError(withDetail(
+      'No worker could start: Failed to start worker daemon',
+      workerFailureMessage('Worker 1 (emulator-5554)', daemon).split('\n'),
+    ));
+    const run = noTargetCouldStart([{ label: 'android Pixel_6', err: worker }, { label: 'ios iPhone 17', err: 'boom' }]);
+    expect(run.message.split('\n')).toEqual([
+      'No device target could start',
+      'android Pixel_6: No worker could start: Failed to start worker daemon',
+      '    Worker 1 (emulator-5554): Failed to start worker daemon',
+      '        tapsmith-core exited with code 1 before answering',
+      '        Recent daemon output:',
+      '          Error: Address already in use (os error 48)',
+      'ios iPhone 17: boom',
+    ]);
   });
 });
 

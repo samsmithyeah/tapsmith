@@ -17,6 +17,7 @@ import { sharedDeviceGroup } from './project.js';
 import { findDaemonBin } from './daemon-bin.js';
 import { assignGroupMemberDevices, deviceGroupSize, resolveDeviceGroup, type DeviceGroupEntry } from './config.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
+import { labelledMessage, withDetail } from './error-detail.js';
 import type { TestResult, SuiteResult } from './runner.js';
 import type { TapsmithReporter, FullResult } from './reporter.js';
 import type {
@@ -726,6 +727,8 @@ export async function coordinateBuckets(
   let releaseBarrier!: () => void;
   const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
 
+  // Progress rows are one line each; the whole reason is printed below them
+  // (or thrown, when no target started).
   const failureSummary = (err: unknown): string => messageFromUnknown(err).split('\n')[0];
   const failedTargetsDetail = (): string => failuresInOrder()
     .map(([i, err]) => `${buckets[i].label} could not start: ${failureSummary(err)}`)
@@ -783,12 +786,12 @@ export async function coordinateBuckets(
     if (!c.quiet) {
       for (const [i, err] of failuresInOrder()) {
         const fileCount = buckets[i].projects.reduce((n, p) => n + p.testFiles.length, 0);
-        process.stderr.write(
-          `${YELLOW}${targetStartWarning(buckets[i].label, fileCount, false)}\n`
+        process.stderr.write(`${YELLOW}${targetStartNotice(
+          targetStartWarning(buckets[i].label, fileCount, false),
           // A TypeError and the like is a bug, not a missing device: keep its
           // stack. Plain Errors are ordinary provisioning failures.
-          + `${isProgrammingError(err) ? (err.stack ?? err.message) : messageFromUnknown(err)}${RESET}\n`,
-        );
+          isProgrammingError(err) ? (err.stack ?? err.message) : messageFromUnknown(err),
+        )}${RESET}\n`);
       }
     }
     c.reporter.onRunStart?.(c.config, c.testFileCount);
@@ -869,10 +872,7 @@ export async function coordinateBuckets(
 export function noTargetCouldStart(failures: Array<{ label: string; err: unknown }>): LaunchSetupError {
   return new LaunchSetupError(
     'No device target could start\n'
-    + failures.map(({ label, err }) => {
-      const [first, ...rest] = messageFromUnknown(err).split('\n');
-      return [`${label}: ${first}`, ...rest.map((line) => `  ${line}`)].join('\n');
-    }).join('\n'),
+    + failures.map(({ label, err }) => labelledMessage(`${label}: `, messageFromUnknown(err))).join('\n'),
     { cause: failures[0]?.err },
   );
 }
@@ -880,10 +880,32 @@ export function noTargetCouldStart(failures: Array<{ label: string; err: unknown
 /**
  * The failure a test file of a target that could not start reports: the
  * whole reason, since its later lines carry the hints (advice, a build
- * excerpt, the log path).
+ * excerpt, the log path) — bounded, and indented under the headline.
  */
 export function targetUnavailableMessage(label: string, err: unknown): string {
-  return `Device target "${label}" could not start: ${messageFromUnknown(err)}`;
+  return labelledMessage(`Device target "${label}" could not start: `, messageFromUnknown(err));
+}
+
+/**
+ * A target-start warning line with the target's whole reason under it.
+ * Shared by the parallel path and the CLI's (PILOT-464).
+ */
+export function targetStartNotice(warning: string, reason: string): string {
+  return withDetail(warning, reason.split('\n'));
+}
+
+/** One worker's start failure, in the list a "No worker could start" error carries. */
+export function workerFailureMessage(workerLabel: string, reason: string): string {
+  return labelledMessage(`${workerLabel}: `, reason);
+}
+
+/**
+ * The note printed when a worker's device is dropped and the others go on.
+ * Nothing is appended to the reason: its last line is often a log path, and
+ * a full stop after it is copied along with the path.
+ */
+export function skippingDeviceNotice(serial: string, reason: string): string {
+  return labelledMessage(`Skipping device ${serial}: `, reason);
 }
 
 /**
@@ -1674,9 +1696,10 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       } else {
         const serial = slotSerials(i).join('+');
         const reasonText = messageFromUnknown(result.reason);
+        // The progress row is one line; the whole reason is in the error.
         const reasonSummary = reasonText.split('\n')[0];
         const workerLabel = `Worker ${displayWorkerId(i)} (${serial})`;
-        failedWorkerMessages.push(`${workerLabel}: ${reasonText}`);
+        failedWorkerMessages.push(workerFailureMessage(workerLabel, reasonText));
         if (launchProgress) {
           launchProgress.update('ui-workers', {
             state: 'running',
@@ -1684,7 +1707,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
             progress: { done: progressReadyCounter.count, total: progressWorkerTotal },
           });
         } else {
-          process.stderr.write(`${YELLOW}Skipping device ${serial}: ${reasonText}.${RESET}\n`);
+          process.stderr.write(`${YELLOW}${skippingDeviceNotice(serial, reasonText)}${RESET}\n`);
         }
       }
     }
@@ -1710,11 +1733,10 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       // why: "no worker-ready devices … or set `avd`" was wrong on both
       // counts when another bucket had a ready device or `avd` was set
       // (PILOT-400). A multi-bucket run labels it with the target.
-      throw new LaunchSetupError(
-        `No worker could start${firstFailure ? `: ${firstFailure}` : ''}\n`
-        + (failedWorkerMessages.length > 0 ? `${failedWorkerMessages.join('\n')}\n` : '')
-        + workerStartAdvice(),
-      );
+      throw new LaunchSetupError(withDetail(
+        `No worker could start${firstFailure ? `: ${firstFailure}` : ''}`,
+        [...failedWorkerMessages.flatMap((m) => m.split('\n')), workerStartAdvice()],
+      ));
     }
 
     if (workerCount < maxUsefulWorkers) {
