@@ -143,20 +143,25 @@ Judge the **card**, not the reviewer's wording or confidence, and not how fiddly
 looks. Write `Verdict: <WORD> — <one sentence naming the likelihood and impact that
 decided it>`.
 
-- **FIX** when likelihood is `rare` or above and the impact is worse than cosmetic (wrong
-  result, hang, crash, data loss, silent degradation, misleading error, flaky test). Also
-  **FIX** when likelihood is `rare` and impact is minor but the fix is a handful of lines
-  with no plausible regression — cheap insurance is worth buying.
-- **WON'T FIX** when likelihood is `unreachable` (the reason is the guard named on the
-  card), or when the impact is cosmetic and the fix would add complexity or risk. The one
-  sentence must be checkable by a fresh reviewer.
+- **FIX** when either:
+  - likelihood is `occasional` or above and the impact is worse than cosmetic (wrong
+    result, hang, crash, data loss, silent degradation, misleading error, flaky test); or
+  - likelihood is `rare` and the impact is a security problem, data loss, or a silently
+    wrong result (a run reported green that should be red, a wrong answer with no error).
+- **WON'T FIX** otherwise — likelihood `unreachable` (the reason is the guard named on
+  the card); `rare` with any lesser impact (reason: `below the bar`, naming the rare
+  condition); or cosmetic impact at any likelihood when the fix would add complexity or
+  risk. A cheap fix is not a reason to fix: every fix costs a review round and adds code
+  for the next reviewer to find edges in, and a loop that buys cheap insurance on every
+  rare edge never converges. The one sentence must be checkable by a fresh reviewer.
 - **OUT OF SCOPE** when the problem is real but pre-existing and unrelated to this change.
   It is not fixed in this loop; it is listed in the final report for the user to decide.
   Exception: if the change makes the pre-existing problem *more* likely, it is FIX.
 - **INVALID** — set at the verify step; see above.
 
-Never soften a FIX into WON'T FIX because the round is getting long. The loop's job is to
-keep going.
+The bar is the same in round 1 and round 10. Never soften a FIX into WON'T FIX because
+the round is getting long, and never tighten it either — convergence comes from the bar,
+applied evenly, and from final verdicts carrying forward. The loop's job is to keep going.
 
 ## Fixing
 

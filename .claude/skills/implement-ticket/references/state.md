@@ -14,10 +14,10 @@ push — never only at the end.
 # implement-ticket state — <KEY>
 
 - Ticket: <KEY> — <title>
-- Mode: interactive | autonomous | worker · flags: jira? leave-draft? plan-review? max-qa=<n>
+- Mode: interactive | auto | worker (+auto) · flags: no-jira? leave-draft? merge? plan-review? after=<branch>? max-qa=<n>
 - Base: <base> · Branch: <branch> · Worktree: <path or "main checkout">
 - PR: <url or none> · draft? yes/no
-- Phase: 0-setup | 1-understand | 2-plan | 3-build | 4-review | 5-qa | 6-ci-threads | 7-gate | done | blocked
+- Phase: 0-setup | 1-understand | 2-plan | 3-build | 4-review | 5-qa | 6-ci-threads | 7-gate | done | blocked | best-effort | held
 - Head SHA: <sha> · pushed: yes/no
 
 ## Slices
@@ -25,7 +25,7 @@ push — never only at the end.
 - [ ] 2 <slice>
 
 ## Loops
-- review-loop: <n runs> · last outcome <clean|max-rounds|oscillation|skipped (why)> at <sha> · ledger <path>
+- review-loop: <n runs> · last outcome <clean|max-rounds|oscillation|skipped: docs only> · clean round at <sha> · FIX counts per round <…> · ledger <path>
 - QA cycles: <n>/<max> · last verdict <…> at <sha> · report <path>
 - CI: last head run <run id> <state> · reruns: <job: count, reason>
 - Review threads: <open count> · last checked <time>
