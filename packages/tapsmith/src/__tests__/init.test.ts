@@ -2,10 +2,34 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { androidEmulatorCaptureLine, avdPickerChoices, generateConfig, generateExampleTest, runInit } from '../init.js';
+import { androidEmulatorCaptureLine, avdPickerChoices, generateConfig, generatedProjects, generateExampleTest, runInit } from '../init.js';
+import type { AndroidConfig, IosConfig, Platform } from '../init.js';
+import { platformlessIosFields } from '../doctor.js';
+import { _internal } from '../runner.js';
+import type { TapsmithConfig } from '../config.js';
 import type { InitCommandOptions } from '../cli-program.js';
 import type { AvdImageInfo } from '../avd-images.js';
 import { stripAnsi } from '../cli-json.js';
+
+interface GeneratedScope {
+  platform?: Platform;
+  package?: string;
+  app?: string;
+  apk?: string;
+  avd?: string;
+  simulator?: string;
+}
+interface GeneratedConfig extends GeneratedScope {
+  projects?: Array<{ name: string; testMatch?: string[]; workers?: number; use?: GeneratedScope }>;
+}
+
+/** Evaluate the generated config text the way a loader would, with `defineConfig` as identity. */
+function evaluateConfig(text: string): GeneratedConfig {
+  const body = text
+    .replace("import { defineConfig } from 'tapsmith'", '')
+    .replace('export default defineConfig(', 'return (');
+  return new Function(body)() as GeneratedConfig;
+}
 
 describe('generateConfig()', () => {
   it('generates single-platform Android config', () => {
@@ -83,6 +107,177 @@ describe('generateConfig()', () => {
     expect(config).toContain("name: 'ios-device',");
     expect(config).toContain('workers: 1,');
     expect(config).toContain("app: './MyApp-device.app',");
+  });
+
+  it('sets platform: ios on a single-platform simulator config (PILOT-251)', () => {
+    const config = generateConfig(
+      ['ios'],
+      undefined,
+      { appPath: './MyApp.app', bundleId: 'com.example.app', simulator: 'iPhone 17', usePhysicalDevice: false },
+      false,
+    );
+
+    expect(config).toContain("platform: 'ios',");
+  });
+
+  it('targets the device build for single-platform iOS on physical devices only (PILOT-251)', () => {
+    const config = generateConfig(
+      ['ios'],
+      undefined,
+      { bundleId: 'com.example.app', usePhysicalDevice: true, deviceAppPath: './MyApp-device.app' },
+      false,
+    );
+    const parsed = evaluateConfig(config);
+
+    expect(parsed).toEqual({ platform: 'ios', package: 'com.example.app', app: './MyApp-device.app' });
+  });
+
+  it('emits simulator and device projects for single-platform iOS on both (PILOT-251)', () => {
+    const config = generateConfig(
+      ['ios'],
+      undefined,
+      {
+        appPath: './MyApp.app',
+        bundleId: 'com.example.app',
+        simulator: 'iPhone 17',
+        usePhysicalDevice: true,
+        deviceAppPath: './MyApp-device.app',
+      },
+      false,
+    );
+    const parsed = evaluateConfig(config);
+
+    expect(parsed.app).toBeUndefined();
+    expect(parsed.simulator).toBeUndefined();
+    expect(parsed.package).toBeUndefined();
+    expect(parsed.projects).toEqual([
+      {
+        name: 'ios',
+        testMatch: ['**/*.test.ts'],
+        use: { platform: 'ios', package: 'com.example.app', app: './MyApp.app', simulator: 'iPhone 17' },
+      },
+      {
+        name: 'ios-device',
+        testMatch: ['**/*.test.ts'],
+        workers: 1,
+        use: { platform: 'ios', package: 'com.example.app', app: './MyApp-device.app' },
+      },
+    ]);
+  });
+
+  it('gives the multi-platform ios-device project the bundle id (PILOT-251)', () => {
+    const config = generateConfig(
+      ['android', 'ios'],
+      { apkPath: './app.apk', packageName: 'com.example.android', useEmulators: false, usePhysicalDevices: true },
+      {
+        appPath: './MyApp.app',
+        bundleId: 'com.example.ios',
+        simulator: 'iPhone 17',
+        usePhysicalDevice: true,
+        deviceAppPath: './MyApp-device.app',
+      },
+      false,
+    );
+    const device = evaluateConfig(config).projects?.find((p) => p.name === 'ios-device');
+
+    expect(device?.use).toEqual({ platform: 'ios', package: 'com.example.ios', app: './MyApp-device.app' });
+  });
+
+  it('omits the simulator project for multi-platform iOS on physical devices only (PILOT-251)', () => {
+    const config = generateConfig(
+      ['android', 'ios'],
+      { apkPath: './app.apk', packageName: 'com.example.android', useEmulators: false, usePhysicalDevices: true },
+      { bundleId: 'com.example.ios', usePhysicalDevice: true, deviceAppPath: './MyApp-device.app' },
+      false,
+    );
+
+    expect(evaluateConfig(config).projects?.map((p) => p.name)).toEqual(['android', 'ios-device']);
+  });
+
+  it('gives the device target the device build\'s own bundle id when it differs', () => {
+    const both = evaluateConfig(generateConfig(
+      ['ios'],
+      undefined,
+      {
+        appPath: './MyApp.app',
+        bundleId: 'com.example.app.dev',
+        deviceBundleId: 'com.example.app',
+        simulator: 'iPhone 17',
+        usePhysicalDevice: true,
+        deviceAppPath: './MyApp-device.app',
+      },
+      false,
+    ));
+    expect(both.projects?.map((p) => [p.name, p.use?.package])).toEqual([
+      ['ios', 'com.example.app.dev'],
+      ['ios-device', 'com.example.app'],
+    ]);
+
+    const physical = evaluateConfig(generateConfig(
+      ['ios'],
+      undefined,
+      { bundleId: 'com.example.app.dev', deviceBundleId: 'com.example.app', usePhysicalDevice: true, deviceAppPath: './MyApp-device.app' },
+      false,
+    ));
+    expect(physical.package).toBe('com.example.app');
+  });
+
+  it('omits package when no bundle id is known', () => {
+    const config = generateConfig(
+      ['ios'],
+      undefined,
+      { usePhysicalDevice: true, deviceAppPath: './MyApp-device.app' },
+      false,
+    );
+
+    expect(config).not.toContain('package');
+    expect(config).not.toContain('undefined');
+  });
+
+  it('escapes single quotes in the device app path', () => {
+    const config = generateConfig(
+      ['ios'],
+      undefined,
+      { bundleId: 'com.x', usePhysicalDevice: true, deviceAppPath: "./it's/MyApp.app" },
+      false,
+    );
+
+    expect(evaluateConfig(config).app).toBe("./it's/MyApp.app");
+  });
+
+  describe('every iOS wizard choice yields a config tapsmith test and doctor accept (PILOT-251)', () => {
+    const android: AndroidConfig = { apkPath: './app.apk', packageName: 'com.example.android', useEmulators: true, usePhysicalDevices: false, avd: 'Pixel_7' };
+    const iosChoices: Record<string, IosConfig> = {
+      simulators: { appPath: './MyApp.app', bundleId: 'com.example.ios', simulator: 'iPhone 17', usePhysicalDevice: false },
+      physical: { bundleId: 'com.example.ios', usePhysicalDevice: true, deviceAppPath: './MyApp-device.app' },
+      both: { appPath: './MyApp.app', bundleId: 'com.example.ios', simulator: 'iPhone 17', usePhysicalDevice: true, deviceAppPath: './MyApp-device.app' },
+    };
+    const cases = Object.entries(iosChoices).flatMap(([choice, ios]) => [
+      { label: `ios only, ${choice}`, platforms: ['ios'] as Platform[], android: undefined, ios },
+      { label: `android + ios, ${choice}`, platforms: ['android', 'ios'] as Platform[], android, ios },
+    ]);
+
+    it.each(cases)('$label', ({ platforms, android: a, ios }) => {
+      const parsed = evaluateConfig(generateConfig(platforms, a, ios, false));
+      expect(platformlessIosFields(parsed)).toEqual([]);
+
+      const scopes = parsed.projects
+        ? parsed.projects.map((p) => ({ ...parsed, projects: undefined, ...p.use }))
+        : [parsed];
+      const iosScopes = scopes.filter((s) => _internal.resolvePlatformFixture(s as TapsmithConfig) === 'ios');
+      // The simulator scope runs the simulator build on the chosen simulator;
+      // the physical scope (no `simulator`) runs the device build.
+      const sim = iosScopes.filter((s) => s.simulator);
+      const phys = iosScopes.filter((s) => !s.simulator);
+      expect(sim.map((s) => s.app)).toEqual(ios.simulator ? ['./MyApp.app'] : []);
+      expect(phys.map((s) => s.app)).toEqual(ios.usePhysicalDevice ? ['./MyApp-device.app'] : []);
+      for (const s of iosScopes) expect(s.package).toBe('com.example.ios');
+    });
+
+    it.each(cases)('$label: the next-steps --project names match the generated projects', ({ platforms, android: a, ios }) => {
+      const parsed = evaluateConfig(generateConfig(platforms, a, ios, false));
+      expect(generatedProjects(platforms, ios).map((p) => p.name)).toEqual((parsed.projects ?? []).map((p) => p.name));
+    });
   });
 
   it('includes network tracing when enabled', () => {
