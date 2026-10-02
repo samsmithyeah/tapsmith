@@ -60,7 +60,7 @@ jobs:
       # is needed; the full build stays below so a broken web-app build does
       # not hide the unit-test results.
       - name: Build SDK for the unit tests
-        run: npx tsc
+        run: npx tsc -p tsconfig.build.json
 
       - name: Unit tests
         run: npx vitest run
