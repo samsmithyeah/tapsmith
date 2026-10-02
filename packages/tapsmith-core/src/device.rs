@@ -229,6 +229,8 @@ impl DeviceManager {
     pub fn set_active(&mut self, serial: &str) -> Result<()> {
         // Checked first: an active device that turned unauthorized is still in
         // `devices` (kept as Disconnected), and must not be made Active again.
+        // The SDK retries device selection on "is attached but not usable"
+        // (worker-protocol.ts isRetryableDeviceSelectionError) — keep the text.
         if let Some(unusable) = self.unusable.iter().find(|d| d.serial == serial) {
             bail!(
                 "Device {serial} is attached but not usable: adb reports it \"{}\". \

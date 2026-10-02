@@ -267,7 +267,8 @@ await device.installApk("./app-debug.apk");
 List the devices the daemon can see. Resolves to `{ requestId, devices, unusableDevices }`, where each
 entry is `{ serial, model, state, isEmulator, platform, osVersion }`.
 
-- `devices` are the devices Tapsmith can target, Android and iOS.
+- `devices` are the devices Tapsmith can target, Android and iOS. A device that was selected and has since
+  gone away stays here with `state: 'Disconnected'`.
 - `unusableDevices` are Android devices adb lists but cannot use (unauthorized, offline,
   `no permissions (…)`, …). Their `state` is adb's whole state string. Tapsmith never selects them, so
   they cannot be passed to `setDevice`; `tapsmith list-devices` shows how to fix each one.
