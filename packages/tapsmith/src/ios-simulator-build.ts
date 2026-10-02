@@ -80,8 +80,8 @@ function processAlive(pid: number): boolean {
  * Rejects with a message naming the exit code, signal, timeout or spawn
  * failure, followed by the excerpt and the log path. The log is per process
  * (two sessions may build at once); buildSimulatorAgent removes it once the
- * build is cached, so only failed builds leave one behind (the next build
- * removes those of processes that have exited). The messages never say
+ * build is cached, so only failed builds leave one behind; a later build
+ * removes those of exited processes once they are a day old. The messages never say
  * "xcodebuild exited with": that is the daemon's agent-launch failure text,
  * which worker-protocol.ts retries as an infrastructure error.
  */
@@ -342,8 +342,9 @@ export async function ensureSimulatorAgent(
     }
     throw new Error(
       'No iOS simulator agent build was found, and it cannot be built here: the iOS Simulator SDK ' +
-        'could not be detected (`xcrun --sdk iphonesimulator --show-sdk-version` failed). ' +
-        'Install Xcode and select it: sudo xcode-select -s /Applications/Xcode.app',
+        'could not be detected. Run `xcrun --sdk iphonesimulator --show-sdk-version` to see why — usually ' +
+        'Xcode is not installed or not selected (sudo xcode-select -s /Applications/Xcode.app), ' +
+        'or its license has not been accepted (sudo xcodebuild -license accept).',
     );
   }
 

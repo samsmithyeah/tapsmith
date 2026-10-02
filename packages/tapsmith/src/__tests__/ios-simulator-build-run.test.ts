@@ -328,6 +328,7 @@ describe('ensureSimulatorAgent() options', () => {
     const message = await ensureSimulatorAgent({ quiet: true }).then(() => '', (err: unknown) => (err as Error).message);
     expect(message).toContain('the iOS Simulator SDK could not be detected');
     expect(message).toContain('xcode-select');
+    expect(message).toContain('xcodebuild -license accept');
     expect(message).not.toContain('npm install');
     expect(message).not.toContain('name=iPhone');
   });
