@@ -8,5 +8,6 @@
     "src/index.ts",
     "scripts/fetch-bezels.mjs"
   ],
+  "ignore": ["scripts/clean-install-checks.d.mts"],
   "ignoreExportsUsedInFile": true
 }

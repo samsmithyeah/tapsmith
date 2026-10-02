@@ -11,8 +11,5 @@
     "url": "https://github.com/tapsmith/tapsmith.git",
     "directory": "npm-packages/core-darwin-x64"
   },
-  "license": "Apache-2.0",
-  "scripts": {
-    "postinstall": "node -e \"for(const f of ['tapsmith-core','tapsmith-ios-hid']){try{require('fs').chmodSync(f,0o755)}catch(e){console.warn('tapsmith: chmod '+f+' failed:',e.message)}}\""
-  }
+  "license": "Apache-2.0"
 }

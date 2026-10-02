@@ -42,6 +42,12 @@ npm install tapsmith
 
 This installs the TypeScript SDK, test runner, the Tapsmith daemon binary for your platform, and the Android agent APKs (via the `@tapsmith/agent-android` optional dependency).
 
+On npm 11.17 and later, the install may end with an `npm warn allow-scripts` (npm 12: `npm warn install-scripts`) list naming `protobufjs`, `esbuild` and, on macOS, `fsevents`. Tapsmith's own packages have no install scripts. These three come in through gRPC and `tsx`, and Tapsmith works with their scripts blocked: `protobufjs` only prints an advisory, `esbuild` only re-checks the binary npm already installed, and `fsevents` ships prebuilt. To record that decision and silence the warning, add this to your project's `package.json`:
+
+```json
+"allowScripts": { "protobufjs": false, "esbuild": false, "fsevents": false }
+```
+
 ## Quick Setup (Recommended)
 
 The interactive setup wizard detects your environment, walks you through platform configuration, and generates your config file:
