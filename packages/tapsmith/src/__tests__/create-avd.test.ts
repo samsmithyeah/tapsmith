@@ -10,6 +10,7 @@ import {
   findSdkTool,
   latestCmdlineToolsZip,
   resolveCreateAvdOptions,
+  sdkPackagesToInstall,
   systemImageDir,
   systemImagePackage,
 } from '../create-avd.js';
@@ -148,6 +149,32 @@ describe('systemImageDir()', () => {
   it('matches where sdkmanager unpacks the image', () => {
     expect(systemImageDir('/sdk', 36, 'arm64-v8a'))
       .toBe(path.join('/sdk', 'system-images', 'android-36', 'google_apis', 'arm64-v8a'));
+  });
+});
+
+describe('sdkPackagesToInstall()', () => {
+  const image = 'system-images;android-36;google_apis;x86_64';
+  const imageDir = path.join('/sdk', 'system-images', 'android-36', 'google_apis', 'x86_64');
+  const emulatorDir = path.join('/sdk', 'emulator');
+  const has = (...dirs: string[]) => (dir: string) => dirs.includes(dir);
+
+  it('installs nothing when the image and the emulator are both there', () => {
+    expect(sdkPackagesToInstall('/sdk', 36, 'x86_64', has(imageDir, emulatorDir))).toEqual([]);
+  });
+
+  it('installs the emulator when only the image is there (a cached system image)', () => {
+    // avdmanager refuses without it ("emulator" package must be installed!),
+    // and the image install was the only thing that pulled it in (PILOT-483).
+    expect(sdkPackagesToInstall('/sdk', 36, 'x86_64', has(imageDir))).toEqual(['emulator']);
+  });
+
+  it('installs the image, and the emulator alongside it when missing', () => {
+    expect(sdkPackagesToInstall('/sdk', 36, 'x86_64', has(emulatorDir))).toEqual([image]);
+    expect(sdkPackagesToInstall('/sdk', 36, 'x86_64', has())).toEqual([image, 'emulator']);
+  });
+
+  it('asks sdkmanager for the image when no SDK root is known', () => {
+    expect(sdkPackagesToInstall(undefined, 36, 'x86_64', has())).toEqual([image]);
   });
 });
 

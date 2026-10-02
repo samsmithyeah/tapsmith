@@ -70,6 +70,29 @@ export function systemImagePackage(api: number, abi: string): string {
   return `system-images;android-${api};google_apis;${abi}`;
 }
 
+/**
+ * The SDK packages `createAvd` has to install with sdkmanager: the system
+ * image unless it is already unpacked, and the emulator unless it is present.
+ * The emulator is no explicit dependency of anything else here: the image
+ * install pulls it in, so with the image already there (a cached image on a
+ * CI runner) nothing would — and avdmanager then refuses to create the AVD
+ * ("\"emulator\" package must be installed!"), and Tapsmith has nothing to
+ * launch it with. With no SDK root known, sdkmanager resolves its own and
+ * only the image is asked for.
+ */
+export function sdkPackagesToInstall(
+  sdkRoot: string | undefined,
+  api: number,
+  abi: string,
+  exists: (dir: string) => boolean = fs.existsSync,
+): string[] {
+  if (!sdkRoot) return [systemImagePackage(api, abi)];
+  const packages: string[] = [];
+  if (!exists(systemImageDir(sdkRoot, api, abi))) packages.push(systemImagePackage(api, abi));
+  if (!exists(path.join(sdkRoot, 'emulator'))) packages.push('emulator');
+  return packages;
+}
+
 // avdmanager rejects names outside this set.
 const AVD_NAME_RE = /^[a-zA-Z0-9._-]+$/;
 // Real avdmanager device ids include spaces and parens ("Nexus 5",
@@ -418,19 +441,22 @@ export async function createAvd(opts: CreateAvdOptions): Promise<void> {
   }
 
   const sdkRoot = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
-  const imageAlreadyInstalled = !!sdkRoot && fs.existsSync(systemImageDir(sdkRoot, opts.api, opts.abi));
+  const packages = sdkPackagesToInstall(sdkRoot, opts.api, opts.abi);
 
-  await ensureSdkTools(opts, sdkRoot, !imageAlreadyInstalled);
+  await ensureSdkTools(opts, sdkRoot, packages.length > 0);
   const env = toolEnv();
 
   console.log();
-  if (imageAlreadyInstalled) {
+  if (packages.length === 0) {
     console.log(`${bold('Step 1/2')} System image already installed ${dim(`(${image})`)}`);
   } else {
     const sdkmanager = findSdkTool('sdkmanager');
-    console.log(`${bold('Step 1/2')} Install system image ${dim(`(${image})`)}`);
+    const what = packages.includes(image)
+      ? `Install system image ${dim(`(${packages.join(', ')})`)}`
+      : `System image already installed; install the Android emulator ${dim('(emulator)')}`;
+    console.log(`${bold('Step 1/2')} ${what}`);
     console.log(dim('sdkmanager may prompt you to accept the Android SDK license.'));
-    await run(sdkmanager, [image], env);
+    await run(sdkmanager, packages, env);
   }
 
   console.log();
