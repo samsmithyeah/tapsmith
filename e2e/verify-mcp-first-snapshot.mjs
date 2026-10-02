@@ -93,14 +93,27 @@ async function mcpSession(config, calls) {
     env: process.env,
   })
   const stderr = []
-  child.stderr.on("data", (d) => stderr.push(String(d)))
-  const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })))
+  child.stdout.setEncoding("utf8")
+  child.stderr.setEncoding("utf8")
+  child.stderr.on("data", (d) => stderr.push(d))
+  // Writing to a server that already died must fail the call, not crash the script.
+  child.stdin.on("error", () => {})
 
   const pending = new Map()
+  let exitInfo = null
+  const exited = new Promise((resolve) =>
+    child.on("exit", (code, signal) => {
+      exitInfo = { code, signal }
+      // A server that dies mid-call fails its pending requests now, not at their timeout.
+      for (const settle of pending.values()) settle(null)
+      pending.clear()
+      resolve(exitInfo)
+    }),
+  )
   const nonJsonStdout = []
   let buf = ""
   child.stdout.on("data", (d) => {
-    const { messages, nonJson, rest } = splitJsonRpcLines(buf + String(d))
+    const { messages, nonJson, rest } = splitJsonRpcLines(buf + d)
     buf = rest
     nonJsonStdout.push(...nonJson)
     for (const msg of messages) {
@@ -114,6 +127,10 @@ async function mcpSession(config, calls) {
   let nextId = 1
   const request = (method, params, timeoutMs = 30_000) =>
     new Promise((resolve, reject) => {
+      if (exitInfo) {
+        reject(new Error(`${method}: the MCP server already exited (${JSON.stringify(exitInfo)})`))
+        return
+      }
       const id = nextId++
       const timer = setTimeout(() => {
         pending.delete(id)
@@ -121,12 +138,14 @@ async function mcpSession(config, calls) {
       }, timeoutMs)
       pending.set(id, (msg) => {
         clearTimeout(timer)
-        resolve(msg)
+        if (msg === null) reject(new Error(`${method}: the MCP server exited (${JSON.stringify(exitInfo)})`))
+        else resolve(msg)
       })
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`)
     })
 
   const results = []
+  let error = null
   try {
     await request("initialize", {
       protocolVersion: "2025-03-26",
@@ -141,6 +160,8 @@ async function mcpSession(config, calls) {
       log(`  ${name} → ${response.result?.isError ? "error" : "ok"} (${elapsed}s)`)
       results.push({ name, response, elapsed })
     }
+  } catch (err) {
+    error = err
   } finally {
     // The server shuts itself (and its daemon and agent) down on stdin EOF.
     child.stdin.end()
@@ -151,7 +172,13 @@ async function mcpSession(config, calls) {
       await exited
     }
   }
-  return { results, stderr: stderr.join(""), nonJsonStdout }
+  const session = { results, stderr: stderr.join(""), nonJsonStdout }
+  if (error) {
+    // The server's stderr is the only diagnostic for a session that broke.
+    printServerLog(session)
+    throw error
+  }
+  return session
 }
 
 function printServerLog(session) {

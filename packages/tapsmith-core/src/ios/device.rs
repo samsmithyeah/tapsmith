@@ -1187,6 +1187,51 @@ fn is_container_manager_file(name: &str) -> bool {
     name.starts_with(".com.apple.")
 }
 
+/// The container manager's own top-level files in a data container, read so
+/// they can be put back after something else (an app-state archive) has been
+/// extracted over the container. See [`put_back_container_manager_files`].
+pub async fn read_container_manager_files(
+    container_path: &str,
+) -> Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
+    let mut files = Vec::new();
+    let mut entries = tokio::fs::read_dir(container_path).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let name = entry.file_name();
+        if is_container_manager_file(&name.to_string_lossy()) && entry.path().is_file() {
+            files.push((entry.path(), tokio::fs::read(entry.path()).await?));
+        }
+    }
+    Ok(files)
+}
+
+/// Make the container's top-level container-manager files exactly `saved`
+/// again: rewrite each saved file and remove any other `.com.apple.*` file
+/// that appeared at the top level. An app-state archive is `tar -C <container> .`
+/// of the *source* container, so it carries that container's
+/// `.com.apple.mobile_container_manager.metadata.plist` (its own UUID); laid
+/// over another simulator's container, or the same app after a reinstall, it
+/// would replace this container's record with a foreign one — the same class
+/// of damage [`clear_container`] avoids (PILOT-462).
+pub async fn put_back_container_manager_files(
+    container_path: &str,
+    saved: &[(std::path::PathBuf, Vec<u8>)],
+) -> Result<()> {
+    let mut entries = tokio::fs::read_dir(container_path).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if is_container_manager_file(&entry.file_name().to_string_lossy())
+            && path.is_file()
+            && !saved.iter().any(|(p, _)| p == &path)
+        {
+            tokio::fs::remove_file(&path).await?;
+        }
+    }
+    for (path, bytes) in saved {
+        tokio::fs::write(path, bytes).await?;
+    }
+    Ok(())
+}
+
 // ─── Simulator Keychain Helpers ───
 
 /// File names making up the simulator's device-level keychain SQLite database.
@@ -1947,5 +1992,39 @@ mod tests {
             );
         }
         assert!(!root.join("stray-file").exists());
+    }
+
+    /// R1-F1: an app-state archive extracted over the container must not
+    /// replace (or add) the container manager's records.
+    #[tokio::test]
+    async fn container_manager_files_survive_an_archive_extract() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let live = root.join(".com.apple.mobile_container_manager.metadata.plist");
+        std::fs::write(&live, b"live-uuid").unwrap();
+        std::fs::create_dir_all(root.join("Library")).unwrap();
+        std::fs::write(root.join("Library/.com.apple.nested"), b"app").unwrap();
+
+        let saved = read_container_manager_files(root.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(saved.len(), 1);
+
+        // What `tar xzf <foreign archive>` does to the container.
+        std::fs::write(&live, b"foreign-uuid").unwrap();
+        std::fs::write(root.join(".com.apple.other"), b"foreign").unwrap();
+        std::fs::write(root.join("Library/.com.apple.nested"), b"restored").unwrap();
+
+        put_back_container_manager_files(root.to_str().unwrap(), &saved)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&live).unwrap(), b"live-uuid");
+        assert!(!root.join(".com.apple.other").exists());
+        // Only top-level container-manager files are touched.
+        assert_eq!(
+            std::fs::read(root.join("Library/.com.apple.nested")).unwrap(),
+            b"restored"
+        );
     }
 }

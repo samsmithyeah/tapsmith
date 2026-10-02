@@ -7236,6 +7236,21 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // regardless of how the archive recorded it.
                 let member = ios::device::KEYCHAIN_ARCHIVE_MEMBER;
                 let member_pattern = format!("./{member}");
+                // The archive carries the *source* container's
+                // container-manager metadata; keep this container's own
+                // (PILOT-462). bsdtar's --exclude is not anchored, so the
+                // files are put back after the extract rather than excluded.
+                let container_manager_files = match ios::device::read_container_manager_files(
+                    &container,
+                )
+                .await
+                {
+                    Ok(files) => files,
+                    Err(e) => {
+                        warn!(%pkg, error = %e, "Could not read container-manager files before restore");
+                        Vec::new()
+                    }
+                };
                 let output = tokio::process::Command::new("tar")
                     .args([
                         "xzf",
@@ -7253,6 +7268,14 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     ])
                     .output()
                     .await;
+                if let Err(e) = ios::device::put_back_container_manager_files(
+                    &container,
+                    &container_manager_files,
+                )
+                .await
+                {
+                    warn!(%pkg, error = %e, "Could not put back container-manager files after restore");
+                }
 
                 match output {
                     Ok(out) if out.status.success() => {
