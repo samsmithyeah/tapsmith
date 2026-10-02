@@ -16,7 +16,7 @@ export const ALLOWED_INSTALL_SCRIPTS = Object.freeze({
   esbuild:
     'via tsx (TypeScript config loading); its install.js only verifies the @esbuild/<platform> binary npm already installed, and esbuild runs without it',
   fsevents:
-    'via tsx, macOS only; npm infers `node-gyp rebuild` from its binding.gyp, but the package ships a prebuilt fsevents.node',
+    'via tsx, macOS only; its manifest declares `install: node-gyp rebuild`, but the package ships a prebuilt fsevents.node and runs without it',
 });
 
 // `npm warn allow-scripts   <name>@<version> (<event>: <command>)` on npm
