@@ -571,6 +571,13 @@ describe('tapsmith_list_devices', () => {
     });
   });
 
+  it('gives no adb fix for a device the daemon only knows is Disconnected', async () => {
+    hoisted.unusable = [deviceInfo({ serial: 'GONE', state: 'Disconnected' })];
+    const listed = JSON.parse(text(await callTool('tapsmith_list_devices'))) as Array<Record<string, unknown>>;
+    expect(listed).toEqual([expect.objectContaining({ serial: 'GONE', usable: false })]);
+    expect(listed[0]).not.toHaveProperty('fix');
+  });
+
   it('scopes unusable devices to the session like usable ones', async () => {
     hoisted.devices = [deviceInfo({ serial: 'emulator-5556' })];
     hoisted.unusable = [deviceInfo({ serial: 'R5CR1234XYZ', state: 'unauthorized' })];

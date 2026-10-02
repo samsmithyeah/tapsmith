@@ -558,6 +558,15 @@ describe('pinnedWorkerDevices', () => {
     expect(message).toContain('Pinned device emulator-5560 is not connected');
   });
 
+  it('does not follow "attached" with "No Android devices are connected"', () => {
+    expect(() => pinnedWorkerDevices(
+      [{ name: 'device-1', device: 'R5C' }],
+      [],
+      false,
+      [{ serial: 'R5C', state: 'unauthorized' }],
+    )).toThrow(/^Pinned device R5C is attached, but adb reports it unauthorized\. Accept the USB debugging prompt on the device\.$/);
+  });
+
   it('never calls a pin adb lists as usable "attached but unusable" (it came online between two adb calls)', () => {
     expect(() => pinnedWorkerDevices(
       [{ name: 'device-1', device: 'emulator-5560' }],

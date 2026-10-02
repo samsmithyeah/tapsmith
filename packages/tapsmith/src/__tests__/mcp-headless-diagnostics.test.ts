@@ -1469,6 +1469,16 @@ describe('mergeDeviceLists', () => {
     expect(merged.devices.map((d) => d.serial)).toEqual(['A', 'B']);
     expect(merged.unusable.map((d) => d.serial)).toEqual(['C']);
   });
+
+  // The daemon keeps its active device as Disconnected once it turns
+  // unauthorized, and lists it under unusable too: the adb state must win.
+  it('never counts a Disconnected device as usable, preferring its adb state', () => {
+    const merged = mergeDeviceLists([
+      { devices: [dev('P', 'Disconnected'), dev('Q', 'Disconnected')], unusable: [dev('P', 'unauthorized')] },
+    ]);
+    expect(merged.devices).toEqual([]);
+    expect(merged.unusable.map((d) => [d.serial, d.state])).toEqual([['P', 'unauthorized'], ['Q', 'Disconnected']]);
+  });
 });
 
 // A config file that exists but fails to load leaves the session without a

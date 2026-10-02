@@ -126,26 +126,31 @@ export async function waitForPinnedDeviceAuthorization(
     listAdbDevices: () => readonly AdbStateEntry[];
     sleep: (ms: number) => Promise<void>;
     onWaiting: (message: string) => void;
+    /** Clock for the deadline — each `adb devices` call takes time of its own. */
+    now?: () => number;
     timeoutMs?: number;
     pollMs?: number;
   },
 ): Promise<string | undefined> {
+  const now = deps.now ?? Date.now;
   const timeoutMs = deps.timeoutMs ?? 30_000;
   const pollMs = deps.pollMs ?? 1_000;
-  let waited = 0;
+  const deadline = now() + timeoutMs;
+  let noted = false;
   for (;;) {
     const devices = deps.listAdbDevices();
     const blocked = pinnedDeviceUnusableMessage(serial, devices, 'preflight');
     const state = devices.find((d) => d.serial === serial)?.state;
     // `authorizing` is the step between: the prompt was just accepted.
     const pending = state === 'unauthorized' || state === 'authorizing';
-    if (!pending || waited >= timeoutMs) return blocked;
-    if (waited === 0) {
-      deps.onWaiting(
-        `${serial} is unauthorized: Accept the USB debugging prompt on the device. Waiting up to ${Math.round(timeoutMs / 1000)} s…`,
-      );
+    if (!pending || now() >= deadline) return blocked;
+    if (!noted) {
+      noted = true;
+      const seconds = Math.round(timeoutMs / 1000);
+      deps.onWaiting(state === 'unauthorized'
+        ? `${serial} is unauthorized: accept the USB debugging prompt on the device. Waiting up to ${seconds} s…`
+        : `Waiting up to ${seconds} s for adb to finish authorizing ${serial}…`);
     }
-    await deps.sleep(pollMs);
-    waited += pollMs;
+    await deps.sleep(Math.max(0, Math.min(pollMs, deadline - now())));
   }
 }

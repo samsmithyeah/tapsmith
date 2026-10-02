@@ -520,8 +520,11 @@ export async function listAllDevices(): Promise<{ devices: DeviceInfoProto[]; un
 }
 
 /**
- * Several daemons' lists as one, deduped by serial. Usable lists are taken
+ * Several daemons' lists as one, deduped by serial. Usable devices are taken
  * first, so a serial usable on any daemon is never also listed unusable.
+ * A daemon keeps its active device as `Disconnected` once adb stops listing
+ * it as usable — and lists it under `unusable` too, with adb's state, which
+ * is the entry kept; a `Disconnected` one with no adb entry goes last.
  *
  * @internal — exported for unit testing.
  */
@@ -534,8 +537,10 @@ export function mergeDeviceLists(
     seen.add(d.serial);
     return true;
   };
-  const devices = perConn.flatMap((c) => c.devices).filter(firstSeen);
-  const unusable = perConn.flatMap((c) => c.unusable).filter(firstSeen);
+  const all = perConn.flatMap((c) => c.devices);
+  const disconnected = (d: DeviceInfoProto): boolean => d.state === 'Disconnected';
+  const devices = all.filter((d) => !disconnected(d)).filter(firstSeen);
+  const unusable = [...perConn.flatMap((c) => c.unusable), ...all.filter(disconnected)].filter(firstSeen);
   return { devices, unusable };
 }
 

@@ -287,9 +287,11 @@ export function pinnedWorkerDevices(
     throw new LaunchSetupError([
       ...attached.map((d) => `Pinned device ${describeUnusableAndroidDevice(d)}`),
       ...(absent.length > 0
-        ? [`Pinned device${absent.length === 1 ? '' : 's'} ${absent.join(', ')} ${absent.length === 1 ? 'is' : 'are'} not connected.`]
+        ? [
+          `Pinned device${absent.length === 1 ? '' : 's'} ${absent.join(', ')} ${absent.length === 1 ? 'is' : 'are'} not connected.`,
+          onlineSerials.length > 0 ? `Connected: ${onlineSerials.join(', ')}.` : 'No Android devices are connected.',
+        ]
         : []),
-      onlineSerials.length > 0 ? `Connected: ${onlineSerials.join(', ')}.` : 'No Android devices are connected.',
     ].join(' '));
   }
   return pins;

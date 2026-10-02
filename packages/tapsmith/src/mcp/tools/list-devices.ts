@@ -29,7 +29,10 @@ export function registerListDevicesTool(server: McpServer, dispatcher?: TestDisp
           usable,
           // What the user must do first — the advice `doctor` and
           // `tapsmith list-devices` give for the same adb state.
-          ...(!usable && d.platform === 'android' ? { fix: androidUnusableDeviceFix(d.state, d.serial) } : {}),
+          // Not for `Disconnected`: that is the daemon's word, not an adb state.
+          ...(!usable && d.platform === 'android' && d.state !== 'Disconnected'
+            ? { fix: androidUnusableDeviceFix(d.state, d.serial) }
+            : {}),
           // Only for group members: the name a test author uses for this
           // device, and the `use.devices` project it belongs to.
           ...(member ? { name: member.name, project: member.group } : {}),

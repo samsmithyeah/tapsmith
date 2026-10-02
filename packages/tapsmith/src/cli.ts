@@ -188,7 +188,7 @@ function reExecWithTsx(args: string[]): never {
  * Attempts ADB restart recovery if unresponsive, throws if not recoverable
  * (the caller decides whether the run can go on without this device).
  */
-async function checkDeviceHealth(serial: string | undefined): Promise<void> {
+async function checkDeviceHealth(serial: string | undefined, progress?: LaunchProgressSink): Promise<void> {
   const target = serial ?? 'any connected device';
 
   if (serial) {
@@ -198,7 +198,7 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
     const blocked = await waitForPinnedDeviceAuthorization(serial, {
       listAdbDevices: () => listAdbDevices(),
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-      onWaiting: (message) => console.log(yellow(message)),
+      onWaiting: (message) => (progress ? progress.note(message) : console.log(yellow(message))),
     });
     if (blocked) throw new Error(blocked);
 
@@ -565,7 +565,7 @@ async function setupSequentialDevice(
   // Skip in CI — the workflow already verified boot_completed=1 and disabled animations.
   if (cfg.platform !== 'ios' && !isCI) {
     progress?.update('primary-device', { state: 'running', detail: `checking ${deviceSerial}` });
-    await checkDeviceHealth(deviceSerial);
+    await checkDeviceHealth(deviceSerial, progress);
   }
 
   const { client, address: daemonAddress } = await ensureDaemonRunning(cfg.daemonAddress, cfg.daemonBin, cfg.platform, progress);

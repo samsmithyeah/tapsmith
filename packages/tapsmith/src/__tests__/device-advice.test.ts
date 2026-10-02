@@ -159,12 +159,14 @@ describe('waitForPinnedDeviceAuthorization()', () => {
   const deps = (listAdbDevices: () => Array<{ serial: string; state: string }>) => {
     const notes: string[] = [];
     const sleeps: number[] = [];
+    let clock = 0;
     return {
       notes,
       sleeps,
       deps: {
         listAdbDevices,
-        sleep: async (ms: number) => { sleeps.push(ms); },
+        sleep: async (ms: number) => { sleeps.push(ms); clock += ms; },
+        now: () => clock,
         onWaiting: (message: string) => notes.push(message),
         timeoutMs: 5_000,
         pollMs: 1_000,
@@ -185,7 +187,7 @@ describe('waitForPinnedDeviceAuthorization()', () => {
     expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
     expect(run.notes).toHaveLength(1);
     expect(run.notes[0]).toContain('R5C');
-    expect(run.notes[0]).toContain('Accept the USB debugging prompt');
+    expect(run.notes[0]).toContain('accept the USB debugging prompt');
     expect(run.sleeps.length).toBe(3);
   });
 
@@ -200,6 +202,29 @@ describe('waitForPinnedDeviceAuthorization()', () => {
     const run = deps(sequence(NO_PERMISSIONS));
     expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toContain('udev rule');
     expect(run.sleeps).toEqual([]);
+  });
+
+  it('bounds the wait by the clock, not by the sleeps, when adb itself is slow', async () => {
+    let clock = 0;
+    let polls = 0;
+    const result = await waitForPinnedDeviceAuthorization('R5C', {
+      listAdbDevices: () => { polls++; clock += 2_000; return [{ serial: 'R5C', state: 'unauthorized' }]; },
+      sleep: async (ms) => { clock += ms; },
+      now: () => clock,
+      onWaiting: () => {},
+      timeoutMs: 9_000,
+      pollMs: 1_000,
+    });
+    expect(result).toContain('unauthorized');
+    expect(polls).toBeLessThanOrEqual(4);
+  });
+
+  it('does not ask for a prompt that was already accepted (authorizing)', async () => {
+    const run = deps(sequence('authorizing', 'device'));
+    expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
+    expect(run.notes).toHaveLength(1);
+    expect(run.notes[0]).not.toMatch(/accept/i);
+    expect(run.notes[0]).toContain('authoriz');
   });
 
   it('leaves offline to the restart recovery', async () => {
