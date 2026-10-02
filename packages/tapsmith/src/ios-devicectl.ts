@@ -40,6 +40,15 @@ export interface PhysicalDeviceInfo {
    * them so `tapsmith test` doesn't get blamed for the failure mode.
    */
   transportType: string
+  /**
+   * Whether CoreDevice can reach the device right now. devicectl also lists
+   * devices the Mac only remembers (unplugged, out of Wi-Fi range, or paired
+   * with another Mac); those report `tunnelState: "unavailable"` and no
+   * transport. A cabled phone whose tunnel is merely idle (`disconnected`) is
+   * connected, paired or not. The daemon's parser applies the same rule
+   * (`isReachable`) and drops unconnected devices outright.
+   */
+  isConnected: boolean
 }
 
 // ─── Listing ───
@@ -63,6 +72,26 @@ export function listPhysicalDevices(): PhysicalDeviceInfo[] {
     // still produces valid JSON in the file. Swallow and try reading the file.
   }
 
+  return readDeviceListScratch(scratch);
+}
+
+/**
+ * {@link listPhysicalDevices} without blocking the event loop — for callers
+ * that run beside other sessions (a device-selection retry in a worker or a
+ * group), where a slow devicectl must not stall every other session's timers.
+ */
+async function listPhysicalDevicesAsync(): Promise<PhysicalDeviceInfo[]> {
+  const scratch = scratchJsonPath('list-devices');
+  try {
+    await execFileAsync('xcrun', ['devicectl', 'list', 'devices', '--json-output', scratch], { timeout: 15_000 });
+  } catch {
+    // As in listPhysicalDevices: the JSON file may still be valid.
+  }
+  return readDeviceListScratch(scratch);
+}
+
+/** Parse and remove a `devicectl list devices` JSON file; never throws. */
+function readDeviceListScratch(scratch: string): PhysicalDeviceInfo[] {
   if (!fs.existsSync(scratch)) return [];
   let raw: string;
   try {
@@ -137,9 +166,23 @@ export function parseDevicectlDeviceList(json: string): PhysicalDeviceInfo[] {
       transportType: typeof connProps['transportType'] === 'string'
         ? (connProps['transportType'] as string)
         : 'unknown',
+      isConnected: isReachable(connProps),
     });
   }
   return result;
+}
+
+/**
+ * The connection rule shared with the daemon's parser (`tapsmith-core/src/ios/device.rs`):
+ * a device is unreachable only when its tunnel is `unavailable` AND devicectl
+ * gives no transport for it — the shape of a device the Mac merely remembers.
+ * A missing tunnelState (older devicectl) or any transport keeps the device,
+ * so a cabled phone CoreDevice has no tunnel to (e.g. a MobileDevice-only
+ * entry) is never hidden.
+ */
+function isReachable(connProps: Record<string, unknown>): boolean {
+  if (connProps['tunnelState'] !== 'unavailable') return true;
+  return typeof connProps['transportType'] === 'string' && connProps['transportType'] !== '';
 }
 
 /**
@@ -150,6 +193,40 @@ export function parseDevicectlDeviceList(json: string): PhysicalDeviceInfo[] {
 export function isPhysicalDevice(udid: string): boolean {
   if (!udid) return false;
   return listPhysicalDevices().some((d) => d.udid === udid);
+}
+
+/** A simulator UDID; physical ones are `8-16` or 40 hex digits. */
+const SIMULATOR_UDID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i;
+
+/**
+ * Why `udid` cannot be used, when it is a physical device devicectl only
+ * remembers (unplugged, out of Wi-Fi range, or paired with another Mac):
+ * the daemon does not list such a device, so selecting it fails with a bare
+ * "not found". Undefined when it is not such a device — connected, a
+ * simulator, or unknown.
+ */
+export async function describeUnreachablePhysicalDevice(udid: string): Promise<string | undefined> {
+  // A simulator's "not found" is a CoreSimulator stall, the case the
+  // selection retry exists for; devicectl may be stalled with it, so do not
+  // spend the retry budget asking.
+  if (SIMULATOR_UDID.test(udid)) return undefined;
+  const device = (await listPhysicalDevicesAsync()).find((d) => d.udid === udid);
+  if (!device || device.isConnected) return undefined;
+  return `${device.name} (${udid}) is not connected: this Mac remembers it, but cannot reach it now. `
+    + 'Plug it in with a USB cable and unlock it, then re-run. `tapsmith list-devices` shows the devices that are connected.';
+}
+
+/**
+ * `err` from selecting `udid`, or — when it is the daemon's "not found" for a
+ * phone devicectl only remembers — an error that names that cause instead of
+ * advising a ListDevices that will never list it. For paths with no selection
+ * retry of their own (MCP).
+ */
+export async function explainDeviceNotFound(udid: string, err: unknown): Promise<unknown> {
+  const message = err instanceof Error ? err.message : String(err);
+  if (!message.includes('not found. Run ListDevices')) return err;
+  const unreachable = await describeUnreachablePhysicalDevice(udid);
+  return unreachable ? new Error(unreachable) : err;
 }
 
 /**
@@ -254,10 +331,13 @@ export async function isAppInstalledOnDevice(udid: string, bundleId: string): Pr
 
 // ─── Helpers ───
 
+let scratchSeq = 0;
+
+/** Unique per call, even for concurrent async calls in one millisecond. */
 function scratchJsonPath(purpose: string): string {
   return path.join(
     os.tmpdir(),
-    `tapsmith-devicectl-${purpose}-${process.pid}-${Date.now()}.json`,
+    `tapsmith-devicectl-${purpose}-${process.pid}-${Date.now()}-${scratchSeq++}.json`,
   );
 }
 

@@ -1382,7 +1382,7 @@ async function prepareTarget(
   // a daemon that already serves this device would tear down a working agent,
   // including one a peer session is mid-run against.
   const wasPointedAt = await currentDevice(conn) ?? conn.preparedDevice;
-  await conn.client.setDevice(serial);
+  await setDeviceExplained(conn.client, serial);
   const repointed = isRepointing(wasPointedAt, serial);
   // Record the move before starting the agent: `setDevice` has already
   // happened, so if the agent start throws, the next claim must still see this
@@ -1921,7 +1921,7 @@ async function setDeviceAndAgent(
     return undefined;
   }
 
-  await client.setDevice(serial);
+  await setDeviceExplained(client, serial);
   log(`Using device: ${serial}`);
   await startAgentFromConfig(client, config, { serial });
   return serial;
@@ -2055,4 +2055,19 @@ export function closeAllClients(): void {
   _ready = false;
   _connectingPromise = null;
   _configFile = undefined;
+}
+
+/**
+ * `setDevice`, except that the daemon's "not found" for a phone devicectl
+ * only remembers is thrown as the not-connected error (PILOT-386). Any other
+ * refusal (`success: false`) is left as before: not thrown here.
+ * Exported for tests.
+ */
+export async function setDeviceExplained(client: TapsmithGrpcClient, serial: string): Promise<void> {
+  const res = await client.setDevice(serial);
+  if (res?.success !== false) return;
+  const { explainDeviceNotFound } = await import('../ios-devicectl.js');
+  const refusal = new Error(res.errorMessage);
+  const explained = await explainDeviceNotFound(serial, refusal);
+  if (explained !== refusal) throw explained;
 }

@@ -170,7 +170,8 @@ fn parse_simctl_runtime_version(runtime: &str) -> String {
     tail.replace('-', ".")
 }
 
-/// List connected physical iOS devices via devicectl.
+/// List connected physical iOS devices via devicectl: real hardware that
+/// CoreDevice can reach now (see `parse_devicectl_devices`).
 ///
 /// Writes devicectl JSON output to a scratch file rather than `/dev/stdout`
 /// because devicectl intermixes provisioning warnings on stdout when the
@@ -263,6 +264,26 @@ fn parse_devicectl_devices(json_str: &str) -> Result<Vec<IosDevice>> {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if provider.contains("CoreSimulator") {
+            continue;
+        }
+        // Only devices reachable now. devicectl also lists devices the Mac
+        // merely remembers (unplugged, out of Wi-Fi range, or paired with
+        // another Mac) with `tunnelState: "unavailable"` and no transport;
+        // listing them made list-devices show phones that are not there and
+        // let auto_pick count (or select) one. `disconnected` is a cabled
+        // phone's idle tunnel and stays; a missing tunnelState (older
+        // devicectl) stays, and so does any device with a transport (a cabled
+        // phone CoreDevice has no tunnel to). Same rule as `isReachable` in
+        // the SDK's ios-devicectl.ts (PILOT-386).
+        let tunnel_state = device
+            .pointer("/connectionProperties/tunnelState")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let transport = device
+            .pointer("/connectionProperties/transportType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if tunnel_state == "unavailable" && transport.is_empty() {
             continue;
         }
 
@@ -1737,6 +1758,63 @@ mod tests {
         let devices = parse_devicectl_devices(json).unwrap();
         let udids: Vec<&str> = devices.iter().map(|d| d.udid.as_str()).collect();
         assert_eq!(udids, vec!["REAL-UDID", "OLD-XCODE-UDID"]);
+    }
+
+    /// The SDK's devicectl parser (`packages/tapsmith/src/ios-devicectl.ts`) is
+    /// tested against this same captured Xcode 27 output, so the two cannot
+    /// disagree about which devices are connected physical devices
+    /// (PILOT-386, PILOT-395). See that test for what the fixture holds.
+    const DEVICECTL_XCODE27_FIXTURE: &str = include_str!(
+        "../../../tapsmith/src/__tests__/fixtures/devicectl-list-devices-xcode27.json"
+    );
+
+    #[test]
+    fn parse_devicectl_devices_shared_xcode27_fixture_keeps_only_connected_hardware() {
+        // Neither simulator (shutdown or booted) and not the remembered,
+        // unplugged phone (`tunnelState: "unavailable"`): only the two cabled
+        // phones, the untrusted one included so setup can tell the user to
+        // pair it. Dropping the remembered phone here keeps it out of
+        // list-devices and DeviceManager's auto-pick.
+        let devices = parse_devicectl_devices(DEVICECTL_XCODE27_FIXTURE).unwrap();
+        let udids: Vec<&str> = devices.iter().map(|d| d.udid.as_str()).collect();
+        assert_eq!(
+            udids,
+            vec!["00008140-000A1B2C3D4E001C", "00008110-0001A2B3C4D5002E"]
+        );
+        assert!(devices.iter().all(|d| !d.is_simulator));
+        assert!(devices[0].is_paired);
+        assert!(!devices[1].is_paired);
+    }
+
+    #[test]
+    fn parse_devicectl_devices_drops_only_remembered_devices() {
+        // Older devicectl omits tunnelState: never hide a device on missing
+        // data. A transport means CoreDevice reaches the device now, tunnel or
+        // not (a MobileDevice-only entry for an older iOS).
+        let json = r#"{
+          "result": {
+            "devices": [
+              {
+                "hardwareProperties": { "platform": "iOS", "udid": "NO-STATE" },
+                "deviceProperties": { "name": "iPhone", "bootState": "booted" },
+                "connectionProperties": { "pairingState": "paired" }
+              },
+              {
+                "hardwareProperties": { "platform": "iOS", "udid": "GONE" },
+                "deviceProperties": { "name": "Old iPhone" },
+                "connectionProperties": { "pairingState": "paired", "tunnelState": "unavailable" }
+              },
+              {
+                "hardwareProperties": { "platform": "iOS", "udid": "CABLED-NO-TUNNEL" },
+                "deviceProperties": { "name": "iPhone 8", "bootState": "booted" },
+                "connectionProperties": { "pairingState": "paired", "tunnelState": "unavailable", "transportType": "wired" }
+              }
+            ]
+          }
+        }"#;
+        let devices = parse_devicectl_devices(json).unwrap();
+        let udids: Vec<&str> = devices.iter().map(|d| d.udid.as_str()).collect();
+        assert_eq!(udids, vec!["NO-STATE", "CABLED-NO-TUNNEL"]);
     }
 
     #[test]
