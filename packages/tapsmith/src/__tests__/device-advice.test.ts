@@ -227,6 +227,25 @@ describe('waitForPinnedDeviceAuthorization()', () => {
     expect(run.notes[0]).toContain('authoriz');
   });
 
+  it('keeps waiting while the pin is briefly gone (the cable replugged to bring the prompt back)', async () => {
+    let call = 0;
+    const states = ['unauthorized', undefined, undefined, 'unauthorized', 'device'];
+    const run = deps(() => {
+      const state = states[Math.min(call++, states.length - 1)];
+      return state ? [{ serial: 'R5C', state }] : [];
+    });
+    expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
+    expect(run.sleeps.length).toBe(4);
+  });
+
+  it('does not wait when a usable device shares the pin\'s serial', async () => {
+    const run = deps(() => [{ serial: 'R5C', state: 'unauthorized' }, { serial: 'R5C', state: 'device' }]);
+    expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
+    expect(run.sleeps).toEqual([]);
+    expect(pinnedDeviceUnusableMessage('R5C', [{ serial: 'R5C', state: 'unauthorized' }, { serial: 'R5C', state: 'device' }], 'after-recovery'))
+      .toBeUndefined();
+  });
+
   it('leaves offline to the restart recovery', async () => {
     const run = deps(sequence('offline'));
     expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();

@@ -1173,6 +1173,9 @@ export function noDeviceMessage(
     if (blocked) return blocked;
   }
   const attached = describeUnusableAndroidDevices(relevant);
+  // Also after a missing pin's message: a stale pin of the very phone that is
+  // attached but unauthorized is a common way to get here.
+  const alsoAttached = attached.length > 0 ? ` ${attached.join(' ')}` : '';
   const what = [platform ? `No ${platform} device is available.` : 'No device is available.', ...attached].join(' ');
   // The devices are there, but a UI session is driving every one of them. Telling
   // the user to boot a simulator beside the one they are looking at would send
@@ -1189,10 +1192,10 @@ export function noDeviceMessage(
   if (wanted && visible.length > 0 && source === 'run_tests') {
     return `Device "${wanted}" is not available. `
       + `${platform ? `Visible ${platform} devices` : 'Visible devices'}: ${visible.join(', ')}. `
-      + 'Pass one of those as `device`, or start that device.';
+      + 'Pass one of those as `device`, or start that device.' + alsoAttached;
   }
   if (wanted && source === 'run_tests') {
-    return `Device "${wanted}" is not available, and no other ${platform ?? 'device'} was found. Start it, or pass another \`device\`.`;
+    return `Device "${wanted}" is not available, and no other ${platform ?? 'device'} was found. Start it, or pass another \`device\`.${alsoAttached}`;
   }
   if (wanted && visible.length > 0) {
     return `Device "${wanted}" from your config is not available. `
@@ -1206,11 +1209,12 @@ export function noDeviceMessage(
         ? ` If "${wanted}" belongs to another platform, set \`device\` inside the `
           + 'relevant project\'s `use` rather than at the top level, where every '
           + 'project inherits it.'
-        : '');
+        : '')
+      + alsoAttached;
   }
   if (wanted) {
     return `Device "${wanted}" from your config is not available, and no other `
-      + `${platform ?? 'device'} was found. Start it, or update \`device\` in your config.`;
+      + `${platform ?? 'device'} was found. Start it, or update \`device\` in your config.${alsoAttached}`;
   }
   if (platform === 'android') return `${what} Start an emulator (or connect a device) and try again.`;
   if (platform === 'ios') return `${what} Boot a simulator (or connect a device) and try again.`;

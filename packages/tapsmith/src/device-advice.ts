@@ -103,6 +103,9 @@ export function pinnedDeviceUnusableMessage(
   devices: readonly AdbStateEntry[],
   phase: 'preflight' | 'after-recovery',
 ): string | undefined {
+  // A usable device sharing the serial wins, as in the daemon: cheap phones
+  // can share one (`0123456789ABCDEF`).
+  if (devices.some((d) => d.serial === serial && isUsableAndroidState(d.state))) return undefined;
   const device = unusableAndroid(devices).find((d) => d.serial === serial);
   if (!device) return undefined;
   if (phase === 'preflight' && device.state !== 'unauthorized' && !device.state.startsWith('no permissions')) {
@@ -137,17 +140,24 @@ export async function waitForPinnedDeviceAuthorization(
   const pollMs = deps.pollMs ?? 1_000;
   const deadline = now() + timeoutMs;
   let noted = false;
+  let lastBlocked: string | undefined;
   for (;;) {
     const devices = deps.listAdbDevices();
+    const mine = devices.filter((d) => d.serial === serial);
     const blocked = pinnedDeviceUnusableMessage(serial, devices, 'preflight');
-    const state = devices.find((d) => d.serial === serial)?.state;
-    // `authorizing` is the step between: the prompt was just accepted.
-    const pending = state === 'unauthorized' || state === 'authorizing';
-    if (!pending || now() >= deadline) return blocked;
+    if (blocked) lastBlocked = blocked;
+    const usable = mine.some((d) => isUsableAndroidState(d.state));
+    // `authorizing` is the step between: the prompt was just accepted. Once
+    // waiting, a pin briefly gone from adb is still pending — replugging the
+    // cable is how the prompt is brought back.
+    const pending = !usable && (mine.some((d) => d.state === 'unauthorized' || d.state === 'authorizing')
+      || (noted && mine.length === 0));
+    if (!pending) return blocked;
+    if (now() >= deadline) return blocked ?? (mine.length === 0 ? lastBlocked : undefined);
     if (!noted) {
       noted = true;
       const seconds = Math.round(timeoutMs / 1000);
-      deps.onWaiting(state === 'unauthorized'
+      deps.onWaiting(mine.some((d) => d.state === 'unauthorized')
         ? `${serial} is unauthorized: accept the USB debugging prompt on the device. Waiting up to ${seconds} s…`
         : `Waiting up to ${seconds} s for adb to finish authorizing ${serial}…`);
     }

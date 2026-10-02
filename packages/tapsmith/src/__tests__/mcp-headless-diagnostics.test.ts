@@ -1451,6 +1451,16 @@ describe('noDeviceMessage', () => {
     }
   });
 
+  it('still names an attached but unusable device when the pin itself is missing (a stale pin of that phone)', () => {
+    const unusable = [{ serial: 'R5CR1234XYZ', state: 'unauthorized', platform: 'android' }];
+    for (const source of ['config', 'run_tests'] as const) {
+      for (const visible of [[], ['emulator-5554']]) {
+        expect(noDeviceMessage('android', 'OLD-SERIAL', visible, [], source, unusable))
+          .toContain('R5CR1234XYZ is attached, but adb reports it unauthorized.');
+      }
+    }
+  });
+
   it('leaves the iOS wording alone', () => {
     const unusable = [{ serial: 'R5CR1234XYZ', state: 'unauthorized', platform: 'android' }];
     expect(noDeviceMessage('ios', undefined, [], [], 'config', unusable)).toBe(noDeviceMessage('ios'));
