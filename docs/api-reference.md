@@ -271,7 +271,8 @@ entry is `{ serial, model, state, isEmulator, platform, osVersion }`.
   gone away stays here with `state: 'Disconnected'`.
 - `unusableDevices` are Android devices adb lists but cannot use (unauthorized, offline,
   `no permissions (…)`, …). Their `state` is adb's whole state string. Tapsmith never selects them, so
-  they cannot be passed to `setDevice`; `tapsmith list-devices` shows how to fix each one.
+  they cannot be passed to `setDevice`; `tapsmith list-devices` shows how to fix each one. A serial can
+  appear in both lists when two attached devices share it.
 
 ### `device.setDevice(serial: string): Promise<void>`
 

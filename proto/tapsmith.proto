@@ -384,9 +384,10 @@ message ListDevicesResponse {
   // Android devices adb lists but cannot use: unauthorized (the USB-debugging
   // prompt was not accepted), offline, "no permissions (...)" on Linux without
   // udev rules, or any other adb state but "device". Listed so a user is told
-  // the device is there and why it cannot be used; never selectable. The one
-  // serial that can also appear in `devices` is a previously active device,
-  // which stays there as "Disconnected" (as an unplugged one does). Here
+  // the device is there and why it cannot be used; never selectable. A serial
+  // here can also appear in `devices`: a previously active device stays there
+  // as "Disconnected" (as an unplugged one does), and two transports can share
+  // one serial (cheap phones reuse `0123456789ABCDEF`). Here
   // `state` is adb's whole state string, `platform` is "android", `model` is
   // empty unless adb reports one, `os_version` is empty.
   repeated DeviceInfo unusable_devices = 3;
