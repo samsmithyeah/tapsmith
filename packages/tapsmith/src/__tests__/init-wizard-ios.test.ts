@@ -100,8 +100,9 @@ describe('configureIos() (PILOT-251)', () => {
     expect(ios.bundleId).toBe('com.example.typed');
   });
 
-  it('both: collects the simulator and device builds, bundle id from the simulator build', async () => {
+  it('both: collects the simulator and device builds, bundle id from the builds', async () => {
     bundleIds.set(SIM_APP, 'com.example.sim');
+    bundleIds.set(DEVICE_APP, 'com.example.sim');
     script('both');
 
     const ios = await configureIos(env);
@@ -152,6 +153,26 @@ describe('configureIos() (PILOT-251)', () => {
   it('both: one id kept once when the typed simulator id matches the device build\'s', async () => {
     bundleIds.set(DEVICE_APP, 'com.example.app');
     script('both', [[/simulator build's bundle identifier/, 'com.example.app']]);
+
+    const ios = await configureIos(env);
+
+    expect(ios.bundleId).toBe('com.example.app');
+    expect(ios.deviceBundleId).toBeUndefined();
+  });
+
+  it('both: confirms the device build\'s id when it cannot be read', async () => {
+    bundleIds.set(SIM_APP, 'com.example.app.dev');
+    script('both', [[/device build's bundle identifier/, 'com.example.app']]);
+
+    const ios = await configureIos(env);
+
+    expect(ios.bundleId).toBe('com.example.app.dev');
+    expect(ios.deviceBundleId).toBe('com.example.app');
+  });
+
+  it('both: an accepted device id that matches the simulator\'s is kept once', async () => {
+    bundleIds.set(SIM_APP, 'com.example.app');
+    script('both', [[/device build's bundle identifier/, 'com.example.app']]);
 
     const ios = await configureIos(env);
 

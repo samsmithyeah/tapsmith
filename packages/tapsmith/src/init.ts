@@ -308,6 +308,17 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
     // Release), so the device id never stands in for the simulator's.
     if (!useSimulators) bundleId = deviceId;
     else if (deviceId && deviceId !== bundleId) deviceBundleId = deviceId;
+    else if (!deviceId && bundleId) {
+      // Device build not readable (often not built yet): confirm its id
+      // rather than assume it matches the simulator build's.
+      const typed = await ask<string>({
+        type: 'input',
+        message: 'What is your device build\'s bundle identifier?',
+        initial: bundleId,
+        validate: (val: string) => val.trim().length > 0 || 'Bundle ID is required',
+      });
+      if (typed !== bundleId) deviceBundleId = typed;
+    }
   }
 
   if (!bundleId) {
