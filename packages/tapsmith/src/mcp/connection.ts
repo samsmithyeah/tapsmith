@@ -516,13 +516,24 @@ export async function listAllDevices(): Promise<{ devices: DeviceInfoProto[]; un
       return { devices: [], unusable: [] };
     }
   }));
+  return mergeDeviceLists(perConn);
+}
+
+/**
+ * Several daemons' lists as one, deduped by serial. Usable lists are taken
+ * first, so a serial usable on any daemon is never also listed unusable.
+ *
+ * @internal — exported for unit testing.
+ */
+export function mergeDeviceLists(
+  perConn: ReadonlyArray<{ devices: DeviceInfoProto[]; unusable: DeviceInfoProto[] }>,
+): { devices: DeviceInfoProto[]; unusable: DeviceInfoProto[] } {
   const seen = new Set<string>();
   const firstSeen = (d: DeviceInfoProto): boolean => {
     if (seen.has(d.serial)) return false;
     seen.add(d.serial);
     return true;
   };
-  // Usable lists first, so a serial usable on any daemon is never also listed unusable.
   const devices = perConn.flatMap((c) => c.devices).filter(firstSeen);
   const unusable = perConn.flatMap((c) => c.unusable).filter(firstSeen);
   return { devices, unusable };

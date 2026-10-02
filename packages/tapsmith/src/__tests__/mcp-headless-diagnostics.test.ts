@@ -22,6 +22,7 @@ import {
   isRepointing,
   takesClaimedDaemon,
   noDeviceMessage,
+  mergeDeviceLists,
   primaryDevice,
   configureMcpConnection,
   normalizeDaemonAddress,
@@ -1453,6 +1454,20 @@ describe('noDeviceMessage', () => {
   it('leaves the iOS wording alone', () => {
     const unusable = [{ serial: 'R5CR1234XYZ', state: 'unauthorized', platform: 'android' }];
     expect(noDeviceMessage('ios', undefined, [], [], 'config', unusable)).toBe(noDeviceMessage('ios'));
+  });
+});
+
+// tapsmith_list_devices merges every pooled daemon's lists (PILOT-457).
+describe('mergeDeviceLists', () => {
+  const dev = (serial: string, state: string) => ({ serial, state, model: '', platform: 'android', osVersion: '', isEmulator: false });
+
+  it('dedupes by serial, and a serial usable on any daemon is never listed unusable', () => {
+    const merged = mergeDeviceLists([
+      { devices: [dev('A', 'Discovered')], unusable: [dev('B', 'unauthorized')] },
+      { devices: [dev('B', 'Discovered'), dev('A', 'Active')], unusable: [dev('C', 'offline'), dev('C', 'offline')] },
+    ]);
+    expect(merged.devices.map((d) => d.serial)).toEqual(['A', 'B']);
+    expect(merged.unusable.map((d) => d.serial)).toEqual(['C']);
   });
 });
 

@@ -6,6 +6,7 @@ import {
   noDeviceAdvice,
   noOnlineDeviceMessage,
   pinnedDeviceUnusableMessage,
+  waitForPinnedDeviceAuthorization,
   workerStartAdvice,
 } from '../device-advice.js';
 
@@ -145,5 +146,65 @@ describe('pinnedDeviceUnusableMessage()', () => {
   it('is undefined for a usable or unlisted device', () => {
     expect(pinnedDeviceUnusableMessage('emulator-5556', adb, 'after-recovery')).toBeUndefined();
     expect(pinnedDeviceUnusableMessage('NOT-THERE', adb, 'after-recovery')).toBeUndefined();
+  });
+});
+
+// A user who starts the run and then taps "Allow" must not lose the run: the
+// preflight waits a while for an unauthorized pin, saying what it waits for.
+describe('waitForPinnedDeviceAuthorization()', () => {
+  const sequence = (...states: string[]) => {
+    let call = 0;
+    return () => [{ serial: 'R5C', state: states[Math.min(call++, states.length - 1)] }];
+  };
+  const deps = (listAdbDevices: () => Array<{ serial: string; state: string }>) => {
+    const notes: string[] = [];
+    const sleeps: number[] = [];
+    return {
+      notes,
+      sleeps,
+      deps: {
+        listAdbDevices,
+        sleep: async (ms: number) => { sleeps.push(ms); },
+        onWaiting: (message: string) => notes.push(message),
+        timeoutMs: 5_000,
+        pollMs: 1_000,
+      },
+    };
+  };
+
+  it('returns at once, without waiting or a note, for a usable or unlisted pin', async () => {
+    const run = deps(sequence('device'));
+    expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
+    expect(await waitForPinnedDeviceAuthorization('OTHER', run.deps)).toBeUndefined();
+    expect(run.sleeps).toEqual([]);
+    expect(run.notes).toEqual([]);
+  });
+
+  it('waits for the prompt to be accepted, saying so once', async () => {
+    const run = deps(sequence('unauthorized', 'unauthorized', 'authorizing', 'device'));
+    expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
+    expect(run.notes).toHaveLength(1);
+    expect(run.notes[0]).toContain('R5C');
+    expect(run.notes[0]).toContain('Accept the USB debugging prompt');
+    expect(run.sleeps.length).toBe(3);
+  });
+
+  it('gives the shared advice once the wait runs out', async () => {
+    const run = deps(sequence('unauthorized'));
+    expect(await waitForPinnedDeviceAuthorization('R5C', run.deps))
+      .toBe('Device R5C is attached, but adb reports it unauthorized. Accept the USB debugging prompt on the device.');
+    expect(run.sleeps.reduce((a, b) => a + b, 0)).toBe(5_000);
+  });
+
+  it('does not wait on a no-permissions device: only the user\'s udev setup changes that', async () => {
+    const run = deps(sequence(NO_PERMISSIONS));
+    expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toContain('udev rule');
+    expect(run.sleeps).toEqual([]);
+  });
+
+  it('leaves offline to the restart recovery', async () => {
+    const run = deps(sequence('offline'));
+    expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
+    expect(run.sleeps).toEqual([]);
   });
 });

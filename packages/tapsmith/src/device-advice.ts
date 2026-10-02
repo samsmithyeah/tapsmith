@@ -52,7 +52,7 @@ export function workerStartAdvice(): string {
 export type AdbStateEntry = AdbDevice & { platform?: string };
 
 /** Usable by Tapsmith: adb's `device` state, or the daemon's names for it. */
-function isUsableAndroidState(state: string): boolean {
+export function isUsableAndroidState(state: string): boolean {
   return state === 'device' || state === 'Discovered' || state === 'Active';
 }
 
@@ -109,4 +109,43 @@ export function pinnedDeviceUnusableMessage(
     return undefined;
   }
   return `Device ${describeUnusableAndroidDevice(device)}`;
+}
+
+/**
+ * Before a pinned device's health check: give the user time to accept the
+ * USB-debugging prompt on an `unauthorized` pin — they often start the run
+ * first and tap "Allow" a moment later — saying once what the run waits for.
+ * Resolves undefined when the pin is usable, unlisted, or in a state the
+ * ADB-restart recovery handles (`offline`, …); otherwise the error to throw:
+ * at once for no-permissions (only the user's udev setup changes that), or
+ * once `timeoutMs` passes still unauthorized.
+ */
+export async function waitForPinnedDeviceAuthorization(
+  serial: string,
+  deps: {
+    listAdbDevices: () => readonly AdbStateEntry[];
+    sleep: (ms: number) => Promise<void>;
+    onWaiting: (message: string) => void;
+    timeoutMs?: number;
+    pollMs?: number;
+  },
+): Promise<string | undefined> {
+  const timeoutMs = deps.timeoutMs ?? 30_000;
+  const pollMs = deps.pollMs ?? 1_000;
+  let waited = 0;
+  for (;;) {
+    const devices = deps.listAdbDevices();
+    const blocked = pinnedDeviceUnusableMessage(serial, devices, 'preflight');
+    const state = devices.find((d) => d.serial === serial)?.state;
+    // `authorizing` is the step between: the prompt was just accepted.
+    const pending = state === 'unauthorized' || state === 'authorizing';
+    if (!pending || waited >= timeoutMs) return blocked;
+    if (waited === 0) {
+      deps.onWaiting(
+        `${serial} is unauthorized: Accept the USB debugging prompt on the device. Waiting up to ${Math.round(timeoutMs / 1000)} s…`,
+      );
+    }
+    await deps.sleep(pollMs);
+    waited += pollMs;
+  }
 }

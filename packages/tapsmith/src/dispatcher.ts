@@ -36,6 +36,7 @@ import {
   prefilterDevicesForStrategy,
   selectDevicesForStrategy,
   filterPreferInstalledApp,
+  listAdbDevices,
   type DeviceHealthResult,
   type LaunchedEmulator,
 } from './emulator.js';
@@ -50,7 +51,7 @@ import {
   type ClonedSimulator,
 } from './ios-simulator.js';
 import { freeStaleAgentPort, findPidsOnPort } from './port-utils.js';
-import { describeUnusableAndroidDevice, moreDevicesAdvice, noOnlineDeviceMessage, workerStartAdvice } from './device-advice.js';
+import { describeUnusableAndroidDevice, isUsableAndroidState, moreDevicesAdvice, noOnlineDeviceMessage, workerStartAdvice } from './device-advice.js';
 import type { AdbDevice } from './adb-devices.js';
 import { notifyLegacySudoersIfPresent } from './legacy-cleanup.js';
 import {
@@ -281,7 +282,7 @@ export function pinnedWorkerDevices(
   if (isIos) return pins;
   const missing = pins.filter((p) => !onlineSerials.includes(p));
   if (missing.length > 0) {
-    const attached = missing.flatMap((p) => unusable.filter((d) => d.serial === p).slice(0, 1));
+    const attached = missing.flatMap((p) => unusable.filter((d) => d.serial === p && !isUsableAndroidState(d.state)).slice(0, 1));
     const absent = missing.filter((p) => !attached.some((d) => d.serial === p));
     throw new LaunchSetupError([
       ...attached.map((d) => `Pinned device ${describeUnusableAndroidDevice(d)}`),
@@ -1474,7 +1475,8 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       throw new LaunchSetupError(
         isIos
           ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
-          : noOnlineDeviceMessage(config, deviceList.unusableDevices),
+          // adb's state now, not at discovery: provisioning may have changed it.
+          : noOnlineDeviceMessage(config, listAdbDevices()),
       );
     }
 

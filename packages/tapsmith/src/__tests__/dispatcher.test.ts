@@ -558,6 +558,15 @@ describe('pinnedWorkerDevices', () => {
     expect(message).toContain('Pinned device emulator-5560 is not connected');
   });
 
+  it('never calls a pin adb lists as usable "attached but unusable" (it came online between two adb calls)', () => {
+    expect(() => pinnedWorkerDevices(
+      [{ name: 'device-1', device: 'emulator-5560' }],
+      [],
+      false,
+      [{ serial: 'emulator-5560', state: 'device' }],
+    )).toThrow(/Pinned device emulator-5560 is not connected/);
+  });
+
   it('takes iOS pins as given: the daemon lists only booted simulators, and the sequential path does not require one', () => {
     expect(pinnedWorkerDevices([{ name: 'device-1', device: 'SIM-UDID' }], [], true, [])).toEqual(['SIM-UDID']);
   });

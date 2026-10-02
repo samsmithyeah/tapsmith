@@ -60,7 +60,7 @@ import {
 import { isRecoverableInfrastructureError, serializeConfig } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort, pickFreePort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
-import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage, pinnedDeviceUnusableMessage } from './device-advice.js';
+import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage, pinnedDeviceUnusableMessage, waitForPinnedDeviceAuthorization } from './device-advice.js';
 import {
   createUiLaunchSteps,
   UiLaunchProgress,
@@ -193,8 +193,13 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
 
   if (serial) {
     // Attached but unauthorized (or, on Linux, no USB permission): no restart
-    // of the ADB server fixes that, so say what does (PILOT-457).
-    const blocked = pinnedDeviceUnusableMessage(serial, listAdbDevices(), 'preflight');
+    // of the ADB server fixes that. Give the user time to accept the prompt,
+    // then say what to do instead of "not responding" (PILOT-457).
+    const blocked = await waitForPinnedDeviceAuthorization(serial, {
+      listAdbDevices: () => listAdbDevices(),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      onWaiting: (message) => console.log(yellow(message)),
+    });
     if (blocked) throw new Error(blocked);
 
     const stable = await waitForDeviceStability(serial, 20_000, probeDeviceHealth);
@@ -1329,7 +1334,8 @@ async function provisionDevicesForBucket(
       // Every device named outright: the same pins-only group (and the same
       // refusal of an Android pin that is not connected) as the parallel path.
       const { pinnedWorkerDevices } = await import('./dispatcher.js');
-      const pins = pinnedWorkerDevices(group, listConnectedDeviceSerials(), effectiveConfig.platform === 'ios', listAdbDevices())!;
+      const isIos = effectiveConfig.platform === 'ios';
+      const pins = pinnedWorkerDevices(group, isIos ? [] : listConnectedDeviceSerials(), isIos, isIos ? [] : listAdbDevices())!;
       return { serials: pins, launched: [], reusedSimulatorCount: 0 };
     }
     const pool = await provisionDevicesForBucket({ ...effectiveConfig, devices: undefined, device: undefined }, group.length, progress);
