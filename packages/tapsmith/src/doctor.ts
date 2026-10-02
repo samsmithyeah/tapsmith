@@ -17,7 +17,7 @@ import { findDaemonBin } from './daemon-bin.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { formatJson, jsonError, stripAnsi, type JsonCheck } from './cli-json.js';
 import { avdCaptureSupport, captureAvdFix, scanAvdImageTags, type AvdImageInfo } from './avd-images.js';
-import { androidStateBlocker, parseAdbDevicesOutput, parseSimctlDevicesJson, tryExec, type AdbDevice } from './env-scan.js';
+import { androidUnusableDeviceFix, parseAdbDevicesOutput, parseSimctlDevicesJson, tryExec, type AdbDevice } from './env-scan.js';
 import type { TapsmithConfig } from './config.js';
 import { emulatorNotFoundMessage, resolveEmulatorBinary, type EmulatorBinary } from './emulator.js';
 
@@ -254,7 +254,7 @@ export function summarizeAndroidDevices(devices: AdbDevice[]): AndroidDevicesSum
     return { status: 'pass', label: readyLabel, detail: ready.map((d) => d.serial).join(', ') };
   }
   if (unusable.length > 0) {
-    const fix = unusable.map(unusableDeviceFix).filter((f, i, arr) => arr.indexOf(f) === i).join('; ');
+    const fix = unusable.map((d) => androidUnusableDeviceFix(d.state, d.serial)).filter((f, i, arr) => arr.indexOf(f) === i).join('; ');
     // A usable device beside it keeps tests running, so still only a warning;
     // but the broken one is named with its fix — it may be the one wanted.
     return ready.length > 0
@@ -267,12 +267,6 @@ export function summarizeAndroidDevices(devices: AdbDevice[]): AndroidDevicesSum
       };
   }
   return { status: 'warn', label: 'No Android devices connected', fix: 'Start an emulator or connect a device with USB debugging enabled' };
-}
-
-function unusableDeviceFix(device: AdbDevice): string {
-  const shared = androidStateBlocker(device.state, device.serial);
-  if (shared) return shared;
-  return `${device.serial} is "${device.state}" to adb: reconnect it, or run \`adb kill-server\` and try again`;
 }
 
 function checkConnectedDevices(report: Reporter): void {

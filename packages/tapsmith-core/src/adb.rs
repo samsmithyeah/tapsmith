@@ -26,12 +26,20 @@ pub async fn find_adb() -> Result<PathBuf> {
 #[derive(Debug, Clone)]
 pub struct AdbDevice {
     pub serial: String,
+    /// adb's whole state string: `device`, `unauthorized`, `offline`, or a
+    /// multi-word one such as `no permissions (missing udev rules? …); see […]`.
     pub state: String,
+    /// The `model:` descriptor from `adb devices -l`; empty when adb omits it
+    /// (it does for unauthorized and offline devices).
+    pub model: String,
 }
 
 impl AdbDevice {
+    /// Usable by Tapsmith. Judged on the state's first word only, so a
+    /// descriptor `parse_devices` failed to recognise (and so kept as part of
+    /// the state) can never hide a working device.
     pub fn is_online(&self) -> bool {
-        self.state == "device"
+        self.state.split_whitespace().next() == Some("device")
     }
 
     pub fn is_emulator(&self) -> bool {
@@ -94,26 +102,70 @@ pub async fn list_devices() -> Result<Vec<AdbDevice>> {
     let stdout = run_adb(None, &["devices", "-l"], DEFAULT_TIMEOUT).await?;
     let output = String::from_utf8_lossy(&stdout);
 
-    let mut devices = Vec::new();
-
-    for line in output.lines().skip(1) {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        let mut parts = line.split_whitespace();
-        let serial = match parts.next() {
-            Some(s) => s.to_string(),
-            None => continue,
-        };
-        let state = parts.next().unwrap_or("unknown").to_string();
-
-        devices.push(AdbDevice { serial, state });
-    }
+    let devices = parse_devices(&output);
 
     debug!(count = devices.len(), "Found ADB devices");
     Ok(devices)
+}
+
+/// Parse `adb devices -l` output. Each device line is the serial, then the
+/// state — which can be several words (`no permissions (…); see [http://…]`
+/// on Linux without udev rules) — then optional `key:value` descriptors
+/// (`usb:1-1`, `product:…`, `model:…`, `device:…`, `transport_id:3`). The
+/// state runs up to the first descriptor, so it is never truncated to its
+/// first word. The header and adb's `* daemon …` notices are skipped.
+fn parse_devices(output: &str) -> Vec<AdbDevice> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty() && !line.starts_with('*') && !line.starts_with("List of devices")
+        })
+        .filter_map(|line| {
+            let mut tokens = line.split_whitespace();
+            let serial = tokens.next()?.to_string();
+            let mut state_words: Vec<&str> = Vec::new();
+            let mut model = String::new();
+            let mut in_descriptors = false;
+            for token in tokens {
+                if !in_descriptors && is_descriptor(token) {
+                    in_descriptors = true;
+                }
+                if in_descriptors {
+                    if let Some(value) = token.strip_prefix("model:") {
+                        model = value.to_string();
+                    }
+                } else {
+                    state_words.push(token);
+                }
+            }
+            let state = if state_words.is_empty() {
+                "unknown".to_string()
+            } else {
+                state_words.join(" ")
+            };
+            Some(AdbDevice {
+                serial,
+                state,
+                model,
+            })
+        })
+        .collect()
+}
+
+/// A `key:value` descriptor from `adb devices -l` (`usb:1-1`, `model:Pixel_7`),
+/// as opposed to a word of the state. A URL inside a state message
+/// (`[http://…]`) starts with `[` and has `//` after its colon, so it is not one.
+fn is_descriptor(token: &str) -> bool {
+    match token.split_once(':') {
+        Some((key, value)) => {
+            !key.is_empty()
+                && key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                && !value.is_empty()
+                && !value.starts_with("//")
+        }
+        None => false,
+    }
 }
 
 /// Get the model name for a device.
@@ -1423,6 +1475,84 @@ mod tests {
         assert_eq!(parse_incompatible_package(msg), None);
     }
 
+    // ─── parse_devices ───
+
+    #[test]
+    fn parse_devices_keeps_online_device_with_model() {
+        let out = "List of devices attached\n\
+            emulator-5554          device product:sdk_gphone64_arm64 model:sdk_gphone64_arm64 device:emu64a transport_id:1\n";
+        let devices = parse_devices(out);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].serial, "emulator-5554");
+        assert_eq!(devices[0].state, "device");
+        assert_eq!(devices[0].model, "sdk_gphone64_arm64");
+        assert!(devices[0].is_online());
+    }
+
+    #[test]
+    fn parse_devices_unauthorized() {
+        let out = "List of devices attached\n\
+            R5CR1234XYZ            unauthorized usb:1-1 transport_id:2\n";
+        let devices = parse_devices(out);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].serial, "R5CR1234XYZ");
+        assert_eq!(devices[0].state, "unauthorized");
+        assert_eq!(devices[0].model, "");
+        assert!(!devices[0].is_online());
+    }
+
+    #[test]
+    fn parse_devices_offline_without_descriptors() {
+        let out = "List of devices attached\nemulator-5556\toffline\n";
+        let devices = parse_devices(out);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].state, "offline");
+    }
+
+    #[test]
+    fn parse_devices_keeps_the_whole_multi_word_no_permissions_state() {
+        let out = "List of devices attached\n\
+            0123456789ABCDEF       no permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html] usb:1-4 transport_id:3\n";
+        let devices = parse_devices(out);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].serial, "0123456789ABCDEF");
+        assert_eq!(
+            devices[0].state,
+            "no permissions (missing udev rules? user is in the plugdev group); \
+             see [http://developer.android.com/tools/device.html]"
+        );
+        assert!(!devices[0].is_online());
+    }
+
+    #[test]
+    fn parse_devices_ignores_header_blank_and_daemon_lines() {
+        let out = "* daemon not running; starting now at tcp:5037\n\
+            * daemon started successfully\n\
+            List of devices attached\n\
+            \n\
+            HVA123456              device model:Pixel_7 transport_id:4\n\
+            emulator-5554          unauthorized transport_id:5\n\n";
+        let devices = parse_devices(out);
+        let summary: Vec<(&str, &str, &str)> = devices
+            .iter()
+            .map(|d| (d.serial.as_str(), d.state.as_str(), d.model.as_str()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("HVA123456", "device", "Pixel_7"),
+                ("emulator-5554", "unauthorized", ""),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_devices_missing_state_is_unknown() {
+        let devices = parse_devices("List of devices attached\nABC123\n");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].state, "unknown");
+    }
+
     // ─── AdbDevice::is_online ───
 
     #[test]
@@ -1430,6 +1560,7 @@ mod tests {
         let dev = AdbDevice {
             serial: "ABC123".into(),
             state: "device".into(),
+            model: String::new(),
         };
         assert!(dev.is_online());
     }
@@ -1439,6 +1570,7 @@ mod tests {
         let dev = AdbDevice {
             serial: "ABC123".into(),
             state: "offline".into(),
+            model: String::new(),
         };
         assert!(!dev.is_online());
     }
@@ -1448,6 +1580,7 @@ mod tests {
         let dev = AdbDevice {
             serial: "ABC123".into(),
             state: "unauthorized".into(),
+            model: String::new(),
         };
         assert!(!dev.is_online());
     }
@@ -1457,8 +1590,19 @@ mod tests {
         let dev = AdbDevice {
             serial: "ABC123".into(),
             state: "unknown".into(),
+            model: String::new(),
         };
         assert!(!dev.is_online());
+    }
+
+    #[test]
+    fn is_online_ignores_trailing_words_an_unrecognised_descriptor_left_in_the_state() {
+        let dev = AdbDevice {
+            serial: "ABC123".into(),
+            state: "device Product:X".into(),
+            model: String::new(),
+        };
+        assert!(dev.is_online());
     }
 
     #[test]
@@ -1466,6 +1610,7 @@ mod tests {
         let dev = AdbDevice {
             serial: "ABC123".into(),
             state: "".into(),
+            model: String::new(),
         };
         assert!(!dev.is_online());
     }
@@ -1501,6 +1646,7 @@ mod tests {
         let dev = AdbDevice {
             serial: "emulator-5554".into(),
             state: "device".into(),
+            model: String::new(),
         };
         assert!(dev.is_emulator());
     }
@@ -1510,6 +1656,7 @@ mod tests {
         let dev = AdbDevice {
             serial: "emulator-5556".into(),
             state: "device".into(),
+            model: String::new(),
         };
         assert!(dev.is_emulator());
     }
@@ -1519,6 +1666,7 @@ mod tests {
         let dev = AdbDevice {
             serial: "localhost:5555".into(),
             state: "device".into(),
+            model: String::new(),
         };
         assert!(dev.is_emulator());
     }
@@ -1528,6 +1676,7 @@ mod tests {
         let dev = AdbDevice {
             serial: "192.168.1.1:5555".into(),
             state: "device".into(),
+            model: String::new(),
         };
         assert!(!dev.is_emulator());
     }
@@ -1537,6 +1686,7 @@ mod tests {
         let dev = AdbDevice {
             serial: "HVA123456".into(),
             state: "device".into(),
+            model: String::new(),
         };
         assert!(!dev.is_emulator());
     }
@@ -1546,6 +1696,7 @@ mod tests {
         let dev = AdbDevice {
             serial: "R5CR1234XYZ".into(),
             state: "device".into(),
+            model: String::new(),
         };
         assert!(!dev.is_emulator());
     }

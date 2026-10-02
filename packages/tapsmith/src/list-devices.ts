@@ -23,7 +23,7 @@ import { findDaemonBin } from './daemon-bin.js';
 import { TapsmithGrpcClient, type DeviceInfoProto } from './grpc-client.js';
 import { pickFreePort } from './port-utils.js';
 import { formatJson, jsonError } from './cli-json.js';
-import { androidStateBlocker } from './env-scan.js';
+import { androidUnusableDeviceFix } from './env-scan.js';
 import {
   listPhysicalDevices,
   listUsbAttachedIosDevices,
@@ -134,6 +134,14 @@ function osLabelFor(
 }
 
 /**
+ * Android states a device can be used in: the daemon's `Discovered`/`Active`
+ * for its usable devices, and adb's own `device`. Anything else is an adb
+ * state the daemon reported under `unusableDevices` (unauthorized, offline,
+ * `no permissions (…)`, …).
+ */
+const USABLE_ANDROID_STATES = new Set(['Discovered', 'Active', 'device']);
+
+/**
  * Imperative one-liners describing what the user needs to do to make the
  * device ready. Empty list = ready. Ordered so the action that unblocks
  * the rest comes first: USB attachment before pairing (you can't pair a
@@ -180,9 +188,8 @@ function blockersFor(
     }
   }
 
-  if (device.platform === 'android' && device.state) {
-    const blocker = androidStateBlocker(device.state, device.serial);
-    if (blocker) blockers.push(blocker);
+  if (device.platform === 'android' && !USABLE_ANDROID_STATES.has(device.state)) {
+    blockers.push(androidUnusableDeviceFix(device.state, device.serial));
   }
 
   return blockers;
@@ -389,7 +396,9 @@ export async function listDevicesFromDaemon(
     }
     try {
       const response = await client.listDevices();
-      return response.devices;
+      // Usable devices first; the ones adb cannot use come back as rows that
+      // are not ready, each with its fix.
+      return [...response.devices, ...response.unusableDevices];
     } catch (err) {
       throw new ListDevicesError(
         'LIST_DEVICES_FAILED',

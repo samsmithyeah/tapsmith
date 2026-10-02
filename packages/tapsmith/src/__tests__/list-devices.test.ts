@@ -151,6 +151,44 @@ describe('buildDeviceRows — readiness', () => {
     expect(rows[0]!.blockers.some((b) => b.includes('USB debugging prompt'))).toBe(true);
   });
 
+  it('treats the daemon\'s own states for a usable Android device as ready', () => {
+    const rows = buildDeviceRows(
+      [
+        daemonDevice({ serial: 'emulator-5554', platform: 'android', isEmulator: true, state: 'Discovered' }),
+        daemonDevice({ serial: 'HT123', platform: 'android', state: 'Active' }),
+      ],
+      [],
+    );
+    expect(rows.map((r) => r.ready)).toEqual([true, true]);
+  });
+
+  it('flags a no-permissions Android device with the udev fix, from its whole multi-word state', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: '0123ABCD', platform: 'android', state: 'no permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html]' })],
+      [],
+    );
+    expect(rows[0]!.ready).toBe(false);
+    expect(rows[0]!.blockers).toEqual([expect.stringContaining('udev rule')]);
+  });
+
+  it('flags an offline emulator with the still-booting advice', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'emulator-5556', platform: 'android', isEmulator: true, state: 'offline' })],
+      [],
+    );
+    expect(rows[0]!.ready).toBe(false);
+    expect(rows[0]!.blockers).toEqual([expect.stringContaining('finish booting')]);
+  });
+
+  it.each(['authorizing', 'recovery', 'sideload', 'unknown'])(
+    'never shows an Android device in adb state %s as ready, giving doctor\'s generic fix',
+    (state) => {
+      const rows = buildDeviceRows([daemonDevice({ serial: 'HT123', platform: 'android', state })], []);
+      expect(rows[0]!.ready).toBe(false);
+      expect(rows[0]!.blockers).toEqual([`HT123 is "${state}" to adb: reconnect it, or run \`adb kill-server\` and try again`]);
+    },
+  );
+
   it('flags an offline Android device', () => {
     const rows = buildDeviceRows(
       [daemonDevice({ serial: 'HT123', platform: 'android', state: 'offline' })],
@@ -235,6 +273,26 @@ describe('runListDevices --json', () => {
       ready: true, platform: 'android-emu', serial: 'emulator-5554', name: 'Pixel 9', osLabel: 'Android 15', blockers: [],
     }]);
     expect(h.err()).toBe('');
+  });
+
+  it('lists an unauthorized phone as not ready, with the fix, instead of "No devices detected"', async () => {
+    const h = capture({
+      fetchDevices: async () => [daemonDevice({ serial: 'R5CR1234XYZ', platform: 'android', state: 'unauthorized' })],
+    });
+    expect(await runListDevices({ json: true }, h.deps)).toBe(0);
+    expect(JSON.parse(h.out())).toEqual({ devices: [{
+      ready: false, platform: 'android', serial: 'R5CR1234XYZ', name: '', osLabel: '', blockers: ['Accept the USB debugging prompt on the device'],
+    }] });
+
+    const text = capture({
+      fetchDevices: async () => [daemonDevice({ serial: 'R5CR1234XYZ', platform: 'android', state: 'unauthorized' })],
+    });
+    expect(await runListDevices({ json: false }, text.deps)).toBe(0);
+    const plain = text.out().replace(/\x1b\[[0-9;]*m/g, '');
+    expect(plain).not.toContain('No devices detected');
+    expect(plain).toContain('R5CR1234XYZ');
+    expect(plain).toContain('Accept the USB debugging prompt on the device');
+    expect(plain).toContain('0 ready · 1 need attention');
   });
 
   it.each([
@@ -376,6 +434,24 @@ describe('listDevicesFromDaemon failure codes', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it('returns the devices adb cannot use after the usable ones', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-list-devices-'));
+    const bin = path.join(dir, 'fake-core');
+    fs.writeFileSync(bin, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
+    const usable = daemonDevice({ serial: 'emulator-5554', platform: 'android', isEmulator: true, state: 'Discovered' });
+    const unauthorized = daemonDevice({ serial: 'R5CR1234XYZ', platform: 'android', state: 'unauthorized' });
+    const stub = {
+      waitForReady: async () => true,
+      listDevices: async () => ({ requestId: 'r', devices: [usable], unusableDevices: [unauthorized] }),
+      close: () => {},
+    } as unknown as TapsmithGrpcClient;
+    try {
+      expect(await listDevicesFromDaemon({ findBin: () => bin, connect: () => stub })).toEqual([usable, unauthorized]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it('LIST_DEVICES_FAILED when the daemon answers but ListDevices rejects', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-list-devices-'));
