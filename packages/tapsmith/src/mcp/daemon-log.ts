@@ -60,12 +60,19 @@ function rotateIfOversized(logPath: string, maxBytes: number): void {
   if (size <= maxBytes) return;
   // A daemon still holding the old file keeps writing to it under its new
   // name, which is harmless: nothing is lost, it just lands in `.1`.
-  fs.renameSync(logPath, `${logPath}.1`);
+  try {
+    fs.renameSync(logPath, `${logPath}.1`);
+  } catch (err) {
+    // A session starting alongside this one rotated it first: nothing to do.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
 }
 
 /**
- * The last lines this daemon wrote — what a "failed to start" message quotes,
- * now that the daemon's stderr no longer reaches the server's.
+ * The last lines written to the log since this daemon opened it — what a
+ * "failed to start" message quotes, now that the daemon's stderr no longer
+ * reaches the server's. Mostly this daemon's own output; a peer daemon in the
+ * same project starting at the same moment can add lines too.
  */
 export function readDaemonLogSince(
   log: Pick<DaemonLog, 'path' | 'startOffset'>,

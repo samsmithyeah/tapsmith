@@ -751,6 +751,9 @@ async function discover(): Promise<void> {
 /** Every port this session has handed to a daemon, gRPC and agent alike. */
 const _issuedPorts = new Set<number>();
 
+/** Daemons spawned by `startDaemon` that have not yet joined `_connections`. */
+const _startingDaemons = new Set<ChildProcess>();
+
 /**
  * A free port this session has not already given out.
  *
@@ -789,7 +792,8 @@ export function daemonSpawnArgs(port: string, agentPort: string, platform?: stri
   return args;
 }
 
-async function startDaemon(platform?: string): Promise<DaemonConnection | null> {
+/** @internal — exported for unit testing. */
+export async function startDaemon(platform?: string): Promise<DaemonConnection | null> {
   log(platform ? `Starting a ${platform} daemon...` : 'No daemon found, starting one...');
   const port = String(await pickUnissuedPort());
   // Its own agent port, like every other daemon we spawn (see dispatcher.ts
@@ -829,41 +833,55 @@ async function startDaemon(platform?: string): Promise<DaemonConnection | null> 
   /** A failed start quotes what the daemon said, since it no longer says it here. */
   const failureDetail = (): string => {
     const tail = daemonLog ? readDaemonLogSince(daemonLog) : '';
-    return tail ? `\nDaemon output (${daemonLog?.path}):\n${tail}` : logNote;
+    // "Recent", not "its": sessions in a project share the default log, so a
+    // daemon starting alongside this one may have written lines here too.
+    return tail ? `\nRecent daemon log (${daemonLog?.path}):\n${tail}` : logNote;
   };
 
-  const address = `127.0.0.1:${port}`;
-  const client = new TapsmithGrpcClient(address);
-  const started = await client.waitForReady(10_000);
-  if (!started) {
-    client.close();
-    daemonProcess.kill();
-    log(`Failed to start daemon. Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.${failureDetail()}`);
-    return null;
-  }
-
+  // Until it is in `_connections`, only this set lets `closeAllClients` find
+  // it: a client that leaves during the seconds a daemon takes to answer would
+  // otherwise strand a detached, unregistered daemon that outlives us by
+  // design (PILOT-453).
+  _startingDaemons.add(daemonProcess);
   try {
-    const { version } = await client.ping();
-    log(`Started daemon v${version} on port ${port} (agent ${agentPort})${platform ? ` [${platform}]` : ''}${logNote}`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`Daemon started but did not respond: ${msg}${failureDetail()}`);
-    client.close();
-    daemonProcess.kill();
-    return null;
-  }
+    const address = `127.0.0.1:${port}`;
+    const client = new TapsmithGrpcClient(address);
+    const started = await client.waitForReady(10_000);
+    if (!started) {
+      client.close();
+      daemonProcess.kill();
+      log(`Failed to start daemon. Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.${failureDetail()}`);
+      return null;
+    }
 
-  registerDaemon(address, daemonProcess.pid);
-  const conn: DaemonConnection = {
-    client,
-    address,
-    devices: [],
-    daemonProcess,
-    source: 'started',
-    platform,
-  };
-  _connections.push(conn);
-  return conn;
+    try {
+      const { version } = await client.ping();
+      log(`Started daemon v${version} on port ${port} (agent ${agentPort})${platform ? ` [${platform}]` : ''}${logNote}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`Daemon started but did not respond: ${msg}${failureDetail()}`);
+      client.close();
+      daemonProcess.kill();
+      return null;
+    }
+
+    registerDaemon(address, daemonProcess.pid);
+    const conn: DaemonConnection = {
+      client,
+      address,
+      devices: [],
+      daemonProcess,
+      source: 'started',
+      platform,
+    };
+    _connections.push(conn);
+    return conn;
+  } catch (err) {
+    daemonProcess.kill();
+    throw err;
+  } finally {
+    _startingDaemons.delete(daemonProcess);
+  }
 }
 
 /** Tear down a daemon we started but cannot use, so it does not linger. */
@@ -1985,6 +2003,11 @@ function log(msg: string): void {
 }
 
 export function closeAllClients(): void {
+  // Never registered, so no peer can be using one: always ours to stop.
+  for (const starting of _startingDaemons) {
+    try { starting.kill(); } catch { /* already gone */ }
+  }
+  _startingDaemons.clear();
   for (const conn of _connections) {
     conn.client.close();
     // Drop our claim first, then keep the daemon alive if a peer session still

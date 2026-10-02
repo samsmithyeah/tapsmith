@@ -41,6 +41,8 @@ const YELLOW = '\x1b[33m';
 const RED = '\x1b[31m';
 const RESET = '\x1b[0m';
 const ACTIVITY_MONITOR_MAX_READ_BYTES = 1024 * 1024;
+/** How long shutdown waits for stderr to drain before exiting anyway. */
+const STDERR_FLUSH_DEADLINE_MS = 1_000;
 
 export type {
   TestDispatcher, TestRunResult, TestResultEntry, TestFailureDetail,
@@ -296,9 +298,19 @@ export async function runMcpServer(
     exiting = true;
     // On macOS a piped stderr is asynchronous: exiting straight away can drop
     // the "Client disconnected" line and the daemon notes before them. The
-    // write callback fires once everything queued ahead of it is flushed.
-    process.stderr.write('', () => process.exit(0));
+    // write callback fires once everything queued ahead of it is flushed —
+    // unless nobody is reading the pipe, so it gets a deadline. Unref'd: it
+    // must not be the thing keeping a finished process alive.
+    const exit = (): void => process.exit(0);
+    setTimeout(exit, STDERR_FLUSH_DEADLINE_MS).unref();
+    process.stderr.write('', exit);
   };
+  // A client that died took the read ends of our pipes with it. Writing the
+  // shutdown notes there fails with EPIPE, and an unhandled stream error would
+  // turn a clean shutdown into a crash. Nothing is left to report it to.
+  const ignoreClosedPipe = (): void => {};
+  process.stdout.on('error', ignoreClosedPipe);
+  process.stderr.on('error', ignoreClosedPipe);
   function cleanup(): void {
     if (cleanedUp) return;
     cleanedUp = true;
