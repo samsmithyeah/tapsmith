@@ -41,6 +41,8 @@ const YELLOW = '\x1b[33m';
 const RED = '\x1b[31m';
 const RESET = '\x1b[0m';
 const ACTIVITY_MONITOR_MAX_READ_BYTES = 1024 * 1024;
+/** How long shutdown waits for stderr to drain before exiting anyway. */
+const STDERR_FLUSH_DEADLINE_MS = 1_000;
 
 export type {
   TestDispatcher, TestRunResult, TestResultEntry, TestFailureDetail,
@@ -285,14 +287,41 @@ export async function runMcpServer(
   configureMcpConnection({ configFile: options.configFile });
   const dispatcher = new HeadlessTestDispatcher({ configFile: options.configFile });
   let cleanedUp = false;
-  const signalHandler = (): void => {
+  let exiting = false;
+  /**
+   * Clean up, then exit 0 once stderr has flushed — the one way this server
+   * ends, whether the client signalled it or just closed stdin.
+   */
+  const shutdown = (): void => {
     cleanup();
-    if (runtimeOptions.exitOnSigint ?? true) process.exit(0);
+    if (!(runtimeOptions.exitOnSigint ?? true) || exiting) return;
+    exiting = true;
+    // On macOS a piped stderr is asynchronous: exiting straight away can drop
+    // the "Client disconnected" line and the daemon notes before them. The
+    // write callback fires once everything queued ahead of it is flushed —
+    // unless nobody is reading the pipe, so it gets a deadline. Unref'd: it
+    // must not be the thing keeping a finished process alive.
+    const exit = (): void => process.exit(0);
+    setTimeout(exit, STDERR_FLUSH_DEADLINE_MS).unref();
+    // Cleanup took the signal handlers down; a signal in this window (a client
+    // that closed stdin and then sent SIGTERM, a second Ctrl-C) would
+    // otherwise end the process by signal instead of exit 0.
+    for (const signal of SHUTDOWN_SIGNALS) process.once(signal, exit);
+    process.stderr.write('', exit);
   };
+  // A client that died took the read ends of our pipes with it. Writing the
+  // shutdown notes there fails with EPIPE, and an unhandled stream error would
+  // turn a clean shutdown into a crash. Nothing is left to report it to.
+  // A broken stdout means the client can no longer hear us even if stdin is
+  // still open (a wrapper that died half-way): that is a disconnect too.
+  process.stdout.on('error', () => onClientGone());
+  process.stderr.on('error', () => {});
   function cleanup(): void {
     if (cleanedUp) return;
     cleanedUp = true;
-    for (const signal of SHUTDOWN_SIGNALS) process.off(signal, signalHandler);
+    for (const signal of SHUTDOWN_SIGNALS) process.off(signal, shutdown);
+    process.stdin.off('end', onClientGone);
+    process.stdin.off('close', onClientGone);
     stopActivityMonitor();
     dispatcher.dispose();
     closeAllClients();
@@ -301,10 +330,24 @@ export async function runMcpServer(
   // its server with SIGTERM on shutdown, and node's default handling for it
   // terminates the process without running any of this — orphaning the daemon
   // (and its device agent) that the session started.
-  for (const signal of SHUTDOWN_SIGNALS) process.once(signal, signalHandler);
+  for (const signal of SHUTDOWN_SIGNALS) process.once(signal, shutdown);
 
   const server = createMcpServer({ events, dispatcher });
   attachMcpClientEventReporting(server, events, cleanup);
+
+  // Stdin EOF is the stdio transport's *primary* shutdown signal: the MCP spec
+  // has a client close the server's stdin, wait for it to exit, and only then
+  // fall back to SIGTERM — and a client killed outright closes the pipe without
+  // signalling anything. The SDK's server transport never listens for it
+  // (only `data` and `error`), so without this the server ran forever after
+  // its client left, keeping the `--outlive-parent` daemon it started and that
+  // daemon's device agent alive (PILOT-453). Closing the server runs `onclose`,
+  // which reports the disconnect and cleans up like any other close.
+  function onClientGone(): void {
+    void server.close().catch(() => {}).finally(shutdown);
+  }
+  process.stdin.once('end', onClientGone);
+  process.stdin.once('close', onClientGone);
 
   const transport = new StdioServerTransport();
   try {

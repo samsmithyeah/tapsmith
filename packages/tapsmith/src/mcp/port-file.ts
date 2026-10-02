@@ -86,6 +86,18 @@ export function mcpDaemonRegistryPath(): string {
   return path.join(daemonStateDir(), `mcp-daemons-${projectHash()}.json`);
 }
 
+/**
+ * Where daemons started by this project's headless MCP sessions write their
+ * output (unless `TAPSMITH_DAEMON_LOG` names another file).
+ *
+ * A file, not the server's stderr: the daemon is started `--outlive-parent`
+ * so another session can adopt it, and a pipe to a server that has exited is
+ * one nobody reads (PILOT-453).
+ */
+export function mcpDaemonLogPath(): string {
+  return path.join(daemonStateDir(), `mcp-daemon-${projectHash()}.log`);
+}
+
 function daemonStateDir(): string {
   const home = os.homedir();
   if (home) return path.join(home, '.tapsmith', 'daemons');
