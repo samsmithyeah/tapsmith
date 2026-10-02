@@ -1238,12 +1238,20 @@ describe('project listing', () => {
 // daemon we spawn (dispatcher.ts, ui-server.ts) passes its own port.
 describe('daemonSpawnArgs', () => {
   it('gives every daemon its own agent port', () => {
-    expect(daemonSpawnArgs('50051', '18901')).toEqual(['--port', '50051', '--agent-port', '18901']);
+    expect(daemonSpawnArgs('50051', '18901'))
+      .toEqual(['--port', '50051', '--agent-port', '18901', '--outlive-parent']);
   });
 
   it('keeps the platform filter alongside the agent port', () => {
     expect(daemonSpawnArgs('50052', '18902', 'ios'))
-      .toEqual(['--port', '50052', '--agent-port', '18902', '--platform', 'ios']);
+      .toEqual(['--port', '50052', '--agent-port', '18902', '--outlive-parent', '--platform', 'ios']);
+  });
+
+  // A daemon otherwise shuts down when the process that spawned it exits
+  // (PILOT-299). This one is detached precisely so it can outlive us and be
+  // adopted by another session from the registry.
+  it('lets the daemon outlive the session that started it', () => {
+    expect(daemonSpawnArgs('50051', '18901')).toContain('--outlive-parent');
   });
 
   it('never spawns two daemons sharing an agent port', () => {

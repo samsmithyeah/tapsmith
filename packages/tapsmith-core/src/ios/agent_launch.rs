@@ -6,6 +6,7 @@ use tokio::net::TcpStream;
 use tokio::process::Command;
 use tracing::{debug, info, instrument, warn};
 
+use super::agent_registry::TrackedAgent;
 use super::iproxy::{kill_stray_iproxy, IproxyHandle};
 
 /// Stable per-udid DerivedData location for `xcodebuild test-without-building`.
@@ -102,6 +103,10 @@ async fn start_agent_impl(
     is_physical: bool,
 ) -> Result<Option<IproxyHandle>> {
     let boot_start = std::time::Instant::now();
+    // Agents orphaned by a SIGKILLed daemon are stopped before we look for a
+    // running one, so we never adopt an agent the reaper is about to kill.
+    #[cfg(target_os = "macos")]
+    super::agent_registry::reap_orphans().await;
     // Check if agent is already running by trying to connect
     if !force && ping_agent(agent_port).await.is_ok() {
         info!("iOS agent is already running");
@@ -180,7 +185,7 @@ async fn start_agent_impl(
 
     // Launch xcodebuild test-without-building in background.
     let (mut child, mut stdout_tail, mut stderr_tail) =
-        spawn_agent_xcodebuild(&patched_xctestrun, udid, &derived_data_path)?;
+        spawn_agent_xcodebuild(&patched_xctestrun, udid, &derived_data_path, is_physical).await?;
 
     // Wait for the agent to start accepting connections.
     // Freshly booted/cloned simulators can take 90+ seconds for xcodebuild to
@@ -194,6 +199,17 @@ async fn start_agent_impl(
     // full RPC round trip; the first attempt has usually warmed the simulator.
     let mut relaunches_left: u32 = 1;
     loop {
+        // The daemon is shutting down (and is stopping this agent): stop here
+        // rather than reading its exit as a crash and running the relaunch
+        // sequence, which would kill the app and burn the shutdown budget on a
+        // spawn that is then refused. Wait for the exit rather than SIGKILLing:
+        // the teardown's SIGTERM lets xcodebuild take its runner down with it,
+        // and the teardown escalates on its own if it has to.
+        if super::agent_registry::global().is_shutting_down() {
+            let _ = child.wait().await;
+            drop(iproxy_handle);
+            bail!("The daemon is shutting down; stopped starting the iOS agent on {udid}");
+        }
         if tokio::time::Instant::now() > deadline {
             // Kill xcodebuild explicitly so it doesn't outlive this function.
             let _ = child.kill().await;
@@ -237,8 +253,13 @@ async fn start_agent_impl(
                 if !target_bundle_id.is_empty() {
                     let _ = super::device::terminate_app(udid, target_bundle_id).await;
                 }
-                (child, stdout_tail, stderr_tail) =
-                    spawn_agent_xcodebuild(&patched_xctestrun, udid, &derived_data_path)?;
+                (child, stdout_tail, stderr_tail) = spawn_agent_xcodebuild(
+                    &patched_xctestrun,
+                    udid,
+                    &derived_data_path,
+                    is_physical,
+                )
+                .await?;
                 continue;
             }
         }
@@ -270,8 +291,13 @@ async fn start_agent_impl(
                     if !attach_to_running_app && !target_bundle_id.is_empty() {
                         let _ = super::device::terminate_app(udid, target_bundle_id).await;
                     }
-                    (child, stdout_tail, stderr_tail) =
-                        spawn_agent_xcodebuild(&patched_xctestrun, udid, &derived_data_path)?;
+                    (child, stdout_tail, stderr_tail) = spawn_agent_xcodebuild(
+                        &patched_xctestrun,
+                        udid,
+                        &derived_data_path,
+                        is_physical,
+                    )
+                    .await?;
                     continue;
                 }
                 drop(iproxy_handle);
@@ -299,6 +325,8 @@ async fn start_agent_impl(
                 // Hand the child off to a reaper task so the kernel can collect
                 // it once xcodebuild eventually exits — without this, dropping
                 // the Child without awaiting leaves a zombie until process exit.
+                // The tracked handle stays registered until then, so a daemon
+                // shutdown stops this agent (PILOT-299).
                 tokio::spawn(async move {
                     let _ = child.wait().await;
                 });
@@ -321,11 +349,17 @@ type OutputTail = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 /// path can kill it explicitly. Without this, a timeout would leave xcodebuild
 /// orphaned until the next kill_existing_agents_on sweep — which may not
 /// happen for a long time, or ever, on a failed run.
-fn spawn_agent_xcodebuild(
+///
+/// It is returned registered with the daemon's agent registry, which stops it
+/// when the daemon shuts down and records its owner so a daemon that is killed
+/// outright has it reaped by the next one (PILOT-299). Spawning is refused once
+/// shutdown has begun.
+async fn spawn_agent_xcodebuild(
     patched_xctestrun: &str,
     udid: &str,
     derived_data_path: &std::path::Path,
-) -> Result<(tokio::process::Child, OutputTail, OutputTail)> {
+    is_physical: bool,
+) -> Result<(TrackedAgent, OutputTail, OutputTail)> {
     use std::sync::{Arc, Mutex};
 
     let mut cmd = Command::new("xcodebuild");
@@ -343,6 +377,9 @@ fn spawn_agent_xcodebuild(
     let mut child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // Backstop: if the handle is ever dropped while xcodebuild runs (the
+        // runtime tearing down its tasks at exit), take xcodebuild with it.
+        .kill_on_drop(true)
         .spawn()
         .context("Failed to spawn xcodebuild for iOS agent")?;
 
@@ -383,6 +420,8 @@ fn spawn_agent_xcodebuild(
         }
     });
 
+    let child =
+        TrackedAgent::track(child, udid, is_physical, super::agent_registry::global()).await?;
     Ok((child, stdout_tail, stderr_tail))
 }
 

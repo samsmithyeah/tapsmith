@@ -53,14 +53,22 @@ struct CliArgs {
     agent_port: Option<u16>,
     verbose: bool,
     platform: Option<Platform>,
+    /// Keep running when the process that spawned us exits. Only the MCP
+    /// server's daemons want this: they are detached so another session can
+    /// adopt them from the registry.
+    outlive_parent: bool,
 }
 
 fn parse_args() -> CliArgs {
-    let mut args = std::env::args().skip(1);
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(mut args: impl Iterator<Item = String>) -> CliArgs {
     let mut port: u16 = 50051;
     let mut platform: Option<Platform> = None;
     let mut agent_port: Option<u16> = None;
     let mut verbose = false;
+    let mut outlive_parent = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -95,14 +103,21 @@ fn parse_args() -> CliArgs {
             "--verbose" | "-v" => {
                 verbose = true;
             }
+            "--outlive-parent" => {
+                outlive_parent = true;
+            }
             "--help" | "-h" => {
-                eprintln!("Usage: tapsmith-core [--port PORT] [--agent-port PORT] [--platform PLATFORM] [--verbose]");
+                eprintln!("Usage: tapsmith-core [--port PORT] [--agent-port PORT] [--platform PLATFORM] [--outlive-parent] [--verbose]");
                 eprintln!();
                 eprintln!("Options:");
                 eprintln!("  --port PORT         gRPC listen port (default: 50051)");
                 eprintln!("  --agent-port PORT   Local port for ADB forwarding to on-device agent (default: 18700)");
                 eprintln!(
                     "  --platform PLATFORM Only discover devices of this platform (ios or android)"
+                );
+                eprintln!("  --outlive-parent    Keep running after the process that started the daemon exits");
+                eprintln!(
+                    "                      (by default the daemon shuts down, stopping its agents)"
                 );
                 eprintln!("  --verbose           Enable debug logging");
                 std::process::exit(0);
@@ -120,11 +135,16 @@ fn parse_args() -> CliArgs {
         agent_port,
         verbose,
         platform,
+        outlive_parent,
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Sampled first, so a parent that dies while the daemon is still starting
+    // up is noticed as soon as the watch begins.
+    let startup_ppid = signal::parent_pid();
+
     // Install the ring crypto provider for rustls (required for MITM proxy TLS).
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -195,6 +215,12 @@ async fn main() -> Result<()> {
         // cleaning up (PILOT-319). A no-op unless an owner record exists.
         #[cfg(target_os = "macos")]
         ios::system_proxy::recover_stale().await;
+
+        // Stop iOS agents orphaned by a daemon that was SIGKILLed before it
+        // could stop them itself (PILOT-299). Only agents with an owner
+        // record whose daemon is dead are touched.
+        #[cfg(target_os = "macos")]
+        ios::agent_registry::reap_orphans().await;
     });
 
     let service = TapsmithServiceImpl::new(device_manager, agent_connection, daemon_log_bus);
@@ -206,7 +232,13 @@ async fn main() -> Result<()> {
 
     info!(%addr, "Starting Tapsmith gRPC server");
 
-    Server::builder()
+    let parent_to_watch = signal::parent_to_watch(args.outlive_parent, startup_ppid);
+    // Checked before tokio installs its own handler, which would replace a
+    // SIG_IGN inherited from `nohup`.
+    let watch_sighup = !signal::sighup_ignored();
+
+    let (shutdown_began_tx, shutdown_began_rx) = tokio::sync::watch::channel(false);
+    let serve = Server::builder()
         .http2_keepalive_interval(Some(Duration::from_secs(30)))
         // Generous ack window: during agent startup the daemon fans out
         // simctl/xcodebuild/PlistBuddy subprocess work that can briefly starve
@@ -218,25 +250,109 @@ async fn main() -> Result<()> {
                 .max_decoding_message_size(64 * 1024 * 1024)
                 .max_encoding_message_size(64 * 1024 * 1024),
         )
-        .serve_with_shutdown(addr, shutdown_signal())
-        .await
-        .context("gRPC server failed")?;
-
-    // Clean up any active network proxy and WebView state before exiting
-    service_handle.cleanup_network_proxy().await;
-    service_handle.cleanup_webview_state().await;
+        // Resolving at once stops the accept loop immediately, so the port is
+        // released as soon as the drain ends — callers that SIGTERM a daemon
+        // and respawn on its port shortly after rely on that.
+        .serve_with_shutdown(addr, async move {
+            shutdown_signal(parent_to_watch, watch_sighup).await;
+            let _ = shutdown_began_tx.send(true);
+        });
+    // Stop the iOS agents as soon as shutdown begins, alongside the drain
+    // rather than after it: a long-lived stream can hold the drain open, and
+    // the agents must not outlive the daemon either way (PILOT-299).
+    let mut teardown_began = shutdown_began_rx.clone();
+    let agent_teardown = tokio::spawn(async move {
+        if teardown_began.wait_for(|began| *began).await.is_ok() {
+            ios::agent_registry::shutdown_all().await;
+        }
+    });
+    // The drain waits for every open connection. A client that keeps a stream
+    // open (or a worker that outlived a killed CLI) would hold it forever, and
+    // nobody escalates to SIGKILL after a parent-exit shutdown — so bound it,
+    // measured from the signal, and still run the proxy cleanup below.
+    let mut limit_began = shutdown_began_rx;
+    let drain_limit = async move {
+        match limit_began.wait_for(|began| *began).await {
+            Ok(_) => tokio::time::sleep(SHUTDOWN_LIMIT).await,
+            Err(_) => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        result = serve => result.context("gRPC server failed")?,
+        _ = drain_limit => {
+            warn!("Shutdown still draining after {SHUTDOWN_LIMIT:?}; exiting without the open gRPC connections");
+        }
+    }
+    // Clean up any active network proxy and WebView state before exiting,
+    // alongside the agent teardown rather than after it: the two share no
+    // state, and the cleanup must not wait out an agent's SIGTERM grace. Both
+    // are awaited (agent teardown bounds itself at ~3 s), so the daemon never
+    // exits with either half done.
+    let cleanup = async {
+        service_handle.cleanup_network_proxy().await;
+        service_handle.cleanup_webview_state().await;
+    };
+    let _ = tokio::join!(agent_teardown, cleanup);
 
     info!("Tapsmith daemon shut down cleanly");
     Ok(())
 }
 
-async fn shutdown_signal() {
+/// How long the gRPC drain may take once a shutdown signal arrives. Agent
+/// teardown runs alongside it and bounds itself at ~3 s (a 1.5 s SIGTERM
+/// grace plus 1.5 s for simctl), so this leaves the proxy cleanup about a
+/// second of the 5 s the UI server gives a daemon between SIGTERM and SIGKILL.
+const SHUTDOWN_LIMIT: Duration = Duration::from_millis(3500);
+
+/// Resolves when the daemon should shut down: SIGINT, SIGTERM, SIGHUP (the
+/// terminal it was started from closed), or — unless `--outlive-parent` —
+/// the process that spawned it exiting, which is how a client that was
+/// SIGKILLed (and so never sent SIGTERM) still gets its daemon and agents
+/// stopped.
+async fn shutdown_signal(parent: Option<u32>, watch_sighup: bool) {
+    use tokio::signal::unix::{signal, SignalKind};
     let ctrl_c = tokio::signal::ctrl_c();
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("Failed to install SIGTERM handler");
+    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
+    // Not installed under `nohup`: that asked for the hangup to be ignored.
+    let mut sighup = watch_sighup
+        .then(|| signal(SignalKind::hangup()).expect("Failed to install SIGHUP handler"));
+    let hangup = async {
+        match sighup.as_mut() {
+            Some(s) => {
+                s.recv().await;
+            }
+            None => std::future::pending().await,
+        }
+    };
+    let parent_gone = async {
+        match parent {
+            Some(ppid) => crate::signal::wait_for_parent_exit(ppid).await,
+            None => std::future::pending().await,
+        }
+    };
 
     tokio::select! {
         _ = ctrl_c => { info!("Received Ctrl+C, shutting down"); }
         _ = sigterm.recv() => { info!("Received SIGTERM, shutting down"); }
+        _ = hangup => { info!("Received SIGHUP, shutting down"); }
+        _ = parent_gone => { info!("The process that started this daemon exited, shutting down"); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> CliArgs {
+        parse_args_from(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn the_daemon_watches_its_parent_unless_told_to_outlive_it() {
+        assert!(!parse(&["--port", "50051"]).outlive_parent);
+        let args = parse(&["--port", "50051", "--outlive-parent", "--platform", "ios"]);
+        assert!(args.outlive_parent);
+        assert_eq!(args.port, 50051);
+        assert_eq!(args.platform, Some(Platform::Ios));
     }
 }
