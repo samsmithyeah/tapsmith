@@ -1468,6 +1468,12 @@ async function provisionPerProjectDevices(
   pinnedSignatures: import('./project.js').PinnedBuckets,
   /** Targets whose primary setup already failed: not tried again at startup, only on a later run. */
   alreadyFailed: ReadonlyMap<string, unknown>,
+  /**
+   * The root config's own `device` before the primary setup wrote its serial
+   * there. A retry of a `use`-less target (whose config is the root) puts it
+   * back: the primary may since be another target's device.
+   */
+  rootDeviceBeforeSetup: string | undefined,
   progress?: LaunchProgressSink,
 ): Promise<PerProjectProvisionResult> {
   progress?.start('worker-devices', 'preparing devices across project targets');
@@ -1497,13 +1503,15 @@ async function provisionPerProjectDevices(
   const provisionBucket = async (
     { signature, projects: bucketProjects }: (typeof bucketEntries)[number],
     sink: LaunchProgressSink | undefined,
+    retrying = false,
   ) => {
     const desiredWorkers = allocation.get(signature) ?? 0;
     if (desiredWorkers === 0) return null;
 
     // The bucket's projects share its devices: provision for the largest
     // group any of them declares (a smaller project runs on the first N).
-    const bucketEffective = sharedDeviceGroup(bucketProjects).config;
+    const shared = sharedDeviceGroup(bucketProjects).config;
+    const bucketEffective = retrying && shared === rootConfig ? { ...shared, device: rootDeviceBeforeSetup } : shared;
     const groupSize = deviceGroupSize(bucketEffective);
     // Every pin, the primary's included, from the snapshot taken before the
     // sequential setup: that setup has since written its auto-picked serial
@@ -1595,7 +1603,7 @@ async function provisionPerProjectDevices(
   const unavailableTargets = new UnavailableTargets(
     async (signature) => {
       const entry = bucketEntries.find((b) => b.signature === signature);
-      const outcome = entry ? await provisionBucket(entry, undefined) : null;
+      const outcome = entry ? await provisionBucket(entry, undefined, true) : null;
       if (!outcome) throw new Error(`internal: device target ${deviceTargetLabel(signature)} has no worker planned`);
       return outcome.target;
     },
@@ -2206,7 +2214,14 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
   /** Device targets (by signature) that could not start, with the error. */
   const failedTargets = new Map<string, unknown>();
   const { deviceTargetLabel, isProgrammingError, noTargetCouldStart, targetStartWarning } = await import('./dispatcher.js');
-  const noteFailedTarget = (signature: string, err: unknown) => {
+  const warnTargetFailed = (signature: string) => {
+    const fileCount = projects
+      .filter((p) => p.deviceSignature === signature)
+      .reduce((n, p) => n + p.testFiles.length, 0);
+    process.stderr.write(yellow(`${targetStartWarning(deviceTargetLabel(signature), fileCount, !!(args.ui || args.watch))}\n`));
+  };
+  /** `announce: false` when the caller only knows later whether the others run. */
+  const noteFailedTarget = (signature: string, err: unknown, announce = true) => {
     failedTargets.set(signature, err);
     // A TypeError and the like is a Tapsmith bug, not a missing device:
     // keep its stack, as the parallel path does.
@@ -2218,10 +2233,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
       spawnedDaemonProcess = undefined;
     }
-    const fileCount = projects
-      .filter((p) => p.deviceSignature === signature)
-      .reduce((n, p) => n + p.testFiles.length, 0);
-    process.stderr.write(yellow(`${targetStartWarning(deviceTargetLabel(signature), fileCount, !!(args.ui || args.watch))}\n`));
+    if (announce) warnTargetFailed(signature);
   };
 
   // Plain `tapsmith test` reports a failed first target and switches to the
@@ -2255,15 +2267,19 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
           sequentialExitCode = 1;
           return;
         }
-        noteFailedTarget(candidate.deviceSignature, err);
+        // Whether the others still run is known only once one starts.
+        noteFailedTarget(candidate.deviceSignature, err, !(args.ui || args.watch));
         // A `use`-less project's config is the root config, which the failed
         // setup may have pinned to its device: the next target must not
         // inherit it (as at a sequential project switch).
         if (candidate.effectiveConfig === config) config.device = rootDeviceBeforeSetup;
       }
     }
-    if ((args.ui || args.watch) && !currentSequentialState) {
-      throw noTargetCouldStart([...failedTargets].map(([signature, err]) => ({ label: deviceTargetLabel(signature), err })));
+    if (args.ui || args.watch) {
+      if (!currentSequentialState) {
+        throw noTargetCouldStart([...failedTargets].map(([signature, err]) => ({ label: deviceTargetLabel(signature), err })));
+      }
+      for (const signature of failedTargets.keys()) warnTargetFailed(signature);
     }
 
     if (currentSequentialState) {
@@ -2299,7 +2315,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
 
       if (isMultiBucketSequential) {
         // Multi-device-target projects: provision per-bucket devices.
-        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, pinnedSignatures, failedTargets, launchProgress);
+        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, pinnedSignatures, failedTargets, rootDeviceBeforeSetup, launchProgress);
         uiUnavailableTargets = perBucket.unavailableTargets;
         uiWorkerGroups = perBucket.workerGroups;
         uiConfigByDevice = perBucket.configByDevice;
@@ -2405,7 +2421,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       let watchUnavailableTargets = new UnavailableTargets(undefined);
 
       if (isMultiBucketSequential) {
-        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, pinnedSignatures, failedTargets);
+        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, pinnedSignatures, failedTargets, rootDeviceBeforeSetup);
         watchUnavailableTargets = perBucket.unavailableTargets;
         watchWorkerGroups = perBucket.workerGroups;
         watchConfigByDevice = perBucket.configByDevice;

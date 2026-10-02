@@ -307,8 +307,10 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     }
   }
 
-  async function initializeWatchWorkers(): Promise<void> {
-    if (workerGroups.length === 0) return;
+  /** @returns the first worker's start failure, if any worker failed. */
+  async function initializeWatchWorkers(): Promise<unknown> {
+    if (workerGroups.length === 0) return undefined;
+    let firstError: unknown;
 
     const daemonBin = resolveDaemonBin();
 
@@ -337,6 +339,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         );
         watchWorkers.push(worker);
       } catch (err) {
+        firstError ??= err;
         process.stderr.write(
           `${YELLOW}Skipping device ${[deviceSerial, ...memberSerials].join('+')}: ${err instanceof Error ? err.message : err}.${RESET}\n`,
         );
@@ -351,6 +354,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       process.stderr.write(`${YELLOW}Only 1 worker initialized. Using single-worker mode.${RESET}\n`);
       cleanupWatchWorkers();
     }
+    return firstError;
   }
 
   async function initOneWatchWorker(
@@ -696,8 +700,10 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     for (const [serial, group] of target.deviceGroupByDevice) ctx.deviceGroupByDevice?.set(serial, group);
     ctx.launchedEmulators.push(...target.launched);
     const firstNew = workerGroups.length;
+    const budgetBefore = workerBudget;
     workerGroups.push(...target.workerGroups);
     workerBudget = (workerBudget ?? 1) + target.workerGroups.length;
+    let firstError: unknown;
 
     if (workersReady) {
       // Parallel already: add the target's workers beside the others.
@@ -709,16 +715,25 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         try {
           watchWorkers.push(await initOneWatchWorker(i, deviceSerial, baseDaemonPort + 100 + i, baseAgentPort + 100 + i, daemonBin, members));
         } catch (err) {
+          firstError ??= err;
           process.stderr.write(`${YELLOW}Skipping device ${workerGroups[i].join('+')}: ${err instanceof Error ? err.message : err}.${RESET}\n`);
         }
       }
     } else if (multiWorker()) {
       // Single-worker until now: the session needs a worker per target.
       cleanupWatchWorkers();
-      await initializeWatchWorkers();
+      firstError = await initializeWatchWorkers();
     }
     if (!watchWorkers.some((w) => w.bucketSignature === signature)) {
-      throw new Error('its devices came up, but no watch worker started on them');
+      // Forget the attempt's groups, or the next attempt (the same devices,
+      // provisioned again) would add them a second time and start two
+      // workers on one device. Only the tail: earlier groups keep their ids.
+      // A worker that failed to start already took its processes down.
+      if (watchWorkers.every((w) => w.id < firstNew)) {
+        workerGroups.splice(firstNew);
+        workerBudget = budgetBefore;
+      }
+      throw firstError ?? new Error('its devices came up, but no watch worker started on them');
     }
   }
 

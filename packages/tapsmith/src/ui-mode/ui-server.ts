@@ -352,6 +352,8 @@ export async function startUIServer(
   const MAX_MCP_BUFFER = 200;
   let traceBufferFull = false;
 
+  /** Ends a run's wait on a device-target retry (Stop). */
+  let interruptRevive: (() => void) | null = null;
   /** Device targets a run has tried again: once per run, its waves share the outcome. */
   const targetsRetriedThisRun = new Set<string>();
 
@@ -1533,9 +1535,10 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     }
   }
 
+  const NO_WORKER_MESSAGE = 'No test worker is available for this device — check the startup log, then use "Respawn worker".';
   /** Every run needs at least one live worker; without one, say so instead of hanging. */
   function reportNoWorkers(): TestRunResult {
-    broadcast({ type: 'error', message: 'No test worker is available for this device — check the startup log, then use "Respawn worker".' });
+    broadcast({ type: 'error', message: NO_WORKER_MESSAGE });
     return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
   }
 
@@ -2043,67 +2046,83 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       bucketSignature: workerBucketSig,
     };
 
-    // Wait for worker to be ready
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`worker ${id} timed out during initialization (90s)`));
-      }, 90_000);
+    // Wait for worker to be ready. A worker that never gets there takes its
+    // processes with it: nothing else holds its handle, and a target tried
+    // again on every run would otherwise leave a child and daemon per run
+    // (PILOT-415, PILOT-416).
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error(`worker ${id} timed out during initialization (90s)`));
+        }, 90_000);
 
-      const onExit = (code: number | null) => {
-        clearTimeout(timeout);
-        cleanup();
-        reject(new Error(`worker ${id} exited with code ${code} during initialization`));
-      };
-
-      const onMessage = (msg: UIWorkerChildMessage) => {
-        if (msg.type === 'ready' && msg.workerId === id) {
-          worker.initialPolicy = msg.policy;
-          worker.capabilities = msg.capabilities;
-          events?.onReady?.();
+        const onExit = (code: number | null) => {
           clearTimeout(timeout);
           cleanup();
-          resolve();
-        } else if (msg.type === 'progress' && msg.workerId === id) {
-          if (launchProgress) events?.onProgress?.(msg.message);
-          else console.log(`${DIM}  Worker ${id} (${deviceSerial}): ${msg.message}${RESET}`);
-          broadcastWorkerStatus(worker, 'initializing');
-        } else if (msg.type === 'error' && msg.workerId === id) {
-          clearTimeout(timeout);
-          cleanup();
-          reject(new Error(msg.error.message));
-        }
-      };
+          reject(new Error(`worker ${id} exited with code ${code} during initialization`));
+        };
 
-      const cleanup = () => {
-        child.removeListener('exit', onExit);
-        child.removeListener('message', onMessage);
-      };
+        const onMessage = (msg: UIWorkerChildMessage) => {
+          if (msg.type === 'ready' && msg.workerId === id) {
+            worker.initialPolicy = msg.policy;
+            worker.capabilities = msg.capabilities;
+            events?.onReady?.();
+            clearTimeout(timeout);
+            cleanup();
+            resolve();
+          } else if (msg.type === 'progress' && msg.workerId === id) {
+            if (launchProgress) events?.onProgress?.(msg.message);
+            else console.log(`${DIM}  Worker ${id} (${deviceSerial}): ${msg.message}${RESET}`);
+            broadcastWorkerStatus(worker, 'initializing');
+          } else if (msg.type === 'error' && msg.workerId === id) {
+            clearTimeout(timeout);
+            cleanup();
+            reject(new Error(msg.error.message));
+          }
+        };
 
-      child.on('exit', onExit);
-      child.on('message', onMessage);
+        const cleanup = () => {
+          child.removeListener('exit', onExit);
+          child.removeListener('message', onMessage);
+        };
 
-      const initMsg: UIWorkerMessage = {
-        type: 'init',
-        workerId: id,
-        deviceSerial,
-        deviceName: groupNames[0].name,
-        daemonPort,
-        config: workerConfig,
-        screenshotDir: ctx.screenshotDir,
-        adoptPrimary: !!adopt,
-        adoptPrepared: !!adopt && adoptPrepared,
-        forceInstall,
-        ...(members.length > 0 ? {
-          groupMembers: members.map((m) => ({
-            name: m.name,
-            deviceSerial: m.deviceSerial,
-            daemonPort: m.daemonPort,
-            adopt: !m.ownsDaemon || undefined,
-          })),
-        } : {}),
-      };
-      child.send(initMsg);
-    });
+        child.on('exit', onExit);
+        child.on('message', onMessage);
+
+        const initMsg: UIWorkerMessage = {
+          type: 'init',
+          workerId: id,
+          deviceSerial,
+          deviceName: groupNames[0].name,
+          daemonPort,
+          config: workerConfig,
+          screenshotDir: ctx.screenshotDir,
+          adoptPrimary: !!adopt,
+          adoptPrepared: !!adopt && adoptPrepared,
+          forceInstall,
+          ...(members.length > 0 ? {
+            groupMembers: members.map((m) => ({
+              name: m.name,
+              deviceSerial: m.deviceSerial,
+              daemonPort: m.daemonPort,
+              adopt: !m.ownsDaemon || undefined,
+            })),
+          } : {}),
+        };
+        child.send(initMsg);
+      });
+    } catch (err) {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      for (const m of members) {
+        m.screenClient?.close();
+        if (m.ownsDaemon) { try { m.daemonProcess?.kill(); } catch { /* already dead */ } }
+      }
+      if (!adopt) {
+        daemonClient.close();
+        try { daemonProcess?.kill(); } catch { /* already dead */ }
+      }
+      throw err;
+    }
 
     // Background preparation: the state machine and the listener for its
     // messages live for the worker's whole life (dispatch listeners come and go
@@ -2211,11 +2230,11 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
    * @returns the files whose target still cannot start.
    */
   async function reviveTargetsFor(files: TaggedFile[]): Promise<TaggedFile[]> {
-    if (ctx.unavailableTargets.size === 0) return [];
+    if (ctx.unavailableTargets.size === 0 || parallelRunAborted) return [];
     const needed = ctx.unavailableTargets.signaturesFor(files.map((f) => f.projectName), ctx.bucketByProject);
     const toRetry = needed.filter((sig) => !targetsRetriedThisRun.has(sig));
     for (const sig of toRetry) targetsRetriedThisRun.add(sig);
-    await Promise.all(toRetry.map(async (sig) => {
+    const attempts = Promise.all(toRetry.map(async (sig) => {
       const label = deviceTargetLabel(sig);
       console.log(`${DIM}Device target ${label} could not start before; trying it again...${RESET}`);
       const started = await ctx.unavailableTargets.retry(sig, (target) => startTargetWorkers(sig, target));
@@ -2227,6 +2246,15 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       console.error(`${YELLOW}${reason}${RESET}`);
       broadcast({ type: 'error', message: `${reason}. Its tests fail until it starts; running them again retries it.` });
     }));
+    // Stop must not wait out a provisioning attempt that can take minutes.
+    const stopped = new Promise<'stopped'>((resolve) => { interruptRevive = () => resolve('stopped'); });
+    try {
+      if (await Promise.race([attempts.then(() => 'done' as const), stopped]) === 'stopped') {
+        attempts.catch((err: unknown) => broadcastError(err));
+      }
+    } finally {
+      interruptRevive = null;
+    }
     return files.filter((f) => ctx.unavailableTargets.has(bucketOfFile(f)));
   }
 
@@ -2264,6 +2292,13 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     )));
     const started = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
     if (started.length === 0) {
+      // Every slot failed, and a failed worker cleans its processes up: give
+      // the ids (and so the ports) back, unless another target took ids after
+      // them, so repeated attempts do not walk into the member-port band.
+      if (slots.length > 0 && workerGroups.length === slots[slots.length - 1].id + 1) {
+        workerGroups.splice(slots[0].id);
+        workerSerials.splice(slots[0].id);
+      }
       throw (settled.find((r): r is PromiseRejectedResult => r.status === 'rejected')?.reason ?? new Error('no worker started'));
     }
     for (const r of settled) {
@@ -2320,7 +2355,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
 
     const activeWorkers = uiWorkers.filter((w) => !w.retired);
     if (activeWorkers.length === 0) {
-      throw new Error('No active workers available');
+      // Reached with only unavailable targets keeping the session runnable.
+      throw new Error(NO_WORKER_MESSAGE);
     }
 
     await new Promise<void>((resolve, reject) => {
@@ -2520,15 +2556,14 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         // workers died while Android workers are still alive).
         const orphaned = drainUnservableFiles(remaining);
         for (const f of orphaned) {
-          broadcastFileStatus(f.filePath, 'done', f.projectName);
           // Counted *and* recorded. Incrementing `failed` alone reported "1
           // failed" from the run while `list_results` said there were no
           // results and the status board showed nothing — the failure existed
           // only in the number. It carries the reason the worker gave, which
           // is the actual cause (an import error, say) rather than the drain.
-          recordFileFailure(f.filePath, f.projectName, new Error(`No worker could run this file: ${reason}`));
-          failed++;
+          failed += failUnservableFile(f, `No worker could run this file: ${reason}`);
           anyFailed = true;
+          if (f.projectName) failedProjectsInDispatch.add(f.projectName);
         }
         if (orphaned.length > 0) {
           const names = orphaned.map((f) => path.basename(f.filePath)).join(', ');
@@ -2879,6 +2914,9 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
    * within STOP_GRACE_MS are SIGKILLed by escalateStop. */
   function stopParallelRun(): void {
     parallelRunAborted = true;
+    // A run still trying a device target again ends now; the attempt carries
+    // on in the background and its workers join if it succeeds.
+    interruptRevive?.();
 
     for (const worker of uiWorkers) {
       if (!worker.busy) continue;
