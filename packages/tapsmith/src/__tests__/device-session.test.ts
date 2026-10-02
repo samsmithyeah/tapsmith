@@ -406,6 +406,19 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     expect(calls).toBe(2);
   }, 10_000);
 
+  it('gives up with the not-connected error once the phone has stayed unreachable past the grace period', async () => {
+    mocks.unreachableGraceMs = 1;
+    mocks.unknownToDaemon.add('PHYS-GONE');
+    mocks.unreachable.add('PHYS-GONE');
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'PHYS-GONE', daemonAddress: 'localhost:50052' },
+      makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
+      { label: 'Device' },
+    )).rejects.toThrow(/PHYS-GONE\) is not connected/);
+    // One retry inside the grace, then it gives up — not the 180 s budget.
+    expect(mocks.devices[0].setDevice).toHaveBeenCalledTimes(2);
+  }, 10_000);
+
   it('keeps retrying a phone that looks unreachable only for a moment (re-enumerating), and selects it', async () => {
     mocks.unreachableGraceMs = 30_000;
     mocks.unknownToDaemon.add('PHYS-BACK');

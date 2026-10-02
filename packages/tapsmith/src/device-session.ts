@@ -550,9 +550,10 @@ export async function openDeviceSession(
         if (config.platform === 'ios' && message.includes('not found. Run ListDevices')) {
           const { describeUnreachablePhysicalDevice } = await import('./ios-devicectl.js');
           const unreachable = await describeUnreachablePhysicalDevice(spec.serial);
-          if (!unreachable) {
-            unreachableSince = undefined;
-          } else {
+          // Not reset when a probe comes back empty: that is as likely a slow
+          // devicectl as a phone that came back, and one that came back is
+          // selected by the next attempt anyway.
+          if (unreachable) {
             unreachableSince ??= Date.now();
             if (Date.now() - unreachableSince >= DEVICE_SELECT_UNREACHABLE_GRACE_MS) throw new Error(unreachable);
           }

@@ -2007,14 +2007,16 @@ export function closeAllClients(): void {
 }
 
 /**
- * `setDevice`, with the daemon's bare "not found" for a phone devicectl only
- * remembers replaced by one that says it is not connected (PILOT-386).
+ * `setDevice`, except that the daemon's "not found" for a phone devicectl
+ * only remembers is thrown as the not-connected error (PILOT-386). Any other
+ * refusal (`success: false`) is left as before: not thrown here.
+ * Exported for tests.
  */
-async function setDeviceExplained(client: TapsmithGrpcClient, serial: string): Promise<void> {
-  try {
-    await client.setDevice(serial);
-  } catch (err) {
-    const { explainDeviceNotFound } = await import('../ios-devicectl.js');
-    throw await explainDeviceNotFound(serial, err);
-  }
+export async function setDeviceExplained(client: TapsmithGrpcClient, serial: string): Promise<void> {
+  const res = await client.setDevice(serial);
+  if (res?.success !== false) return;
+  const { explainDeviceNotFound } = await import('../ios-devicectl.js');
+  const refusal = new Error(res.errorMessage);
+  const explained = await explainDeviceNotFound(serial, refusal);
+  if (explained !== refusal) throw explained;
 }

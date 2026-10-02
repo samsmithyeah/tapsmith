@@ -195,6 +195,9 @@ export function isPhysicalDevice(udid: string): boolean {
   return listPhysicalDevices().some((d) => d.udid === udid);
 }
 
+/** A simulator UDID; physical ones are `8-16` or 40 hex digits. */
+const SIMULATOR_UDID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i;
+
 /**
  * Why `udid` cannot be used, when it is a physical device devicectl only
  * remembers (unplugged, out of Wi-Fi range, or paired with another Mac):
@@ -203,6 +206,10 @@ export function isPhysicalDevice(udid: string): boolean {
  * simulator, or unknown.
  */
 export async function describeUnreachablePhysicalDevice(udid: string): Promise<string | undefined> {
+  // A simulator's "not found" is a CoreSimulator stall, the case the
+  // selection retry exists for; devicectl may be stalled with it, so do not
+  // spend the retry budget asking.
+  if (SIMULATOR_UDID.test(udid)) return undefined;
   const device = (await listPhysicalDevicesAsync()).find((d) => d.udid === udid);
   if (!device || device.isConnected) return undefined;
   return `${device.name} (${udid}) is not connected: this Mac remembers it, but cannot reach it now. `
@@ -324,10 +331,13 @@ export async function isAppInstalledOnDevice(udid: string, bundleId: string): Pr
 
 // ─── Helpers ───
 
+let scratchSeq = 0;
+
+/** Unique per call, even for concurrent async calls in one millisecond. */
 function scratchJsonPath(purpose: string): string {
   return path.join(
     os.tmpdir(),
-    `tapsmith-devicectl-${purpose}-${process.pid}-${Date.now()}.json`,
+    `tapsmith-devicectl-${purpose}-${process.pid}-${Date.now()}-${scratchSeq++}.json`,
   );
 }
 

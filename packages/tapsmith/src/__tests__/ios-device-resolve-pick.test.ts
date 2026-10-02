@@ -7,7 +7,7 @@ import * as path from 'node:path';
 // `xcrun devicectl` is replaced by one that writes a fixture to the
 // `--json-output` path, and `idevice_id -l` by a fixed USB list.
 const fixtures = path.join(import.meta.dirname, 'fixtures');
-const devicectl = vi.hoisted(() => ({ json: '', usb: '' }));
+const devicectl = vi.hoisted(() => ({ json: '', usb: '', asyncCalls: 0 }));
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -17,6 +17,7 @@ vi.mock('node:child_process', async (importOriginal) => {
     // promisify(execFile), which calls back (err, stdout, stderr).
     execFile: vi.fn((cmd: string, args: readonly string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
       if (cmd === 'xcrun' && args[0] === 'devicectl') {
+        devicectl.asyncCalls++;
         fs.writeFileSync(args[args.indexOf('--json-output') + 1], devicectl.json);
         cb(null, '', '');
       } else {
@@ -117,5 +118,41 @@ describe('describeUnreachablePhysicalDevice() (PILOT-386)', () => {
     expect(await explainDeviceNotFound(REMEMBERED, other)).toBe(other);
     const simNotFound = new Error('Device SIM not found. Run ListDevices first to refresh the device list.');
     expect(await explainDeviceNotFound('SIM', simNotFound)).toBe(simNotFound);
+  });
+});
+
+describe('the reachability probe on retries (PILOT-386)', () => {
+  beforeEach(() => {
+    devicectl.json = fs.readFileSync(path.join(fixtures, 'devicectl-list-devices-xcode27.json'), 'utf-8');
+    devicectl.asyncCalls = 0;
+  });
+
+  it('does not run devicectl for a simulator UDID: the "not found" retry exists for simulator stalls', async () => {
+    expect(await describeUnreachablePhysicalDevice('15CD8814-5BC0-4BDC-B688-E5D82BF4064C')).toBeUndefined();
+    expect(devicectl.asyncCalls).toBe(0);
+  });
+
+  it('two probes in the same millisecond (a device group retrying together) both see the device', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_790_000_000_000);
+    try {
+      const [a, b] = await Promise.all([
+        describeUnreachablePhysicalDevice(REMEMBERED),
+        describeUnreachablePhysicalDevice(REMEMBERED),
+      ]);
+      expect(a).toMatch(/is not connected/);
+      expect(b).toMatch(/is not connected/);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('MCP\'s setDeviceExplained turns the daemon\'s success:false "not found" for a remembered phone into the not-connected error', async () => {
+    const { setDeviceExplained } = await import('../mcp/connection.js');
+    const notFound = { success: false, errorMessage: `Device ${REMEMBERED} not found. Run ListDevices first to refresh the device list.` };
+    const client = { setDevice: vi.fn(async () => notFound) };
+    await expect(setDeviceExplained(client as never, REMEMBERED)).rejects.toThrow(/is not connected/);
+    // Any other refusal keeps MCP's existing behaviour (logged by the agent start, not thrown here).
+    const other = { setDevice: vi.fn(async () => ({ success: false, errorMessage: 'Device X is attached but not usable' })) };
+    await expect(setDeviceExplained(other as never, 'X')).resolves.toBeUndefined();
   });
 });
