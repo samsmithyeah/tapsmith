@@ -2248,7 +2248,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     for (const candidate of primaryCandidates) {
       // The setup writes the device it picks onto the config before steps
       // that can still fail; a failed target must not stay pinned to it.
-      const deviceBefore = candidate.effectiveConfig.device;
+      const { device: deviceBefore, daemonAddress: daemonAddressBefore } = candidate.effectiveConfig;
       try {
         currentSequentialState = await setupSequentialDevice(
           candidate.effectiveConfig,
@@ -2289,6 +2289,8 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
         // — the root config, for a `use`-less project — so neither the next
         // target nor a later retry of this one inherits it.
         candidate.effectiveConfig.device = deviceBefore;
+        // And its daemon address, which may name the daemon just stopped.
+        candidate.effectiveConfig.daemonAddress = daemonAddressBefore;
       }
     }
     if (args.ui || args.watch) {

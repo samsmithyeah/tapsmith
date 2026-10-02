@@ -2346,11 +2346,16 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       return worker;
     })));
     const started = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+    // A failed slot cleans its processes up: give its id (and so its ports)
+    // back, so repeated attempts do not walk into the member-port band, and
+    // stop listing its devices as this session's.
+    settled.forEach((r, i) => {
+      if (r.status === 'fulfilled') return;
+      workerGroups[slots[i].id] = [];
+      workerSerials[slots[i].id] = '';
+      freeWorkerIds.push(slots[i].id);
+    });
     if (started.length === 0) {
-      // Every slot failed, and a failed worker cleans its processes up: give
-      // the ids (and so the ports) back, so repeated attempts do not walk
-      // into the member-port band.
-      freeWorkerIds.push(...slots.map((slot) => slot.id));
       throw (settled.find((r): r is PromiseRejectedResult => r.status === 'rejected')?.reason ?? new Error('no worker started'));
     }
     for (const r of settled) {
@@ -2459,7 +2464,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
             // Recorded, not just counted, so the file shows why it failed
             // (PILOT-415) — the same as a drained file below.
             for (const f of fileQueue.splice(0)) {
-              failed += failUnservableFile(f, unservableReason(f));
+              failed += failUnservableFile(f, unservableReason(f), f.reported);
               anyFailed = true;
               if (f.projectName) failedProjectsInDispatch.add(f.projectName);
             }
