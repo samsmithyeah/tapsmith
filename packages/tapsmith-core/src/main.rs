@@ -53,6 +53,10 @@ struct CliArgs {
     agent_port: Option<u16>,
     verbose: bool,
     platform: Option<Platform>,
+    /// Keep running when the process that spawned us exits. Only the MCP
+    /// server's daemons want this: they are detached so another session can
+    /// adopt them from the registry.
+    outlive_parent: bool,
 }
 
 fn parse_args() -> CliArgs {
@@ -61,6 +65,7 @@ fn parse_args() -> CliArgs {
     let mut platform: Option<Platform> = None;
     let mut agent_port: Option<u16> = None;
     let mut verbose = false;
+    let mut outlive_parent = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -95,14 +100,21 @@ fn parse_args() -> CliArgs {
             "--verbose" | "-v" => {
                 verbose = true;
             }
+            "--outlive-parent" => {
+                outlive_parent = true;
+            }
             "--help" | "-h" => {
-                eprintln!("Usage: tapsmith-core [--port PORT] [--agent-port PORT] [--platform PLATFORM] [--verbose]");
+                eprintln!("Usage: tapsmith-core [--port PORT] [--agent-port PORT] [--platform PLATFORM] [--outlive-parent] [--verbose]");
                 eprintln!();
                 eprintln!("Options:");
                 eprintln!("  --port PORT         gRPC listen port (default: 50051)");
                 eprintln!("  --agent-port PORT   Local port for ADB forwarding to on-device agent (default: 18700)");
                 eprintln!(
                     "  --platform PLATFORM Only discover devices of this platform (ios or android)"
+                );
+                eprintln!("  --outlive-parent    Keep running after the process that started the daemon exits");
+                eprintln!(
+                    "                      (by default the daemon shuts down, stopping its agents)"
                 );
                 eprintln!("  --verbose           Enable debug logging");
                 std::process::exit(0);
@@ -120,6 +132,7 @@ fn parse_args() -> CliArgs {
         agent_port,
         verbose,
         platform,
+        outlive_parent,
     }
 }
 
@@ -195,6 +208,12 @@ async fn main() -> Result<()> {
         // cleaning up (PILOT-319). A no-op unless an owner record exists.
         #[cfg(target_os = "macos")]
         ios::system_proxy::recover_stale().await;
+
+        // Stop iOS agents orphaned by a daemon that was SIGKILLed before it
+        // could stop them itself (PILOT-299). Only agents with an owner
+        // record whose daemon is dead are touched.
+        #[cfg(target_os = "macos")]
+        ios::agent_registry::reap_orphans().await;
     });
 
     let service = TapsmithServiceImpl::new(device_manager, agent_connection, daemon_log_bus);
@@ -205,6 +224,12 @@ async fn main() -> Result<()> {
         .context("Invalid listen address")?;
 
     info!(%addr, "Starting Tapsmith gRPC server");
+
+    // A parent that is already gone (ppid 1) cannot be watched; that only
+    // happens if it died within the daemon's first moments.
+    let parent_to_watch = (!args.outlive_parent)
+        .then(signal::parent_pid)
+        .filter(|&ppid| ppid > 1);
 
     Server::builder()
         .http2_keepalive_interval(Some(Duration::from_secs(30)))
@@ -218,7 +243,13 @@ async fn main() -> Result<()> {
                 .max_decoding_message_size(64 * 1024 * 1024)
                 .max_encoding_message_size(64 * 1024 * 1024),
         )
-        .serve_with_shutdown(addr, shutdown_signal())
+        .serve_with_shutdown(addr, async move {
+            shutdown_signal(parent_to_watch).await;
+            // Stop the iOS agents first, before the gRPC drain: a long-lived
+            // stream can hold the drain open, and the agents must not outlive
+            // the daemon either way (PILOT-299).
+            ios::agent_registry::shutdown_all().await;
+        })
         .await
         .context("gRPC server failed")?;
 
@@ -230,13 +261,27 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn shutdown_signal() {
+/// Resolves when the daemon should shut down: SIGINT, SIGTERM, SIGHUP (the
+/// terminal it was started from closed), or — unless `--outlive-parent` —
+/// the process that spawned it exiting, which is how a client that was
+/// SIGKILLed (and so never sent SIGTERM) still gets its daemon and agents
+/// stopped.
+async fn shutdown_signal(parent: Option<u32>) {
+    use tokio::signal::unix::{signal, SignalKind};
     let ctrl_c = tokio::signal::ctrl_c();
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("Failed to install SIGTERM handler");
+    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
+    let mut sighup = signal(SignalKind::hangup()).expect("Failed to install SIGHUP handler");
+    let parent_gone = async {
+        match parent {
+            Some(ppid) => crate::signal::wait_for_parent_exit(ppid).await,
+            None => std::future::pending().await,
+        }
+    };
 
     tokio::select! {
         _ = ctrl_c => { info!("Received Ctrl+C, shutting down"); }
         _ = sigterm.recv() => { info!("Received SIGTERM, shutting down"); }
+        _ = sighup.recv() => { info!("Received SIGHUP, shutting down"); }
+        _ = parent_gone => { info!("The process that started this daemon exited, shutting down"); }
     }
 }

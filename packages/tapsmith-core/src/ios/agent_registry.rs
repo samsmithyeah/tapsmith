@@ -1,0 +1,885 @@
+//! Lifetime of the `xcodebuild test-without-building` agent processes this
+//! daemon spawns (PILOT-299).
+//!
+//! An iOS agent is an `xcodebuild` child of the daemon. Nothing used to stop
+//! it when the daemon went away, so every session left one behind, reparented
+//! to launchd, squatting its simulator for days. Two mechanisms fix that:
+//!
+//! 1. **In-process registry.** Every agent is registered the moment it is
+//!    spawned (not when it becomes ready, so a shutdown during the startup
+//!    wait catches it too) and deregistered once it has been reaped. On a
+//!    graceful shutdown — SIGTERM, SIGINT, SIGHUP, or the daemon's parent
+//!    dying — [`shutdown_all`] stops every registered agent and refuses new
+//!    spawns, so a startup loop that sees its xcodebuild exit cannot relaunch
+//!    it behind our back.
+//! 2. **Owner records + startup reaper.** A daemon that is SIGKILLed runs no
+//!    code, so each agent also gets an owner record in
+//!    `~/.tapsmith/ios-agents/<pid>.json` naming the agent and the daemon
+//!    that started it, each by pid *and* process start time. The next daemon
+//!    to start on the machine ([`reap_orphans`]) stops an agent only when its
+//!    record says so: the recorded daemon is gone and the recorded process is
+//!    still the one we started. An xcodebuild without a record is never
+//!    touched — Tapsmith cannot prove it launched it (the PILOT-401 rule).
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
+use anyhow::{bail, Result};
+use serde::{Deserialize, Serialize};
+use tokio::process::{Child, Command};
+use tracing::{debug, info, warn};
+
+/// How long an agent gets to exit after SIGTERM before it is SIGKILLed.
+/// xcodebuild exits in ~250 ms on SIGTERM (and its in-simulator runner with
+/// it); the UI server gives a daemon 5 s between SIGTERM and SIGKILL, so the
+/// whole teardown has to fit well inside that.
+const TERM_GRACE: Duration = Duration::from_secs(2);
+
+/// Bound on the `simctl terminate` belt-and-braces step for each simulator.
+const RUNNER_TERMINATE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Bundle id of the XCUITest runner app inside the simulator.
+const RUNNER_BUNDLE_ID: &str = "dev.tapsmith.agent.xctrunner";
+
+// ─── Registry ───
+
+#[derive(Debug, Clone)]
+struct Entry {
+    udid: String,
+    is_physical: bool,
+}
+
+/// The set of agents a daemon has spawned and not yet reaped.
+pub(crate) struct Registry {
+    entries: Mutex<HashMap<u32, Entry>>,
+    shutting_down: AtomicBool,
+    /// Where owner records go; `None` when there is no home directory, which
+    /// only costs the SIGKILL-recovery half of the feature.
+    records_dir: Option<PathBuf>,
+}
+
+impl Registry {
+    pub(crate) fn new(records_dir: Option<PathBuf>) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            shutting_down: AtomicBool::new(false),
+            records_dir,
+        }
+    }
+
+    fn insert(&self, pid: u32, entry: Entry) {
+        self.entries.lock().unwrap().insert(pid, entry);
+    }
+
+    fn remove(&self, pid: u32) {
+        self.entries.lock().unwrap().remove(&pid);
+    }
+
+    fn snapshot(&self) -> Vec<(u32, Entry)> {
+        self.entries
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(pid, e)| (*pid, e.clone()))
+            .collect()
+    }
+
+    fn contains(&self, pid: u32) -> bool {
+        self.entries.lock().unwrap().contains_key(&pid)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.lock().unwrap().len()
+    }
+
+    fn record_path(&self, pid: u32) -> Option<PathBuf> {
+        self.records_dir
+            .as_ref()
+            .map(|d| d.join(format!("{pid}.json")))
+    }
+}
+
+fn records_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".tapsmith").join("ios-agents"))
+}
+
+/// The daemon-wide registry.
+pub(crate) fn global() -> &'static Registry {
+    static GLOBAL: OnceLock<Registry> = OnceLock::new();
+    GLOBAL.get_or_init(|| Registry::new(records_dir()))
+}
+
+/// A spawned agent process, registered for as long as it is alive.
+///
+/// Dropping it deregisters the agent and deletes its owner record. Callers
+/// only drop it once the process has been reaped (`try_wait`/`wait`/`kill`
+/// returned) — except at runtime shutdown, where the spawning `Command`'s
+/// `kill_on_drop` stops the process as the guard goes.
+pub(crate) struct TrackedAgent {
+    child: Child,
+    pid: Option<u32>,
+    registry: &'static Registry,
+}
+
+impl TrackedAgent {
+    /// Register `child` (spawned for `udid`) and write its owner record.
+    /// Refuses — killing the child — once the daemon is shutting down, so a
+    /// startup loop cannot relaunch an agent the teardown just stopped.
+    pub(crate) async fn track(
+        mut child: Child,
+        udid: &str,
+        is_physical: bool,
+        registry: &'static Registry,
+    ) -> Result<Self> {
+        let pid = child.id();
+        if let Some(pid) = pid {
+            registry.insert(
+                pid,
+                Entry {
+                    udid: udid.to_string(),
+                    is_physical,
+                },
+            );
+        }
+        // Checked after inserting, so a concurrent `shutdown_all` either sees
+        // the entry or we see its flag: an agent can never slip between them.
+        if registry.shutting_down.load(Ordering::SeqCst) {
+            let _ = child.kill().await;
+            if let Some(pid) = pid {
+                registry.remove(pid);
+            }
+            bail!("the daemon is shutting down; not starting an iOS agent");
+        }
+        if let (Some(pid), Some(path)) = (pid, pid.and_then(|p| registry.record_path(p))) {
+            write_record(&path, pid, udid, is_physical).await;
+        }
+        Ok(Self {
+            child,
+            pid,
+            registry,
+        })
+    }
+
+    pub(crate) fn child_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+}
+
+impl Drop for TrackedAgent {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid {
+            self.registry.remove(pid);
+            if let Some(path) = self.registry.record_path(pid) {
+                // Synchronous on purpose: Drop cannot await, and this is one
+                // small unlink.
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
+// ─── Graceful shutdown ───
+
+/// Stop every agent this daemon spawned, and refuse to spawn more.
+///
+/// SIGTERM first (xcodebuild then tears down its in-simulator runner itself),
+/// SIGKILL whatever is still registered after [`TERM_GRACE`], then
+/// `simctl terminate` the runner on each simulator in case it outlived its
+/// xcodebuild. A pid is only signalled while it is still registered, i.e. not
+/// yet reaped, so it cannot have been reused by another process.
+pub async fn shutdown_all() {
+    shutdown_registry(global(), TERM_GRACE, terminate_runner).await;
+}
+
+async fn shutdown_registry<F, Fut>(registry: &Registry, grace: Duration, terminate_runner: F)
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    registry.shutting_down.store(true, Ordering::SeqCst);
+    let agents = registry.snapshot();
+    if agents.is_empty() {
+        return;
+    }
+    info!(count = agents.len(), "Stopping iOS agents before exit");
+
+    for (pid, _) in &agents {
+        signal(*pid, libc::SIGTERM);
+    }
+    let deadline = tokio::time::Instant::now() + grace;
+    while agents.iter().any(|(pid, _)| registry.contains(*pid))
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for (pid, entry) in &agents {
+        if registry.contains(*pid) {
+            warn!(pid, udid = %entry.udid, "iOS agent ignored SIGTERM; killing it");
+            signal(*pid, libc::SIGKILL);
+        }
+    }
+
+    let mut sims: Vec<String> = agents
+        .into_iter()
+        .filter(|(_, e)| !e.is_physical)
+        .map(|(_, e)| e.udid)
+        .collect();
+    sims.sort();
+    sims.dedup();
+    let terminations: Vec<_> = sims.into_iter().map(&terminate_runner).collect();
+    for t in terminations {
+        t.await;
+    }
+}
+
+fn signal(pid: u32, sig: libc::c_int) {
+    let Ok(pid) = i32::try_from(pid) else {
+        return;
+    };
+    // SAFETY: plain kill(2); callers only pass pids they have proven are the
+    // process they mean (registered and unreaped, or start-time matched).
+    unsafe {
+        libc::kill(pid, sig);
+    }
+}
+
+async fn terminate_runner(udid: String) {
+    let _ = super::device::bounded_output(
+        "simctl terminate xctrunner",
+        Command::new("xcrun").args(["simctl", "terminate", &udid, RUNNER_BUNDLE_ID]),
+        RUNNER_TERMINATE_TIMEOUT,
+    )
+    .await;
+}
+
+// ─── Owner records ───
+
+/// Contents of `~/.tapsmith/ios-agents/<pid>.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct OwnerRecord {
+    pub pid: u32,
+    /// The agent's process start time (`ps -o lstart=`), so a reused pid is
+    /// never mistaken for it. `None` if `ps` failed at spawn time; such a
+    /// record can never prove anything, so it is only ever discarded.
+    pub started: Option<String>,
+    pub udid: String,
+    pub is_physical: bool,
+    pub daemon_pid: u32,
+    pub daemon_started: Option<String>,
+}
+
+async fn write_record(path: &Path, pid: u32, udid: &str, is_physical: bool) {
+    let record = OwnerRecord {
+        pid,
+        started: process_started(pid).await,
+        udid: udid.to_string(),
+        is_physical,
+        daemon_pid: std::process::id(),
+        daemon_started: own_start_time().await,
+    };
+    let result = async {
+        if let Some(dir) = path.parent() {
+            tokio::fs::create_dir_all(dir).await?;
+        }
+        tokio::fs::write(path, serde_json::to_vec(&record)?).await?;
+        anyhow::Ok(())
+    }
+    .await;
+    if let Err(e) = result {
+        warn!(path = %path.display(), "Could not write the iOS agent owner record ({e:#}); \
+               if this daemon is killed, the agent will not be cleaned up automatically");
+    }
+}
+
+async fn own_start_time() -> Option<String> {
+    static STARTED: tokio::sync::OnceCell<Option<String>> = tokio::sync::OnceCell::const_new();
+    STARTED
+        .get_or_init(|| process_started(std::process::id()))
+        .await
+        .clone()
+}
+
+/// A process's start time from `ps -o lstart=`, in a fixed zone and locale
+/// so daemons launched from different environments compare equal.
+async fn process_started(pid: u32) -> Option<String> {
+    let out = super::device::bounded_output(
+        "ps lstart",
+        Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "lstart="])
+            .env("TZ", "UTC")
+            .env("LC_ALL", "C"),
+        Duration::from_secs(5),
+    )
+    .await
+    .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+// ─── Startup reaper ───
+
+/// What a host process looks like now, for a record's pid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Probe {
+    /// No process with that pid.
+    Gone,
+    /// A process exists; its start time and command name, when `ps` could read them.
+    Running {
+        started: Option<String>,
+        comm: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    /// The daemon that wrote the record is alive: it owns the agent.
+    Keep,
+    /// The daemon is gone and the agent is still the process it started.
+    Reap,
+    /// Nothing to stop (agent gone, pid reused, unprovable record): delete it.
+    Discard,
+}
+
+/// Decide what to do with one owner record. Pure, so every branch is tested.
+pub(crate) fn judge(record: &OwnerRecord, daemon: &Probe, agent: &Probe) -> Verdict {
+    let daemon_alive = match daemon {
+        Probe::Gone => false,
+        // A live daemon is proven by its start time. If `ps` could not read
+        // it, assume the daemon is ours to leave alone rather than kill a
+        // live session's agent.
+        Probe::Running { started, .. } => match (&record.daemon_started, started) {
+            (Some(want), Some(have)) => want == have,
+            _ => true,
+        },
+    };
+    if daemon_alive {
+        return Verdict::Keep;
+    }
+    match agent {
+        Probe::Gone => Verdict::Discard,
+        Probe::Running { started, comm } => {
+            let same_process = matches!(
+                (&record.started, started),
+                (Some(want), Some(have)) if want == have
+            );
+            let is_xcodebuild = comm.as_deref().is_some_and(|c| c.contains("xcodebuild"));
+            if same_process && is_xcodebuild {
+                Verdict::Reap
+            } else {
+                Verdict::Discard
+            }
+        }
+    }
+}
+
+/// Host operations the reaper needs, injectable for tests.
+#[async_trait::async_trait]
+pub(crate) trait ReapHost: Send + Sync {
+    async fn probe(&self, pid: u32) -> Probe;
+    /// Stop an orphaned agent: SIGTERM, then SIGKILL if it is still there.
+    async fn stop(&self, record: &OwnerRecord);
+}
+
+struct RealHost;
+
+#[async_trait::async_trait]
+impl ReapHost for RealHost {
+    async fn probe(&self, pid: u32) -> Probe {
+        let Ok(pid_i) = i32::try_from(pid) else {
+            return Probe::Gone;
+        };
+        // SAFETY: signal 0 only checks for existence/permission.
+        let exists = unsafe { libc::kill(pid_i, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        if !exists {
+            return Probe::Gone;
+        }
+        let comm = super::device::bounded_output(
+            "ps comm",
+            Command::new("/bin/ps").args(["-p", &pid.to_string(), "-o", "comm="]),
+            Duration::from_secs(5),
+        )
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+        Probe::Running {
+            started: process_started(pid).await,
+            comm,
+        }
+    }
+
+    async fn stop(&self, record: &OwnerRecord) {
+        signal(record.pid, libc::SIGTERM);
+        let deadline = tokio::time::Instant::now() + TERM_GRACE;
+        while tokio::time::Instant::now() < deadline {
+            if self.probe(record.pid).await == Probe::Gone {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // Re-prove identity before escalating: the pid could have been reused
+        // in the grace window.
+        if let Probe::Running { started, .. } = self.probe(record.pid).await {
+            if started.is_some() && started == record.started {
+                signal(record.pid, libc::SIGKILL);
+            }
+        }
+        if !record.is_physical {
+            terminate_runner(record.udid.clone()).await;
+        }
+    }
+}
+
+/// Stop agents left behind by a daemon that was killed without running its
+/// teardown. Called once at daemon startup; a no-op without owner records.
+pub async fn reap_orphans() {
+    let Some(dir) = records_dir() else {
+        return;
+    };
+    reap_in(&dir, &RealHost).await;
+}
+
+pub(crate) async fn reap_in(dir: &Path, host: &dyn ReapHost) {
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let record: Option<OwnerRecord> = tokio::fs::read(&path)
+            .await
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok());
+        let Some(record) = record else {
+            debug!(path = %path.display(), "Discarding unreadable iOS agent owner record");
+            let _ = tokio::fs::remove_file(&path).await;
+            continue;
+        };
+        let daemon = host.probe(record.daemon_pid).await;
+        let agent = host.probe(record.pid).await;
+        match judge(&record, &daemon, &agent) {
+            Verdict::Keep => {}
+            Verdict::Reap => {
+                info!(
+                    pid = record.pid,
+                    udid = %record.udid,
+                    daemon_pid = record.daemon_pid,
+                    "Stopping an iOS agent orphaned by a daemon that was killed"
+                );
+                host.stop(&record).await;
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+            Verdict::Discard => {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn leaked(dir: Option<PathBuf>) -> &'static Registry {
+        Box::leak(Box::new(Registry::new(dir)))
+    }
+
+    fn spawn(script: &str) -> Child {
+        Command::new("/bin/sh")
+            .args(["-c", script])
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn /bin/sh")
+    }
+
+    /// Move a tracked agent into a reaper task, as `start_agent_impl` does
+    /// on success.
+    fn hand_to_reaper(mut agent: TrackedAgent) {
+        tokio::spawn(async move {
+            let _ = agent.child_mut().wait().await;
+        });
+    }
+
+    fn alive(pid: u32) -> bool {
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+
+    type Calls = Arc<Mutex<Vec<String>>>;
+
+    fn recording_terminator(calls: &Calls) -> impl Fn(String) -> std::future::Ready<()> {
+        let calls = calls.clone();
+        move |udid| {
+            calls.lock().unwrap().push(udid);
+            std::future::ready(())
+        }
+    }
+
+    #[tokio::test]
+    async fn tracking_registers_and_dropping_after_reap_deregisters() {
+        let registry = leaked(None);
+        let mut agent = TrackedAgent::track(spawn("exit 0"), "SIM-A", false, registry)
+            .await
+            .unwrap();
+        assert_eq!(registry.len(), 1);
+        agent.child_mut().wait().await.unwrap();
+        drop(agent);
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn shutdown_stops_a_running_agent_with_sigterm() {
+        let registry = leaked(None);
+        let agent = TrackedAgent::track(spawn("sleep 60"), "SIM-A", false, registry)
+            .await
+            .unwrap();
+        let pid = agent.pid.unwrap();
+        hand_to_reaper(agent);
+        let calls: Calls = Arc::default();
+        let started = std::time::Instant::now();
+        shutdown_registry(
+            registry,
+            Duration::from_secs(5),
+            recording_terminator(&calls),
+        )
+        .await;
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "SIGTERM should be enough"
+        );
+        assert_eq!(registry.len(), 0);
+        assert!(!alive(pid));
+        assert_eq!(*calls.lock().unwrap(), vec!["SIM-A".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn shutdown_kills_an_agent_that_ignores_sigterm() {
+        let registry = leaked(None);
+        // The pid we hold is the TERM-ignoring shell itself.
+        let agent = TrackedAgent::track(
+            spawn("trap '' TERM; while :; do sleep 1; done"),
+            "SIM-A",
+            false,
+            registry,
+        )
+        .await
+        .unwrap();
+        let pid = agent.pid.unwrap();
+        hand_to_reaper(agent);
+        // Let the shell install its trap before we signal it.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let calls: Calls = Arc::default();
+        shutdown_registry(
+            registry,
+            Duration::from_millis(300),
+            recording_terminator(&calls),
+        )
+        .await;
+        // SIGKILL is asynchronous with respect to our reaper task.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while registry.len() > 0 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(registry.len(), 0, "SIGKILLed agent should be reaped");
+        assert!(!alive(pid));
+    }
+
+    #[tokio::test]
+    async fn shutdown_terminates_each_simulator_runner_once_and_skips_physical() {
+        let registry = leaked(None);
+        for (udid, physical) in [
+            ("SIM-A", false),
+            ("SIM-A", false),
+            ("PHONE", true),
+            ("SIM-B", false),
+        ] {
+            let agent = TrackedAgent::track(spawn("sleep 60"), udid, physical, registry)
+                .await
+                .unwrap();
+            hand_to_reaper(agent);
+        }
+        let calls: Calls = Arc::default();
+        shutdown_registry(
+            registry,
+            Duration::from_secs(5),
+            recording_terminator(&calls),
+        )
+        .await;
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["SIM-A".to_string(), "SIM-B".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn no_agent_can_be_started_once_shutdown_has_begun() {
+        // A startup loop whose xcodebuild exits during teardown must not
+        // relaunch it.
+        let registry = leaked(None);
+        let calls: Calls = Arc::default();
+        shutdown_registry(
+            registry,
+            Duration::from_secs(1),
+            recording_terminator(&calls),
+        )
+        .await;
+        let child = spawn("sleep 60");
+        let pid = child.id().unwrap();
+        let err = TrackedAgent::track(child, "SIM-A", false, registry)
+            .await
+            .err()
+            .expect("track must refuse during shutdown");
+        assert!(err.to_string().contains("shutting down"), "{err}");
+        assert_eq!(registry.len(), 0);
+        assert!(!alive(pid), "the refused child must be killed");
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn owner_record_lives_exactly_as_long_as_the_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = leaked(Some(dir.path().to_path_buf()));
+        let mut agent = TrackedAgent::track(spawn("sleep 60"), "SIM-A", false, registry)
+            .await
+            .unwrap();
+        let pid = agent.pid.unwrap();
+        let path = dir.path().join(format!("{pid}.json"));
+        let record: OwnerRecord =
+            serde_json::from_slice(&std::fs::read(&path).expect("record written")).unwrap();
+        assert_eq!(record.pid, pid);
+        assert_eq!(record.udid, "SIM-A");
+        assert!(!record.is_physical);
+        assert_eq!(record.daemon_pid, std::process::id());
+        assert!(record.started.is_some(), "agent start time recorded");
+        assert!(
+            record.daemon_started.is_some(),
+            "daemon start time recorded"
+        );
+        agent.child_mut().kill().await.unwrap();
+        drop(agent);
+        assert!(!path.exists(), "record removed once the agent is reaped");
+    }
+
+    #[tokio::test]
+    async fn an_unwritable_records_dir_does_not_stop_the_agent_starting() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        // A regular file where the directory should be.
+        let registry = leaked(Some(file.path().join("ios-agents")));
+        let mut agent = TrackedAgent::track(spawn("sleep 60"), "SIM-A", false, registry)
+            .await
+            .unwrap();
+        assert_eq!(registry.len(), 1);
+        agent.child_mut().kill().await.unwrap();
+    }
+
+    // ─── judge ───
+
+    fn record() -> OwnerRecord {
+        OwnerRecord {
+            pid: 100,
+            started: Some("Fri Oct  2 09:00:00 2026".into()),
+            udid: "SIM-A".into(),
+            is_physical: false,
+            daemon_pid: 50,
+            daemon_started: Some("Fri Oct  2 08:59:00 2026".into()),
+        }
+    }
+
+    fn running(started: &str, comm: &str) -> Probe {
+        Probe::Running {
+            started: Some(started.into()),
+            comm: Some(comm.into()),
+        }
+    }
+
+    const AGENT_START: &str = "Fri Oct  2 09:00:00 2026";
+    const DAEMON_START: &str = "Fri Oct  2 08:59:00 2026";
+    const XCODEBUILD: &str = "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild";
+
+    #[test]
+    fn a_live_daemon_keeps_its_agent() {
+        let v = judge(
+            &record(),
+            &running(DAEMON_START, "tapsmith-core"),
+            &running(AGENT_START, XCODEBUILD),
+        );
+        assert_eq!(v, Verdict::Keep);
+    }
+
+    #[test]
+    fn a_daemon_whose_start_time_ps_cannot_read_is_presumed_alive() {
+        let daemon = Probe::Running {
+            started: None,
+            comm: None,
+        };
+        let v = judge(&record(), &daemon, &running(AGENT_START, XCODEBUILD));
+        assert_eq!(v, Verdict::Keep);
+    }
+
+    #[test]
+    fn an_orphan_of_a_dead_daemon_is_reaped() {
+        let v = judge(&record(), &Probe::Gone, &running(AGENT_START, XCODEBUILD));
+        assert_eq!(v, Verdict::Reap);
+    }
+
+    #[test]
+    fn a_reused_daemon_pid_does_not_protect_the_orphan() {
+        let v = judge(
+            &record(),
+            &running("Fri Oct  2 11:00:00 2026", "Safari"),
+            &running(AGENT_START, XCODEBUILD),
+        );
+        assert_eq!(v, Verdict::Reap);
+    }
+
+    #[test]
+    fn a_reused_agent_pid_is_never_killed() {
+        let v = judge(
+            &record(),
+            &Probe::Gone,
+            &running("Fri Oct  2 11:00:00 2026", XCODEBUILD),
+        );
+        assert_eq!(v, Verdict::Discard);
+    }
+
+    #[test]
+    fn a_process_that_is_not_xcodebuild_is_never_killed() {
+        let v = judge(
+            &record(),
+            &Probe::Gone,
+            &running(AGENT_START, "/usr/bin/vim"),
+        );
+        assert_eq!(v, Verdict::Discard);
+    }
+
+    #[test]
+    fn an_agent_whose_identity_cannot_be_proven_is_never_killed() {
+        let mut r = record();
+        r.started = None;
+        assert_eq!(
+            judge(&r, &Probe::Gone, &running(AGENT_START, XCODEBUILD)),
+            Verdict::Discard
+        );
+        let unreadable = Probe::Running {
+            started: None,
+            comm: Some(XCODEBUILD.into()),
+        };
+        assert_eq!(
+            judge(&record(), &Probe::Gone, &unreadable),
+            Verdict::Discard
+        );
+    }
+
+    #[test]
+    fn a_finished_agent_just_loses_its_record() {
+        assert_eq!(
+            judge(&record(), &Probe::Gone, &Probe::Gone),
+            Verdict::Discard
+        );
+    }
+
+    // ─── reap_in ───
+
+    #[derive(Default)]
+    struct FakeHost {
+        procs: HashMap<u32, Probe>,
+        stopped: Mutex<Vec<u32>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ReapHost for FakeHost {
+        async fn probe(&self, pid: u32) -> Probe {
+            self.procs.get(&pid).cloned().unwrap_or(Probe::Gone)
+        }
+        async fn stop(&self, record: &OwnerRecord) {
+            self.stopped.lock().unwrap().push(record.pid);
+        }
+    }
+
+    fn write(dir: &Path, name: &str, body: &[u8]) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[tokio::test]
+    async fn reaper_stops_only_proven_orphans_and_keeps_live_sessions_records() {
+        let dir = tempfile::tempdir().unwrap();
+        // 100: orphan of dead daemon 50 → reaped.
+        let orphan = write(
+            dir.path(),
+            "100.json",
+            &serde_json::to_vec(&record()).unwrap(),
+        );
+        // 200: agent of live daemon 60 → kept, record untouched.
+        let mut live = record();
+        live.pid = 200;
+        live.daemon_pid = 60;
+        let live_path = write(dir.path(), "200.json", &serde_json::to_vec(&live).unwrap());
+        // 300: agent already gone → record discarded.
+        let mut gone = record();
+        gone.pid = 300;
+        let gone_path = write(dir.path(), "300.json", &serde_json::to_vec(&gone).unwrap());
+        // Corrupt record → discarded, nothing stopped.
+        let corrupt = write(dir.path(), "400.json", b"{not json");
+        // Not a record → ignored.
+        let other = write(dir.path(), "notes.txt", b"hello");
+
+        let mut host = FakeHost::default();
+        host.procs.insert(100, running(AGENT_START, XCODEBUILD));
+        host.procs.insert(200, running(AGENT_START, XCODEBUILD));
+        host.procs
+            .insert(60, running(DAEMON_START, "tapsmith-core"));
+        reap_in(dir.path(), &host).await;
+
+        assert_eq!(*host.stopped.lock().unwrap(), vec![100]);
+        assert!(!orphan.exists());
+        assert!(live_path.exists());
+        assert!(!gone_path.exists());
+        assert!(!corrupt.exists());
+        assert!(other.exists());
+    }
+
+    #[tokio::test]
+    async fn reaper_is_a_no_op_without_a_records_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::default();
+        reap_in(&dir.path().join("missing"), &host).await;
+        assert!(host.stopped.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn real_host_stops_a_recorded_orphan() {
+        // End to end against a real process: write the record the way a
+        // daemon would, pretend that daemon died, and reap.
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let pid = child.id().unwrap();
+        let mut r = record();
+        r.pid = pid;
+        r.started = process_started(pid).await;
+        r.is_physical = true; // no simctl in unit tests
+        r.daemon_pid = u32::MAX - 1; // no such process
+                                     // `sleep` is not xcodebuild, so the real judge must refuse it…
+        write(dir.path(), "a.json", &serde_json::to_vec(&r).unwrap());
+        reap_in(dir.path(), &RealHost).await;
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "non-xcodebuild must survive"
+        );
+        // …while RealHost::stop itself does stop a proven process.
+        RealHost.stop(&r).await;
+        let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .expect("stopped")
+            .unwrap();
+        assert!(!status.success());
+    }
+}
