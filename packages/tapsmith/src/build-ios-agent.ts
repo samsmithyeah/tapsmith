@@ -490,12 +490,7 @@ export async function buildIosAgent(options: BuildIosAgentOptions): Promise<stri
       }
     }
 
-    const cwd = path.resolve(options.cwd ?? process.cwd());
-    for (const line of builtRunnerConfigHint(newest, {
-      autoDetected: findDeviceXctestrun(cwd) === newest,
-      inNpmAgentDir: !path.relative(npmIosAgentDir(), newest).startsWith('..'),
-      cwd,
-    })) console.log(line);
+    for (const line of builtRunnerConfigHint(newest, path.resolve(options.cwd ?? process.cwd()))) console.log(line);
     console.log();
   }
   return newest;
@@ -508,15 +503,14 @@ export async function buildIosAgent(options: BuildIosAgentOptions): Promise<stri
  * usual layouts, so say that, and give an absolute path for pinning or for a
  * build it will not find (a custom `--derived-data-path`).
  */
-export function builtRunnerConfigHint(
-  xctestrun: string,
-  where: { autoDetected: boolean; inNpmAgentDir: boolean; cwd: string },
-): string[] {
+export function builtRunnerConfigHint(xctestrun: string, cwd: string): string[] {
   const pin = `    ${dim('iosXctestrun:')} ${green(`'${xctestrun}'`)}`;
-  if (!where.autoDetected) {
+  if (findDeviceXctestrun(cwd) !== xctestrun) {
     return ['  Add to your ' + bold('tapsmith.config.ts') + ' (an absolute path, so it works from any rootDir):', pin];
   }
-  const scope = where.inNpmAgentDir ? '' : ` when run from ${where.cwd} or a directory inside it`;
+  const inNpmAgentDir = !path.relative(npmIosAgentDir(), xctestrun).startsWith('..');
+  // findDeviceXctestrun walks up five parents from rootDir.
+  const scope = inNpmAgentDir ? '' : ` when your config's rootDir is ${cwd} or up to five levels inside it`;
   return [
     `  ${bold('tapsmith test')} finds this runner itself${scope} — no \`iosXctestrun\` needed.`,
     dim('  To pin this build instead, add to your tapsmith.config.ts:'),

@@ -2883,7 +2883,8 @@ command-line tools, `xcrun devicectl`, libimobiledevice (`iproxy`), a code
 signing identity and an Apple Developer team registered with Xcode; and, as
 advisory checks, passwordless `sudo` for the Developer Disk Image mount (so a
 test run does not stop at a password prompt), a signed agent runner (found the way
-`tapsmith test` finds it: see `ios build-agent` below; a runner an earlier
+`tapsmith test` finds it, taking the current directory as `rootDir`: see
+`ios build-agent` below; a runner an earlier
 Tapsmith version built for an npm install is flagged for a rebuild), and the
 provisioning profile's expiry. Device check: each listed device is paired and
 does not have Developer Mode off (`unknown`, as on devices before iOS 16, passes).

@@ -264,10 +264,14 @@ export function checkSudoTruePasswordless(): CheckResult {
  * outside the warning window.
  */
 export function checkProfileExpiry(startDir: string = process.cwd()): CheckResult {
-  // The same runner `tapsmith test` would pick (PILOT-264).
+  // The runner `tapsmith test` would pick with this directory as rootDir
+  // (PILOT-264).
   const xctestrunPath = findDeviceXctestrun(startDir);
   if (!xctestrunPath) {
-    return { label: 'Provisioning profile expiry', ok: true, detail: 'no signed runner yet (build first)' };
+    const detail = staleNpmDeviceBuild()
+      ? 'not checked: the runner needs a rebuild (above)'
+      : 'no signed runner yet (build first)';
+    return { label: 'Provisioning profile expiry', ok: true, detail };
   }
   const info = getProfileExpiryInfo(xctestrunPath);
   if (!info) {
@@ -299,9 +303,9 @@ export function checkProfileExpiry(startDir: string = process.cwd()): CheckResul
  * means one less step in the "next steps" list when it's already done.
  */
 export function checkIosAgentBuilt(startDir: string = process.cwd()): CheckResult {
-  // The same lookup `tapsmith test` uses: a checkout's ios-agent/.build-device
-  // in or above startDir, then the npm install's ~/.tapsmith/ios-agent build
-  // (PILOT-264).
+  // The lookup `tapsmith test` uses, from this directory as rootDir: a
+  // checkout's ios-agent/.build-device in or above startDir, then the npm
+  // install's ~/.tapsmith/ios-agent build (PILOT-264).
   const xctestrun = findDeviceXctestrun(startDir);
   if (xctestrun) {
     return { label: 'Signed iOS agent runner', ok: true, detail: displayPath(xctestrun) };
@@ -314,8 +318,8 @@ export function checkIosAgentBuilt(startDir: string = process.cwd()): CheckResul
       advisory: true,
       fix: [
         `The runner under ~/.tapsmith/ios-agent was built by ${stale.builtBy ? `Tapsmith ${stale.builtBy}` : 'another Tapsmith version'} (this is ${stale.current}).`,
-        'Rebuild it for this version:',
-        '  tapsmith ios build-agent',
+        `Rebuild it with Tapsmith ${stale.current} (run it in your project):`,
+        '  npx tapsmith ios build-agent',
       ],
     };
   }

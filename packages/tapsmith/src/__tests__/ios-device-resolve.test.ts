@@ -111,7 +111,8 @@ describe('staleNpmDeviceBuild / describeMissingDeviceXctestrun', () => {
     const msg = describeMissingDeviceXctestrun(path.join(tmp, 'proj'));
     expect(msg).toContain('built by Tapsmith 0.0.1-old');
     expect(msg).toContain(`this is ${tapsmithPackageVersion()}`);
-    expect(msg).toContain('tapsmith ios build-agent');
+    // Names the version to build with, so a second installed Tapsmith does not loop (R1-F7).
+    expect(msg).toContain(`Rebuild it with Tapsmith ${tapsmithPackageVersion()}: run \`npx tapsmith ios build-agent\` in your project`);
   });
 
   it('is not stale when the npm build matches this version, or when there is no npm build', () => {

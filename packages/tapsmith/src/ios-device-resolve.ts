@@ -112,7 +112,7 @@ export function describeMissingDeviceXctestrun(startDir: string): string {
   if (stale) {
     const by = stale.builtBy ? `Tapsmith ${stale.builtBy}` : 'another Tapsmith version';
     return `${looked} The runner under ${npmBuild} was built by ${by} (this is ${stale.current}), `
-      + 'so it is not used. Rebuild it with `tapsmith ios build-agent`.';
+      + `so it is not used. Rebuild it with Tapsmith ${stale.current}: run \`npx tapsmith ios build-agent\` in your project.`;
   }
   return `${looked} Run \`tapsmith ios build-agent\` first, or set \`iosXctestrun\` explicitly.`;
 }
@@ -166,9 +166,15 @@ function newestIphoneosXctestrun(productsDir: string): string | undefined {
         !e.endsWith('.patched.xctestrun'),
     )
     .map((e) => path.join(productsDir, e));
-  if (matches.length === 0) return undefined;
-  matches.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-  return matches[0];
+  // Stat each once, skipping a file removed since the readdir (an upgrade
+  // re-extracting ~/.tapsmith/ios-agent in another process).
+  const stamped: Array<{ path: string; mtime: number }> = [];
+  for (const p of matches) {
+    try { stamped.push({ path: p, mtime: fs.statSync(p).mtimeMs }); } catch { /* vanished */ }
+  }
+  if (stamped.length === 0) return undefined;
+  stamped.sort((a, b) => b.mtime - a.mtime);
+  return stamped[0].path;
 }
 
 /**

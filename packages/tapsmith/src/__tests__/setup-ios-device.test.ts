@@ -264,6 +264,11 @@ describe('checkIosAgentBuilt / checkProfileExpiry find the npm build (PILOT-264)
     expect(result.fix?.join('\n')).toMatch(/built by Tapsmith 0\.0\.1-old[\s\S]*tapsmith ios build-agent/);
   });
 
+  it('with a stale npm build, the profile-expiry row points at the rebuild instead of saying nothing is built', () => {
+    npmBuild('0.0.1-old');
+    expect(checkProfileExpiry(path.join(tmp, 'project')).detail).toBe('not checked: the runner needs a rebuild (above)');
+  });
+
   it('still says "not built yet" with nothing built', () => {
     const result = checkIosAgentBuilt(path.join(tmp, 'project'));
     expect(result).toMatchObject({ ok: false, advisory: true });

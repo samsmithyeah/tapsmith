@@ -1,4 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { tapsmithPackageVersion } from '../ios-agent-paths.js';
 import {
   builtRunnerConfigHint,
   matchKnownErrorHint,
@@ -158,25 +162,50 @@ describe('matchKnownErrorHint', () => {
 describe('builtRunnerConfigHint', () => {
   // The hint is styled for the terminal; read the words.
   const plain = (lines: string[]) => lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
-  const npmRunner = '/Users/me/.tapsmith/ios-agent/.build-device/Build/Products/A_iphoneos26.4-arm64.xctestrun';
+  const XCTESTRUN = 'A_iphoneos26.4-arm64.xctestrun';
+  let tmp: string;
+  let savedHome: string | undefined;
+  const writeRunner = (productsDir: string) => {
+    fs.mkdirSync(productsDir, { recursive: true });
+    const file = path.join(productsDir, XCTESTRUN);
+    fs.writeFileSync(file, '<plist/>');
+    return file;
+  };
 
-  it('when tapsmith test will find the runner, says so and offers an absolute pin', () => {
-    const text = plain(builtRunnerConfigHint(npmRunner, { autoDetected: true, inNpmAgentDir: true, cwd: '/Users/me/app' }));
-    expect(text).toMatch(/finds this runner itself/);
-    expect(text).toMatch(/no `iosXctestrun` needed/);
-    expect(text).toContain(`iosXctestrun: '${npmRunner}'`);
-    expect(text).not.toMatch(/iosXctestrun: '\.\.?\//);
+  beforeEach(() => {
+    tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-hint-')));
+    fs.mkdirSync(path.join(tmp, 'home'));
+    savedHome = process.env.HOME;
+    process.env.HOME = path.join(tmp, 'home');
+  });
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('a checkout build is found from the build directory or below it', () => {
-    const runner = '/src/tapsmith/ios-agent/.build-device/Build/Products/A_iphoneos26.4-arm64.xctestrun';
-    const text = plain(builtRunnerConfigHint(runner, { autoDetected: true, inNpmAgentDir: false, cwd: '/src/tapsmith' }));
-    expect(text).toMatch(/run from \/src\/tapsmith or a directory inside it/);
+  it('an npm build: tapsmith test finds it from anywhere; offers an absolute pin', () => {
+    const agent = path.join(tmp, 'home', '.tapsmith', 'ios-agent');
+    const runner = writeRunner(path.join(agent, '.build-device', 'Build', 'Products'));
+    fs.writeFileSync(path.join(agent, '.tapsmith-version'), tapsmithPackageVersion());
+    const app = path.join(tmp, 'app');
+    fs.mkdirSync(app);
+    const text = plain(builtRunnerConfigHint(runner, app));
+    expect(text).toMatch(/finds this runner itself — no `iosXctestrun` needed/);
+    expect(text).not.toMatch(/rootDir is/);
+    expect(text).toContain(`iosXctestrun: '${runner}'`);
+  });
+
+  it('a checkout build is found from rootDirs at or up to five levels inside the build directory', () => {
+    const repo = path.join(tmp, 'repo');
+    const runner = writeRunner(path.join(repo, 'ios-agent', '.build-device', 'Build', 'Products'));
+    const text = plain(builtRunnerConfigHint(runner, repo));
+    expect(text).toContain(`when your config's rootDir is ${repo} or up to five levels inside it`);
   });
 
   it('a build it will not find (custom --derived-data-path) gets an absolute iosXctestrun to add', () => {
-    const runner = '/tmp/dd/Build/Products/A_iphoneos26.4-arm64.xctestrun';
-    const text = plain(builtRunnerConfigHint(runner, { autoDetected: false, inNpmAgentDir: false, cwd: '/Users/me/app' }));
+    const runner = writeRunner(path.join(tmp, 'dd', 'Build', 'Products'));
+    const text = plain(builtRunnerConfigHint(runner, path.join(tmp, 'home')));
     expect(text).not.toMatch(/finds this runner itself/);
     expect(text).toMatch(/Add to your/);
     expect(text).toContain(`iosXctestrun: '${runner}'`);
