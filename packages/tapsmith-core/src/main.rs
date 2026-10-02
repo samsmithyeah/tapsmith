@@ -252,26 +252,27 @@ async fn main() -> Result<()> {
         )
         .serve_with_shutdown(addr, async move {
             shutdown_signal(parent_to_watch, watch_sighup).await;
+            let _ = shutdown_began_tx.send(());
             // Stop the iOS agents first, before the gRPC drain: a long-lived
             // stream can hold the drain open, and the agents must not outlive
             // the daemon either way (PILOT-299).
             ios::agent_registry::shutdown_all().await;
-            let _ = shutdown_began_tx.send(());
         });
     // The drain waits for every open connection. A client that keeps a stream
     // open (or a worker that outlived a killed CLI) would hold it forever, and
-    // nobody escalates to SIGKILL after a parent-exit shutdown — so bound it,
-    // and still run the proxy cleanup below.
+    // nobody escalates to SIGKILL after a parent-exit shutdown — so bound
+    // agent teardown plus drain, measured from the signal, and still run the
+    // proxy cleanup below.
     let drain_limit = async {
         match shutdown_began_rx.await {
-            Ok(()) => tokio::time::sleep(DRAIN_LIMIT).await,
+            Ok(()) => tokio::time::sleep(SHUTDOWN_LIMIT).await,
             Err(_) => std::future::pending().await,
         }
     };
     tokio::select! {
         result = serve => result.context("gRPC server failed")?,
         _ = drain_limit => {
-            warn!("gRPC connections still open {DRAIN_LIMIT:?} after shutdown began; exiting without them");
+            warn!("Shutdown still draining after {SHUTDOWN_LIMIT:?}; exiting without the open gRPC connections");
         }
     }
 
@@ -283,10 +284,11 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// How long the gRPC drain may run once shutdown has begun. Short enough that
-/// agent teardown plus drain plus proxy cleanup fit inside the 5 s the UI
-/// server gives a daemon between SIGTERM and SIGKILL.
-const DRAIN_LIMIT: Duration = Duration::from_secs(2);
+/// How long agent teardown plus the gRPC drain may take once a shutdown
+/// signal arrives. Agent teardown is itself bounded at ~3 s (1.5 s SIGTERM
+/// grace + 1.5 s simctl), so this leaves the proxy cleanup about a second of
+/// the 5 s the UI server gives a daemon between SIGTERM and SIGKILL.
+const SHUTDOWN_LIMIT: Duration = Duration::from_millis(3500);
 
 /// Resolves when the daemon should shut down: SIGINT, SIGTERM, SIGHUP (the
 /// terminal it was started from closed), or — unless `--outlive-parent` —

@@ -36,11 +36,11 @@ use tracing::{info, warn};
 /// xcodebuild exits in ~250 ms on SIGTERM (and its in-simulator runner with
 /// it); the UI server gives a daemon 5 s between SIGTERM and SIGKILL, so the
 /// whole teardown has to fit well inside that.
-const TERM_GRACE: Duration = Duration::from_secs(2);
+const TERM_GRACE: Duration = Duration::from_millis(1500);
 
 /// Bound on the `simctl terminate` belt-and-braces step (all simulators run
 /// in parallel), so grace + this stays well inside the UI server's 5 s.
-const RUNNER_TERMINATE_TIMEOUT: Duration = Duration::from_secs(2);
+const RUNNER_TERMINATE_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Bundle id of the XCUITest runner app inside the simulator.
 const RUNNER_BUNDLE_ID: &str = "dev.tapsmith.agent.xctrunner";
@@ -413,7 +413,8 @@ pub(crate) enum Probe {
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Verdict {
-    /// The daemon that wrote the record is alive: it owns the agent.
+    /// Leave the record: its daemon is alive and owns the agent, or the
+    /// agent's identity could not be read this time.
     Keep,
     /// The daemon is gone and the agent is still the process it started.
     Reap,
@@ -439,18 +440,21 @@ pub(crate) fn judge(record: &OwnerRecord, daemon: &Probe, agent: &Probe) -> Verd
     }
     match agent {
         Probe::Gone => Verdict::Discard,
-        Probe::Running { started, comm } => {
-            let same_process = matches!(
-                (&record.started, started),
-                (Some(want), Some(have)) if want == have
-            );
-            let is_xcodebuild = comm.as_deref().is_some_and(|c| c.contains("xcodebuild"));
-            if same_process && is_xcodebuild {
-                Verdict::Reap
-            } else {
-                Verdict::Discard
+        Probe::Running { started, comm } => match (&record.started, started, comm) {
+            // Written without a start time: can never prove anything.
+            (None, _, _) => Verdict::Discard,
+            // `ps` failed just now: keep the record so a later start can
+            // still prove it, rather than throwing away the only evidence.
+            (Some(_), None, _) | (Some(_), Some(_), None) => Verdict::Keep,
+            (Some(want), Some(have), Some(comm)) => {
+                if want == have && comm.contains("xcodebuild") {
+                    Verdict::Reap
+                } else {
+                    // The pid now belongs to another process.
+                    Verdict::Discard
+                }
             }
-        }
+        },
     }
 }
 
@@ -459,7 +463,8 @@ pub(crate) fn judge(record: &OwnerRecord, daemon: &Probe, agent: &Probe) -> Verd
 #[async_trait::async_trait]
 pub(crate) trait ReapHost: Send + Sync {
     async fn probe(&self, pid: u32) -> Probe;
-    /// Stop an orphaned agent: SIGTERM, then SIGKILL if it is still there.
+    /// Stop an orphaned agent (only that pid): SIGTERM, then SIGKILL if it is
+    /// still the same process.
     async fn stop(&self, record: &OwnerRecord);
 }
 
@@ -510,9 +515,9 @@ impl ReapHost for RealHost {
                 signal(record.pid, libc::SIGKILL);
             }
         }
-        if !record.is_physical {
-            terminate_runner(record.udid.clone()).await;
-        }
+        // Deliberately no `simctl terminate` here: the in-simulator runner
+        // exits with its xcodebuild, and a udid-wide terminate is not proven
+        // ours — another daemon may already have started an agent there.
     }
 }
 
@@ -930,13 +935,25 @@ mod tests {
             judge(&r, &Probe::Gone, &running(AGENT_START, XCODEBUILD)),
             Verdict::Discard
         );
-        let unreadable = Probe::Running {
+    }
+
+    #[test]
+    fn an_agent_ps_cannot_read_right_now_keeps_its_record_for_next_time() {
+        let unreadable_start = Probe::Running {
             started: None,
             comm: Some(XCODEBUILD.into()),
         };
         assert_eq!(
-            judge(&record(), &Probe::Gone, &unreadable),
-            Verdict::Discard
+            judge(&record(), &Probe::Gone, &unreadable_start),
+            Verdict::Keep
+        );
+        let unreadable_comm = Probe::Running {
+            started: Some(AGENT_START.into()),
+            comm: None,
+        };
+        assert_eq!(
+            judge(&record(), &Probe::Gone, &unreadable_comm),
+            Verdict::Keep
         );
     }
 

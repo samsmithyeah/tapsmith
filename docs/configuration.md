@@ -491,7 +491,7 @@ export default defineConfig({
 });
 ```
 
-A daemon shuts down, stopping the device agents it started, when the process
+A daemon shuts down, stopping the iOS agents it started, when the process
 that launched it exits. That keeps a killed test run from leaving a daemon and
 its agents behind. If you start `tapsmith-core` yourself and want it to keep
 running after the shell or CI step that started it ends, pass
