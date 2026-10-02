@@ -184,7 +184,7 @@ describe('builtRunnerConfigHint', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('an npm build: tapsmith test finds it from anywhere; offers an absolute pin', () => {
+  it('an npm build: tapsmith test finds it from anywhere; no pin offered (an upgrade would delete the pinned file)', () => {
     const agent = path.join(tmp, 'home', '.tapsmith', 'ios-agent');
     const runner = writeRunner(path.join(agent, '.build-device', 'Build', 'Products'));
     fs.writeFileSync(path.join(agent, '.tapsmith-version'), tapsmithPackageVersion());
@@ -193,7 +193,7 @@ describe('builtRunnerConfigHint', () => {
     const text = plain(builtRunnerConfigHint(runner, app));
     expect(text).toMatch(/finds this runner itself — no `iosXctestrun` needed/);
     expect(text).not.toMatch(/rootDir is/);
-    expect(text).toContain(`iosXctestrun: '${runner}'`);
+    expect(text).not.toContain('iosXctestrun:');
   });
 
   it('a checkout build is found from rootDirs at or up to five levels inside the build directory', () => {
@@ -201,6 +201,7 @@ describe('builtRunnerConfigHint', () => {
     const runner = writeRunner(path.join(repo, 'ios-agent', '.build-device', 'Build', 'Products'));
     const text = plain(builtRunnerConfigHint(runner, repo));
     expect(text).toContain(`when your config's rootDir is ${repo} or up to five levels inside it`);
+    expect(text).toContain(`iosXctestrun: '${runner}'`);
   });
 
   it('a build it will not find (custom --derived-data-path) gets an absolute iosXctestrun to add', () => {

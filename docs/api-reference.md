@@ -2920,9 +2920,10 @@ install), but only if the installed Tapsmith version built it. Upgrading
 Tapsmith replaces `~/.tapsmith/ios-agent/` the next time Tapsmith builds an agent, so rebuild
 after an upgrade; until then `tapsmith test` reports that the runner was built
 by the earlier version. When the build finishes, the command says whether
-`tapsmith test` will find the runner on its own, and prints an absolute
-`iosXctestrun:` line to pin it (or to add, for a build it will not find, such as
-one with `--derived-data-path`). An `iosXctestrun` or `TAPSMITH_IOS_XCTESTRUN`
+`tapsmith test` will find the runner on its own. For a checkout build it also
+prints an absolute `iosXctestrun:` line to pin it, and for a build the lookup will
+not find (such as one with `--derived-data-path`) the line to add; it offers no
+pin for the npm build, which an upgrade replaces. An `iosXctestrun` or `TAPSMITH_IOS_XCTESTRUN`
 naming a file that does not exist stops the run before the agent starts, with
 the path in the error.
 

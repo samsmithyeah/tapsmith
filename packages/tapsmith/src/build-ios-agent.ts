@@ -509,10 +509,15 @@ export function builtRunnerConfigHint(xctestrun: string, cwd: string): string[] 
     return ['  Add to your ' + bold('tapsmith.config.ts') + ' (an absolute path, so it works from any rootDir):', pin];
   }
   const inNpmAgentDir = !path.relative(npmIosAgentDir(), xctestrun).startsWith('..');
+  if (inNpmAgentDir) {
+    // No pin offered: upgrading Tapsmith replaces ~/.tapsmith/ios-agent, so a
+    // pinned path there would turn into a hard error, where auto-detection
+    // just asks for a rebuild.
+    return [`  ${bold('tapsmith test')} finds this runner itself — no \`iosXctestrun\` needed.`];
+  }
   // findDeviceXctestrun walks up five parents from rootDir.
-  const scope = inNpmAgentDir ? '' : ` when your config's rootDir is ${cwd} or up to five levels inside it`;
   return [
-    `  ${bold('tapsmith test')} finds this runner itself${scope} — no \`iosXctestrun\` needed.`,
+    `  ${bold('tapsmith test')} finds this runner itself when your config's rootDir is ${cwd} or up to five levels inside it — no \`iosXctestrun\` needed.`,
     dim('  To pin this build instead, add to your tapsmith.config.ts:'),
     pin,
   ];
