@@ -1931,23 +1931,31 @@ async function startAgentFromConfig(
 
 /**
  * The xctestrun this session hands the daemon when it starts an iOS agent
- * itself (its `run_tests` children adopt that agent). Once the device is
- * known it resolves exactly like every test run path (`resolveAgentArtifacts`):
- * the device build — a checkout's or the npm install's — for a physical
- * device, the simulator agent otherwise, and a hand-set path that does not
- * exist refused (PILOT-264). With no device known (recovering an orphaned
- * daemon's agent) it falls back to the hand-set path or a simulator build.
+ * itself (its `run_tests` children adopt that agent). A hand-set path
+ * (`iosXctestrun` / `TAPSMITH_IOS_XCTESTRUN`) or a physical device resolves
+ * exactly like every test run path (`resolveAgentArtifacts`): a missing
+ * hand-set file is refused, and a physical device gets the device build — a
+ * checkout's or the npm install's — instead of a simulator one (PILOT-264).
+ * A simulator with nothing set keeps the plain lookup: the shared path would
+ * build the simulator agent on demand, which logs to stdout (the stdio MCP
+ * protocol channel) and holds the tool call for the whole xcodebuild.
  */
 export async function iosXctestrunForAgentStart(
   config: TapsmithConfig,
   serial: string | undefined,
 ): Promise<string | undefined> {
+  const handSet = config.iosXctestrun || process.env.TAPSMITH_IOS_XCTESTRUN;
   if (serial) {
-    const { resolveAgentArtifacts } = await import('../device-session.js');
-    const artifacts = await resolveAgentArtifacts(config, serial, undefined, { requireXctestrun: true });
-    return artifacts.iosXctestrunPath;
+    const { isPhysicalDevice } = await import('../ios-devicectl.js');
+    if (handSet || isPhysicalDevice(serial)) {
+      const { resolveAgentArtifacts } = await import('../device-session.js');
+      const artifacts = await resolveAgentArtifacts(config, serial, undefined, { requireXctestrun: true });
+      return artifacts.iosXctestrunPath;
+    }
   }
+  // No device known (recovering an orphaned daemon's agent), or a simulator.
   if (config.iosXctestrun) return path.resolve(config.rootDir, config.iosXctestrun);
+  if (process.env.TAPSMITH_IOS_XCTESTRUN) return process.env.TAPSMITH_IOS_XCTESTRUN;
   try {
     const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
     return findSimulatorXctestrun();

@@ -17,6 +17,11 @@ vi.mock('../ios-devicectl.js', async (importOriginal) => ({
   isPhysicalDevice: vi.fn((serial: string) => mocks.physical.has(serial)),
 }));
 
+vi.mock('../ios-device-resolve.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../ios-device-resolve.js')>()),
+  findSimulatorXctestrun: vi.fn(() => undefined),
+}));
+
 vi.mock('../ios-simulator-build.js', () => ({
   ensureSimulatorAgent: vi.fn(async () => '/derived/Sim_iphonesimulator27.0-arm64.xctestrun'),
 }));
@@ -78,8 +83,23 @@ describe('iosXctestrunForAgentStart', () => {
       .rejects.toThrow(/The xctestrun set by `iosXctestrun` .*does not exist/);
   });
 
-  it('a simulator with nothing set gets the simulator agent', async () => {
-    await expect(iosXctestrunForAgentStart(config(), 'SIM-1')).resolves.toBe('/derived/Sim_iphonesimulator27.0-arm64.xctestrun');
+  it('a simulator with nothing set uses the plain lookup, never the on-demand build (it logs to the stdio channel)', async () => {
+    const { ensureSimulatorAgent } = await import('../ios-simulator-build.js');
+    const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
+    vi.mocked(findSimulatorXctestrun).mockReturnValueOnce('/cache/Sim_iphonesimulator27.0-arm64.xctestrun');
+    await expect(iosXctestrunForAgentStart(config(), 'SIM-1')).resolves.toBe('/cache/Sim_iphonesimulator27.0-arm64.xctestrun');
+    expect(ensureSimulatorAgent).not.toHaveBeenCalled();
+  });
+
+  it('a simulator with a hand-set path that exists gets it, checked', async () => {
+    const file = path.join(tmp, 'project', 'Sim.xctestrun');
+    fs.writeFileSync(file, '<plist/>');
+    await expect(iosXctestrunForAgentStart(config({ iosXctestrun: 'Sim.xctestrun' }), 'SIM-1')).resolves.toBe(file);
+  });
+
+  it('with no device known, honours TAPSMITH_IOS_XCTESTRUN', async () => {
+    process.env.TAPSMITH_IOS_XCTESTRUN = '/env/Agent.xctestrun';
+    await expect(iosXctestrunForAgentStart(config(), undefined)).resolves.toBe('/env/Agent.xctestrun');
   });
 
   it('with no device known, uses the hand-set path as given', async () => {
