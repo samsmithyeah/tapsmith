@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { androidEmulatorCaptureLine, avdPickerChoices, generateConfig, generateExampleTest, runInit } from '../init.js';
+import { androidEmulatorCaptureLine, avdPickerChoices, generateConfig, generatedProjects, generateExampleTest, runInit } from '../init.js';
 import type { AndroidConfig, IosConfig, Platform } from '../init.js';
 import { platformlessIosFields } from '../doctor.js';
 import { _internal } from '../runner.js';
@@ -272,6 +272,11 @@ describe('generateConfig()', () => {
       expect(sim.map((s) => s.app)).toEqual(ios.simulator ? ['./MyApp.app'] : []);
       expect(phys.map((s) => s.app)).toEqual(ios.usePhysicalDevice ? ['./MyApp-device.app'] : []);
       for (const s of iosScopes) expect(s.package).toBe('com.example.ios');
+    });
+
+    it.each(cases)('$label: the next-steps --project names match the generated projects', ({ platforms, android: a, ios }) => {
+      const parsed = evaluateConfig(generateConfig(platforms, a, ios, false));
+      expect(generatedProjects(platforms, ios).map((p) => p.name)).toEqual((parsed.projects ?? []).map((p) => p.name));
     });
   });
 

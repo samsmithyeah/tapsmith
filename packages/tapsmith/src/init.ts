@@ -304,17 +304,22 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
       },
     });
     const deviceId = detectBundleId(deviceAppPath);
-    if (!bundleId) bundleId = deviceId;
+    // Simulator and device builds can carry different ids (Debug vs
+    // Release), so the device id never stands in for the simulator's.
+    if (!useSimulators) bundleId = deviceId;
     else if (deviceId && deviceId !== bundleId) deviceBundleId = deviceId;
   }
 
   if (!bundleId) {
     bundleId = await ask<string>({
       type: 'input',
-      message: 'What is your app\'s bundle identifier?',
-      initial: 'com.example.myapp',
+      message: deviceBundleId
+        ? 'What is your simulator build\'s bundle identifier?'
+        : 'What is your app\'s bundle identifier?',
+      initial: deviceBundleId ?? 'com.example.myapp',
       validate: (val: string) => val.trim().length > 0 || 'Bundle ID is required',
     });
+    if (bundleId === deviceBundleId) deviceBundleId = undefined;
   }
 
   return { appPath, bundleId, deviceBundleId, simulator, usePhysicalDevice, deviceAppPath };
@@ -408,6 +413,38 @@ export async function ensureSimulatorAgent(
 
 // ─── Config generation ───
 
+/**
+ * The iOS targets the user picked. A scope with no `simulator` is a
+ * physical-device run (the runner auto-detects the paired device), so a
+ * simulator target needs both the simulator build and a simulator, and the
+ * device target must not inherit either.
+ */
+function iosTargets(ios: IosConfig | undefined): { sim?: { app: string; simulator: string }; deviceApp?: string } {
+  return {
+    sim: ios?.appPath && ios.simulator ? { app: ios.appPath, simulator: ios.simulator } : undefined,
+    deviceApp: ios?.usePhysicalDevice ? ios.deviceAppPath : undefined,
+  };
+}
+
+/**
+ * The `--project` names generateConfig() writes, with a label for the
+ * wizard's next steps. Empty when the config has no projects.
+ */
+export function generatedProjects(
+  platforms: Platform[],
+  ios: IosConfig | undefined,
+): Array<{ name: string; label: string }> {
+  const { sim, deviceApp } = iosTargets(ios);
+  const device = !!deviceApp;
+  const multi = platforms.length > 1;
+  if (!multi && !(platforms[0] === 'ios' && sim && device)) return [];
+  const out: Array<{ name: string; label: string }> = [];
+  if (multi) out.push({ name: 'android', label: 'Run Android only' });
+  if (sim) out.push({ name: 'ios', label: device ? 'Run iOS simulator only' : 'Run iOS only' });
+  if (device) out.push({ name: 'ios-device', label: sim ? 'Run iOS device only' : 'Run iOS only' });
+  return out;
+}
+
 export function generateConfig(
   platforms: Platform[],
   android: AndroidConfig | undefined,
@@ -423,12 +460,7 @@ export function generateConfig(
 
   if (enableNetwork) lines.push("  trace: { mode: 'retain-on-failure' },");
 
-  // The iOS targets the user picked. A scope with no `simulator` is a
-  // physical-device run (the runner auto-detects the paired device), so a
-  // simulator scope needs both the simulator build and a simulator, and the
-  // device scope must not inherit either.
-  const iosSim = ios?.appPath && ios.simulator ? { app: ios.appPath, simulator: ios.simulator } : undefined;
-  const iosDeviceApp = ios?.usePhysicalDevice ? ios.deviceAppPath : undefined;
+  const { sim: iosSim, deviceApp: iosDeviceApp } = iosTargets(ios);
   const iosDevicePkg = ios?.deviceBundleId ?? ios?.bundleId;
 
   const iosProjects = (out: string[], iosCfg: IosConfig): void => {
@@ -765,10 +797,13 @@ async function runInitInner(): Promise<void> {
   console.log(`  List devices:       ${green('npx tapsmith list-devices')}`);
   console.log(`  Health check:       ${green('npx tapsmith doctor')}`);
 
-  if (selectedPlatforms.length > 1) {
+  const projects = generatedProjects(selectedPlatforms, iosConfig);
+  if (projects.length > 0) {
     console.log();
-    console.log(`  Run Android only:   ${green('npx tapsmith test --project android')}`);
-    console.log(`  Run iOS only:       ${green('npx tapsmith test --project ios')}`);
+    const width = Math.max(...projects.map((p) => p.label.length)) + 1;
+    for (const { name, label } of projects) {
+      console.log(`  ${`${label}:`.padEnd(width + 2)} ${green(`npx tapsmith test --project ${name}`)}`);
+    }
   }
 
   console.log();
