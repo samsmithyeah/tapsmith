@@ -34,6 +34,7 @@ import * as path from 'node:path';
 import { glob } from 'glob';
 import { getProfileExpiryInfo, formatExpiryWarning } from './ios-profile-expiry.js';
 import { npmIosAgentDir, npmIosAgentVersion, npmIosAgentVersionFile, tapsmithPackageVersion } from './ios-agent-paths.js';
+import { findDeviceXctestrun } from './ios-device-resolve.js';
 
 // ─── iOS agent source resolution ────────────────────────────────────────
 
@@ -489,11 +490,38 @@ export async function buildIosAgent(options: BuildIosAgentOptions): Promise<stri
       }
     }
 
-    console.log('  Add to your ' + bold('tapsmith.config.ts') + ':');
-    console.log(`    ${dim('iosXctestrun:')} ${green("'" + path.relative(options.cwd ?? process.cwd(), newest) + "'")}`);
+    const cwd = path.resolve(options.cwd ?? process.cwd());
+    for (const line of builtRunnerConfigHint(newest, {
+      autoDetected: findDeviceXctestrun(cwd) === newest,
+      inNpmAgentDir: !path.relative(npmIosAgentDir(), newest).startsWith('..'),
+      cwd,
+    })) console.log(line);
     console.log();
   }
   return newest;
+}
+
+/**
+ * What to tell the user about configuring the runner just built. It used to
+ * print a cwd-relative `iosXctestrun`, which broke in a config whose rootDir
+ * is elsewhere (PILOT-264); `tapsmith test` now finds this build itself in the
+ * usual layouts, so say that, and give an absolute path for pinning or for a
+ * build it will not find (a custom `--derived-data-path`).
+ */
+export function builtRunnerConfigHint(
+  xctestrun: string,
+  where: { autoDetected: boolean; inNpmAgentDir: boolean; cwd: string },
+): string[] {
+  const pin = `    ${dim('iosXctestrun:')} ${green(`'${xctestrun}'`)}`;
+  if (!where.autoDetected) {
+    return ['  Add to your ' + bold('tapsmith.config.ts') + ' (an absolute path, so it works from any rootDir):', pin];
+  }
+  const scope = where.inNpmAgentDir ? '' : ` when run from ${where.cwd} or a directory inside it`;
+  return [
+    `  ${bold('tapsmith test')} finds this runner itself${scope} — no \`iosXctestrun\` needed.`,
+    dim('  To pin this build instead, add to your tapsmith.config.ts:'),
+    pin,
+  ];
 }
 
 /**

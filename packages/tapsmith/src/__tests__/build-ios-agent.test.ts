@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  builtRunnerConfigHint,
   matchKnownErrorHint,
   parseCodesignIdentities,
   parseXcodeTeams,
@@ -151,3 +152,33 @@ describe('matchKnownErrorHint', () => {
   });
 });
 
+
+// PILOT-264: the hint used to print a path relative to the build's cwd, which
+// broke when pasted into a config whose rootDir is elsewhere.
+describe('builtRunnerConfigHint', () => {
+  // The hint is styled for the terminal; read the words.
+  const plain = (lines: string[]) => lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  const npmRunner = '/Users/me/.tapsmith/ios-agent/.build-device/Build/Products/A_iphoneos26.4-arm64.xctestrun';
+
+  it('when tapsmith test will find the runner, says so and offers an absolute pin', () => {
+    const text = plain(builtRunnerConfigHint(npmRunner, { autoDetected: true, inNpmAgentDir: true, cwd: '/Users/me/app' }));
+    expect(text).toMatch(/finds this runner itself/);
+    expect(text).toMatch(/no `iosXctestrun` needed/);
+    expect(text).toContain(`iosXctestrun: '${npmRunner}'`);
+    expect(text).not.toMatch(/iosXctestrun: '\.\.?\//);
+  });
+
+  it('a checkout build is found from the build directory or below it', () => {
+    const runner = '/src/tapsmith/ios-agent/.build-device/Build/Products/A_iphoneos26.4-arm64.xctestrun';
+    const text = plain(builtRunnerConfigHint(runner, { autoDetected: true, inNpmAgentDir: false, cwd: '/src/tapsmith' }));
+    expect(text).toMatch(/run from \/src\/tapsmith or a directory inside it/);
+  });
+
+  it('a build it will not find (custom --derived-data-path) gets an absolute iosXctestrun to add', () => {
+    const runner = '/tmp/dd/Build/Products/A_iphoneos26.4-arm64.xctestrun';
+    const text = plain(builtRunnerConfigHint(runner, { autoDetected: false, inNpmAgentDir: false, cwd: '/Users/me/app' }));
+    expect(text).not.toMatch(/finds this runner itself/);
+    expect(text).toMatch(/Add to your/);
+    expect(text).toContain(`iosXctestrun: '${runner}'`);
+  });
+});
