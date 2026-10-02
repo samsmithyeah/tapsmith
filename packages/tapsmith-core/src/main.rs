@@ -237,7 +237,7 @@ async fn main() -> Result<()> {
     // SIG_IGN inherited from `nohup`.
     let watch_sighup = !signal::sighup_ignored();
 
-    let (shutdown_began_tx, shutdown_began_rx) = tokio::sync::oneshot::channel::<()>();
+    let (shutdown_began_tx, shutdown_began_rx) = tokio::sync::watch::channel(false);
     let serve = Server::builder()
         .http2_keepalive_interval(Some(Duration::from_secs(30)))
         // Generous ack window: during agent startup the daemon fans out
@@ -250,22 +250,30 @@ async fn main() -> Result<()> {
                 .max_decoding_message_size(64 * 1024 * 1024)
                 .max_encoding_message_size(64 * 1024 * 1024),
         )
+        // Resolving at once stops the accept loop immediately, so the port is
+        // released as soon as the drain ends — callers that SIGTERM a daemon
+        // and respawn on its port shortly after rely on that.
         .serve_with_shutdown(addr, async move {
             shutdown_signal(parent_to_watch, watch_sighup).await;
-            let _ = shutdown_began_tx.send(());
-            // Stop the iOS agents first, before the gRPC drain: a long-lived
-            // stream can hold the drain open, and the agents must not outlive
-            // the daemon either way (PILOT-299).
-            ios::agent_registry::shutdown_all().await;
+            let _ = shutdown_began_tx.send(true);
         });
+    // Stop the iOS agents as soon as shutdown begins, alongside the drain
+    // rather than after it: a long-lived stream can hold the drain open, and
+    // the agents must not outlive the daemon either way (PILOT-299).
+    let mut teardown_began = shutdown_began_rx.clone();
+    let agent_teardown = tokio::spawn(async move {
+        if teardown_began.wait_for(|began| *began).await.is_ok() {
+            ios::agent_registry::shutdown_all().await;
+        }
+    });
     // The drain waits for every open connection. A client that keeps a stream
     // open (or a worker that outlived a killed CLI) would hold it forever, and
-    // nobody escalates to SIGKILL after a parent-exit shutdown — so bound
-    // agent teardown plus drain, measured from the signal, and still run the
-    // proxy cleanup below.
-    let drain_limit = async {
-        match shutdown_began_rx.await {
-            Ok(()) => tokio::time::sleep(SHUTDOWN_LIMIT).await,
+    // nobody escalates to SIGKILL after a parent-exit shutdown — so bound it,
+    // measured from the signal, and still run the proxy cleanup below.
+    let mut limit_began = shutdown_began_rx;
+    let drain_limit = async move {
+        match limit_began.wait_for(|began| *began).await {
+            Ok(_) => tokio::time::sleep(SHUTDOWN_LIMIT).await,
             Err(_) => std::future::pending().await,
         }
     };
@@ -275,6 +283,8 @@ async fn main() -> Result<()> {
             warn!("Shutdown still draining after {SHUTDOWN_LIMIT:?}; exiting without the open gRPC connections");
         }
     }
+    // Agent teardown bounds itself (~3 s); never exit with it half done.
+    let _ = agent_teardown.await;
 
     // Clean up any active network proxy and WebView state before exiting
     service_handle.cleanup_network_proxy().await;
@@ -284,10 +294,10 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// How long agent teardown plus the gRPC drain may take once a shutdown
-/// signal arrives. Agent teardown is itself bounded at ~3 s (1.5 s SIGTERM
-/// grace + 1.5 s simctl), so this leaves the proxy cleanup about a second of
-/// the 5 s the UI server gives a daemon between SIGTERM and SIGKILL.
+/// How long the gRPC drain may take once a shutdown signal arrives. Agent
+/// teardown runs alongside it and bounds itself at ~3 s (a 1.5 s SIGTERM
+/// grace plus 1.5 s for simctl), so this leaves the proxy cleanup about a
+/// second of the 5 s the UI server gives a daemon between SIGTERM and SIGKILL.
 const SHUTDOWN_LIMIT: Duration = Duration::from_millis(3500);
 
 /// Resolves when the daemon should shut down: SIGINT, SIGTERM, SIGHUP (the

@@ -251,8 +251,8 @@ impl Drop for TrackedAgent {
 ///
 /// SIGTERM first (xcodebuild then tears down its in-simulator runner itself),
 /// SIGKILL whatever is still registered after [`TERM_GRACE`], then
-/// `simctl terminate` the runner on each simulator in case it outlived its
-/// xcodebuild. Agents deregister the moment they are reaped, so a pid that is
+/// `simctl terminate` the runner on each simulator whose xcodebuild had to be
+/// SIGKILLed, in case the runner outlived it. Agents deregister the moment they are reaped, so a pid that is
 /// still registered is still ours; the only gap is the instant between
 /// `waitpid` returning and the deregistration that immediately follows it.
 pub async fn shutdown_all() {
@@ -280,18 +280,20 @@ where
     {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // Runners of agents that exited on SIGTERM went with their xcodebuild;
+    // only a SIGKILLed one may have left its runner behind. Terminating a
+    // runner is udid-wide, so it is kept to the cases that need it — a
+    // replacement daemon may already be starting an agent on that simulator.
+    let mut sims: Vec<String> = Vec::new();
     for (pid, entry) in &agents {
         if registry.contains(*pid) {
             warn!(pid, udid = %entry.udid, "iOS agent ignored SIGTERM; killing it");
             signal(*pid, libc::SIGKILL);
+            if !entry.is_physical {
+                sims.push(entry.udid.clone());
+            }
         }
     }
-
-    let mut sims: Vec<String> = agents
-        .into_iter()
-        .filter(|(_, e)| !e.is_physical)
-        .map(|(_, e)| e.udid)
-        .collect();
     sims.sort();
     sims.dedup();
     let mut terminations = tokio::task::JoinSet::new();
@@ -658,8 +660,12 @@ mod tests {
         );
         assert_eq!(registry.len(), 0);
         assert!(!alive(pid));
-        assert_eq!(*calls.lock().unwrap(), vec!["SIM-A".to_string()]);
+        // Its runner went with it: no udid-wide terminate needed.
+        assert!(calls.lock().unwrap().is_empty());
     }
+
+    /// A child that ignores SIGTERM.
+    const STUBBORN: &str = "trap '' TERM; while :; do sleep 1; done";
 
     #[tokio::test]
     async fn shutdown_kills_an_agent_that_ignores_sigterm() {
@@ -694,23 +700,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_terminates_each_simulator_runner_once_and_skips_physical() {
+    async fn shutdown_terminates_each_killed_simulator_runner_once_and_skips_physical() {
         let registry = leaked(None);
-        for (udid, physical) in [
-            ("SIM-A", false),
-            ("SIM-A", false),
-            ("PHONE", true),
-            ("SIM-B", false),
+        // SIM-C's agent exits on SIGTERM; the rest ignore it and are killed.
+        for (udid, physical, script) in [
+            ("SIM-A", false, STUBBORN),
+            ("SIM-A", false, STUBBORN),
+            ("PHONE", true, STUBBORN),
+            ("SIM-B", false, STUBBORN),
+            ("SIM-C", false, "sleep 60"),
         ] {
-            let agent = TrackedAgent::track(spawn("sleep 60"), udid, physical, registry)
+            let agent = TrackedAgent::track(spawn(script), udid, physical, registry)
                 .await
                 .unwrap();
             hand_to_reaper(agent);
         }
+        tokio::time::sleep(Duration::from_millis(200)).await;
         let calls: Calls = Arc::default();
         shutdown_registry(
             registry,
-            Duration::from_secs(5),
+            Duration::from_millis(500),
             recording_terminator(&calls),
         )
         .await;
