@@ -1216,6 +1216,11 @@ pub async fn put_back_container_manager_files(
     container_path: &str,
     saved: &[(std::path::PathBuf, Vec<u8>)],
 ) -> Result<()> {
+    // Write the container's own records back first, so a failure removing an
+    // extra never leaves the foreign copy in place.
+    for (path, bytes) in saved {
+        tokio::fs::write(path, bytes).await?;
+    }
     let mut entries = tokio::fs::read_dir(container_path).await?;
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
@@ -1226,10 +1231,32 @@ pub async fn put_back_container_manager_files(
             tokio::fs::remove_file(&path).await?;
         }
     }
-    for (path, bytes) in saved {
-        tokio::fs::write(path, bytes).await?;
-    }
     Ok(())
+}
+
+/// Run `extract` (something that writes over the container, such as an
+/// app-state `tar xzf`) and then put the container's own container-manager
+/// files back as they were. If they cannot be read first, nothing is put back:
+/// with no record of what was there, "put back" would delete the live metadata
+/// plist — the very damage this guards against.
+pub async fn keeping_container_manager_files<T>(
+    container_path: &str,
+    extract: impl std::future::Future<Output = T>,
+) -> T {
+    let saved = match read_container_manager_files(container_path).await {
+        Ok(files) => Some(files),
+        Err(e) => {
+            warn!(container_path, error = %e, "Could not read container-manager files; leaving them to the extract");
+            None
+        }
+    };
+    let result = extract.await;
+    if let Some(saved) = saved {
+        if let Err(e) = put_back_container_manager_files(container_path, &saved).await {
+            warn!(container_path, error = %e, "Could not put back container-manager files after extract");
+        }
+    }
+    result
 }
 
 // ─── Simulator Keychain Helpers ───
@@ -2026,5 +2053,46 @@ mod tests {
             std::fs::read(root.join("Library/.com.apple.nested")).unwrap(),
             b"restored"
         );
+    }
+
+    /// R2-F1: when the container-manager files cannot be read first, the
+    /// extract must not be followed by a "put back" of nothing, which would
+    /// delete the live metadata plist.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unreadable_container_manager_files_are_left_to_the_extract() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let live = root.join(".com.apple.mobile_container_manager.metadata.plist");
+        std::fs::write(&live, b"live-uuid").unwrap();
+        let unreadable = root.join(".com.apple.unreadable");
+        std::fs::write(&unreadable, b"x").unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&unreadable).is_ok() {
+            return; // running as root: the read cannot be made to fail
+        }
+
+        let root_str = root.to_str().unwrap();
+        keeping_container_manager_files(root_str, async {}).await;
+
+        assert_eq!(std::fs::read(&live).unwrap(), b"live-uuid");
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn keeping_container_manager_files_wraps_the_extract() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let live = root.join(".com.apple.mobile_container_manager.metadata.plist");
+        std::fs::write(&live, b"live-uuid").unwrap();
+        let root_str = root.to_str().unwrap().to_string();
+        let out = keeping_container_manager_files(&root_str, async {
+            std::fs::write(&live, b"foreign-uuid").unwrap();
+            42
+        })
+        .await;
+        assert_eq!(out, 42);
+        assert_eq!(std::fs::read(&live).unwrap(), b"live-uuid");
     }
 }

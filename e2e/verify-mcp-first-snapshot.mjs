@@ -30,8 +30,8 @@
  *     --udid <simulator udid> --app ./fixtures/TapsmithTestApp.app
  *
  * `--udid` defaults to $TAPSMITH_IOS_UDID and `--bundle-id` to the test app's
- * (dev.tapsmith.testapp). The simulator must be the only booted one the
- * config's MCP session can pick.
+ * (dev.tapsmith.testapp). Every MCP call is pinned to `--udid` with the
+ * tools' `device` argument, so it drives the simulator the script reboots.
  */
 
 import { spawn, spawnSync } from "node:child_process"
@@ -201,7 +201,7 @@ async function main() {
 
   log("session 1: tapsmith_launch_app with clear_data")
   const s1 = await mcpSession(opts.config, [
-    { name: "tapsmith_launch_app", args: { package: opts.bundleId, clear_data: true } },
+    { name: "tapsmith_launch_app", args: { package: opts.bundleId, clear_data: true, device: opts.udid } },
   ])
   const launch = s1.results[0]?.response
   if (!launch || launch.result?.isError) {
@@ -212,7 +212,7 @@ async function main() {
   if (failures.length === 0) {
     reboot(opts.udid)
     log("session 2: tapsmith_snapshot after the first reboot")
-    const s2 = await mcpSession(opts.config, [{ name: "tapsmith_snapshot" }])
+    const s2 = await mcpSession(opts.config, [{ name: "tapsmith_snapshot", args: { device: opts.udid } }])
     for (const p of checkSnapshotResponse(s2.results[0]?.response, { expectText: EXPECT_TEXT })) {
       failures.push(`after the first reboot: ${p}`)
     }
@@ -220,7 +220,7 @@ async function main() {
 
     reboot(opts.udid)
     log("session 3: the first call of a new session is tapsmith_snapshot")
-    const s3 = await mcpSession(opts.config, [{ name: "tapsmith_snapshot" }])
+    const s3 = await mcpSession(opts.config, [{ name: "tapsmith_snapshot", args: { device: opts.udid } }])
     const problems = checkSnapshotResponse(s3.results[0]?.response, { expectText: EXPECT_TEXT })
     for (const p of problems) failures.push(`after the second reboot: ${p}`)
     if (problems.length > 0) printServerLog(s3)

@@ -7240,42 +7240,26 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // container-manager metadata; keep this container's own
                 // (PILOT-462). bsdtar's --exclude is not anchored, so the
                 // files are put back after the extract rather than excluded.
-                let container_manager_files = match ios::device::read_container_manager_files(
-                    &container,
-                )
-                .await
-                {
-                    Ok(files) => files,
-                    Err(e) => {
-                        warn!(%pkg, error = %e, "Could not read container-manager files before restore");
-                        Vec::new()
-                    }
-                };
-                let output = tokio::process::Command::new("tar")
-                    .args([
-                        "xzf",
-                        local_path,
-                        "-C",
-                        &container,
-                        "--exclude",
-                        &member_pattern,
-                        "--exclude",
-                        &format!("{member_pattern}/*"),
-                        "--exclude",
-                        member,
-                        "--exclude",
-                        &format!("{member}/*"),
-                    ])
-                    .output()
-                    .await;
-                if let Err(e) = ios::device::put_back_container_manager_files(
-                    &container,
-                    &container_manager_files,
-                )
-                .await
-                {
-                    warn!(%pkg, error = %e, "Could not put back container-manager files after restore");
-                }
+                let output = ios::device::keeping_container_manager_files(&container, async {
+                    tokio::process::Command::new("tar")
+                        .args([
+                            "xzf",
+                            local_path,
+                            "-C",
+                            &container,
+                            "--exclude",
+                            &member_pattern,
+                            "--exclude",
+                            &format!("{member_pattern}/*"),
+                            "--exclude",
+                            member,
+                            "--exclude",
+                            &format!("{member}/*"),
+                        ])
+                        .output()
+                        .await
+                })
+                .await;
 
                 match output {
                     Ok(out) if out.status.success() => {
