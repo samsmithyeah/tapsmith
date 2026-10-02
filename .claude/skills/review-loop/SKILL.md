@@ -44,7 +44,7 @@ text handed to the reviewer verbatim:
 | `base=<ref>` | diff against this ref's merge-base with HEAD | repo default branch (`origin/HEAD`, else `main`, else `master`) |
 | `<A>..<B>` | explicit range, committed work only | — |
 | `model=<opus\|sonnet\|fable\|haiku>` | reviewer model | `opus` |
-| `max-rounds=<n>` | safety cap | `8` |
+| `max-rounds=<n>` | safety cap on rounds in this run | `10` |
 | `commit` | one commit per round with fixes, following the project's commit conventions (sign-off flag if the project requires DCO) | no commits; fixes stay in the working tree |
 | `worktree=<path>` | review the branch checked out at this path, and make every fix, check and commit there (`git -C <path>`, absolute paths) — for callers whose own shell sits in another checkout | the current checkout |
 | `ledger=<dir>` | directory for the ledger and findings files — pass a distinct one whenever several loops can run in one session (e.g. parallel workers sharing a scratchpad) | `<session scratchpad>/review-loop/` |
@@ -63,7 +63,14 @@ out of the reviewer's sight.
    and the working tree is clean, stop and say there is nothing to review.
 2. Decide the ledger path: `<ledger dir>/ledger.md`, where the ledger dir is `ledger=` or
    else `<session scratchpad>/review-loop/` (the scratchpad directory is named in your
-   system prompt). Reviewer findings files go beside it as
+   system prompt). **If that ledger already holds a finished run** (it ends with an
+   `## Outcome:` record — e.g. a caller re-reviewing after later fixes), continue it
+   rather than starting over: append a `## Run <k>` header with the new merge-base, a
+   rewritten change brief and focus, keep numbering rounds from the last one (so card ids
+   stay unique), and match repeats against every earlier card — so a `final` verdict
+   from an earlier run is carried forward, not re-argued. `max-rounds` counts this run's
+   rounds only. A ledger whose last round is unfinished is a resume (Ground rules), not
+   a new run. Reviewer findings files go beside it as
    `findings-<unix timestamp>.md` — never a name that reveals the round. Create the
    directory.
 3. Write the **change brief**: 3–8 lines on what the change is for and which design

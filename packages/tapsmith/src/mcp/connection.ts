@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as http from 'node:http';
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess, type StdioOptions } from 'node:child_process';
 import { withFileLockSync } from '../file-lock.js';
 import { TapsmithGrpcClient, type DeviceInfoProto } from '../grpc-client.js';
 import { findDaemonBin } from '../daemon-bin.js';
@@ -9,6 +9,7 @@ import { pickFreePort } from '../port-utils.js';
 import { resolveDeviceGroup, primaryDevicePin, type TapsmithConfig } from '../config.js';
 import { loadMcpConfig } from './config-loader.js';
 import { uiPortFilePath, allUiPortFiles, mcpDaemonRegistryPath } from './port-file.js';
+import { openDaemonLog, readDaemonLogSince } from './daemon-log.js';
 
 const DEFAULT_ADDRESS = 'localhost:50051';
 
@@ -750,6 +751,17 @@ async function discover(): Promise<void> {
 /** Every port this session has handed to a daemon, gRPC and agent alike. */
 const _issuedPorts = new Set<number>();
 
+/** Daemons spawned by `startDaemon` that have not yet joined `_connections`. */
+const _startingDaemons = new Set<ChildProcess>();
+
+/**
+ * Bumped by `closeAllClients`. A tool call still in flight when the session
+ * closes keeps running its awaits; a `startDaemon` that began before the close
+ * must not spawn a daemon, or add one to the freshly reset connection list,
+ * after it.
+ */
+let _sessionGeneration = 0;
+
 /**
  * A free port this session has not already given out.
  *
@@ -788,7 +800,10 @@ export function daemonSpawnArgs(port: string, agentPort: string, platform?: stri
   return args;
 }
 
-async function startDaemon(platform?: string): Promise<DaemonConnection | null> {
+/** @internal — exported for unit testing. */
+export async function startDaemon(platform?: string): Promise<DaemonConnection | null> {
+  const generation = _sessionGeneration;
+  const sessionClosed = (): boolean => generation !== _sessionGeneration;
   log(platform ? `Starting a ${platform} daemon...` : 'No daemon found, starting one...');
   const port = String(await pickUnissuedPort());
   // Its own agent port, like every other daemon we spawn (see dispatcher.ts
@@ -800,6 +815,7 @@ async function startDaemon(platform?: string): Promise<DaemonConnection | null> 
   const agentPort = String(await pickUnissuedPort());
   const bin = findDaemonBin();
   const daemonArgs = daemonSpawnArgs(port, agentPort, platform);
+  if (sessionClosed()) return null;
 
   // `detached`, not just `unref`. A daemon may outlive the session that started
   // it — that is the whole point of the registry, and `closeAllClients`
@@ -807,53 +823,82 @@ async function startDaemon(platform?: string): Promise<DaemonConnection | null> 
   // process group, a Ctrl-C in the starter's shell is delivered to the group and
   // kills the daemon anyway, before any of that reasoning runs. `unref` only
   // stops it holding *our* event loop open, which is a different problem.
-  const daemonProcess = spawn(bin, daemonArgs, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+  // Output goes to a log file, not a pipe back to us. The daemon is meant to
+  // outlive this server when a peer adopts it, and once we exit a pipe has no
+  // reader: the daemon's writes fail with EPIPE for the rest of its life, and
+  // its logs are gone anyway (PILOT-453).
+  const daemonLog = openDaemonLog(log);
+  const stdio: StdioOptions = daemonLog ? ['ignore', daemonLog.fd, daemonLog.fd] : 'ignore';
+  let daemonProcess: ChildProcess;
+  try {
+    daemonProcess = spawn(bin, daemonArgs, { stdio, detached: true });
+  } finally {
+    // The child has its own copy; ours would only leak a descriptor per daemon.
+    if (daemonLog) {
+      try { fs.closeSync(daemonLog.fd); } catch { /* already closed */ }
+    }
+  }
   daemonProcess.unref();
   daemonProcess.on('error', (err) => { log(`Daemon process error: ${err.message}`); });
-  daemonProcess.stderr?.on('data', (data: Buffer) => { log(`Daemon: ${data.toString().trim()}`); });
-  // `unref` on the child does not cover its pipes — they are separate handles,
-  // and a piped stderr with a listener holds the event loop open on its own.
-  // This daemon is meant to outlive us when a peer adopts it, and the MCP
-  // server exits by draining rather than by `process.exit` when its client
-  // disconnects: without this the session's node process would sit there until
-  // the daemon it deliberately left running finally died. Reading continues —
-  // `unref` only stops the handle keeping the loop alive.
-  // Typed `Readable`, which has no `unref`; the pipe behind it is a `Socket`,
-  // which does. Optional call so a future stdio change cannot throw here.
-  (daemonProcess.stderr as unknown as { unref?: () => void } | null)?.unref?.();
-
-  const address = `127.0.0.1:${port}`;
-  const client = new TapsmithGrpcClient(address);
-  const started = await client.waitForReady(10_000);
-  if (!started) {
-    client.close();
-    daemonProcess.kill();
-    log('Failed to start daemon. Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.');
-    return null;
-  }
-
-  try {
-    const { version } = await client.ping();
-    log(`Started daemon v${version} on port ${port} (agent ${agentPort})${platform ? ` [${platform}]` : ''}`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`Daemon started but did not respond: ${msg}`);
-    client.close();
-    daemonProcess.kill();
-    return null;
-  }
-
-  registerDaemon(address, daemonProcess.pid);
-  const conn: DaemonConnection = {
-    client,
-    address,
-    devices: [],
-    daemonProcess,
-    source: 'started',
-    platform,
+  const logNote = daemonLog ? ` — log: ${daemonLog.path}` : '';
+  /** A failed start quotes what the daemon said, since it no longer says it here. */
+  const failureDetail = (): string => {
+    const tail = daemonLog ? readDaemonLogSince(daemonLog) : '';
+    // "Recent", not "its": sessions in a project share the default log, so a
+    // daemon starting alongside this one may have written lines here too.
+    return tail ? `\nRecent daemon log (${daemonLog?.path}):\n${tail}` : logNote;
   };
-  _connections.push(conn);
-  return conn;
+
+  // Until it is in `_connections`, only this set lets `closeAllClients` find
+  // it: a client that leaves during the seconds a daemon takes to answer would
+  // otherwise strand a detached, unregistered daemon that outlives us by
+  // design (PILOT-453).
+  _startingDaemons.add(daemonProcess);
+  try {
+    const address = `127.0.0.1:${port}`;
+    const client = new TapsmithGrpcClient(address);
+    const started = await client.waitForReady(10_000);
+    if (!started) {
+      client.close();
+      daemonProcess.kill();
+      log(`Failed to start daemon. Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.${failureDetail()}`);
+      return null;
+    }
+
+    try {
+      const { version } = await client.ping();
+      log(`Started daemon v${version} on port ${port} (agent ${agentPort})${platform ? ` [${platform}]` : ''}${logNote}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`Daemon started but did not respond: ${msg}${failureDetail()}`);
+      client.close();
+      daemonProcess.kill();
+      return null;
+    }
+
+    if (sessionClosed()) {
+      client.close();
+      daemonProcess.kill();
+      return null;
+    }
+
+    registerDaemon(address, daemonProcess.pid);
+    const conn: DaemonConnection = {
+      client,
+      address,
+      devices: [],
+      daemonProcess,
+      source: 'started',
+      platform,
+    };
+    _connections.push(conn);
+    return conn;
+  } catch (err) {
+    daemonProcess.kill();
+    throw err;
+  } finally {
+    _startingDaemons.delete(daemonProcess);
+  }
 }
 
 /** Tear down a daemon we started but cannot use, so it does not linger. */
@@ -1337,7 +1382,7 @@ async function prepareTarget(
   // a daemon that already serves this device would tear down a working agent,
   // including one a peer session is mid-run against.
   const wasPointedAt = await currentDevice(conn) ?? conn.preparedDevice;
-  await conn.client.setDevice(serial);
+  await setDeviceExplained(conn.client, serial);
   const repointed = isRepointing(wasPointedAt, serial);
   // Record the move before starting the agent: `setDevice` has already
   // happened, so if the agent start throws, the next claim must still see this
@@ -1876,7 +1921,7 @@ async function setDeviceAndAgent(
     return undefined;
   }
 
-  await client.setDevice(serial);
+  await setDeviceExplained(client, serial);
   log(`Using device: ${serial}`);
   await startAgentFromConfig(client, config, { serial });
   return serial;
@@ -1975,6 +2020,12 @@ function log(msg: string): void {
 }
 
 export function closeAllClients(): void {
+  _sessionGeneration++;
+  // Never registered, so no peer can be using one: always ours to stop.
+  for (const starting of _startingDaemons) {
+    try { starting.kill(); } catch { /* already gone */ }
+  }
+  _startingDaemons.clear();
   for (const conn of _connections) {
     conn.client.close();
     // Drop our claim first, then keep the daemon alive if a peer session still
@@ -2004,4 +2055,19 @@ export function closeAllClients(): void {
   _ready = false;
   _connectingPromise = null;
   _configFile = undefined;
+}
+
+/**
+ * `setDevice`, except that the daemon's "not found" for a phone devicectl
+ * only remembers is thrown as the not-connected error (PILOT-386). Any other
+ * refusal (`success: false`) is left as before: not thrown here.
+ * Exported for tests.
+ */
+export async function setDeviceExplained(client: TapsmithGrpcClient, serial: string): Promise<void> {
+  const res = await client.setDevice(serial);
+  if (res?.success !== false) return;
+  const { explainDeviceNotFound } = await import('../ios-devicectl.js');
+  const refusal = new Error(res.errorMessage);
+  const explained = await explainDeviceNotFound(serial, refusal);
+  if (explained !== refusal) throw explained;
 }

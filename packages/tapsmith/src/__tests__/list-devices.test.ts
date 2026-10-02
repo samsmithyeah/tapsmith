@@ -26,6 +26,7 @@ const physicalDevice = (overrides: Partial<PhysicalDeviceInfo>): PhysicalDeviceI
   bootState: 'booted',
   developerModeStatus: 'enabled',
   transportType: 'wired',
+  isConnected: true,
   ...overrides,
 });
 

@@ -335,27 +335,43 @@ export function checkIosAgentBuilt(startDir: string = process.cwd()): CheckResul
   };
 }
 
-/** Check connected physical devices and their pairing / DDI / Developer Mode state. */
-export function checkDeviceConnection(): { ok: boolean; devices: PhysicalDeviceInfo[]; label: string; fix?: string[] } {
-  const devices = listPhysicalDevices();
+const CONNECT_STEPS = [
+  '  1) Plug the device into this Mac via USB',
+  '  2) On the device, tap "Trust This Computer" when prompted',
+  '  3) Enable Developer Mode:',
+  '       Settings → Privacy & Security → Developer Mode → On',
+  '     (requires a device reboot)',
+  '  4) Open Xcode → Window → Devices and Simulators and wait for',
+  '     the device to register under your team',
+];
+
+/**
+ * Check connected physical devices and their pairing / DDI / Developer Mode
+ * state. devicectl also lists devices this Mac only remembers (unplugged, or
+ * paired with another Mac); those are returned as `notConnected` and never
+ * count toward the verdict (PILOT-386).
+ */
+export function checkDeviceConnection(
+  listed: PhysicalDeviceInfo[] = listPhysicalDevices(),
+): { ok: boolean; devices: PhysicalDeviceInfo[]; notConnected: PhysicalDeviceInfo[]; label: string; fix?: string[] } {
+  const devices = listed.filter((d) => d.isConnected);
+  const notConnected = listed.filter((d) => !d.isConnected);
+  const label = 'Physical iOS device paired';
   if (devices.length === 0) {
-    return {
-      ok: false,
-      devices: [],
-      label: 'Physical iOS device paired',
-      fix: [
-        'No physical iOS device found. To connect one:',
-        '  1) Plug the device into this Mac via USB',
-        '  2) On the device, tap "Trust This Computer" when prompted',
-        '  3) Enable Developer Mode:',
-        '       Settings → Privacy & Security → Developer Mode → On',
-        '     (requires a device reboot)',
-        '  4) Open Xcode → Window → Devices and Simulators and wait for',
-        '     the device to register under your team',
-      ],
-    };
+    const fix = notConnected.length === 0
+      ? ['No physical iOS device found. To connect one:', ...CONNECT_STEPS]
+      : [
+        `No physical iOS device is connected. This Mac remembers ${deviceNames(notConnected)}, but none is reachable now.`,
+        'To connect one:',
+        ...CONNECT_STEPS,
+      ];
+    return { ok: false, devices: [], notConnected, label, fix };
   }
-  return { ok: true, devices, label: 'Physical iOS device paired' };
+  return { ok: true, devices, notConnected, label };
+}
+
+function deviceNames(list: PhysicalDeviceInfo[]): string {
+  return list.map((d) => `${d.name} (${d.udid})`).join(', ');
 }
 
 // ─── Pretty-printing ─────────────────────────────────────────────────────
@@ -442,7 +458,10 @@ export interface SetupDeviceJsonDevice {
 export interface SetupDeviceJson {
   ok: boolean;
   checks: JsonCheck[];
+  /** The devices connected now; only these count toward `ok`. */
   devices: SetupDeviceJsonDevice[];
+  /** Devices devicectl lists that this Mac only remembers (unplugged, or paired with another Mac). */
+  notConnected: Array<{ udid: string; name: string }>;
 }
 
 const UNPAIRED_FIX = 'Open Xcode → Window → Devices and Simulators, wait for the device to appear, then click "Use for Development".';
@@ -477,23 +496,22 @@ function jsonCheck(id: string, result: { label: string; ok: boolean; detail?: st
 }
 
 /**
- * The device row of the checklist. It fails when no device is listed and when
- * a listed device is unpaired or has Developer Mode off, so a failing `ok`
+ * The device row of the checklist. It fails when no device is connected and when
+ * a connected device is unpaired or has Developer Mode off, so a failing `ok`
  * always has a failing check to explain it.
  */
 function deviceConnectedCheck(deviceCheck: DeviceConnectionCheck): JsonCheck {
   const unpaired = deviceCheck.devices.filter((d) => !d.isPaired);
   const devModeOff = deviceCheck.devices.filter(developerModeOff);
   if (!deviceCheck.ok || (unpaired.length === 0 && devModeOff.length === 0)) return jsonCheck('device-connected', deviceCheck);
-  const names = (list: PhysicalDeviceInfo[]) => list.map((d) => `${d.name} (${d.udid})`).join(', ');
   const detail: string[] = [];
   const fix: string[] = [];
   if (unpaired.length > 0) {
-    detail.push(`not paired: ${names(unpaired)}`);
+    detail.push(`not paired: ${deviceNames(unpaired)}`);
     fix.push(UNPAIRED_FIX);
   }
   if (devModeOff.length > 0) {
-    detail.push(`Developer Mode off: ${names(devModeOff)}`);
+    detail.push(`Developer Mode off: ${deviceNames(devModeOff)}`);
     fix.push(DEVELOPER_MODE_FIX);
   }
   return {
@@ -507,8 +525,8 @@ function deviceConnectedCheck(deviceCheck: DeviceConnectionCheck): JsonCheck {
 
 /**
  * Hard-fail criteria, shared by the text and JSON output: any non-advisory
- * check failed, or no device listed, or a listed device is unpaired or has
- * Developer Mode off.
+ * check failed, or no device connected, or a connected device is unpaired or
+ * has Developer Mode off. Devices devicectl only remembers never count.
  * Advisory checks (agent not yet built, profile near expiry, no passwordless
  * sudo) print a ⚠ hint but don't block. We intentionally don't require
  * `ddiServicesAvailable` either; it's an unreliable "is Xcode currently
@@ -544,6 +562,7 @@ export function buildSetupDeviceJson(
       if (fixes.length > 0) entry.fix = fixes.join('\n');
       return entry;
     }),
+    notConnected: deviceCheck.notConnected.map((d) => ({ udid: d.udid, name: d.name })),
   };
 }
 
@@ -632,6 +651,9 @@ function printSetupIosDevice(deps: SetupDeviceDeps): number {
     }
   } else {
     printDeviceStatus(deviceCheck.devices);
+  }
+  for (const d of deviceCheck.notConnected) {
+    console.log(`  ${dim(`– ${d.name} (${d.udid}) not connected — ignored`)}`);
   }
   console.log();
 
