@@ -573,6 +573,11 @@ jobs:
   # emulator binary itself.
   android-bare:
     name: Android bare state (create-avd, then launch)
+    # Weekly and on manual dispatch only: it downloads the cmdline-tools and
+    # the full system image every run. The per-PR android job above already
+    # runs create-avd (cached image, no emulator package, no AVD-home
+    # override), so a create-avd regression still fails the PR that causes it.
+    if: github.event_name != 'pull_request'
     needs: [ build-sdk, build-daemon-linux, build-agent-android, build-test-app-android ]
     runs-on: ubuntu-latest
     timeout-minutes: 45
