@@ -1461,6 +1461,18 @@ describe('noDeviceMessage', () => {
     }
   });
 
+  it('gives the shared fix for an offline pin: no ADB restart happened here', () => {
+    const unusable = [{ serial: 'HVA9', state: 'offline', platform: 'android' }];
+    const msg = noDeviceMessage('android', 'HVA9', [], [], 'config', unusable);
+    expect(msg).toBe('Device HVA9 is attached, but adb reports it offline. Reconnect cable or run `adb kill-server`.');
+  });
+
+  it('does not call a visible pin unusable because an unusable device shares its serial', () => {
+    const unusable = [{ serial: '0123456789ABCDEF', state: 'unauthorized', platform: 'android' }];
+    const msg = noDeviceMessage('android', '0123456789ABCDEF', ['0123456789ABCDEF'], [], 'run_tests', unusable);
+    expect(msg).not.toContain('Device 0123456789ABCDEF is attached');
+  });
+
   it('leaves the iOS wording alone', () => {
     const unusable = [{ serial: 'R5CR1234XYZ', state: 'unauthorized', platform: 'android' }];
     expect(noDeviceMessage('ios', undefined, [], [], 'config', unusable)).toBe(noDeviceMessage('ios'));

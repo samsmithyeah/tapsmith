@@ -2758,7 +2758,7 @@ npx tapsmith create-avd --install-tools         # non-interactive bootstrap (CI)
 
 ### `tapsmith list-devices [--json]`
 
-Print a table of every device Tapsmith can target: Android (ADB), iOS simulators (simctl), and iOS physical devices (devicectl). Each row shows a one-line status (`Ready` or an imperative fix). An Android device adb lists but cannot use — unauthorized (the USB-debugging prompt was not accepted), offline, or `no permissions` (Linux without udev rules) — is listed as not ready with the same fix `tapsmith doctor` gives; Tapsmith never selects one for a test run, and a run that finds no usable device (or is pinned to such a device with `--device`) names it with that fix. `--json` prints `{ devices }`, or the [JSON error envelope](#json-output---json) when the daemon cannot be started or cannot list devices.
+Print a table of every device Tapsmith can target: Android (ADB), iOS simulators (simctl), and iOS physical devices (devicectl). Each row shows a one-line status (`Ready` or an imperative fix). An Android device adb lists but cannot use — unauthorized (the USB-debugging prompt was not accepted), offline, or `no permissions` (Linux without udev rules) — is listed as not ready with the same fix `tapsmith doctor` gives; Tapsmith never selects one for a test run. When a run finds no usable device, its error also names any attached device adb cannot use, with its adb state. `--json` prints `{ devices }`, or the [JSON error envelope](#json-output---json) when the daemon cannot be started or cannot list devices.
 
 ```bash
 npx tapsmith list-devices

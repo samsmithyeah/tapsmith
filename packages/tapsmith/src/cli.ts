@@ -258,7 +258,7 @@ async function checkDeviceHealth(serial: string | undefined, progress?: LaunchPr
   }
 
   // Still unusable, and adb says why: that beats a list of possible causes.
-  const unusable = serial ? pinnedDeviceUnusableMessage(serial, listAdbDevices(), 'after-recovery') : undefined;
+  const unusable = serial ? pinnedDeviceUnusableMessage(serial, listAdbDevices(), 'after-adb-restart') : undefined;
   if (unusable) throw new Error(unusable);
 
   // Still unresponsive — give the user actionable guidance

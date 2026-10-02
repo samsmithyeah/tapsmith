@@ -96,13 +96,15 @@ export function noOnlineDeviceMessage(config: AdviceConfig, attached: readonly A
  * undefined when it is usable or not listed. `preflight` (before any ADB
  * server restart) reports only states a restart cannot fix — unauthorized
  * and no-permissions — since `offline` (whose fix *is* a restart) and
- * transient states such as `authorizing` may recover; `after-recovery`
- * reports whatever state adb still gives.
+ * transient states such as `authorizing` may recover; `any` reports
+ * whatever state adb gives, with the shared fix; `after-adb-restart` does
+ * too, but — once Tapsmith has restarted the ADB server itself — never
+ * advises the restart again.
  */
 export function pinnedDeviceUnusableMessage(
   serial: string,
   devices: readonly AdbStateEntry[],
-  phase: 'preflight' | 'after-recovery',
+  phase: 'preflight' | 'after-adb-restart' | 'any',
 ): string | undefined {
   // A usable device sharing the serial wins, as in the daemon: cheap phones
   // can share one (`0123456789ABCDEF`).
@@ -114,7 +116,7 @@ export function pinnedDeviceUnusableMessage(
   }
   // After the restart, advice to restart adb would repeat what just failed.
   // An emulator's own advice (wait for boot, or restart it) still applies.
-  const restarted = phase === 'after-recovery' && !device.serial.startsWith('emulator-')
+  const restarted = phase === 'after-adb-restart' && !device.serial.startsWith('emulator-')
     && !device.state.startsWith('no permissions') && device.state !== 'unauthorized';
   return `Device ${describeUnusableAndroidDevice(
     device,

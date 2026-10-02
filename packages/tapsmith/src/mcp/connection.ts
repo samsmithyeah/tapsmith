@@ -1168,8 +1168,10 @@ export function noDeviceMessage(
   unusable: readonly AdbStateEntry[] = [],
 ): string {
   const relevant = platform ? unusable.filter((d) => (d.platform ?? platform) === platform) : unusable;
-  if (wanted) {
-    const blocked = pinnedDeviceUnusableMessage(wanted, relevant, 'after-recovery');
+  // A visible pin was not refused for its adb state (a usable device can
+  // share its serial with an unusable one).
+  if (wanted && !visible.includes(wanted)) {
+    const blocked = pinnedDeviceUnusableMessage(wanted, relevant, 'any');
     if (blocked) return blocked;
   }
   const attached = describeUnusableAndroidDevices(relevant);

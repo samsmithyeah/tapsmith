@@ -138,23 +138,23 @@ describe('pinnedDeviceUnusableMessage()', () => {
   });
 
   it('names any state adb still reports once recovery has failed', () => {
-    expect(pinnedDeviceUnusableMessage('emulator-5554', adb, 'after-recovery'))
+    expect(pinnedDeviceUnusableMessage('emulator-5554', adb, 'any'))
       .toContain('Device emulator-5554 is attached, but adb reports it offline.');
-    expect(pinnedDeviceUnusableMessage('HVA1', adb, 'after-recovery')).toContain('adb reports it authorizing.');
+    expect(pinnedDeviceUnusableMessage('HVA1', adb, 'any')).toContain('adb reports it authorizing.');
   });
 
   it('does not suggest the ADB restart that recovery has just tried', () => {
-    const offline = pinnedDeviceUnusableMessage('HVA9', [{ serial: 'HVA9', state: 'offline' }], 'after-recovery');
+    const offline = pinnedDeviceUnusableMessage('HVA9', [{ serial: 'HVA9', state: 'offline' }], 'after-adb-restart');
     expect(offline).toContain('adb reports it offline.');
     expect(offline).not.toContain('kill-server');
     expect(offline).toContain('Tapsmith already restarted the ADB server');
-    const odd = pinnedDeviceUnusableMessage('HVA9', [{ serial: 'HVA9', state: 'recovery' }], 'after-recovery');
+    const odd = pinnedDeviceUnusableMessage('HVA9', [{ serial: 'HVA9', state: 'recovery' }], 'after-adb-restart');
     expect(odd).not.toContain('kill-server');
   });
 
   it('is undefined for a usable or unlisted device', () => {
-    expect(pinnedDeviceUnusableMessage('emulator-5556', adb, 'after-recovery')).toBeUndefined();
-    expect(pinnedDeviceUnusableMessage('NOT-THERE', adb, 'after-recovery')).toBeUndefined();
+    expect(pinnedDeviceUnusableMessage('emulator-5556', adb, 'any')).toBeUndefined();
+    expect(pinnedDeviceUnusableMessage('NOT-THERE', adb, 'any')).toBeUndefined();
   });
 });
 
@@ -251,7 +251,7 @@ describe('waitForPinnedDeviceAuthorization()', () => {
     const run = deps(() => [{ serial: 'R5C', state: 'unauthorized' }, { serial: 'R5C', state: 'device' }]);
     expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
     expect(run.sleeps).toEqual([]);
-    expect(pinnedDeviceUnusableMessage('R5C', [{ serial: 'R5C', state: 'unauthorized' }, { serial: 'R5C', state: 'device' }], 'after-recovery'))
+    expect(pinnedDeviceUnusableMessage('R5C', [{ serial: 'R5C', state: 'unauthorized' }, { serial: 'R5C', state: 'device' }], 'any'))
       .toBeUndefined();
   });
 
