@@ -129,7 +129,12 @@ export function formatError(error: Error, indent: string = '        '): string {
   for (const line of error.message.split('\n')) lines.push(line === '' ? '' : `${indent}${red(line)}`);
 
   if (error.stack) {
-    const stackLines = error.stack.split('\n').slice(1);
+    // The stack opens with "<name>: <message>" — every line of the message,
+    // which is already printed above. Only what follows is frames.
+    const opensWithMessage = error.stack.startsWith(`${error.name}: ${error.message}`)
+      || error.stack.startsWith(`Error: ${error.message}`);
+    const header = opensWithMessage ? error.message.split('\n').length : 1;
+    const stackLines = error.stack.split('\n').slice(header);
 
     // Find the first user-code frame via extractStack, which owns the
     // framework-frame classification: it skips tapsmith internals in BOTH

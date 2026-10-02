@@ -2278,11 +2278,11 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     if (!started.ok) {
       try { proc.kill(); } catch { /* already dead */ }
       const portInUse = !started.spawnFailed && !(await isPortAvailable(port));
-      const message = daemonStartFailure(`Daemon for ${describe} on port ${port} did not start`, {
+      // "port in use" on the headline, which is all a progress row shows.
+      const message = daemonStartFailure(`Daemon for ${describe} on port ${port}${portInUse ? ' (already in use)' : ''} did not start`, {
         ...started,
         recentOutput: output.recentOutput(),
         logPath: output.logPath,
-        hints: portInUse ? [`Port ${port} is already in use.`] : [],
       });
       output.dispose();
       throw new Error(message);
@@ -2296,7 +2296,7 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     daemonProcess = firstDaemon;
     opts.onDaemonReady?.();
   } else {
-    daemonProcess = await spawnWorkerDaemon(daemonPort, agentPort, `worker ${workerId}`);
+    daemonProcess = await spawnWorkerDaemon(daemonPort, agentPort, `worker ${opts.displayWorkerId ?? workerId}`);
     opts.onDaemonReady?.();
   }
 
@@ -2307,7 +2307,7 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     // first failure while its siblings were still starting, and the ones that
     // then came up would never be captured — or killed.
     const settled = await Promise.allSettled(opts.members.map((m) =>
-      spawnWorkerDaemon(m.daemonPort, m.agentPort, `worker ${workerId} member ${m.name}`)));
+      spawnWorkerDaemon(m.daemonPort, m.agentPort, `worker ${opts.displayWorkerId ?? workerId} member ${m.name}`)));
     const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
     if (failure) {
       for (const r of settled) {

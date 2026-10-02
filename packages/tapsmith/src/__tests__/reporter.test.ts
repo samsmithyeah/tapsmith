@@ -1119,6 +1119,16 @@ describe('base formatting utilities', () => {
     ]);
   });
 
+  it('formatError shows a multi-line message once, then the real frames', async () => {
+    const { formatError } = await import('../reporters/base.js');
+    const err = new Error('Expected: 1\nReceived: 2');
+    err.stack = 'Error: Expected: 1\nReceived: 2\n    at one (/x/a.js:1:1)\n    at two (/x/b.js:2:2)';
+    const plain = formatError(err).replace(/\x1b\[[0-9;]*m/g, '');
+    expect(plain.split('\n').filter((l) => l.includes('Received: 2'))).toHaveLength(1);
+    expect(plain).toContain('at one (/x/a.js:1:1)');
+    expect(plain).toContain('at two (/x/b.js:2:2)');
+  });
+
   it('formatError renders the snippet from the user frame, skipping npm-installed framework frames', async () => {
     // A timeout error's top frame points at the framework. In the monorepo
     // that path contains /packages/tapsmith/ — but for npm installs it is

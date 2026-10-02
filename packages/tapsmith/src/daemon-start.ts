@@ -194,17 +194,18 @@ export interface DaemonStartFailureDetail {
 }
 
 /**
- * `headline`, then why: the cause, any hints, the install question only when
+ * `headline: <cause>`, then why: any hints, the install question only when
  * the binary could not be run, the daemon's recent output, and its log path —
  * last, on its own line, so nothing is copied along with it.
  */
 export function daemonStartFailure(headline: string, detail: DaemonStartFailureDetail): string {
-  const lines = [detail.cause, ...(detail.hints ?? [])];
+  // The cause on the headline: a launch-progress row shows only that line.
+  const lines = [...(detail.hints ?? [])];
   if (detail.spawnFailed) {
     lines.push('Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.');
   }
   const output = detail.recentOutput.split('\n').filter((line) => line.trim() !== '');
   if (output.length > 0) lines.push('Recent daemon output:', ...output.map((line) => `  ${line}`));
   if (detail.logPath) lines.push(`Daemon log: ${detail.logPath}`);
-  return withDetail(headline, lines);
+  return withDetail(`${headline}: ${detail.cause}`, lines);
 }

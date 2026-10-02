@@ -150,8 +150,7 @@ describe('startDaemon', () => {
     const err = await startDaemon('ios').then(() => undefined, (e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message.split('\n')).toEqual([
-      'Failed to start a ios daemon',
-      '  tapsmith-core exited with code 1 before it answered',
+      'Failed to start a ios daemon: tapsmith-core exited with code 1 before it answered',
       '  Recent daemon output:',
       '    Error: address already in use',
       `  Daemon log: ${mcpDaemonLogPath()}`,

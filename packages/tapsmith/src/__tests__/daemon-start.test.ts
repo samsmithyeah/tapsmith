@@ -130,8 +130,8 @@ describe('daemonStartFailure()', () => {
       recentOutput: 'Error: Address already in use (os error 48)',
       logPath: '/tmp/daemon.log',
     }).split('\n')).toEqual([
-      'Failed to start Tapsmith daemon',
-      '  tapsmith-core exited with code 1 before it answered',
+      // The cause on the headline: one-line progress rows show only that.
+      'Failed to start Tapsmith daemon: tapsmith-core exited with code 1 before it answered',
       '  Recent daemon output:',
       '    Error: Address already in use (os error 48)',
       '  Daemon log: /tmp/daemon.log',
@@ -143,8 +143,7 @@ describe('daemonStartFailure()', () => {
     expect(ran).not.toContain('installed');
     const missing = daemonStartFailure('Failed', { cause: 'could not run /x: spawn /x ENOENT', spawnFailed: true, recentOutput: '' });
     expect(missing.split('\n')).toEqual([
-      'Failed',
-      '  could not run /x: spawn /x ENOENT',
+      'Failed: could not run /x: spawn /x ENOENT',
       '  Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.',
     ]);
   });
@@ -152,6 +151,6 @@ describe('daemonStartFailure()', () => {
   it('puts extra hints after the cause', () => {
     expect(daemonStartFailure('Failed', {
       cause: 'exited', spawnFailed: false, recentOutput: '', hints: ['Port 50052 is already in use.', 'Run: lsof -ti tcp:50052 | xargs kill'],
-    }).split('\n')).toEqual(['Failed', '  exited', '  Port 50052 is already in use.', '  Run: lsof -ti tcp:50052 | xargs kill']);
+    }).split('\n')).toEqual(['Failed: exited', '  Port 50052 is already in use.', '  Run: lsof -ti tcp:50052 | xargs kill']);
   });
 });
