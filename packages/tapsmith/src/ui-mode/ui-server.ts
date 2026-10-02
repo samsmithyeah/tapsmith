@@ -1788,6 +1788,14 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     for (const [bucket, reason] of initFailureByBucket) {
       if (uiWorkers.some((w) => w.bucketSignature === bucket)) continue;
       ctx.unavailableTargets.add(bucket, reason);
+      // Its slots hold no worker: free them, as a failed retry does, so they
+      // are neither listed as this session's devices nor kept off reuse.
+      for (let i = 0; i < numWorkers; i++) {
+        if (ctx.bucketByDevice?.get(workerSerials[i]) !== bucket) continue;
+        workerGroups[i] = [];
+        workerSerials[i] = '';
+        freeWorkerIds.push(i);
+      }
       const message = ctx.unavailableTargets.notice(bucket, 'Running its tests again retries it.')!;
       if (launchProgress) launchProgress.note(message);
       else console.error(`${YELLOW}${message}${RESET}`);

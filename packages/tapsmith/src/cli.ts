@@ -1392,7 +1392,12 @@ async function provisionDevicesForBucket(
         : undefined,
       reusableUdids,
       onProgress: (message, level) => {
-        if (!progress) return;
+        if (!progress) {
+          // A mid-session retry has no progress display; a warning still has
+          // to reach the user, as on the Android path.
+          if (level === 'warning') process.stderr.write(`${YELLOW}${message}${RESET}\n`);
+          return;
+        }
         if (level === 'warning') progress.note(message);
         else progress.update('worker-devices', { state: 'running', detail: message });
       },
