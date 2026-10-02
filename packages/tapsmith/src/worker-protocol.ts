@@ -276,11 +276,11 @@ export function isRetryableDeviceSelectionError(err: unknown): boolean {
  * Run device selection, retrying transient failures (see
  * `isRetryableDeviceSelectionError`) with a short pause until the budget is
  * spent. `onRetry` fires before each re-attempt so callers can report
- * progress their own way.
+ * progress their own way; an error it throws ends the retry with that error.
  */
 export async function retryDeviceSelection<T>(
   fn: () => Promise<T>,
-  onRetry: (err: unknown) => void,
+  onRetry: (err: unknown) => void | Promise<void>,
 ): Promise<T> {
   const deadline = Date.now() + DEVICE_SELECT_RETRY_BUDGET_MS;
   for (;;) {
@@ -288,7 +288,7 @@ export async function retryDeviceSelection<T>(
       return await fn();
     } catch (err) {
       if (!isRetryableDeviceSelectionError(err) || Date.now() >= deadline) throw err;
-      onRetry(err);
+      await onRetry(err);
       await new Promise((resolve) => setTimeout(resolve, DEVICE_SELECT_RETRY_DELAY_MS));
     }
   }

@@ -43,10 +43,10 @@ export interface PhysicalDeviceInfo {
   /**
    * Whether CoreDevice can reach the device right now. devicectl also lists
    * devices the Mac only remembers (unplugged, out of Wi-Fi range, or paired
-   * with another Mac); those report `tunnelState: "unavailable"`. A cabled
-   * phone whose tunnel is merely idle (`disconnected`) is connected, paired or
-   * not. The daemon's parser (`tapsmith-core/src/ios/device.rs`) applies the
-   * same rule and drops unconnected devices outright.
+   * with another Mac); those report `tunnelState: "unavailable"` and no
+   * transport. A cabled phone whose tunnel is merely idle (`disconnected`) is
+   * connected, paired or not. The daemon's parser applies the same rule
+   * (`isReachable`) and drops unconnected devices outright.
    */
   isConnected: boolean
 }
@@ -89,16 +89,6 @@ export function listPhysicalDevices(): PhysicalDeviceInfo[] {
   } catch {
     return [];
   }
-}
-
-/**
- * The physical iOS devices connected right now — what setup-device judges and
- * what the physical-device auto-pick chooses from. {@link listPhysicalDevices}
- * also returns devices the Mac only remembers, which {@link isPhysicalDevice}
- * needs: a pinned phone that is unplugged must still take the devicectl path.
- */
-export function listConnectedPhysicalDevices(): PhysicalDeviceInfo[] {
-  return listPhysicalDevices().filter((d) => d.isConnected);
 }
 
 // Exported for unit tests.
@@ -156,12 +146,23 @@ export function parseDevicectlDeviceList(json: string): PhysicalDeviceInfo[] {
       transportType: typeof connProps['transportType'] === 'string'
         ? (connProps['transportType'] as string)
         : 'unknown',
-      // Only an explicit "unavailable" hides a device: a missing tunnelState
-      // (older devicectl) keeps the device, as before this field was read.
-      isConnected: connProps['tunnelState'] !== 'unavailable',
+      isConnected: isReachable(connProps),
     });
   }
   return result;
+}
+
+/**
+ * The connection rule shared with the daemon's parser (`tapsmith-core/src/ios/device.rs`):
+ * a device is unreachable only when its tunnel is `unavailable` AND devicectl
+ * gives no transport for it — the shape of a device the Mac merely remembers.
+ * A missing tunnelState (older devicectl) or any transport keeps the device,
+ * so a cabled phone CoreDevice has no tunnel to (e.g. a MobileDevice-only
+ * entry) is never hidden.
+ */
+function isReachable(connProps: Record<string, unknown>): boolean {
+  if (connProps['tunnelState'] !== 'unavailable') return true;
+  return typeof connProps['transportType'] === 'string' && connProps['transportType'] !== '';
 }
 
 /**
@@ -172,6 +173,20 @@ export function parseDevicectlDeviceList(json: string): PhysicalDeviceInfo[] {
 export function isPhysicalDevice(udid: string): boolean {
   if (!udid) return false;
   return listPhysicalDevices().some((d) => d.udid === udid);
+}
+
+/**
+ * Why `udid` cannot be used, when it is a physical device devicectl only
+ * remembers (unplugged, out of Wi-Fi range, or paired with another Mac):
+ * the daemon does not list such a device, so selecting it fails with a bare
+ * "not found". Undefined when it is not such a device — connected, cabled per
+ * `idevice_id`, a simulator, or unknown.
+ */
+export function describeUnreachablePhysicalDevice(udid: string): string | undefined {
+  const device = listPhysicalDevices().find((d) => d.udid === udid);
+  if (!device || device.isConnected || listUsbAttachedIosDevices().has(udid)) return undefined;
+  return `${device.name} (${udid}) is not connected: this Mac remembers it, but cannot reach it now. `
+    + 'Plug it in with a USB cable and unlock it, then re-run. `tapsmith list-devices` shows the devices that are connected.';
 }
 
 /**

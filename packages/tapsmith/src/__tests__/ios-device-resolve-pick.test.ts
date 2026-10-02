@@ -25,7 +25,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 const { resolvePhysicalIosDevice } = await import('../ios-device-resolve.js');
-const { isPhysicalDevice, listPhysicalDevices } = await import('../ios-devicectl.js');
+const { describeUnreachablePhysicalDevice, isPhysicalDevice, listPhysicalDevices } = await import('../ios-devicectl.js');
 
 const CONNECTED = '00008140-000A1B2C3D4E001C';
 const REMEMBERED = '00008140-000F9E8D7C6B001C';
@@ -70,8 +70,34 @@ describe('resolvePhysicalIosDevice() picks only a connected device (PILOT-386)',
     expect(() => resolvePhysicalIosDevice()).toThrow(/No connected, paired physical iOS device detected/);
   });
 
+  it('a USB-attached phone is a candidate even when devicectl calls it unreachable (idevice_id is the ground truth)', () => {
+    devicectl.usb = `${REMEMBERED}\n`;
+    expect(resolvePhysicalIosDevice()).toBe(REMEMBERED);
+  });
+
   it('isPhysicalDevice still knows a remembered phone, so a pinned one takes the devicectl path, not simctl', () => {
     expect(listPhysicalDevices().map((d) => d.udid)).toContain(REMEMBERED);
     expect(isPhysicalDevice(REMEMBERED)).toBe(true);
+  });
+});
+
+describe('describeUnreachablePhysicalDevice() (PILOT-386)', () => {
+  beforeEach(() => {
+    devicectl.json = fs.readFileSync(path.join(fixtures, 'devicectl-list-devices-xcode27.json'), 'utf-8');
+    devicectl.usb = '';
+  });
+
+  it('names a remembered phone as not connected, with what to do', () => {
+    expect(describeUnreachablePhysicalDevice(REMEMBERED)).toMatch(
+      /^Remembered iPhone \(00008140-000F9E8D7C6B001C\) is not connected: .*Plug it in with a USB cable/,
+    );
+  });
+
+  it('says nothing for a connected phone, a simulator, an unknown UDID, or a phone idevice_id sees on USB', () => {
+    expect(describeUnreachablePhysicalDevice(CONNECTED)).toBeUndefined();
+    expect(describeUnreachablePhysicalDevice('15CD8814-5BC0-4BDC-B688-E5D82BF4064C')).toBeUndefined();
+    expect(describeUnreachablePhysicalDevice('NOPE')).toBeUndefined();
+    devicectl.usb = `${REMEMBERED}\n`;
+    expect(describeUnreachablePhysicalDevice(REMEMBERED)).toBeUndefined();
   });
 });

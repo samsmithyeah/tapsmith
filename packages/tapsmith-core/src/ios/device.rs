@@ -268,16 +268,22 @@ fn parse_devicectl_devices(json_str: &str) -> Result<Vec<IosDevice>> {
         }
         // Only devices reachable now. devicectl also lists devices the Mac
         // merely remembers (unplugged, out of Wi-Fi range, or paired with
-        // another Mac) with `tunnelState: "unavailable"`; listing them made
-        // list-devices show phones that are not there and let auto_pick count
-        // (or select) one. `disconnected` is a cabled phone's idle tunnel and
-        // stays; a missing tunnelState (older devicectl) stays too. Same rule
-        // as `isConnected` in the SDK's ios-devicectl.ts (PILOT-386).
+        // another Mac) with `tunnelState: "unavailable"` and no transport;
+        // listing them made list-devices show phones that are not there and
+        // let auto_pick count (or select) one. `disconnected` is a cabled
+        // phone's idle tunnel and stays; a missing tunnelState (older
+        // devicectl) stays, and so does any device with a transport (a cabled
+        // phone CoreDevice has no tunnel to). Same rule as `isReachable` in
+        // the SDK's ios-devicectl.ts (PILOT-386).
         let tunnel_state = device
             .pointer("/connectionProperties/tunnelState")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if tunnel_state == "unavailable" {
+        let transport = device
+            .pointer("/connectionProperties/transportType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if tunnel_state == "unavailable" && transport.is_empty() {
             continue;
         }
 
@@ -1781,8 +1787,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_devicectl_devices_keeps_devices_without_tunnel_state() {
-        // Older devicectl omits tunnelState: never hide a device on missing data.
+    fn parse_devicectl_devices_drops_only_remembered_devices() {
+        // Older devicectl omits tunnelState: never hide a device on missing
+        // data. A transport means CoreDevice reaches the device now, tunnel or
+        // not (a MobileDevice-only entry for an older iOS).
         let json = r#"{
           "result": {
             "devices": [
@@ -1795,13 +1803,18 @@ mod tests {
                 "hardwareProperties": { "platform": "iOS", "udid": "GONE" },
                 "deviceProperties": { "name": "Old iPhone" },
                 "connectionProperties": { "pairingState": "paired", "tunnelState": "unavailable" }
+              },
+              {
+                "hardwareProperties": { "platform": "iOS", "udid": "CABLED-NO-TUNNEL" },
+                "deviceProperties": { "name": "iPhone 8", "bootState": "booted" },
+                "connectionProperties": { "pairingState": "paired", "tunnelState": "unavailable", "transportType": "wired" }
               }
             ]
           }
         }"#;
         let devices = parse_devicectl_devices(json).unwrap();
         let udids: Vec<&str> = devices.iter().map(|d| d.udid.as_str()).collect();
-        assert_eq!(udids, vec!["NO-STATE"]);
+        assert_eq!(udids, vec!["NO-STATE", "CABLED-NO-TUNNEL"]);
     }
 
     #[test]

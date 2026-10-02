@@ -162,7 +162,7 @@ describe('parseDevicectlDeviceList', () => {
     expect(parseDevicectlDeviceList(json).map((d) => d.udid)).toEqual(['REAL-UDID', 'OLD-XCODE-UDID']);
   });
 
-  it('a device counts as connected unless devicectl says its tunnel is unavailable', () => {
+  it('a device counts as connected unless devicectl says its tunnel is unavailable and gives no transport', () => {
     const entry = (udid: string, connectionProperties: Record<string, unknown>) => ({
       hardwareProperties: { platform: 'iOS', udid },
       deviceProperties: { name: udid },
@@ -176,6 +176,9 @@ describe('parseDevicectlDeviceList', () => {
           entry('TUNNEL-IDLE', { tunnelState: 'disconnected', transportType: 'wired' }),
           entry('WIFI', { tunnelState: 'disconnected', transportType: 'localNetwork' }),
           entry('GONE', { tunnelState: 'unavailable' }),
+          // A transport means CoreDevice is reaching it now, even without a
+          // tunnel (e.g. a MobileDevice-only entry for an older iOS).
+          entry('CABLED-NO-TUNNEL', { tunnelState: 'unavailable', transportType: 'wired' }),
           // Older devicectl without tunnelState: never hidden on missing data.
           entry('NO-STATE', {}),
         ],
@@ -186,6 +189,7 @@ describe('parseDevicectlDeviceList', () => {
       ['TUNNEL-IDLE', true],
       ['WIFI', true],
       ['GONE', false],
+      ['CABLED-NO-TUNNEL', true],
       ['NO-STATE', true],
     ]);
   });

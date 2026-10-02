@@ -14,7 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { listConnectedPhysicalDevices, listUsbAttachedIosDevices } from './ios-devicectl.js';
+import { listPhysicalDevices, listUsbAttachedIosDevices } from './ios-devicectl.js';
 import { displayPath, npmIosAgentDir, npmIosAgentVersion, tapsmithPackageVersion } from './ios-agent-paths.js';
 
 const require = createRequire(import.meta.url);
@@ -33,7 +33,10 @@ const require = createRequire(import.meta.url);
  * can't actually be driven by `tapsmith test`.
  */
 export function resolvePhysicalIosDevice(): string {
-  const paired = listConnectedPhysicalDevices().filter((d) => d.isPaired);
+  // idevice_id's USB list is ground truth for a cable, so a USB-attached
+  // phone stays a candidate whatever devicectl says about its tunnel.
+  const usb = listUsbAttachedIosDevices();
+  const paired = listPhysicalDevices().filter((d) => d.isPaired && (d.isConnected || usb.has(d.udid)));
   if (paired.length === 0) {
     throw new Error(
       'No connected, paired physical iOS device detected. Connect one via USB and run ' +
@@ -41,7 +44,6 @@ export function resolvePhysicalIosDevice(): string {
     );
   }
 
-  const usb = listUsbAttachedIosDevices();
   const usbPaired = paired.filter((d) => usb.has(d.udid));
   const candidates = usbPaired.length > 0 ? usbPaired : paired;
 

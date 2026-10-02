@@ -570,6 +570,14 @@ async function setupSequentialDevice(
   // Physical-iOS fast-fail checks. Fire BEFORE the 8-second installAppOnDevice
   // so the user gets an immediate, actionable error instead of a mid-test hang.
   if (cfg.platform === 'ios' && targetIsPhysical) {
+    // A phone devicectl only remembers (unplugged, or paired with another
+    // Mac): every step below would fail slowly against it (PILOT-386).
+    const { describeUnreachablePhysicalDevice } = await import('./ios-devicectl.js');
+    const unreachable = describeUnreachablePhysicalDevice(deviceSerial);
+    if (unreachable) {
+      progress?.fail('primary-device', 'device is not connected');
+      throw new Error(unreachable);
+    }
     // Cert-trust probe. The devicectl launch is ~1s and pattern-matches
     // cleanly on "cert not trusted". Only helpful when the runner is
     // already installed (i.e. second-and-subsequent runs on the device)

@@ -530,6 +530,7 @@ export async function openDeviceSession(
   try {
     progress(`selecting device ${spec.serial}`);
     if (opts.refreshDeviceList) await device.listDevices();
+    let checkedReachability = false;
     await retryDeviceSelection(
       () => device.setDevice(
         spec.serial,
@@ -537,7 +538,19 @@ export async function openDeviceSession(
         networkHostsForPac(config.trace),
         networkPassthroughHosts(config.trace),
       ),
-      (err) => progress(`device selection failed transiently, retrying: ${err instanceof Error ? err.message : String(err)}`),
+      async (err) => {
+        // A physical iPhone devicectl only remembers is absent from the
+        // daemon's list, so its "not found" would be retried for minutes.
+        // Checked once, on the first retry, so a healthy selection never pays
+        // for the devicectl call (PILOT-386).
+        if (config.platform === 'ios' && !checkedReachability) {
+          checkedReachability = true;
+          const { describeUnreachablePhysicalDevice } = await import('./ios-devicectl.js');
+          const unreachable = describeUnreachablePhysicalDevice(spec.serial);
+          if (unreachable) throw new Error(unreachable);
+        }
+        progress(`device selection failed transiently, retrying: ${err instanceof Error ? err.message : String(err)}`);
+      },
     );
 
     if (!opts.skipWakeUnlock) {

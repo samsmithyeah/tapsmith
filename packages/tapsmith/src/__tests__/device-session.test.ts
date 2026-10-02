@@ -26,6 +26,8 @@ const mocks = vi.hoisted(() => ({
   deviceXctestrun: '/proj/ios-agent/.build-device/TapsmithAgent.xctestrun' as string | undefined,
   /** Shell commands device-session ran (`execFileSync`). */
   execs: [] as string[][],
+  /** Serials the daemon does not list (setDevice: "not found"). */
+  unknownToDaemon: new Set<string>(),
 }));
 
 // No real backoff between agent-start attempts — the retry is what matters here.
@@ -47,7 +49,10 @@ vi.mock('../device.js', () => ({
     let serial = '';
     const device: Record<string, ReturnType<typeof vi.fn>> = {
       listDevices: vi.fn(async () => ({ devices: [] })),
-      setDevice: vi.fn(async (s: string) => { serial = s; }),
+      setDevice: vi.fn(async (s: string) => {
+        if (mocks.unknownToDaemon.has(s)) throw new Error(`Device ${s} not found. Run ListDevices first to refresh the device list.`);
+        serial = s;
+      }),
       wake: vi.fn(async () => {}),
       unlock: vi.fn(async () => {}),
       installApk: vi.fn(async () => {}),
@@ -89,6 +94,8 @@ vi.mock('../ios-devicectl.js', () => ({
   isPhysicalDevice: vi.fn((serial: string) => serial.startsWith('PHYS')),
   installAppOnDevice: vi.fn(async () => {}),
   isAppInstalledOnDevice: vi.fn(async () => true),
+  describeUnreachablePhysicalDevice: vi.fn((serial: string) =>
+    serial.startsWith('GONE') ? `Old iPhone (${serial}) is not connected: this Mac remembers it, but cannot reach it now.` : undefined),
 }));
 
 vi.mock('../ios-device-resolve.js', async (importOriginal) => ({
@@ -138,6 +145,7 @@ beforeEach(() => {
   mocks.simAppMatches = true;
   mocks.deviceXctestrun = '/proj/ios-agent/.build-device/TapsmithAgent.xctestrun';
   mocks.execs.length = 0;
+  mocks.unknownToDaemon.clear();
   mocks.preflight.ensureSessionReady.mockClear();
   mocks.preflight.launchConfiguredApp.mockClear();
   mocks.preflight.probeResetCapabilities.mockClear();
@@ -349,6 +357,21 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
       process.off('unhandledRejection', onUnhandled);
     }
     expect(unhandled).toEqual([]);
+  });
+
+  // PILOT-386: the daemon does not list a phone devicectl only remembers, so
+  // selecting a pinned one fails "not found" — which the selection retry
+  // treats as transient for minutes. Say what is wrong at the first retry.
+  it('fails fast, naming the cause, when a pinned iOS device is remembered but not connected', async () => {
+    mocks.unknownToDaemon.add('GONE-1');
+    const started = Date.now();
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'GONE-1', daemonAddress: 'localhost:50052' },
+      makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
+      { label: 'Device' },
+    )).rejects.toThrow(/Old iPhone \(GONE-1\) is not connected/);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(mocks.devices[0].setDevice).toHaveBeenCalledTimes(1);
   });
 
   it('fails a physical iOS device that has no device-slice xctestrun to run', async () => {
