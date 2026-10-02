@@ -41,6 +41,8 @@ import type {
 } from './ui-mode/ui-protocol.js';
 import { RunQueue, mapKeyToAction } from './watch-queue.js';
 import { preserveEmulatorsForReuse, emulatorsLaunchedThisProcess, type LaunchedEmulator } from './emulator.js';
+import { deviceTargetLabel } from './dispatcher.js';
+import type { ProvisionedTarget, UnavailableTargets } from './unavailable-targets.js';
 
 // ─── ANSI helpers ───
 
@@ -127,6 +129,13 @@ export interface WatchModeContext {
   deviceGroupByDevice?: Map<string, DeviceGroupEntry[]>
   bucketByDevice?: Map<string, string>
   bucketByProject?: Map<string, string>
+  /**
+   * Device targets that could not start (PILOT-415). Their files are never
+   * run on another target's device: a run that includes them tries the
+   * target again, and they fail with its reason while it still cannot start.
+   * Required so an embedder cannot forget it: empty for a single-target session.
+   */
+  unavailableTargets: UnavailableTargets
 }
 
 /**
@@ -262,41 +271,37 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     bucketSignature?: string
   }
 
+  // Grows when a target that could not start comes up on a retry (PILOT-415).
   const workerGroups: string[][] = ctx.workerGroups && ctx.workerGroups.length > 0
-    ? ctx.workerGroups
+    ? [...ctx.workerGroups]
     : (ctx.deviceSerials ?? []).map((s) => [s]);
-  const multiWorker = (ctx.workers ?? 1) > 1 && workerGroups.length > 1;
+  let workerBudget = ctx.workers;
+  // A multi-target session routes every file through the workers, even a
+  // lone one: the single-worker path runs on the CLI's primary device with
+  // the root config, which is another target's device and config for every
+  // project but the primary's (PILOT-415; the wider fallback is PILOT-379).
+  const multiTarget = !!ctx.bucketByProject;
+  const multiWorker = () => workerGroups.length > 0
+    && (multiTarget || ((workerBudget ?? 1) > 1 && workerGroups.length > 1));
   const watchWorkers: WatchWorkerHandle[] = [];
   let workersReady = false;
 
-  async function initializeWatchWorkers(): Promise<void> {
-    if (workerGroups.length === 0) return;
-
-    const baseDaemonPort = Number.parseInt(ctx.daemonAddress.split(':').pop() ?? '50051', 10);
-    const baseAgentPort = 18700;
+  const baseDaemonPort = Number.parseInt(ctx.daemonAddress.split(':').pop() ?? '50051', 10);
+  const baseAgentPort = 18700;
+  // Group members take ports past the per-worker band (at most 100 workers).
+  const memberPorts = (workerIndex: number, memberIndex: number): { daemonPort: number; agentPort: number } => {
+    const offset = 200 + workerIndex * 10 + memberIndex;
+    return { daemonPort: baseDaemonPort + offset, agentPort: baseAgentPort + offset };
+  };
+  const resolveDaemonBin = (): string => {
     const rawBin = process.env.TAPSMITH_DAEMON_BIN ?? ctx.config.daemonBin ?? findDaemonBin();
-    const daemonBin = rawBin.includes(path.sep) || rawBin.startsWith('.')
+    return rawBin.includes(path.sep) || rawBin.startsWith('.')
       ? path.resolve(ctx.config.rootDir, rawBin)
       : rawBin;
+  };
 
-    const numWorkers = Math.min(ctx.workers ?? 2, workerGroups.length);
-    process.stderr.write(`${DIM}Initializing ${numWorkers} watch worker(s)...${RESET}\n`);
-
-    // Kill stale daemons from a previous watch session that may still be
-    // listening on the worker ports. Without this, waitForReady connects to
-    // the old daemon instead of the freshly spawned one, which means daemon
-    // binary updates (e.g. bug fixes) don't take effect until the user
-    // manually kills the old processes.
-    // Group members take ports past the per-worker band (at most 100 workers).
-    const memberPorts = (workerIndex: number, memberIndex: number): { daemonPort: number; agentPort: number } => {
-      const offset = 200 + workerIndex * 10 + memberIndex;
-      return { daemonPort: baseDaemonPort + offset, agentPort: baseAgentPort + offset };
-    };
-    const daemonPorts = [
-      ...Array.from({ length: numWorkers }, (_, i) => baseDaemonPort + 100 + i),
-      ...workerGroups.slice(0, numWorkers).flatMap((g, i) => g.slice(1).map((_, m) => memberPorts(i, m).daemonPort)),
-    ];
-    for (const port of daemonPorts) {
+  async function killStaleListeners(ports: number[]): Promise<void> {
+    for (const port of ports) {
       try {
         const { execFileSync } = await import('node:child_process');
         const out = execFileSync('lsof', ['-iTCP:' + port, '-sTCP:LISTEN', '-t'], { encoding: 'utf-8' }).trim();
@@ -306,9 +311,33 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         if (out) await new Promise((r) => setTimeout(r, 500));
       } catch { /* no listener — nothing to kill */ }
     }
+  }
+
+  /** @returns each worker's start failure, by worker index. */
+  async function initializeWatchWorkers(): Promise<Map<number, unknown>> {
+    const errors = new Map<number, unknown>();
+    if (workerGroups.length === 0) return errors;
+
+    const daemonBin = resolveDaemonBin();
+
+    const numWorkers = Math.min(workerBudget ?? 2, workerGroups.length);
+    process.stderr.write(`${DIM}Initializing ${numWorkers} watch worker(s)...${RESET}\n`);
+
+    // Kill stale daemons from a previous watch session that may still be
+    // listening on the worker ports. Without this, waitForReady connects to
+    // the old daemon instead of the freshly spawned one, which means daemon
+    // binary updates (e.g. bug fixes) don't take effect until the user
+    // manually kills the old processes.
+    const daemonPorts = [
+      ...Array.from({ length: numWorkers }, (_, i) => baseDaemonPort + 100 + i),
+      ...workerGroups.slice(0, numWorkers).flatMap((g, i) => g.slice(1).map((_, m) => memberPorts(i, m).daemonPort)),
+    ];
+    await killStaleListeners(daemonPorts);
 
     for (let i = 0; i < numWorkers; i++) {
       const [deviceSerial, ...memberSerials] = workerGroups[i];
+      // A slot given up below (its target is unavailable; a retry provisions it afresh).
+      if (!deviceSerial) continue;
       const daemonPort = baseDaemonPort + 100 + i;
       const agentPort = baseAgentPort + 100 + i;
       try {
@@ -318,13 +347,30 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         );
         watchWorkers.push(worker);
       } catch (err) {
+        errors.set(i, err);
         process.stderr.write(
           `${YELLOW}Skipping device ${[deviceSerial, ...memberSerials].join('+')}: ${err instanceof Error ? err.message : err}.${RESET}\n`,
         );
       }
     }
 
-    if (watchWorkers.length > 1) {
+    // A target none of whose workers started could not start: its files fail
+    // with the reason and a run of them tries it again, as in UI mode. Its
+    // groups are given up, so that retry cannot start a second worker on the
+    // same devices (PILOT-415).
+    if (multiTarget) {
+      for (const [i, err] of errors) {
+        const signature = ctx.bucketByDevice?.get(workerGroups[i][0]);
+        if (!signature || watchWorkers.some((w) => w.bucketSignature === signature)) continue;
+        if (!ctx.unavailableTargets.has(signature)) {
+          ctx.unavailableTargets.add(signature, err);
+          process.stderr.write(`${YELLOW}${ctx.unavailableTargets.notice(signature, 'Running its tests again retries it.')}${RESET}\n`);
+        }
+        workerGroups[i] = [];
+      }
+    }
+
+    if (watchWorkers.length > 1 || (multiTarget && watchWorkers.length === 1)) {
       workersReady = true;
       process.stderr.write(`${DIM}${watchWorkers.length} watch worker(s) ready.${RESET}\n`);
     } else if (watchWorkers.length === 1) {
@@ -332,7 +378,18 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       process.stderr.write(`${YELLOW}Only 1 worker initialized. Using single-worker mode.${RESET}\n`);
       cleanupWatchWorkers();
     }
+    return errors;
   }
+
+  /**
+   * Processes of watch workers still starting: their handles reach
+   * `watchWorkers` only once ready, so `cleanup()` kills these too. A session
+   * quit during a slow start (a target tried again on a run) must not leave
+   * the new daemons and child behind (PILOT-415).
+   */
+  const startingWorkerProcesses = new Set<ChildProcess[]>();
+  /** Devices a watch worker already set up with `--force-install`. */
+  const forceInstalledSerials = new Set<string>();
 
   async function initOneWatchWorker(
     id: number,
@@ -341,6 +398,24 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     agentPort: number,
     daemonBin: string,
     members: Array<{ serial: string; daemonPort: number; agentPort: number }> = [],
+  ): Promise<WatchWorkerHandle> {
+    const spawned: ChildProcess[] = [];
+    startingWorkerProcesses.add(spawned);
+    try {
+      return await startOneWatchWorker(spawned, id, deviceSerial, daemonPort, agentPort, daemonBin, members);
+    } finally {
+      startingWorkerProcesses.delete(spawned);
+    }
+  }
+
+  async function startOneWatchWorker(
+    spawned: ChildProcess[],
+    id: number,
+    deviceSerial: string,
+    daemonPort: number,
+    agentPort: number,
+    daemonBin: string,
+    members: Array<{ serial: string; daemonPort: number; agentPort: number }>,
   ): Promise<WatchWorkerHandle> {
     const workerConfig = ctx.configByDevice?.get(deviceSerial) ?? serializedConfig;
     const workerBucketSig = ctx.bucketByDevice?.get(deviceSerial);
@@ -355,6 +430,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       { stdio: 'ignore' },
     );
     daemonProcess.on('error', () => { /* handled by waitForReady */ });
+    spawned.push(daemonProcess);
 
     const daemonClient = new TapsmithGrpcClient(`localhost:${daemonPort}`);
     const ready = await daemonClient.waitForReady(10_000);
@@ -375,6 +451,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
           describe: `daemon for ${m.serial}`,
         });
         memberDaemons.push(daemon.process);
+        spawned.push(daemon.process);
       }
     } catch (err) {
       for (const d of memberDaemons) { try { d.kill(); } catch { /* already dead */ } }
@@ -387,6 +464,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       ...(tsxBin ? { execPath: tsxBin } : {}),
       env: { ...process.env, NODE_PATH: path.resolve(import.meta.dirname, '..'), TAPSMITH_WORKER_ID: String(id) },
     });
+    spawned.push(child);
     child.setMaxListeners(20);
 
     const worker: WatchWorkerHandle = {
@@ -426,6 +504,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
           clearTimeout(timeout);
           child.removeListener('message', onMessage);
           child.removeListener('exit', onExit);
+          // Ready means its setup, the install included, went through.
+          if (ctx.forceInstall) forceInstalledSerials.add(deviceSerial);
           resolve();
         } else if (msg.type === 'progress' && msg.workerId === id) {
           process.stderr.write(`${DIM}  Worker ${id} (${deviceSerial}): ${msg.message}${RESET}\n`);
@@ -445,6 +525,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       child.on('message', onMessage);
       child.on('exit', onExit);
 
+      const forceInstall = ctx.forceInstall && deviceSerial !== ctx.deviceSerial && !forceInstalledSerials.has(deviceSerial);
       child.send({
         type: 'init',
         workerId: id,
@@ -455,7 +536,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         screenshotDir: ctx.screenshotDir,
         // The worker on the CLI's own group sets it up afresh (it does not
         // adopt), but the CLI already force-installed there this session.
-        forceInstall: ctx.forceInstall && deviceSerial !== ctx.deviceSerial,
+        // Once per device: not again on every retry of a target that keeps failing.
+        forceInstall,
         ...(members.length > 0 ? {
           groupMembers: members.map((m, i) => ({ name: groupNames[i + 1].name, deviceSerial: m.serial, daemonPort: m.daemonPort })),
         } : {}),
@@ -635,7 +717,105 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     workersReady = false;
   }
 
-  const useParallel = () => multiWorker && workersReady && watchWorkers.length > 1;
+  const useParallel = () => multiWorker() && workersReady && watchWorkers.length > (multiTarget ? 0 : 1);
+
+  // ─── Device targets that could not start (PILOT-415) ───
+
+  /** Targets a run has tried again: once per run, its waves share the outcome. */
+  const targetsRetriedThisRun = new Set<string>();
+
+  /** The device target a project runs on, when that target could not start. */
+  function unavailableTargetOf(projectName: string | undefined): string | undefined {
+    const sig = projectName ? ctx.bucketByProject?.get(projectName) : undefined;
+    return ctx.unavailableTargets.has(sig) ? sig : undefined;
+  }
+
+  /**
+   * Try each unavailable target the given projects run on again (once per
+   * run), starting its workers when it comes up. Call before choosing
+   * between parallel and single-worker execution: a target that comes up
+   * can turn a single-worker session parallel.
+   */
+  async function reviveTargetsFor(projectNames: Array<string | undefined>): Promise<void> {
+    const toRetry = ctx.unavailableTargets.signaturesFor(projectNames, ctx.bucketByProject)
+      .filter((sig) => !targetsRetriedThisRun.has(sig));
+    for (const sig of toRetry) {
+      targetsRetriedThisRun.add(sig);
+      const label = deviceTargetLabel(sig);
+      process.stderr.write(`${DIM}Device target ${label} could not start before; trying it again...${RESET}\n`);
+      const started = await ctx.unavailableTargets.retry(sig, (target) => startTargetWorkers(sig, target));
+      process.stderr.write(started
+        ? `${DIM}Device target ${label} started.${RESET}\n`
+        : `${YELLOW}${ctx.unavailableTargets.reason(sig)}${RESET}\n`);
+    }
+  }
+
+  /** Start watch workers for a target that came up on a retry; throws when none of its workers starts. */
+  async function startTargetWorkers(signature: string, target: ProvisionedTarget): Promise<void> {
+    for (const [serial, cfg] of target.configByDevice) {
+      ctx.configByDevice?.set(serial, cfg);
+      ctx.bucketByDevice?.set(serial, signature);
+    }
+    for (const [serial, group] of target.deviceGroupByDevice) ctx.deviceGroupByDevice?.set(serial, group);
+    ctx.launchedEmulators.push(...target.launched);
+    const firstNew = workerGroups.length;
+    const budgetBefore = workerBudget;
+    workerGroups.push(...target.workerGroups);
+    workerBudget = (workerBudget ?? 1) + target.workerGroups.length;
+    let firstError: unknown;
+
+    if (workersReady) {
+      // Parallel already: add the target's workers beside the others.
+      const daemonBin = resolveDaemonBin();
+      for (let i = firstNew; i < workerGroups.length; i++) {
+        const [deviceSerial, ...memberSerials] = workerGroups[i];
+        const members = memberSerials.map((serial, m) => ({ serial, ...memberPorts(i, m) }));
+        await killStaleListeners([baseDaemonPort + 100 + i, ...members.map((m) => m.daemonPort)]);
+        try {
+          watchWorkers.push(await initOneWatchWorker(i, deviceSerial, baseDaemonPort + 100 + i, baseAgentPort + 100 + i, daemonBin, members));
+        } catch (err) {
+          firstError ??= err;
+          process.stderr.write(`${YELLOW}Skipping device ${workerGroups[i].join('+')}: ${err instanceof Error ? err.message : err}.${RESET}\n`);
+        }
+      }
+    } else if (multiWorker()) {
+      // No worker until now: start one per group, this target's included.
+      cleanupWatchWorkers();
+      const errors = await initializeWatchWorkers();
+      // Only this target's own groups explain why it has no worker.
+      firstError = [...errors].find(([i]) => i >= firstNew)?.[1];
+    }
+    if (!watchWorkers.some((w) => w.bucketSignature === signature)) {
+      // Forget the attempt's groups, or the next attempt (the same devices,
+      // provisioned again) would add them a second time and start two
+      // workers on one device. Only the tail: earlier groups keep their ids.
+      // A worker that failed to start already took its processes down.
+      if (watchWorkers.every((w) => w.id < firstNew)) {
+        workerGroups.splice(firstNew);
+        workerBudget = budgetBefore;
+      }
+      throw firstError ?? new Error('its devices came up, but no watch worker started on them');
+    }
+  }
+
+  /** Report a file of a target that could not start as failed, with the target's reason. */
+  function failUnavailableFile(
+    reporter: TapsmithReporter,
+    filePath: string,
+    projectName: string | undefined,
+    signature: string,
+  ): { result: TestResult; suite: SuiteResult } {
+    const err = new Error(ctx.unavailableTargets.reason(signature));
+    // The stack is watch's, not the user's: reporters would print its frames.
+    err.stack = undefined;
+    const failure = makeErrorResult(filePath, err, projectName);
+    failure.result.filePath = filePath;
+    reporter.onTestFileStart?.(filePath);
+    reporter.onTestEnd?.(failure.result);
+    reporter.onTestFileEnd?.(filePath, [failure.result]);
+    state.failedFiles.add(filePath);
+    return failure;
+  }
 
   // ─── Run queue ───
 
@@ -666,6 +846,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     const reporter = new ReporterDispatcher(reporters);
 
     const totalFiles = [...state.knownFiles].length;
+    targetsRetriedThisRun.clear();
+    await reviveTargetsFor((ctx.projects ?? []).filter((p) => p.testFiles.length > 0).map((p) => p.name));
     // Pass the actual worker count to the reporter so it shows worker/project
     // tags and suppresses file headers when running in parallel.
     const reporterConfig = useParallel()
@@ -679,6 +861,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     } else if (ctx.projectWaves && ctx.projects) {
       // Sequential wave-based execution respecting project dependencies
       const failedProjects = new Set<string>();
+      /** Files that failed on a target that could not start, this run. */
+      const unavailableFiles = new Set<string>();
 
       for (const wave of ctx.projectWaves) {
         for (const project of wave) {
@@ -690,6 +874,18 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
               allResults.push(result);
               allSuites.push(suite);
               reporter.onTestEnd?.(result);
+            }
+            failedProjects.add(project.name);
+            continue;
+          }
+
+          const unavailable = unavailableTargetOf(project.name);
+          if (unavailable && project.testFiles.length > 0) {
+            for (const file of project.testFiles) {
+              const { result, suite } = failUnavailableFile(reporter, file, projectLabel(project), unavailable);
+              allResults.push(result);
+              allSuites.push(suite);
+              unavailableFiles.add(file);
             }
             failedProjects.add(project.name);
             continue;
@@ -714,7 +910,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
               if (results.some((r) => r.status === 'failed')) {
                 state.failedFiles.add(file);
                 projectFailed = true;
-              } else {
+              } else if (!unavailableFiles.has(file)) {
+                // Its run on an unavailable target failed: a pass here must not clear that.
                 state.failedFiles.delete(file);
               }
             } catch (err) {
@@ -797,6 +994,18 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
             // it actually re-runs and we have fresh signal on it.
             continue;
           }
+          const unavailable = unavailableTargetOf(project.name);
+          if (unavailable && project.testFiles.length > 0) {
+            for (const file of project.testFiles) {
+              const { result, suite } = failUnavailableFile(reporter, file, projectLabel(project), unavailable);
+              allResults.push(result);
+              allSuites.push(suite);
+              filesRanThisRun.add(file);
+              filesFailedThisRun.add(file);
+            }
+            failedProjects.add(project.name);
+            continue;
+          }
           for (const file of project.testFiles) {
             waveFiles.push({
               filePath: file,
@@ -870,23 +1079,42 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       }
     }
 
+    targetsRetriedThisRun.clear();
+    await reviveTargetsFor(tagged.map((t) => t.projectName));
+
     const reporterConfig = useParallel()
       ? { ...ctx.config, workers: watchWorkers.length }
       : { ...ctx.config, workers: 1 };
     reporter.onRunStart(reporterConfig, files.length);
 
-    if (useParallel() && tagged.length > 1) {
+    // A target that still cannot start: its files fail with the reason and
+    // never run on another target's device.
+    const runnable: TaggedFile[] = [];
+    const unavailableFiles = new Set<string>();
+    for (const entry of tagged) {
+      const unavailable = unavailableTargetOf(entry.projectName);
+      if (!unavailable) {
+        runnable.push(entry);
+        continue;
+      }
+      const { result, suite } = failUnavailableFile(reporter, entry.filePath, entry.projectName, unavailable);
+      allResults.push(result);
+      allSuites.push(suite);
+      unavailableFiles.add(entry.filePath);
+    }
+
+    if (useParallel() && (runnable.length > 1 || multiTarget)) {
       // Dispatch across persistent workers (parallel)
-      const { results, suites, failedFilePaths } = await dispatchParallel(tagged, reporter);
+      const { results, suites, failedFilePaths } = await dispatchParallel(runnable, reporter);
       allResults.push(...results);
       allSuites.push(...suites);
       for (const f of files) {
-        if (failedFilePaths.has(f)) state.failedFiles.add(f);
+        if (failedFilePaths.has(f) || unavailableFiles.has(f)) state.failedFiles.add(f);
         else state.failedFiles.delete(f);
       }
     } else {
       // Single entry or single-worker — sequential
-      for (const entry of tagged) {
+      for (const entry of runnable) {
         reporter.onTestFileStart?.(entry.filePath);
 
         try {
@@ -897,7 +1125,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
 
           if (results.some((r) => r.status === 'failed')) {
             state.failedFiles.add(entry.filePath);
-          } else {
+          } else if (!unavailableFiles.has(entry.filePath)) {
+            // Its run on an unavailable target failed: a pass here must not clear that.
             state.failedFiles.delete(entry.filePath);
           }
         } catch (err) {
@@ -1201,6 +1430,9 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     }
 
     cleanupWatchWorkers();
+    for (const processes of startingWorkerProcesses) {
+      for (const p of processes) { try { p.kill(); } catch { /* already dead */ } }
+    }
 
     if (state.watcher) {
       state.watcher.close();
@@ -1225,7 +1457,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
   // ─── Start watch mode ───
 
   // Initialize parallel workers if multiple devices available
-  if (multiWorker) {
+  if (multiWorker()) {
     await initializeWatchWorkers();
   }
 

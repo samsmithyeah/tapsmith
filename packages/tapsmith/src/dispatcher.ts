@@ -784,8 +784,7 @@ export async function coordinateBuckets(
       for (const [i, err] of failuresInOrder()) {
         const fileCount = buckets[i].projects.reduce((n, p) => n + p.testFiles.length, 0);
         process.stderr.write(
-          `${YELLOW}Device target ${buckets[i].label} could not start; its ${fileCount} test file(s) are reported as failed. `
-          + `The other device targets still run.\n`
+          `${YELLOW}${targetStartWarning(buckets[i].label, fileCount, false)}\n`
           // A TypeError and the like is a bug, not a missing device: keep its
           // stack. Plain Errors are ordinary provisioning failures.
           + `${isProgrammingError(err) ? (err.stack ?? err.message) : messageFromUnknown(err)}${RESET}\n`,
@@ -845,16 +844,7 @@ export async function coordinateBuckets(
     // not folded into a "could not start" message.
     const bug = errors.find(isProgrammingError);
     if (bug) throw bug;
-    // Each target's whole message: its later lines carry the hints (the
-    // per-worker failures, a port squatter's kill command, the advice).
-    throw new LaunchSetupError(
-      'No device target could start\n'
-      + failuresInOrder().map(([i, err]) => {
-        const [first, ...rest] = messageFromUnknown(err).split('\n');
-        return [`${buckets[i].label}: ${first}`, ...rest.map((line) => `  ${line}`)].join('\n');
-      }).join('\n'),
-      { cause: errors[0] },
-    );
+    throw noTargetCouldStart(failuresInOrder().map(([i, err]) => ({ label: buckets[i].label, err })));
   }
 
   const results = settled.flatMap((r) => (r.status === 'fulfilled' && r.value ? [r.value] : []));
@@ -869,28 +859,42 @@ export async function coordinateBuckets(
 }
 
 /**
- * The error for UI or watch mode when device targets could not be
- * provisioned. Those modes keep a worker per target alive for the whole
- * session and cannot yet go on without one (PILOT-415), so this fails the
- * start — labelled, and pointing at the ways to run the other targets —
- * instead of surfacing as a "Fatal error" with a stack (PILOT-400).
+ * The error when no device target of a run or session could start: each
+ * target's whole message, its later lines (the hints: per-worker failures, a
+ * port squatter's kill command, the advice) indented under it. Shared by the
+ * parallel path, UI mode and watch (PILOT-400, PILOT-415).
  *
  * @internal — exported for unit testing.
  */
-export function targetProvisionFailure(
-  mode: 'UI mode' | 'Watch mode',
-  failures: Array<{ label: string; err: unknown }>,
-): LaunchSetupError {
-  const summaries = failures.map(({ label, err }) => `Device target ${label} could not start: ${messageFromUnknown(err).split('\n')[0]}`);
-  // Every target's later lines, indented under its summary: they carry the hints.
-  const blocks = failures.map(({ err }, i) => [summaries[i], ...messageFromUnknown(err).split('\n').slice(1).map((l) => `  ${l}`)]);
+export function noTargetCouldStart(failures: Array<{ label: string; err: unknown }>): LaunchSetupError {
   return new LaunchSetupError(
-    `${summaries[0]}${failures.length > 1 ? ` (and ${failures.length - 1} more)` : ''}\n`
-    + (failures.length > 1 ? blocks.flat() : blocks[0].slice(1)).map((l) => `${l}\n`).join('')
-    + `${mode} needs every device target to start. Pass --project to leave ${failures.length === 1 ? 'this target' : 'these targets'} out, `
-    + 'or run `tapsmith test`, which runs the other targets and reports this one\'s tests as failed.',
-    { cause: failures[0].err },
+    'No device target could start\n'
+    + failures.map(({ label, err }) => {
+      const [first, ...rest] = messageFromUnknown(err).split('\n');
+      return [`${label}: ${first}`, ...rest.map((line) => `  ${line}`)].join('\n');
+    }).join('\n'),
+    { cause: failures[0]?.err },
   );
+}
+
+/**
+ * The failure a test file of a target that could not start reports: the
+ * whole reason, since its later lines carry the hints (advice, a build
+ * excerpt, the log path).
+ */
+export function targetUnavailableMessage(label: string, err: unknown): string {
+  return `Device target "${label}" could not start: ${messageFromUnknown(err)}`;
+}
+
+/**
+ * The warning printed when one device target could not start and the others
+ * go on. `retries`: the session keeps running (UI, watch) and a re-run of
+ * the target's tests tries it again.
+ */
+export function targetStartWarning(label: string, fileCount: number, retries: boolean): string {
+  return `Device target ${label} could not start; its ${fileCount} test file(s) are reported as failed. `
+    + 'The other device targets still run.'
+    + (retries ? ' Running its tests again retries it.' : '');
 }
 
 /** The one-test suite a start-failure result is reported under. */
@@ -915,7 +919,7 @@ export function targetStartFailureResults(
   projects: import('./project.js').ResolvedProject[],
   err: unknown,
 ): TestResult[] {
-  const message = `Device target "${label}" could not start: ${messageFromUnknown(err).split('\n')[0]}`;
+  const message = targetUnavailableMessage(label, err);
   return projects.flatMap((project) => project.testFiles.map((file) => {
     const error = new Error(message);
     // The stack is the dispatcher's, not the user's: reporters would print

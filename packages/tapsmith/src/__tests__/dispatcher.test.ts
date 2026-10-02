@@ -15,7 +15,9 @@ import {
   coordinateBuckets,
   deviceTargetLabel,
   targetStartFailureResults,
-  targetProvisionFailure,
+  noTargetCouldStart,
+  targetUnavailableMessage,
+  targetStartWarning,
   type BucketRunner,
   type DispatcherOptions,
 } from '../dispatcher.js';
@@ -709,7 +711,8 @@ describe('coordinateBuckets()', () => {
       ['android', 'a.test.ts', '/t/a.test.ts'],
       ['android', 'b.test.ts', '/t/b.test.ts'],
     ]);
-    expect(failed[0].error?.message).toBe('Device target "android Pixel_6" could not start: No worker could start: launcher ANR');
+    // The whole reason: its later lines carry the hints.
+    expect(failed[0].error?.message).toBe('Device target "android Pixel_6" could not start: No worker could start: launcher ANR\ndetails');
     expect(result.tests.filter((t) => t.status === 'passed').map((t) => t.name)).toEqual(['ios test']);
   });
 
@@ -927,14 +930,15 @@ describe('targetStartFailureResults()', () => {
     expect(deviceTargetLabel('ios|iPhone 17')).toBe('ios iPhone 17');
   });
 
-  it('fails each file once with the first line of the reason and no dispatcher stack', () => {
+  it('fails each file once with the whole reason and no dispatcher stack', () => {
     const project = makeProject('android', 'android|Pixel_6', ['/t/a.test.ts', '/t/b.test.ts']);
     const results = targetStartFailureResults('android Pixel_6', [project], new Error('No online devices found.\nConnect a device'));
     expect(results.map((r) => [r.name, r.filePath, r.status, r.project])).toEqual([
       ['a.test.ts', '/t/a.test.ts', 'failed', 'android'],
       ['b.test.ts', '/t/b.test.ts', 'failed', 'android'],
     ]);
-    expect(results[0].error?.message).toBe('Device target "android Pixel_6" could not start: No online devices found.');
+    // The later lines carry the hints (a build excerpt, the log path).
+    expect(results[0].error?.message).toBe('Device target "android Pixel_6" could not start: No online devices found.\nConnect a device');
     expect(results[0].error?.stack).toBeUndefined();
   });
 
@@ -945,39 +949,44 @@ describe('targetStartFailureResults()', () => {
   });
 });
 
-// UI and watch mode cannot yet run without one of their targets (PILOT-415):
-// a provisioning failure fails the start with a labelled message instead of
-// "Fatal error" plus a stack (PILOT-400).
-describe('targetProvisionFailure()', () => {
-  it('is a launch failure naming the target, with a way forward', () => {
-    const err = targetProvisionFailure('UI mode', [
-      { label: 'android Pixel_6', err: new Error('Failed to provision any devices for bucket "android Pixel_6".\nmore') },
+// Every target of a session failing: the parallel path and UI/watch fail the
+// start with one message that lists each target's reason (PILOT-400, PILOT-415).
+describe('noTargetCouldStart()', () => {
+  it('is a launch failure listing each target with its hint lines indented', () => {
+    const err = noTargetCouldStart([
+      { label: 'android Pixel_6', err: new Error('No online devices found.\nSet `avd`') },
+      { label: 'ios iPhone 17', err: 'boom' },
     ]);
     expect(isLaunchSetupError(err)).toBe(true);
-    const [summary, ...details] = err.message.split('\n');
-    expect(summary).toBe('Device target android Pixel_6 could not start: Failed to provision any devices for bucket "android Pixel_6".');
-    expect(details.join('\n')).toContain('UI mode needs every device target to start');
-    expect(details.join('\n')).toContain('--project');
+    expect(err.message.split('\n')).toEqual([
+      'No device target could start',
+      'android Pixel_6: No online devices found.',
+      '  Set `avd`',
+      'ios iPhone 17: boom',
+    ]);
+    expect(err.cause).toBeInstanceOf(Error);
+  });
+});
+
+describe('targetUnavailableMessage()', () => {
+  it('names the target and keeps the whole reason, hint and log lines included', () => {
+    expect(targetUnavailableMessage('android Pixel_6', new Error('No online devices found.\nhint')))
+      .toBe('Device target "android Pixel_6" could not start: No online devices found.\nhint');
+    expect(targetUnavailableMessage('ios iPhone 17', 'boom')).toBe('Device target "ios iPhone 17" could not start: boom');
+  });
+});
+
+describe('targetStartWarning()', () => {
+  it('says the other targets still run', () => {
+    expect(targetStartWarning('android Pixel_6', 2, false)).toBe(
+      'Device target android Pixel_6 could not start; its 2 test file(s) are reported as failed. The other device targets still run.',
+    );
   });
 
-  it('keeps each target\'s hint lines', () => {
-    const err = targetProvisionFailure('UI mode', [
-      { label: 'ios iPhone 17', err: new Error('Failed to provision iOS simulator.\nRun: xcrun simctl list') },
-    ]);
-    expect(err.message.split('\n').slice(0, 2)).toEqual([
-      'Device target ios iPhone 17 could not start: Failed to provision iOS simulator.',
-      '  Run: xcrun simctl list',
-    ]);
-  });
-
-  it('lists every failed target', () => {
-    const err = targetProvisionFailure('Watch mode', [
-      { label: 'android Pixel_6', err: new Error('a') },
-      { label: 'ios iPhone 17', err: 'b' },
-    ]);
-    const [summary, ...details] = err.message.split('\n');
-    expect(summary).toBe('Device target android Pixel_6 could not start: a (and 1 more)');
-    expect(details).toContain('Device target ios iPhone 17 could not start: b');
-    expect(details.join('\n')).toContain('these targets');
+  it('says a re-run retries it in a session that keeps going', () => {
+    expect(targetStartWarning('ios iPhone 17', 1, true)).toBe(
+      'Device target ios iPhone 17 could not start; its 1 test file(s) are reported as failed. The other device targets still run. '
+      + 'Running its tests again retries it.',
+    );
   });
 });

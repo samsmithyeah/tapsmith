@@ -104,6 +104,8 @@ export default defineConfig({
 
 Running a test from the "Pixel 6" project routes it to the Android emulator; running one from "iPhone 16" routes it to the iOS simulator. The UI handles this routing transparently.
 
+If one project's device can't start (for example the Android emulator never comes online), UI mode still opens with the other projects' devices. A notice names the device target and the reason. That project's tests fail with `Device target "android Pixel_6" could not start: …` when you run them. Each run that includes them tries that device again, so once you fix the device, run them again.
+
 ## Workers
 
 Every UI session runs tests in a persistent worker process per device. With a single device, that one worker attaches to the daemon and agent the CLI already set up — nothing is provisioned twice, and there is no per-run process start-up: clicking Run goes straight to the runner (the declared app reset, then your tests).
