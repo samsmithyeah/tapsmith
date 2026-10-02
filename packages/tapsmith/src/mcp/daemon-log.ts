@@ -59,7 +59,10 @@ function rotateIfOversized(logPath: string, maxBytes: number): void {
   }
   if (size <= maxBytes) return;
   // A daemon still holding the old file keeps writing to it under its new
-  // name, which is harmless: nothing is lost, it just lands in `.1`.
+  // name, so its output lands in `.1`. A second rotation while that daemon
+  // is still alive replaces `.1`, and the rest of its output goes to an
+  // unlinked file: accepted, since it needs two 5 MB rotations within one
+  // daemon's lifetime, and rotating under a live writer is not worth more.
   try {
     fs.renameSync(logPath, `${logPath}.1`);
   } catch (err) {
