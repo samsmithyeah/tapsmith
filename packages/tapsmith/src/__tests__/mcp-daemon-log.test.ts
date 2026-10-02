@@ -87,6 +87,49 @@ describe('openDaemonLog', () => {
     expect(fs.existsSync(`${custom}.1`)).toBe(false);
   });
 
+  it('tightens a default state directory someone left group- or world-accessible', () => {
+    const dir = path.dirname(mcpDaemonLogPath());
+    fs.mkdirSync(dir, { recursive: true, mode: 0o777 });
+    fs.chmodSync(dir, 0o777);
+    expect(open()).not.toBeNull();
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+  });
+
+  it('refuses a default log path that is a symlink, rather than writing through it', () => {
+    // On a host with no home directory the state dir falls back to a
+    // predictable temp path; a planted link there must not redirect our writes.
+    const logPath = mcpDaemonLogPath();
+    fs.mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 });
+    const target = path.join(tmpDir, 'elsewhere.txt');
+    fs.writeFileSync(target, 'precious\n');
+    fs.symlinkSync(target, logPath);
+    const warnings: string[] = [];
+    expect(open((m) => warnings.push(m))).toBeNull();
+    expect(fs.readFileSync(target, 'utf-8')).toBe('precious\n');
+    expect(warnings.join('\n')).toContain('discarded');
+  });
+
+  it('refuses a default state directory that is a symlink', () => {
+    const dir = path.dirname(mcpDaemonLogPath());
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    const real = path.join(tmpDir, 'real-dir');
+    fs.mkdirSync(real, { mode: 0o700 });
+    fs.symlinkSync(real, dir);
+    expect(open()).toBeNull();
+    expect(fs.readdirSync(real)).toEqual([]);
+  });
+
+  it('still follows a symlink the user named in TAPSMITH_DAEMON_LOG', () => {
+    const target = path.join(tmpDir, 'real.log');
+    const link = path.join(tmpDir, 'link.log');
+    fs.writeFileSync(target, '');
+    fs.symlinkSync(target, link);
+    process.env.TAPSMITH_DAEMON_LOG = link;
+    const log = open()!;
+    fs.writeSync(log.fd, 'via link\n');
+    expect(fs.readFileSync(target, 'utf-8')).toBe('via link\n');
+  });
+
   it('warns and returns null when the log cannot be opened', () => {
     // A directory where the file should be: open() fails with EISDIR.
     const blocked = path.join(tmpDir, 'blocked.log');

@@ -40,14 +40,40 @@ export function openDaemonLog(
   const logPath = override ? path.resolve(override) : mcpDaemonLogPath();
   try {
     fs.mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 });
-    if (!override) rotateIfOversized(logPath, maxBytes);
-    const fd = fs.openSync(logPath, 'a', 0o600);
+    let fd: number;
+    if (override) {
+      // The user's own file: a symlink they set up is theirs to follow.
+      fd = fs.openSync(logPath, 'a', 0o600);
+    } else {
+      assertPrivateStateDir(path.dirname(logPath));
+      rotateIfOversized(logPath, maxBytes);
+      // Never through a link: with no home directory the state dir is a
+      // predictable temp path, and a link planted at the log's name would
+      // otherwise point our appends at a file of someone else's choosing.
+      const { O_WRONLY, O_APPEND, O_CREAT, O_NOFOLLOW } = fs.constants;
+      fd = fs.openSync(logPath, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600);
+    }
     return { fd, path: logPath, startOffset: fs.fstatSync(fd).size };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     warn(`Could not open daemon log ${logPath}; daemon output will be discarded: ${message}`);
     return null;
   }
+}
+
+/**
+ * The same checks the daemon registry makes before trusting its directory
+ * (`privateRegistryFile` in connection.ts): a real directory, not a link, owned
+ * by us, and closed to everyone else. `mkdir`'s mode does nothing to a
+ * directory that already existed.
+ */
+function assertPrivateStateDir(dir: string): void {
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory()) throw new Error(`${dir} is not a directory`);
+  if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+    throw new Error(`${dir} is owned by another user`);
+  }
+  if (stat.mode & 0o077) fs.chmodSync(dir, 0o700);
 }
 
 function rotateIfOversized(logPath: string, maxBytes: number): void {
