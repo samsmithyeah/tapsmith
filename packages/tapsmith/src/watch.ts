@@ -276,7 +276,13 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     ? [...ctx.workerGroups]
     : (ctx.deviceSerials ?? []).map((s) => [s]);
   let workerBudget = ctx.workers;
-  const multiWorker = () => (workerBudget ?? 1) > 1 && workerGroups.length > 1;
+  // A multi-target session routes every file through the workers, even a
+  // lone one: the single-worker path runs on the CLI's primary device with
+  // the root config, which is another target's device and config for every
+  // project but the primary's (PILOT-415; the wider fallback is PILOT-379).
+  const multiTarget = !!ctx.bucketByProject;
+  const multiWorker = () => workerGroups.length > 0
+    && (multiTarget || ((workerBudget ?? 1) > 1 && workerGroups.length > 1));
   const watchWorkers: WatchWorkerHandle[] = [];
   let workersReady = false;
 
@@ -307,10 +313,10 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     }
   }
 
-  /** @returns the first worker's start failure, if any worker failed. */
-  async function initializeWatchWorkers(): Promise<unknown> {
-    if (workerGroups.length === 0) return undefined;
-    let firstError: unknown;
+  /** @returns each worker's start failure, by worker index. */
+  async function initializeWatchWorkers(): Promise<Map<number, unknown>> {
+    const errors = new Map<number, unknown>();
+    if (workerGroups.length === 0) return errors;
 
     const daemonBin = resolveDaemonBin();
 
@@ -339,14 +345,14 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         );
         watchWorkers.push(worker);
       } catch (err) {
-        firstError ??= err;
+        errors.set(i, err);
         process.stderr.write(
           `${YELLOW}Skipping device ${[deviceSerial, ...memberSerials].join('+')}: ${err instanceof Error ? err.message : err}.${RESET}\n`,
         );
       }
     }
 
-    if (watchWorkers.length > 1) {
+    if (watchWorkers.length > 1 || (multiTarget && watchWorkers.length === 1)) {
       workersReady = true;
       process.stderr.write(`${DIM}${watchWorkers.length} watch worker(s) ready.${RESET}\n`);
     } else if (watchWorkers.length === 1) {
@@ -354,7 +360,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       process.stderr.write(`${YELLOW}Only 1 worker initialized. Using single-worker mode.${RESET}\n`);
       cleanupWatchWorkers();
     }
-    return firstError;
+    return errors;
   }
 
   async function initOneWatchWorker(
@@ -658,7 +664,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     workersReady = false;
   }
 
-  const useParallel = () => multiWorker() && workersReady && watchWorkers.length > 1;
+  const useParallel = () => multiWorker() && workersReady && watchWorkers.length > (multiTarget ? 0 : 1);
 
   // ─── Device targets that could not start (PILOT-415) ───
 
@@ -720,9 +726,11 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         }
       }
     } else if (multiWorker()) {
-      // Single-worker until now: the session needs a worker per target.
+      // No worker until now: start one per group, this target's included.
       cleanupWatchWorkers();
-      firstError = await initializeWatchWorkers();
+      const errors = await initializeWatchWorkers();
+      // Only this target's own groups explain why it has no worker.
+      firstError = [...errors].find(([i]) => i >= firstNew)?.[1];
     }
     if (!watchWorkers.some((w) => w.bucketSignature === signature)) {
       // Forget the attempt's groups, or the next attempt (the same devices,
@@ -1042,7 +1050,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       unavailableFiles.add(entry.filePath);
     }
 
-    if (useParallel() && runnable.length > 1) {
+    if (useParallel() && (runnable.length > 1 || multiTarget)) {
       // Dispatch across persistent workers (parallel)
       const { results, suites, failedFilePaths } = await dispatchParallel(runnable, reporter);
       allResults.push(...results);

@@ -352,6 +352,8 @@ export async function startUIServer(
   const MAX_MCP_BUFFER = 200;
   let traceBufferFull = false;
 
+  /** Worker ids a failed target retry gave back, for the next attempt. */
+  const freeWorkerIds: number[] = [];
   /** Ends a run's wait on a device-target retry (Stop). */
   let interruptRevive: (() => void) | null = null;
   /** Device targets a run has tried again: once per run, its waves share the outcome. */
@@ -2274,11 +2276,12 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     const baseDaemonPort = Number.parseInt((ctx.daemonAddress ?? ctx.config.daemonAddress).split(':').pop() ?? '50051', 10);
     const rawBin = process.env.TAPSMITH_DAEMON_BIN ?? ctx.config.daemonBin ?? findDaemonBin();
     const daemonBin = rawBin.includes(path.sep) || rawBin.startsWith('.') ? path.resolve(ctx.config.rootDir, rawBin) : rawBin;
-    // Ids are taken before anything awaits, so concurrent targets never share one.
+    // Ids are taken before anything awaits, so concurrent targets never share
+    // one; a failed attempt's ids are reused first.
     const slots = target.workerGroups.map((group) => {
-      const id = workerGroups.length;
-      workerGroups.push(group);
-      workerSerials.push(group[0]);
+      const id = freeWorkerIds.shift() ?? workerGroups.length;
+      workerGroups[id] = group;
+      workerSerials[id] = group[0];
       return { id, group, daemonPort: baseDaemonPort + 100 + id, agentPort: 18700 + 100 + id };
     });
     const stalePids = collectListeningPids(slots.flatMap(({ id, group, daemonPort }) => [
@@ -2293,12 +2296,9 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     const started = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
     if (started.length === 0) {
       // Every slot failed, and a failed worker cleans its processes up: give
-      // the ids (and so the ports) back, unless another target took ids after
-      // them, so repeated attempts do not walk into the member-port band.
-      if (slots.length > 0 && workerGroups.length === slots[slots.length - 1].id + 1) {
-        workerGroups.splice(slots[0].id);
-        workerSerials.splice(slots[0].id);
-      }
+      // the ids (and so the ports) back, so repeated attempts do not walk
+      // into the member-port band.
+      freeWorkerIds.push(...slots.map((slot) => slot.id));
       throw (settled.find((r): r is PromiseRejectedResult => r.status === 'rejected')?.reason ?? new Error('no worker started'));
     }
     for (const r of settled) {
@@ -2355,8 +2355,15 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
 
     const activeWorkers = uiWorkers.filter((w) => !w.retired);
     if (activeWorkers.length === 0) {
-      // Reached with only unavailable targets keeping the session runnable.
-      throw new Error(NO_WORKER_MESSAGE);
+      // Reached with only unavailable targets keeping the session runnable:
+      // fail the rest alongside the target's files, so the counts and the
+      // tree agree, rather than throwing them away.
+      for (const f of fileQueue) {
+        failed += failUnservableFile(f, NO_WORKER_MESSAGE);
+        if (f.projectName) failedProjectsInDispatch.add(f.projectName);
+      }
+      broadcast({ type: 'error', message: NO_WORKER_MESSAGE });
+      return { passed, failed, skipped, duration, anyFailed: true, failedProjectNames: failedProjectsInDispatch };
     }
 
     await new Promise<void>((resolve, reject) => {
