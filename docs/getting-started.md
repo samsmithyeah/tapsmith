@@ -55,7 +55,7 @@ The wizard walks through these steps:
 1. **Environment detection** — checks for ADB, Xcode, simulators, emulators, and reports what's available
 2. **Platform selection** — choose Android, iOS, or both
 3. **App configuration** — specify your APK/`.app` path; the wizard detects the package name automatically
-4. **Device setup** — choose between connected devices, emulators/simulators, or auto-launch
+4. **Device setup** — choose between connected devices, emulators/simulators, or auto-launch. For iOS physical devices the wizard asks for your device-signed (`iphoneos`) `.app` and points the config at it; choosing both simulators and physical devices writes an `ios` project and an `ios-device` project (see [Running simulator and device together](./ios-physical-devices.md#running-simulator-and-device-together))
 5. **Parallel execution** — optionally configure multiple workers with `launchEmulators` and `avd`
 6. **Network capture** — optionally enable HTTPS traffic capture in traces
 7. **File generation** — creates `tapsmith.config.ts` and an example test file
