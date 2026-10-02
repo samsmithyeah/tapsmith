@@ -35,8 +35,11 @@ pub struct AdbDevice {
 }
 
 impl AdbDevice {
+    /// Usable by Tapsmith. Judged on the state's first word only, so a
+    /// descriptor `parse_devices` failed to recognise (and so kept as part of
+    /// the state) can never hide a working device.
     pub fn is_online(&self) -> bool {
-        self.state == "device"
+        self.state.split_whitespace().next() == Some("device")
     }
 
     pub fn is_emulator(&self) -> bool {
@@ -1590,6 +1593,16 @@ mod tests {
             model: String::new(),
         };
         assert!(!dev.is_online());
+    }
+
+    #[test]
+    fn is_online_ignores_trailing_words_an_unrecognised_descriptor_left_in_the_state() {
+        let dev = AdbDevice {
+            serial: "ABC123".into(),
+            state: "device Product:X".into(),
+            model: String::new(),
+        };
+        assert!(dev.is_online());
     }
 
     #[test]
