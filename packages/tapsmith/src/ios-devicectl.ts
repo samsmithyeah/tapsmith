@@ -179,12 +179,12 @@ export function isPhysicalDevice(udid: string): boolean {
  * Why `udid` cannot be used, when it is a physical device devicectl only
  * remembers (unplugged, out of Wi-Fi range, or paired with another Mac):
  * the daemon does not list such a device, so selecting it fails with a bare
- * "not found". Undefined when it is not such a device — connected, cabled per
- * `idevice_id`, a simulator, or unknown.
+ * "not found". Undefined when it is not such a device — connected, a
+ * simulator, or unknown.
  */
 export function describeUnreachablePhysicalDevice(udid: string): string | undefined {
   const device = listPhysicalDevices().find((d) => d.udid === udid);
-  if (!device || device.isConnected || listUsbAttachedIosDevices().has(udid)) return undefined;
+  if (!device || device.isConnected) return undefined;
   return `${device.name} (${udid}) is not connected: this Mac remembers it, but cannot reach it now. `
     + 'Plug it in with a USB cable and unlock it, then re-run. `tapsmith list-devices` shows the devices that are connected.';
 }

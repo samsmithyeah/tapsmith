@@ -374,6 +374,29 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     expect(mocks.devices[0].setDevice).toHaveBeenCalledTimes(1);
   });
 
+  it('still checks reachability when the first selection failure was a transient infrastructure error', async () => {
+    let calls = 0;
+    mocks.unknownToDaemon.add('GONE-2');
+    const { Device } = await import('../device.js');
+    const real = vi.mocked(Device).getMockImplementation()!;
+    vi.mocked(Device).mockImplementationOnce((...args: Parameters<typeof real>) => {
+      const device = real(...args) as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      const notFound = device.setDevice.getMockImplementation()!;
+      device.setDevice.mockImplementation(async (s: string) => {
+        calls++;
+        if (calls === 1) throw new Error('Agent connection dropped');
+        return notFound(s);
+      });
+      return device as never;
+    });
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'GONE-2', daemonAddress: 'localhost:50052' },
+      makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
+      { label: 'Device' },
+    )).rejects.toThrow(/is not connected/);
+    expect(calls).toBe(2);
+  }, 10_000);
+
   it('fails a physical iOS device that has no device-slice xctestrun to run', async () => {
     mocks.deviceXctestrun = undefined;
     await expect(openDeviceSession(

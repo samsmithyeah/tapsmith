@@ -70,9 +70,10 @@ describe('resolvePhysicalIosDevice() picks only a connected device (PILOT-386)',
     expect(() => resolvePhysicalIosDevice()).toThrow(/No connected, paired physical iOS device detected/);
   });
 
-  it('a USB-attached phone is a candidate even when devicectl calls it unreachable (idevice_id is the ground truth)', () => {
+  it('a phone devicectl cannot reach is not a candidate even if idevice_id lists it — the daemon would not list it either', () => {
     devicectl.usb = `${REMEMBERED}\n`;
-    expect(resolvePhysicalIosDevice()).toBe(REMEMBERED);
+    expect(() => resolvePhysicalIosDevice()).toThrow(/Multiple paired physical iOS devices detected \(2\)/);
+    expect(() => resolvePhysicalIosDevice()).not.toThrow(new RegExp(REMEMBERED));
   });
 
   it('isPhysicalDevice still knows a remembered phone, so a pinned one takes the devicectl path, not simctl', () => {
@@ -93,11 +94,9 @@ describe('describeUnreachablePhysicalDevice() (PILOT-386)', () => {
     );
   });
 
-  it('says nothing for a connected phone, a simulator, an unknown UDID, or a phone idevice_id sees on USB', () => {
+  it('says nothing for a connected phone, a simulator or an unknown UDID', () => {
     expect(describeUnreachablePhysicalDevice(CONNECTED)).toBeUndefined();
     expect(describeUnreachablePhysicalDevice('15CD8814-5BC0-4BDC-B688-E5D82BF4064C')).toBeUndefined();
     expect(describeUnreachablePhysicalDevice('NOPE')).toBeUndefined();
-    devicectl.usb = `${REMEMBERED}\n`;
-    expect(describeUnreachablePhysicalDevice(REMEMBERED)).toBeUndefined();
   });
 });
