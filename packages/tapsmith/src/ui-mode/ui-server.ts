@@ -229,6 +229,11 @@ interface TaggedFile {
   projectUseOptions?: RunFileUseOptions
   projectName?: string
   testFilter?: string
+  /**
+   * Tests (fullName) a worker that died partway through this file already
+   * reported this dispatch: they keep their result if the file is drained.
+   */
+  reported?: Set<string>
 }
 
 /**
@@ -2394,7 +2399,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         if (f.projectName) failedProjectsInDispatch.add(f.projectName);
       }
     }
-    const fileQueue = files.filter((f) => !unavailable.includes(f));
+    // Copies: dispatch state (`reported`) must not outlive this dispatch on a caller's entries.
+    const fileQueue = files.filter((f) => !unavailable.includes(f)).map((f) => ({ ...f }));
     if (fileQueue.length === 0 || parallelRunAborted) {
       return { passed, failed, skipped, duration, anyFailed, failedProjectNames: failedProjectsInDispatch };
     }
@@ -2506,7 +2512,9 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         worker.busy = true;
         worker.currentFile = next;
         worker.currentTest = undefined;
-        worker.reportedInFile = new Set();
+        // A requeued file keeps what its dead worker already reported.
+        worker.reportedInFile = new Set(next.reported);
+        next.reported = worker.reportedInFile;
         worker.lastRun = { file: next.filePath, projectName: next.projectName };
         lastRunProject = next.projectName ?? lastRunProject;
         // Hand over a background preparation that satisfies this file's policy;
@@ -2601,6 +2609,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
           }
           broadcastFileStatus(inFlightFile.filePath, 'done', inFlightFile.projectName);
         } else if (inFlightFile) {
+          // Carried on the entry, so a later drain still knows them.
+          if (inFlightReported?.size) inFlightFile.reported = inFlightReported;
           fileQueue.unshift(inFlightFile);
           console.error(`${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile.filePath)}.${RESET}`);
         }
@@ -2616,7 +2626,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
           // results and the status board showed nothing — the failure existed
           // only in the number. It carries the reason the worker gave, which
           // is the actual cause (an import error, say) rather than the drain.
-          failed += failUnservableFile(f, `No worker could run this file: ${reason}`, f === inFlightFile ? inFlightReported : undefined);
+          failed += failUnservableFile(f, `No worker could run this file: ${reason}`, f.reported);
           anyFailed = true;
           if (f.projectName) failedProjectsInDispatch.add(f.projectName);
         }
