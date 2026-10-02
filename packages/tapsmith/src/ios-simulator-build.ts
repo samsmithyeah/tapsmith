@@ -52,9 +52,9 @@ interface XcodebuildOutcome {
  *
  * Rejects with a message naming the exit code, signal, timeout or spawn
  * failure, followed by the excerpt and the log path. The log is per process
- * (two sessions may build at once) and is removed after a successful build,
- * so only failed builds leave one behind (the next build removes those of
- * processes that have exited). The messages never say
+ * (two sessions may build at once); buildSimulatorAgent removes it once the
+ * build is cached, so only failed builds leave one behind (the next build
+ * removes those of processes that have exited). The messages never say
  * "xcodebuild exited with": that is the daemon's agent-launch failure text,
  * which worker-protocol.ts retries as an infrastructure error.
  */
@@ -81,7 +81,14 @@ function processAlive(pid: number): boolean {
 async function runXcodebuild(args: string[], logPath: string, timeoutMs: number | undefined): Promise<void> {
   const log = fs.createWriteStream(logPath);
   let logWritable = true;
-  log.on('error', () => { logWritable = false; });
+  const sources: NodeJS.ReadableStream[] = [];
+  // A log that cannot be written (disk full, unwritable path) must not stall
+  // the build: stop writing to it and keep reading the pipes, or xcodebuild
+  // blocks on a full pipe and never exits.
+  log.on('error', () => {
+    logWritable = false;
+    for (const source of sources) source.resume();
+  });
 
   const errorLines: string[] = [];
   const tail: string[] = [];
@@ -160,20 +167,25 @@ async function runXcodebuild(args: string[], logPath: string, timeoutMs: number 
     // Both are null when the spawn failed early (EMFILE); 'error' reports it.
     for (const stream of [child.stdout, child.stderr]) {
       if (!stream) continue;
-      stream.pipe(log, { end: false });
+      sources.push(stream);
+      // Written by hand rather than pipe(): pipe() pauses the source for good
+      // when the log errors.
+      stream.on('data', (chunk: Buffer) => {
+        if (logWritable && !log.write(chunk)) {
+          stream.pause();
+          log.once('drain', () => stream.resume());
+        }
+      });
       collectLines(stream);
     }
   });
   await new Promise<void>((resolve) => log.end(resolve));
 
   if (outcome.spawnError) {
-    fs.rmSync(logPath, { force: true });
+    try { fs.rmSync(logPath, { force: true }); } catch { /* best effort */ }
     throw new Error(`could not start xcodebuild: ${outcome.spawnError.message}`);
   }
-  if (!outcome.timedOut && outcome.code === 0) {
-    fs.rmSync(logPath, { force: true });
-    return;
-  }
+  if (!outcome.timedOut && outcome.code === 0) return;
 
   const what = 'xcodebuild build-for-testing';
   const reason = outcome.timedOut
@@ -225,7 +237,9 @@ export async function buildSimulatorAgent(
       'CODE_SIGNING_ALLOWED=NO',
     ];
 
-    await runXcodebuild(args, path.join(CACHE_DIR, `xcodebuild-${process.pid}.log`), options.timeoutMs);
+    const logPath = path.join(CACHE_DIR, `xcodebuild-${process.pid}.log`);
+    const logHint = (): string => (fs.existsSync(logPath) ? `\nFull build log: ${logPath}` : '');
+    await runXcodebuild(args, logPath, options.timeoutMs);
 
     // Copy products to the cache directory.
     const productsDir = path.join(buildDir, 'Build', 'Products');
@@ -233,7 +247,7 @@ export async function buildSimulatorAgent(
     // Copy the Debug-iphonesimulator/ directory.
     const simDir = path.join(productsDir, 'Debug-iphonesimulator');
     if (!fs.existsSync(simDir)) {
-      throw new Error(`Build succeeded but products directory not found at ${simDir}`);
+      throw new Error(`Build succeeded but products directory not found at ${simDir}${logHint()}`);
     }
     const cachedSimDir = path.join(CACHE_DIR, 'Debug-iphonesimulator');
     if (fs.existsSync(cachedSimDir)) {
@@ -261,7 +275,7 @@ export async function buildSimulatorAgent(
     if (!xctestrunDest) {
       throw new Error(
         'xcodebuild succeeded but no .xctestrun file was found in Build/Products. ' +
-          'This is unexpected — please file a bug.',
+          `This is unexpected — please file a bug.${logHint()}`,
       );
     }
 
@@ -271,6 +285,7 @@ export async function buildSimulatorAgent(
 
     // Write the SDK version marker so future runs can skip the build.
     fs.writeFileSync(sdkMarker, sdkVersion);
+    try { fs.rmSync(logPath, { force: true }); } catch { /* best effort */ }
 
     return xctestrunDest;
   } finally {

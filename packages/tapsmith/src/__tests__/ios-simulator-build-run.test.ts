@@ -72,6 +72,9 @@ case "$FAKE_XCB_MODE" in
     sleep 5 &
     printf 'final line without a newline'
     exit 3;;
+  ok-no-products)
+    echo 'built nothing'
+    exit 0;;
   sleep-child)
     # A descendant inherits the pipes and outlives the killed parent.
     echo 'hanging with a child'
@@ -206,6 +209,27 @@ describe('buildSimulatorAgent() xcodebuild output handling', () => {
     expect(fs.existsSync(dead)).toBe(false);
     expect(fs.existsSync(live)).toBe(true);
   }, 30_000);
+
+  it('keeps building when the log cannot be written', async () => {
+    // A directory where the log goes: opening it fails (EISDIR), as a full
+    // disk or an unwritable path would. 12 MB of output must still drain.
+    fs.mkdirSync(logPath(), { recursive: true });
+    expect(await build('big-ok')).toBe(path.join(cacheDir(), XCTESTRUN));
+  }, 30_000);
+
+  it('omits the log line when the log could not be written', async () => {
+    fs.mkdirSync(logPath(), { recursive: true });
+    const message = await buildError('fail');
+    expect(message).toContain('failed (exit code 65)');
+    expect(message).not.toContain('Full build log');
+  }, 30_000);
+
+  it('keeps the log when xcodebuild succeeded but produced no products', async () => {
+    const message = await buildError('ok-no-products');
+    expect(message).toContain('products directory not found');
+    expect(message).toContain(`Full build log: ${logPath()}`);
+    expect(fs.readFileSync(logPath(), 'utf8')).toContain('built nothing');
+  });
 
   it('says xcodebuild could not start when it is not installed', async () => {
     process.env.PATH = path.join(root, 'empty-bin');
