@@ -283,12 +283,16 @@ async fn main() -> Result<()> {
             warn!("Shutdown still draining after {SHUTDOWN_LIMIT:?}; exiting without the open gRPC connections");
         }
     }
-    // Agent teardown bounds itself (~3 s); never exit with it half done.
-    let _ = agent_teardown.await;
-
-    // Clean up any active network proxy and WebView state before exiting
-    service_handle.cleanup_network_proxy().await;
-    service_handle.cleanup_webview_state().await;
+    // Clean up any active network proxy and WebView state before exiting,
+    // alongside the agent teardown rather than after it: the two share no
+    // state, and the cleanup must not wait out an agent's SIGTERM grace. Both
+    // are awaited (agent teardown bounds itself at ~3 s), so the daemon never
+    // exits with either half done.
+    let cleanup = async {
+        service_handle.cleanup_network_proxy().await;
+        service_handle.cleanup_webview_state().await;
+    };
+    let _ = tokio::join!(agent_teardown, cleanup);
 
     info!("Tapsmith daemon shut down cleanly");
     Ok(())

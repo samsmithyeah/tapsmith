@@ -136,6 +136,9 @@ pub(crate) struct TrackedAgent {
     /// False for the background waiter itself, so a drop there (the runtime
     /// tearing its tasks down) can never spawn another waiter.
     rehome_on_drop: bool,
+    /// (udid, is_physical) while the owner record has not been written yet,
+    /// so a waiter that inherits a cancelled `track` can still write it.
+    pending_record: Option<(String, bool)>,
 }
 
 impl TrackedAgent {
@@ -159,13 +162,15 @@ impl TrackedAgent {
             );
         }
         // The guard exists before the first await, so a caller cancelled
-        // mid-track (a dropped RPC future) still deregisters and, through
-        // `kill_on_drop`, stops the child.
+        // mid-track (a dropped RPC future) leaves the agent tracked: `Drop`
+        // hands it to a background waiter, which also writes the owner record
+        // the cancelled track did not get to.
         let mut agent = Self {
             child: Some(child),
             pid,
             registry,
             rehome_on_drop: true,
+            pending_record: Some((udid.to_string(), is_physical)),
         };
         // Checked after inserting, so a concurrent `shutdown_all` either sees
         // the entry or we see its flag: an agent can never slip between them.
@@ -176,6 +181,7 @@ impl TrackedAgent {
         if let (Some(pid), Some(path)) = (pid, pid.and_then(|p| registry.record_path(p))) {
             write_record(&path, pid, udid, is_physical).await;
         }
+        agent.pending_record = None;
         Ok(agent)
     }
 
@@ -239,8 +245,15 @@ impl Drop for TrackedAgent {
                     pid: self.pid.take(),
                     registry: self.registry,
                     rehome_on_drop: false,
+                    pending_record: None,
                 };
+                let pending = self.pending_record.take();
                 runtime.spawn(async move {
+                    if let (Some((udid, is_physical)), Some(pid)) = (pending, waiter.pid) {
+                        if let Some(path) = waiter.registry.record_path(pid) {
+                            write_record(&path, pid, &udid, is_physical).await;
+                        }
+                    }
                     let _ = waiter.wait().await;
                 });
                 return;
@@ -330,7 +343,9 @@ fn has_exited(pid: u32) -> bool {
             libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
         );
         if rc != 0 {
-            return true;
+            // ECHILD: already reaped (or not ours) — nothing left to signal.
+            // Anything else (EINTR, in theory): assume it is still running.
+            return std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD);
         }
         // With WNOHANG, si_pid stays 0 while the child is still running.
         #[cfg(target_os = "linux")]
@@ -880,6 +895,16 @@ mod tests {
         // Still tracked (so shutdown would stop it)…
         assert_eq!(registry.len(), 1);
         assert!(alive(pid));
+        // …with the owner record the cancelled track never wrote…
+        let record = dir.path().join(format!("{pid}.json"));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !record.exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            record.exists(),
+            "the waiter writes the missing owner record"
+        );
         // …and deregistered, not left behind as a dead pid, once it exits.
         signal(pid, libc::SIGKILL);
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
