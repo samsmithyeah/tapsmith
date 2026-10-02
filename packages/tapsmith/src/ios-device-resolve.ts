@@ -14,13 +14,15 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { listPhysicalDevices, listUsbAttachedIosDevices } from './ios-devicectl.js';
+import { listConnectedPhysicalDevices, listUsbAttachedIosDevices } from './ios-devicectl.js';
 import { displayPath, npmIosAgentDir, npmIosAgentVersion, tapsmithPackageVersion } from './ios-agent-paths.js';
 
 const require = createRequire(import.meta.url);
 
 /**
- * Resolve a single paired, USB-attached physical iOS device UDID. Throws
+ * Resolve a single connected, paired, USB-attached physical iOS device UDID.
+ * Devices devicectl only remembers (unplugged, or paired with another Mac)
+ * are never candidates (PILOT-386). Throws
  * with an actionable error when zero or multiple are found so users who
  * own several phones get a clear prompt rather than a silent pick.
  *
@@ -31,10 +33,10 @@ const require = createRequire(import.meta.url);
  * can't actually be driven by `tapsmith test`.
  */
 export function resolvePhysicalIosDevice(): string {
-  const paired = listPhysicalDevices().filter((d) => d.isPaired);
+  const paired = listConnectedPhysicalDevices().filter((d) => d.isPaired);
   if (paired.length === 0) {
     throw new Error(
-      'No paired physical iOS device detected. Connect one via USB and run ' +
+      'No connected, paired physical iOS device detected. Connect one via USB and run ' +
         '`tapsmith ios setup-device`, or set `device` / TAPSMITH_IOS_DEVICE explicitly.',
     );
   }

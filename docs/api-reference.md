@@ -2461,14 +2461,15 @@ The results:
 - **`doctor --json`**: `{ ok, checks, inventory }` — `ok` is false when any check has `status` `fail`;
   `checks` are health checks (below); `inventory` is `{ avds, simulators, connectedDevices }`: AVD names,
   simulators as `{ name, udid, state, runtime }`, and connected Android devices as `{ serial, state }`.
-- **`ios setup-device --json`**: `{ ok, checks, devices }` — `ok` is the same verdict as the exit code;
-  `checks` are health checks (below), ending with `device-connected`, which fails when no device is listed or
-  a listed device is unpaired or has Developer Mode off, so `ok` is false exactly when some check fails; `devices` are the devices `xcrun
-  devicectl` lists, as `{ udid, name, osVersion, paired, developerMode, transport, fix? }`, where `osVersion`
+- **`ios setup-device --json`**: `{ ok, checks, devices, notConnected }` — `ok` is the same verdict as the exit code;
+  `checks` are health checks (below), ending with `device-connected`, which fails when no device is connected or
+  a connected device is unpaired or has Developer Mode off, so `ok` is false exactly when some check fails; `devices` are the
+  physical devices `xcrun devicectl` can reach now, as `{ udid, name, osVersion, paired, developerMode, transport, fix? }`, where `osVersion`
   is empty when devicectl does not report it, `developerMode` is `enabled`, `disabled` or `unknown`,
-  `transport` is `wired`, `localNetwork` or `unknown` (not connected now), and `fix` is set on a device that is
+  `transport` is `wired`, `localNetwork` or `unknown`, and `fix` is set on a device that is
   unpaired or has Developer Mode `disabled` (one line per problem). `developerMode` and `transport` pass through what devicectl reports, so treat a value not listed
-  here as unknown.
+  here as unknown. `notConnected` lists, as `{ udid, name }`, the devices devicectl only remembers (unplugged,
+  out of Wi-Fi range, or paired with another Mac); they never affect `ok`, and `list-devices` leaves them out.
 - **`list-devices --json`**: `{ devices }`, each `{ ready, platform, serial, name, osLabel, blockers }` —
   `platform` is `android`, `android-emu`, `ios-sim` or `ios-device`; `osLabel` is like `iOS 18.1` or empty
   when unknown; `blockers` are the fixes that would make it ready, empty when `ready`.

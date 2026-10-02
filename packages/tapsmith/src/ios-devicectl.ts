@@ -40,6 +40,15 @@ export interface PhysicalDeviceInfo {
    * them so `tapsmith test` doesn't get blamed for the failure mode.
    */
   transportType: string
+  /**
+   * Whether CoreDevice can reach the device right now. devicectl also lists
+   * devices the Mac only remembers (unplugged, out of Wi-Fi range, or paired
+   * with another Mac); those report `tunnelState: "unavailable"`. A cabled
+   * phone whose tunnel is merely idle (`disconnected`) is connected, paired or
+   * not. The daemon's parser (`tapsmith-core/src/ios/device.rs`) applies the
+   * same rule and drops unconnected devices outright.
+   */
+  isConnected: boolean
 }
 
 // ─── Listing ───
@@ -80,6 +89,16 @@ export function listPhysicalDevices(): PhysicalDeviceInfo[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * The physical iOS devices connected right now — what setup-device judges and
+ * what the physical-device auto-pick chooses from. {@link listPhysicalDevices}
+ * also returns devices the Mac only remembers, which {@link isPhysicalDevice}
+ * needs: a pinned phone that is unplugged must still take the devicectl path.
+ */
+export function listConnectedPhysicalDevices(): PhysicalDeviceInfo[] {
+  return listPhysicalDevices().filter((d) => d.isConnected);
 }
 
 // Exported for unit tests.
@@ -137,6 +156,9 @@ export function parseDevicectlDeviceList(json: string): PhysicalDeviceInfo[] {
       transportType: typeof connProps['transportType'] === 'string'
         ? (connProps['transportType'] as string)
         : 'unknown',
+      // Only an explicit "unavailable" hides a device: a missing tunnelState
+      // (older devicectl) keeps the device, as before this field was read.
+      isConnected: connProps['tunnelState'] !== 'unavailable',
     });
   }
   return result;
