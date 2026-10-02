@@ -7,10 +7,11 @@
  * the build as long as the cached SDK version still matches.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 
 import { resolveIosAgentDir, stripDstRootPath } from './build-ios-agent.js';
 import { extractSdkVersion, findSimulatorXctestrun, getInstalledSimulatorSdkVersion } from './ios-device-resolve.js';
@@ -29,6 +30,12 @@ const TAIL_LINES = 15;
 const MAX_LINE_LENGTH = 1000;
 /** How long a timed-out xcodebuild gets to exit on SIGTERM before SIGKILL. */
 const KILL_GRACE_MS = 5000;
+/**
+ * How long after xcodebuild exits its output pipes may stay open. A
+ * descendant that inherited them (a script phase, a helper) would otherwise
+ * hold the run open past its exit — and past a timeout's kill.
+ */
+const STDIO_DRAIN_MS = 2000;
 
 interface XcodebuildOutcome {
   code: number | null;
@@ -44,7 +51,9 @@ interface XcodebuildOutcome {
  * (PILOT-393). Only a bounded excerpt stays in memory for the error.
  *
  * Rejects with a message naming the exit code, signal, timeout or spawn
- * failure, followed by the excerpt and the log path. The messages never say
+ * failure, followed by the excerpt and the log path. The log is per process
+ * (two sessions may build at once) and is removed after a successful build,
+ * so only failed builds leave one behind. The messages never say
  * "xcodebuild exited with": that is the daemon's agent-launch failure text,
  * which worker-protocol.ts retries as an infrastructure error.
  */
@@ -65,9 +74,11 @@ async function runXcodebuild(args: string[], logPath: string, timeoutMs: number 
     if (tail.length > TAIL_LINES) tail.shift();
   };
   const collectLines = (stream: NodeJS.ReadableStream): void => {
+    // A decoder per stream: a pipe chunk can end inside a multibyte character.
+    const decoder = new StringDecoder('utf8');
     let partial = '';
     stream.on('data', (chunk: Buffer) => {
-      partial += chunk.toString('utf8');
+      partial += decoder.write(chunk);
       let idx = partial.indexOf('\n');
       while (idx !== -1) {
         keep(partial.slice(0, idx));
@@ -80,11 +91,20 @@ async function runXcodebuild(args: string[], logPath: string, timeoutMs: number 
         partial = '';
       }
     });
-    stream.on('end', () => { if (partial) keep(partial); });
+    stream.on('end', () => {
+      partial += decoder.end();
+      if (partial) keep(partial);
+    });
   };
 
   const outcome = await new Promise<XcodebuildOutcome>((resolve) => {
-    const child = spawn('xcodebuild', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let child: ChildProcess;
+    try {
+      child = spawn('xcodebuild', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (err) {
+      resolve({ code: null, signal: null, timedOut: false, spawnError: err instanceof Error ? err : new Error(String(err)) });
+      return;
+    }
     let timedOut = false;
     const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
       timedOut = true;
@@ -98,11 +118,19 @@ async function runXcodebuild(args: string[], logPath: string, timeoutMs: number 
       if (timer) clearTimeout(timer);
       resolve({ code: null, signal: null, timedOut: false, spawnError: err });
     });
+    child.on('exit', () => {
+      setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      }, STDIO_DRAIN_MS).unref();
+    });
     child.on('close', (code, signal) => {
       if (timer) clearTimeout(timer);
       resolve({ code, signal, timedOut });
     });
+    // Both are null when the spawn failed early (EMFILE); 'error' reports it.
     for (const stream of [child.stdout, child.stderr]) {
+      if (!stream) continue;
       stream.pipe(log, { end: false });
       collectLines(stream);
     }
@@ -112,7 +140,10 @@ async function runXcodebuild(args: string[], logPath: string, timeoutMs: number 
   if (outcome.spawnError) {
     throw new Error(`could not start xcodebuild: ${outcome.spawnError.message}`);
   }
-  if (!outcome.timedOut && outcome.code === 0) return;
+  if (!outcome.timedOut && outcome.code === 0) {
+    fs.rmSync(logPath, { force: true });
+    return;
+  }
 
   const what = 'xcodebuild build-for-testing';
   const reason = outcome.timedOut
@@ -163,7 +194,7 @@ export async function buildSimulatorAgent(
       'CODE_SIGNING_ALLOWED=NO',
     ];
 
-    await runXcodebuild(args, path.join(CACHE_DIR, 'xcodebuild.log'), options.timeoutMs);
+    await runXcodebuild(args, path.join(CACHE_DIR, `xcodebuild-${process.pid}.log`), options.timeoutMs);
 
     // Copy products to the cache directory.
     const productsDir = path.join(buildDir, 'Build', 'Products');
@@ -268,5 +299,10 @@ export async function ensureSimulatorAgent(
 
   // SDK mismatch — rebuild.
   progress(`Building iOS agent for SDK ${installedSdk}... (cached for future runs)`);
-  return buildSimulatorAgent(installedSdk, buildOptions);
+  try {
+    return await buildSimulatorAgent(installedSdk, buildOptions);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to rebuild the iOS simulator agent for SDK ${installedSdk}: ${detail}`);
+  }
 }

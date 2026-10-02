@@ -15,11 +15,13 @@ vi.mock('../build-ios-agent.js', () => ({
   stripDstRootPath: () => undefined,
 }));
 
-// No existing build, and a detectable SDK: ensureSimulatorAgent() builds.
+// By default no existing build and a detectable SDK, so ensureSimulatorAgent()
+// builds; a test can hand it a build for another SDK instead.
+const { existingBuild } = vi.hoisted(() => ({ existingBuild: { path: undefined as string | undefined } }));
 vi.mock('../ios-device-resolve.js', () => ({
-  findSimulatorXctestrun: () => undefined,
+  findSimulatorXctestrun: () => existingBuild.path,
   getInstalledSimulatorSdkVersion: () => '27.0',
-  extractSdkVersion: () => undefined,
+  extractSdkVersion: (p: string) => /iphonesimulator(\d+\.\d+)/.exec(p)?.[1],
 }));
 
 const XCTESTRUN = 'TapsmithAgentUITests_TapsmithAgentUITests_iphonesimulator27.0-arm64.xctestrun';
@@ -60,6 +62,11 @@ case "$FAKE_XCB_MODE" in
   sleep)
     echo 'hanging'
     exec sleep 30;;
+  sleep-child)
+    # A descendant inherits the pipes and outlives the killed parent.
+    echo 'hanging with a child'
+    sleep 30 &
+    wait;;
 esac
 `;
 
@@ -94,10 +101,11 @@ afterEach(() => {
   process.env.HOME = saved.HOME;
   process.env.PATH = saved.PATH;
   delete process.env.FAKE_XCB_MODE;
+  existingBuild.path = undefined;
 });
 
 const cacheDir = (): string => path.join(home, '.tapsmith', 'ios-simulator-agent');
-const logPath = (): string => path.join(cacheDir(), 'xcodebuild.log');
+const logPath = (): string => path.join(cacheDir(), `xcodebuild-${process.pid}.log`);
 
 async function build(mode: string, options?: { timeoutMs?: number }): Promise<string> {
   process.env.FAKE_XCB_MODE = mode;
@@ -117,11 +125,8 @@ describe('buildSimulatorAgent() xcodebuild output handling', () => {
     const xctestrun = await build('big-ok');
     expect(xctestrun).toBe(path.join(cacheDir(), XCTESTRUN));
     expect(fs.readFileSync(path.join(cacheDir(), '.sdk-version'), 'utf8')).toBe('27.0');
-    // The whole stream went to the log, not to memory.
-    const log = fs.readFileSync(logPath(), 'utf8');
-    expect(log.length).toBeGreaterThan(12_000_000);
-    expect(log).toContain('** TEST BUILD SUCCEEDED **');
-    expect(log).toContain('some warning on stderr');
+    // Only a failed build leaves its log behind.
+    expect(fs.readdirSync(cacheDir()).filter((f) => f.endsWith('.log'))).toEqual([]);
   }, 30_000);
 
   it('names the exit code, shows the error lines and points at the log', async () => {
@@ -163,6 +168,14 @@ describe('buildSimulatorAgent() xcodebuild output handling', () => {
     expect(message).toContain('hanging');
   });
 
+  it('stops at the timeout even when a descendant still holds the output pipes', async () => {
+    const started = Date.now();
+    const message = await buildError('sleep-child', { timeoutMs: 300 });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(message).toContain('timed out after 0.3s and was stopped');
+    expect(message).toContain('hanging with a child');
+  }, 15_000);
+
   it('says xcodebuild could not start when it is not installed', async () => {
     process.env.PATH = path.join(root, 'empty-bin');
     const message = await buildError('big-ok');
@@ -197,6 +210,21 @@ describe('ensureSimulatorAgent() options', () => {
       log.mockRestore();
     }
   }, 30_000);
+
+  it('rebuilds an SDK-mismatched build quietly, within its timeout, and names the failure', async () => {
+    existingBuild.path = '/old/TapsmithAgentUITests_iphonesimulator26.0-arm64.xctestrun';
+    process.env.FAKE_XCB_MODE = 'sleep';
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const { ensureSimulatorAgent } = await import('../ios-simulator-build.js');
+      await expect(ensureSimulatorAgent({ quiet: true, timeoutMs: 300 })).rejects.toThrow(
+        /^Failed to rebuild the iOS simulator agent for SDK 27\.0: xcodebuild build-for-testing timed out after 0\.3s/,
+      );
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
 
   it('passes its timeout to the build and names the build failure', async () => {
     process.env.FAKE_XCB_MODE = 'sleep';
