@@ -1291,6 +1291,11 @@ interface PerProjectProvisionResult {
   bucketByProject: Map<string, string>
   launched: LaunchedEmulator[]
   reusedSimulatorCount: number
+  /**
+   * The targets that could not start, and how to try one again: the session
+   * goes on with the others (PILOT-415).
+   */
+  unavailableTargets: import('./unavailable-targets.js').UnavailableTargets
 }
 
 /**
@@ -1450,6 +1455,10 @@ async function provisionDevicesForBucket(
  * Provision devices per project bucket. Each bucket (set of projects sharing
  * a deviceSignature) gets its own devices and serialized config. Used by
  * UI mode and watch mode to support multi-device-target projects.
+ *
+ * A bucket that cannot be provisioned does not fail the session while
+ * another can (PILOT-415): it comes back in `unavailableTargets`, which can
+ * provision it again for a later run. Only every bucket failing throws.
  */
 async function provisionPerProjectDevices(
   rootConfig: TapsmithConfig,
@@ -1457,12 +1466,12 @@ async function provisionPerProjectDevices(
   budgetCap: number | undefined,
   /** Buckets that pin a device, taken before the sequential setup ran (see `allocateBucketWorkers`). */
   pinnedSignatures: import('./project.js').PinnedBuckets,
-  /** Names the mode in the error when a target cannot be provisioned. */
-  modeName: 'UI mode' | 'Watch mode',
+  /** Targets whose primary setup already failed: not tried again at startup, only on a later run. */
+  alreadyFailed: ReadonlyMap<string, unknown>,
   progress?: LaunchProgressSink,
 ): Promise<PerProjectProvisionResult> {
   progress?.start('worker-devices', 'preparing devices across project targets');
-  const result: PerProjectProvisionResult = {
+  const result: Omit<PerProjectProvisionResult, 'unavailableTargets'> = {
     deviceSerials: [],
     workerGroups: [],
     configByDevice: new Map(),
@@ -1484,11 +1493,11 @@ async function provisionPerProjectDevices(
   // Allocate workers across buckets
   const allocation = allocateBucketWorkers(rootConfig.workers, bucketEntries, budgetCap, pinnedSignatures);
 
-  // Provision each bucket's devices in parallel — Android emulators and
-  // iOS simulators both have multi-second cold-start costs, and there's
-  // no cross-bucket dependency. Preserves per-bucket ordering in the
-  // aggregated result by collecting into position-indexed slots.
-  const tasks = bucketEntries.map(async ({ signature, projects: bucketProjects }) => {
+  /** Provision one bucket's devices; null when it was allocated no worker. */
+  const provisionBucket = async (
+    { signature, projects: bucketProjects }: (typeof bucketEntries)[number],
+    sink: LaunchProgressSink | undefined,
+  ) => {
     const desiredWorkers = allocation.get(signature) ?? 0;
     if (desiredWorkers === 0) return null;
 
@@ -1503,11 +1512,11 @@ async function provisionPerProjectDevices(
     const pinned = [...(snapshot?.pins ?? [])];
     const workersWanted = pinned.length > 0 ? 1 : desiredWorkers;
     const desiredDevices = workersWanted * groupSize;
-    progress?.update(
+    sink?.update(
       'worker-devices',
       { state: 'running', detail: `preparing ${desiredDevices} device(s) for ${bucketProjects.map((p) => p.name).join(', ')}` },
     );
-    const provisioned = await provisionDevicesForBucket(bucketEffective, desiredDevices, progress, snapshot?.group);
+    const provisioned = await provisionDevicesForBucket(bucketEffective, desiredDevices, sink, snapshot?.group);
 
     if (provisioned.serials.length === 0) {
       throw new Error(
@@ -1523,52 +1532,92 @@ async function provisionPerProjectDevices(
     }
     if (provisioned.serials.length < desiredDevices) {
       const message = `Bucket "${bucketProjects.map((p) => p.name).join(',')}" requested ${workersWanted} workers but only ${Math.floor(provisioned.serials.length / groupSize)} could be provisioned.`;
-      if (progress) progress.note(message);
+      if (sink) sink.note(message);
       else process.stderr.write(`${YELLOW}${message}${RESET}\n`);
     }
 
-    return { signature, bucketEffective, provisioned, groupSize };
-  });
+    const bucketSerialized = serializeConfig({ ...bucketEffective, devices: rootConfig.devices });
+    // Whole groups only: a trailing partial group has no worker to serve.
+    const usable = provisioned.serials.slice(0, Math.floor(provisioned.serials.length / groupSize) * groupSize);
+    const target: import('./unavailable-targets.js').ProvisionedTarget = {
+      workerGroups: [],
+      configByDevice: new Map(),
+      deviceGroupByDevice: new Map(),
+      launched: provisioned.launched,
+    };
+    for (const serial of usable) {
+      target.configByDevice.set(serial, bucketSerialized);
+      target.deviceGroupByDevice.set(serial, resolveDeviceGroup({ devices: bucketEffective.devices, device: serial }));
+    }
+    for (let i = 0; i < usable.length; i += groupSize) {
+      target.workerGroups.push(usable.slice(i, i + groupSize));
+    }
+    return { signature, target, reusedSimulatorCount: provisioned.reusedSimulatorCount };
+  };
 
-  // Let every bucket settle, so the error names each target that failed
-  // and no provisioning is left running behind it.
-  const settled = await Promise.allSettled(tasks);
-  const { deviceTargetLabel, isProgrammingError, targetProvisionFailure } = await import('./dispatcher.js');
+  // Provision each bucket's devices in parallel — Android emulators and
+  // iOS simulators both have multi-second cold-start costs, and there's
+  // no cross-bucket dependency. Every bucket settles, so none is left
+  // provisioning behind a failure, and results keep bucket order.
+  const settled = await Promise.allSettled(bucketEntries.map((entry) => (alreadyFailed.has(entry.signature)
+    ? Promise.reject(alreadyFailed.get(entry.signature))
+    : provisionBucket(entry, progress))));
+  const { deviceTargetLabel, isProgrammingError, noTargetCouldStart, targetStartWarning } = await import('./dispatcher.js');
+  const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
   // A bug in Tapsmith surfaces as itself, with its stack.
   const bug = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected' && isProgrammingError(r.reason));
   if (bug) throw bug.reason;
   const failures = settled.flatMap((r, i) => (r.status === 'rejected'
-    ? [{ label: deviceTargetLabel(bucketEntries[i].signature), err: r.reason as unknown }]
+    ? [{ signature: bucketEntries[i].signature, label: deviceTargetLabel(bucketEntries[i].signature), err: r.reason as unknown }]
     : []));
-  if (failures.length > 0) {
-    const error = targetProvisionFailure(modeName, failures);
+  const outcomes = settled.flatMap((r) => (r.status === 'fulfilled' && r.value ? [r.value] : []));
+  if (outcomes.length === 0 && failures.length > 0) {
+    const error = noTargetCouldStart(failures);
     progress?.fail('worker-devices', error.message.split('\n')[0]);
     throw error;
   }
-  const outcomes = settled.map((r) => (r.status === 'fulfilled' ? r.value : null));
 
-  for (const outcome of outcomes) {
-    if (!outcome) continue;
-    const { signature, bucketEffective, provisioned, groupSize } = outcome;
-    result.launched.push(...provisioned.launched);
-    result.reusedSimulatorCount += provisioned.reusedSimulatorCount;
-    const bucketSerialized = serializeConfig({ ...bucketEffective, devices: rootConfig.devices });
-    // Whole groups only: a trailing partial group has no worker to serve.
-    const usable = provisioned.serials.slice(0, Math.floor(provisioned.serials.length / groupSize) * groupSize);
-    for (const serial of usable) {
-      result.deviceSerials.push(serial);
-      result.configByDevice.set(serial, bucketSerialized);
-      result.deviceGroupByDevice.set(serial, resolveDeviceGroup({ devices: bucketEffective.devices, device: serial }));
-      result.bucketByDevice.set(serial, signature);
-    }
-    for (let i = 0; i < usable.length; i += groupSize) {
-      result.workerGroups.push(usable.slice(i, i + groupSize));
+  for (const { signature, target, reusedSimulatorCount } of outcomes) {
+    result.launched.push(...target.launched);
+    result.reusedSimulatorCount += reusedSimulatorCount;
+    for (const group of target.workerGroups) {
+      result.workerGroups.push(group);
+      for (const serial of group) {
+        result.deviceSerials.push(serial);
+        result.configByDevice.set(serial, target.configByDevice.get(serial)!);
+        result.deviceGroupByDevice.set(serial, target.deviceGroupByDevice.get(serial)!);
+        result.bucketByDevice.set(serial, signature);
+      }
     }
   }
 
+  const { UnavailableTargets } = await import('./unavailable-targets.js');
+  const unavailableTargets = new UnavailableTargets(
+    async (signature) => {
+      const entry = bucketEntries.find((b) => b.signature === signature);
+      const outcome = entry ? await provisionBucket(entry, undefined) : null;
+      if (!outcome) throw new Error(`internal: device target ${deviceTargetLabel(signature)} has no worker planned`);
+      return outcome.target;
+    },
+    failures.map((f) => [f.signature, f.err] as [string, unknown]),
+  );
+
   const reuseSuffix = result.reusedSimulatorCount > 0 ? ` (${result.reusedSimulatorCount} reused)` : '';
-  progress?.complete('worker-devices', `${result.deviceSerials.length} device(s)${reuseSuffix}: ${result.deviceSerials.join(', ')}`);
-  return result;
+  const ready = `${result.deviceSerials.length} device(s)${reuseSuffix}: ${result.deviceSerials.join(', ')}`;
+  if (failures.length > 0) {
+    progress?.update('worker-devices', {
+      state: 'warning',
+      detail: `${ready}; ${failures.map((f) => `${f.label} could not start: ${messageOf(f.err).split('\n')[0]}`).join('; ')}`,
+    });
+    // A target whose primary setup failed was announced then.
+    for (const f of failures.filter((x) => !alreadyFailed.has(x.signature))) {
+      const fileCount = bucketEntries.find((b) => b.signature === f.signature)!.projects.reduce((n, p) => n + p.testFiles.length, 0);
+      process.stderr.write(`${YELLOW}${targetStartWarning(f.label, fileCount, true)}\n${messageOf(f.err)}${RESET}\n`);
+    }
+  } else {
+    progress?.complete('worker-devices', ready);
+  }
+  return { ...result, unavailableTargets };
 }
 
 // ─── Main ───
@@ -2146,17 +2195,17 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     );
   }
 
-  // A plain multi-target `tapsmith test` goes on without a target that
-  // cannot start: its files are reported failed and the other targets run
-  // (PILOT-400). UI and watch still need the first target to start.
+  // A multi-target run goes on without a target that cannot start: its
+  // files are reported failed and the other targets run (PILOT-400). UI and
+  // watch set their primary device up on the next target instead (PILOT-415).
   // Targets with files to run: a target whose projects were all filtered
   // down to no files is not a target this run needs (a single effective
   // target keeps the single-target behaviour).
   const targetsWithFiles = new Set(projects.filter((p) => p.testFiles.length > 0).map((p) => p.deviceSignature));
-  const toleratesTargetFailure = targetsWithFiles.size > 1 && !args.ui && !args.watch;
+  const toleratesTargetFailure = targetsWithFiles.size > 1;
   /** Device targets (by signature) that could not start, with the error. */
   const failedTargets = new Map<string, unknown>();
-  const { deviceTargetLabel, isProgrammingError } = await import('./dispatcher.js');
+  const { deviceTargetLabel, isProgrammingError, noTargetCouldStart, targetStartWarning } = await import('./dispatcher.js');
   const noteFailedTarget = (signature: string, err: unknown) => {
     failedTargets.set(signature, err);
     // A TypeError and the like is a Tapsmith bug, not a missing device:
@@ -2172,42 +2221,49 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     const fileCount = projects
       .filter((p) => p.deviceSignature === signature)
       .reduce((n, p) => n + p.testFiles.length, 0);
-    process.stderr.write(yellow(
-      `Device target ${deviceTargetLabel(signature)} could not start; its ${fileCount} test file(s) are reported as failed. `
-      + 'The other device targets still run.\n',
-    ));
+    process.stderr.write(yellow(`${targetStartWarning(deviceTargetLabel(signature), fileCount, !!(args.ui || args.watch))}\n`));
   };
 
+  // Plain `tapsmith test` reports a failed first target and switches to the
+  // next between projects. UI and watch need a primary device to start on,
+  // so they try each target in turn (PILOT-415).
+  const { firstProjectPerTarget, UnavailableTargets } = await import('./unavailable-targets.js');
+  const primaryCandidates = args.ui || args.watch
+    ? [initialProject, ...firstProjectPerTarget(projects).filter((p) => p.deviceSignature !== initialProject.deviceSignature)]
+    : [initialProject];
+
   try {
-    try {
-      currentSequentialState = await setupSequentialDevice(
-        initialEffectiveConfig,
-        args.forceInstall,
-        initialProject.deviceSignature,
-        launchProgress,
-        bucketGroup(initialProject.deviceSignature),
-      );
-    } catch (err) {
-      // The setup marks the step that actually failed (primary, install,
-      // agent, launch, device group); this only catches a failure that
-      // happened before any step was reached. Re-labelling the primary here
-      // used to print "✗ Primary device" for a group member that failed.
-      const message = err instanceof Error ? err.message : String(err);
-      if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', message.split('\n')[0]);
-      console.error(red(message));
-      if (!toleratesTargetFailure) {
-        if (targetsWithFiles.size > 1) {
-          // UI or watch with several targets: say which one, and how to go on.
-          const { targetProvisionFailure } = await import('./dispatcher.js');
-          const advice = targetProvisionFailure(args.ui ? 'UI mode' : 'Watch mode', [
-            { label: deviceTargetLabel(initialProject.deviceSignature), err },
-          ]).message.split('\n').at(-1);
-          console.error(dim(`Device target ${deviceTargetLabel(initialProject.deviceSignature)} could not start. ${advice}`));
+    for (const candidate of primaryCandidates) {
+      try {
+        currentSequentialState = await setupSequentialDevice(
+          candidate.effectiveConfig,
+          args.forceInstall,
+          candidate.deviceSignature,
+          launchProgress,
+          bucketGroup(candidate.deviceSignature),
+        );
+        break;
+      } catch (err) {
+        // The setup marks the step that actually failed (primary, install,
+        // agent, launch, device group); this only catches a failure that
+        // happened before any step was reached. Re-labelling the primary here
+        // used to print "✗ Primary device" for a group member that failed.
+        const message = err instanceof Error ? err.message : String(err);
+        if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', message.split('\n')[0]);
+        console.error(red(message));
+        if (!toleratesTargetFailure) {
+          sequentialExitCode = 1;
+          return;
         }
-        sequentialExitCode = 1;
-        return;
+        noteFailedTarget(candidate.deviceSignature, err);
+        // A `use`-less project's config is the root config, which the failed
+        // setup may have pinned to its device: the next target must not
+        // inherit it (as at a sequential project switch).
+        if (candidate.effectiveConfig === config) config.device = rootDeviceBeforeSetup;
       }
-      noteFailedTarget(initialProject.deviceSignature, err);
+    }
+    if ((args.ui || args.watch) && !currentSequentialState) {
+      throw noTargetCouldStart([...failedTargets].map(([signature, err]) => ({ label: deviceTargetLabel(signature), err })));
     }
 
     if (currentSequentialState) {
@@ -2224,8 +2280,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     // daemon, emulator, and agent alive and serves a Preact SPA.
     // When workers > 1, the UI server manages its own daemons and workers.
     if (args.ui) {
-      // UI and watch return above when the first target cannot start
-      // (toleratesTargetFailure is off for them), so they always have one.
+      // UI and watch throw above when no target can start, so they always have one.
       if (!currentSequentialState || !client || !device) throw new Error('internal: UI mode without a started device');
       const { startUIServer } = await import('./ui-mode/ui-server.js');
 
@@ -2240,10 +2295,12 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       let uiBucketByDevice: Map<string, string> | undefined;
       let uiBucketByProject: Map<string, string> | undefined;
       let uiWorkersOverride: number | undefined;
+      let uiUnavailableTargets = new UnavailableTargets(undefined);
 
       if (isMultiBucketSequential) {
         // Multi-device-target projects: provision per-bucket devices.
-        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, pinnedSignatures, 'UI mode', launchProgress);
+        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, pinnedSignatures, failedTargets, launchProgress);
+        uiUnavailableTargets = perBucket.unavailableTargets;
         uiWorkerGroups = perBucket.workerGroups;
         uiConfigByDevice = perBucket.configByDevice;
         uiDeviceGroupByDevice = perBucket.deviceGroupByDevice;
@@ -2303,6 +2360,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
         deviceGroupByDevice: uiDeviceGroupByDevice,
         bucketByDevice: uiBucketByDevice,
         bucketByProject: uiBucketByProject,
+        unavailableTargets: uiUnavailableTargets,
       }, {
         port: args.uiPort,
         devUrl: args.uiDevUrl ?? process.env.TAPSMITH_UI_DEV_URL,
@@ -2344,9 +2402,11 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       let watchBucketByDevice: Map<string, string> | undefined;
       let watchBucketByProject: Map<string, string> | undefined;
       let watchWorkersOverride: number | undefined;
+      let watchUnavailableTargets = new UnavailableTargets(undefined);
 
       if (isMultiBucketSequential) {
-        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, pinnedSignatures, 'Watch mode');
+        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, pinnedSignatures, failedTargets);
+        watchUnavailableTargets = perBucket.unavailableTargets;
         watchWorkerGroups = perBucket.workerGroups;
         watchConfigByDevice = perBucket.configByDevice;
         watchDeviceGroupByDevice = perBucket.deviceGroupByDevice;
@@ -2398,6 +2458,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
         deviceGroupByDevice: watchDeviceGroupByDevice,
         bucketByDevice: watchBucketByDevice,
         bucketByProject: watchBucketByProject,
+        unavailableTargets: watchUnavailableTargets,
       });
       // runWatchMode never returns — exits via cleanup()
     }
