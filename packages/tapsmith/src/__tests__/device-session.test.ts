@@ -369,9 +369,9 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     const iosConfig = (over: Partial<TapsmithConfig> = {}) =>
       makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app', ...over });
 
-    it('refuses `iosXctestrun`, naming the resolved path and rootDir', async () => {
+    it('refuses `iosXctestrun`, naming the path resolved against rootDir', async () => {
       await expect(openDeviceSession(physical, iosConfig({ iosXctestrun: 'gone/Agent.xctestrun' }), { label: 'Device' }))
-        .rejects.toThrow(/The xctestrun set by `iosXctestrun` \(resolved against rootDir \/proj\) does not exist: \/proj\/gone\/Agent\.xctestrun/);
+        .rejects.toThrow(/The xctestrun set by `iosXctestrun` does not exist: \/proj\/gone\/Agent\.xctestrun/);
       expect(mocks.devices[0].startAgent).not.toHaveBeenCalled();
     });
 

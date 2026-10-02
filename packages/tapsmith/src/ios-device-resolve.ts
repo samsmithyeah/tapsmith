@@ -127,7 +127,7 @@ export function describeMissingExplicitXctestrun(xctestrunPath: string, source: 
   const head = `The xctestrun set by ${source} does not exist: ${displayPath(xctestrunPath)}.`;
   if (isInside(xctestrunPath, npmIosAgentDir())) {
     return `${head} Upgrading Tapsmith replaces ${displayPath(npmIosAgentDir())}, which removes the runner built there. `
-      + 'Rebuild it with `tapsmith ios build-agent`; `tapsmith test` then finds that build without the setting.';
+      + 'Rebuild it with `npx tapsmith ios build-agent` in your project; `tapsmith test` then finds that build without the setting.';
   }
   return `${head} Fix the path, or unset it to let Tapsmith find the agent build itself.`;
 }

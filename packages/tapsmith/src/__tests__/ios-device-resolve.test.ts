@@ -145,7 +145,7 @@ describe('describeMissingExplicitXctestrun / staleExplicitXctestrunWarning', () 
     const msg = describeMissingExplicitXctestrun(path.join(npmProducts(), XCTESTRUN), '`iosXctestrun`');
     expect(msg).toContain(`does not exist: ~/.tapsmith/ios-agent/.build-device/Build/Products/${XCTESTRUN}`);
     expect(msg).toContain('Upgrading Tapsmith replaces ~/.tapsmith/ios-agent');
-    expect(msg).toContain('tapsmith ios build-agent');
+    expect(msg).toContain('`npx tapsmith ios build-agent` in your project');
   });
 
   it('a missing path elsewhere says to fix or unset it', () => {

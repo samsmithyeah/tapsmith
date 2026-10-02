@@ -295,9 +295,9 @@ export async function resolveAgentArtifacts(
     // it here, with the likely cause (PILOT-264).
     const resolve = await import('./ios-device-resolve.js');
     if (!fs.existsSync(iosXctestrunPath)) {
-      const source = config.iosXctestrun
-        ? `\`iosXctestrun\` (resolved against rootDir ${config.rootDir})`
-        : 'TAPSMITH_IOS_XCTESTRUN';
+      // The resolved path shows the rootDir a relative `iosXctestrun` was
+      // resolved against.
+      const source = config.iosXctestrun ? '`iosXctestrun`' : 'TAPSMITH_IOS_XCTESTRUN';
       throw new Error(resolve.describeMissingExplicitXctestrun(iosXctestrunPath, source));
     }
     const stale = resolve.staleExplicitXctestrunWarning(iosXctestrunPath);

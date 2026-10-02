@@ -1340,7 +1340,7 @@ async function prepareTarget(
   // daemon as pointed here rather than assume it never moved.
   conn.preparedDevice = serial;
   try {
-    await startAgentFromConfig(conn.client, config, { force: repointed, required: true });
+    await startAgentFromConfig(conn.client, config, { force: repointed, required: true, serial });
     conn.agentFailed = false;
   } catch (err) {
     // Deliberately *not* rolling `preparedDevice` back: `set_device` already
@@ -1874,7 +1874,7 @@ async function setDeviceAndAgent(
 
   await client.setDevice(serial);
   log(`Using device: ${serial}`);
-  await startAgentFromConfig(client, config);
+  await startAgentFromConfig(client, config, { serial });
   return serial;
 }
 
@@ -1890,7 +1890,7 @@ async function setDeviceAndAgent(
 async function startAgentFromConfig(
   client: TapsmithGrpcClient,
   config: TapsmithConfig | null,
-  options?: { force?: boolean; required?: boolean },
+  options?: { force?: boolean; required?: boolean; serial?: string },
 ): Promise<void> {
   if (!options?.force) {
     const { agentConnected } = await client.ping();
@@ -1901,16 +1901,15 @@ async function startAgentFromConfig(
   const agentApk = config?.agentApk ? path.resolve(rootDir, config.agentApk) : undefined;
   const agentTestApk = config?.agentTestApk ? path.resolve(rootDir, config.agentTestApk) : undefined;
 
-  let iosXctestrun = config?.iosXctestrun
-    ? path.resolve(rootDir, config.iosXctestrun)
-    : undefined;
-
-  if (!iosXctestrun && config?.platform === 'ios') {
+  let iosXctestrun: string | undefined;
+  if (config?.platform === 'ios') {
     try {
-      const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
-      iosXctestrun = findSimulatorXctestrun() ?? undefined;
-    } catch {
-      // Not on macOS or no xctestrun built
+      iosXctestrun = await iosXctestrunForAgentStart(config, options?.serial);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`Warning: no iOS agent to start (${msg}). Device tools may not work.`);
+      if (options?.required) throw new Error(`Failed to start the agent on this device: ${msg}`);
+      return;
     }
   }
 
@@ -1927,6 +1926,33 @@ async function startAgentFromConfig(
     const msg = err instanceof Error ? err.message : String(err);
     log(`Warning: agent start failed (${msg}). Device tools may not work.`);
     if (options?.required) throw new Error(`Failed to start the agent on this device: ${msg}`);
+  }
+}
+
+/**
+ * The xctestrun this session hands the daemon when it starts an iOS agent
+ * itself (its `run_tests` children adopt that agent). Once the device is
+ * known it resolves exactly like every test run path (`resolveAgentArtifacts`):
+ * the device build — a checkout's or the npm install's — for a physical
+ * device, the simulator agent otherwise, and a hand-set path that does not
+ * exist refused (PILOT-264). With no device known (recovering an orphaned
+ * daemon's agent) it falls back to the hand-set path or a simulator build.
+ */
+export async function iosXctestrunForAgentStart(
+  config: TapsmithConfig,
+  serial: string | undefined,
+): Promise<string | undefined> {
+  if (serial) {
+    const { resolveAgentArtifacts } = await import('../device-session.js');
+    const artifacts = await resolveAgentArtifacts(config, serial, undefined, { requireXctestrun: true });
+    return artifacts.iosXctestrunPath;
+  }
+  if (config.iosXctestrun) return path.resolve(config.rootDir, config.iosXctestrun);
+  try {
+    const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
+    return findSimulatorXctestrun();
+  } catch {
+    return undefined; // not on macOS, or nothing built
   }
 }
 
