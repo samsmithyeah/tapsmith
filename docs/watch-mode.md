@@ -41,7 +41,7 @@ While watch mode is running, these keys are available:
 
 Watch mode uses the same `tapsmith.config.ts` as normal runs. No additional configuration is needed. The `testMatch` patterns control which files are watched, and all other options (timeout, retries, screenshot mode, trace config, etc.) apply as usual.
 
-Watch mode also works with [projects](ui-mode.md#multi-project-support). When your config defines multiple projects, watch mode detects which project(s) a changed file belongs to and re-runs it on the correct device. If a file matches multiple projects (e.g. both an Android and iOS project share `**/*.test.ts`), it re-runs on all matching devices.
+Watch mode also works with [projects](ui-mode.md#multi-project-support). When your config defines multiple projects, watch mode detects which project(s) a changed file belongs to and re-runs it on the correct device. If a file matches multiple projects (e.g. both an Android and iOS project share `**/*.test.ts`), it re-runs on all matching devices. If one project's device can't start, watch mode runs the other projects. That project's files fail with the device target and the reason, and each re-run that includes them tries that device again.
 
 ## Multi-worker watch
 
