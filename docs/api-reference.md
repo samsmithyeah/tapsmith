@@ -2455,11 +2455,11 @@ The results:
   simulators as `{ name, udid, state, runtime }`, and connected Android devices as `{ serial, state }`.
 - **`ios setup-device --json`**: `{ ok, checks, devices }` — `ok` is the same verdict as the exit code;
   `checks` are health checks (below), ending with `device-connected`, which fails when no device is listed or
-  a listed device is unpaired, so `ok` is false exactly when some check fails; `devices` are the devices `xcrun
+  a listed device is unpaired or has Developer Mode off, so `ok` is false exactly when some check fails; `devices` are the devices `xcrun
   devicectl` lists, as `{ udid, name, osVersion, paired, developerMode, transport, fix? }`, where `osVersion`
   is empty when devicectl does not report it, `developerMode` is `enabled`, `disabled` or `unknown`,
-  `transport` is `wired`, `localNetwork` or `unknown` (not connected now), and `fix` is set on an unpaired
-  device. `developerMode` and `transport` pass through what devicectl reports, so treat a value not listed
+  `transport` is `wired`, `localNetwork` or `unknown` (not connected now), and `fix` is set on a device that is
+  unpaired or has Developer Mode `disabled` (one line per problem). `developerMode` and `transport` pass through what devicectl reports, so treat a value not listed
   here as unknown.
 - **`list-devices --json`**: `{ devices }`, each `{ ready, platform, serial, name, osLabel, blockers }` —
   `platform` is `android`, `android-emu`, `ios-sim` or `ios-device`; `osLabel` is like `iOS 18.1` or empty
@@ -2882,18 +2882,20 @@ arguments: it checks the Mac, then every device `xcrun devicectl` lists. Host ch
 command-line tools, `xcrun devicectl`, libimobiledevice (`iproxy`), a code
 signing identity and an Apple Developer team registered with Xcode; and, as
 advisory checks, passwordless `sudo` for the Developer Disk Image mount (so a
-test run does not stop at a password prompt), a signed agent runner under
-`ios-agent/.build-device` in or up to two levels above the current directory
-(a checkout build, not the npm install's `~/.tapsmith/ios-agent/`), and the
-provisioning profile's expiry. Device check: each listed device is paired.
+test run does not stop at a password prompt), a signed agent runner (found the way
+`tapsmith test` finds it: see `ios build-agent` below; a runner an earlier
+Tapsmith version built for an npm install is flagged for a rebuild), and the
+provisioning profile's expiry. Device check: each listed device is paired and
+does not have Developer Mode off (`unknown`, as on devices before iOS 16, passes).
 devicectl also lists devices it remembers that are not plugged in. It does not
 check the Developer Disk Image (Tapsmith mounts it when a test run starts) or
 the macOS firewall (`ios network configure --fix-firewall` handles that).
 Each check prints `✓`, `⚠` (advisory, not blocking) or `✗` with the fix; the
 command exits 1 if a required check fails, no device is listed, or any listed
-device is unpaired. When the
+device is unpaired or has Developer Mode off. When the
 required checks pass, it ends with the steps it cannot check from the Mac
-(trusting the developer certificate, turning off Auto-Lock). Either way it
+(trusting the developer certificate, turning off Auto-Lock) and notes that
+`tapsmith test` finds the device and the runner itself. Either way it
 ends by pointing at network capture: `tapsmith ios network configure <udid>`
 for the device, `tapsmith ios network setup-simulator` for a simulator.
 `--json` prints the same checks and the listed devices as `{ ok, checks, devices }`
@@ -2909,15 +2911,19 @@ Xcode's preferences (or keychain) if `--team-id` is omitted. `-v` /
 The agent source comes from `<cwd>/ios-agent/` in a Tapsmith checkout (`--cwd`
 points at one), or else from the copy the npm package extracts to
 `~/.tapsmith/ios-agent/`. Build products go to `.build-device` inside that
-source directory (`ios-agent/.build-device`, or `~/.tapsmith/ios-agent/.build-device`) unless `--derived-data-path` says otherwise. When the
-build finishes, the command prints the `iosXctestrun:` line to add to your
-config, as a path relative to the directory it ran in (or to `--cwd`).
-`tapsmith test` resolves `iosXctestrun` against `rootDir` (by default the
-directory you run `tapsmith test` from), so run the build from there or use an
-absolute path. Without `iosXctestrun` (or the
-`TAPSMITH_IOS_XCTESTRUN` environment variable), `tapsmith test` finds the
-runner only under an `ios-agent/.build-device` in or above the project
-directory, the checkout layout; with the npm package, set one of them.
+source directory (`ios-agent/.build-device`, or `~/.tapsmith/ios-agent/.build-device`) unless `--derived-data-path` says otherwise. Without `iosXctestrun` (or the `TAPSMITH_IOS_XCTESTRUN` environment
+variable), `tapsmith test` uses the newest device runner under an
+`ios-agent/.build-device` in or up to five levels above `rootDir` (a checkout),
+and otherwise the one under `~/.tapsmith/ios-agent/.build-device` (an npm
+install), but only if the installed Tapsmith version built it. Upgrading
+Tapsmith replaces `~/.tapsmith/ios-agent/` the next time Tapsmith builds an agent, so rebuild
+after an upgrade; until then `tapsmith test` reports that the runner was built
+by the earlier version. When the build finishes, the command says whether
+`tapsmith test` will find the runner on its own, and prints an absolute
+`iosXctestrun:` line to pin it (or to add, for a build it will not find, such as
+one with `--derived-data-path`). An `iosXctestrun` or `TAPSMITH_IOS_XCTESTRUN`
+naming a file that does not exist stops the run before the agent starts, with
+the path in the error.
 
 #### `tapsmith ios network`
 

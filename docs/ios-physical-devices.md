@@ -27,7 +27,7 @@ tapsmith ios setup-device
 
 4. **Register the device with your Apple Developer team.** Open Xcode → Window → Devices and Simulators, wait for the device to appear, and click **Use for Development**. Xcode auto-creates the development provisioning profile. This is the one step that can't be automated from the command line — Xcode owns device registration.
 
-5. **Verify with `tapsmith ios setup-device`.** Every row should be ✓ and your device should be listed as "ready for tapsmith test". If it says "not paired", go back through steps 1-4.
+5. **Verify with `tapsmith ios setup-device`.** Every row should be ✓ and your device should be listed as "ready for tapsmith test". If it says "not paired" or "Developer Mode off", go back through steps 1-4.
 
 6. **Build the signed Tapsmith agent for your device.**
 
@@ -35,9 +35,9 @@ tapsmith ios setup-device
    tapsmith ios build-agent
    ```
 
-   This auto-detects the Apple Developer team from Xcode's Accounts preferences, runs `xcodebuild build-for-testing` with automatic signing, and writes the resulting `.xctestrun` under `.build-device/` in the agent source directory: `ios-agent/.build-device/` in your checkout, or `~/.tapsmith/ios-agent/.build-device/` when Tapsmith is installed from npm. It prints the `iosXctestrun:` line to add to your config. First run takes 60–120s; incremental rebuilds are <10s. If you have multiple teams, pass `--team-id XXXXXXXXXX` to skip the prompt.
+   This auto-detects the Apple Developer team from Xcode's Accounts preferences, runs `xcodebuild build-for-testing` with automatic signing, and writes the resulting `.xctestrun` under `.build-device/` in the agent source directory: `ios-agent/.build-device/` in your checkout, or `~/.tapsmith/ios-agent/.build-device/` when Tapsmith is installed from npm. `tapsmith test` finds that build on its own, so you don't need to set `iosXctestrun`; the command says so, and prints an absolute `iosXctestrun:` line in case you want to pin the build. First run takes 60–120s; incremental rebuilds are <10s. If you have multiple teams, pass `--team-id XXXXXXXXXX` to skip the prompt.
 
-   Rebuild when you upgrade Tapsmith, switch teams/devices, or your profile expires. **Free Apple Developer accounts expire provisioning profiles every 7 days** — Tapsmith will warn you when you're within three days of expiry.
+   Rebuild when you upgrade Tapsmith, switch teams/devices, or your profile expires. With an npm install, upgrading Tapsmith makes the old build unusable: `tapsmith test` and `tapsmith ios setup-device` then say it was built by the previous version and ask you to run `tapsmith ios build-agent` again. **Free Apple Developer accounts expire provisioning profiles every 7 days** — Tapsmith will warn you when you're within three days of expiry.
 
 7. **Run your first test.** The first run installs the Tapsmith runner on the device and will fail with *"Developer App Certificate is not trusted"*. That's expected — it's the cue for the next step.
 
@@ -70,7 +70,7 @@ export default defineConfig({
 What Tapsmith fills in for you:
 
 - **Device UDID** — when `device` is omitted, Tapsmith picks the single paired USB iOS device. Zero or more than one → actionable error.
-- **`iosXctestrun`** — when omitted, Tapsmith looks for the newest `*iphoneos*.xctestrun` under `ios-agent/.build-device/Build/Products/` in the project directory or a parent of it (populated by `tapsmith ios build-agent` in a Tapsmith checkout). With Tapsmith installed from npm the build lands under `~/.tapsmith/ios-agent/`, which is not searched: set `iosXctestrun` (or `TAPSMITH_IOS_XCTESTRUN`) to the path `tapsmith ios build-agent` prints (relative to the directory you ran it in; `iosXctestrun` is resolved against `rootDir`, by default the directory you run `tapsmith test` from), or to an absolute path.
+- **`iosXctestrun`** — when omitted (and `TAPSMITH_IOS_XCTESTRUN` is unset), Tapsmith uses the newest `*iphoneos*.xctestrun` that `tapsmith ios build-agent` built. It looks first under `ios-agent/.build-device/Build/Products/` in the project directory or a parent of it (a Tapsmith checkout), then under `~/.tapsmith/ios-agent/.build-device/Build/Products/` (an npm install). It uses the npm build only if the installed Tapsmith version built it. If you set `iosXctestrun`, it is resolved against `rootDir` (by default the directory you run `tapsmith test` from). If the file it names does not exist, `tapsmith test` stops before starting the agent and names the path.
 
 Both can be overridden:
 
@@ -122,7 +122,7 @@ tapsmith test --project ios-phys # just the physical device
 |---|---|---|
 | `simulator` | Name or UDID | — |
 | `device` | — | Auto-detected (or UDID override) |
-| `iosXctestrun` | Simulator-slice xctestrun | Auto-detected under `ios-agent/.build-device/` |
+| `iosXctestrun` | Simulator-slice xctestrun | Auto-detected: `ios-agent/.build-device/` in a checkout, `~/.tapsmith/ios-agent/.build-device/` for npm |
 | `app` | Simulator-slice `.app` | Device-signed `.app` |
 
 ## Want network capture too?
@@ -166,7 +166,7 @@ Run `tapsmith ios setup-device` first — it surfaces most setup issues with act
 
 **"No profiles for 'dev.tapsmith.agent.xctrunner' were found"** — Your device isn't registered under the selected team. Open Xcode → Window → Devices and Simulators and wait for auto-registration.
 
-**"Developer Mode disabled"** — Settings → Privacy & Security → Developer Mode → On, then reboot.
+**"Developer Mode off" in `tapsmith ios setup-device`** — Settings → Privacy & Security → Developer Mode → On, then confirm after the device restarts.
 
 **"Unable to install TapsmithAgentUITests-Runner"** — the developer profile isn't trusted on the device. Settings → General → VPN & Device Management → trust it.
 
