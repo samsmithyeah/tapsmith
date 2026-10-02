@@ -389,4 +389,4 @@ Use `tapsmith_session_info` to see available projects and their configuration.
 
 ## Resources
 
-The MCP server exposes a `tapsmith://api-reference` resource containing the complete Tapsmith API documentation. Agents can read this resource to understand available methods and their signatures without needing external documentation.
+The MCP server exposes a `tapsmith://api-reference` resource containing the complete Tapsmith API documentation (the [API reference](api-reference.md), as shipped with the installed Tapsmith version). Agents can list it with `resources/list` and read it with `resources/read` to learn the available methods and their signatures without needing external documentation.
