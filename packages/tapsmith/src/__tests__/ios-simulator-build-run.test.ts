@@ -5,7 +5,7 @@
  * (PILOT-393: a buffered build was killed by ENOBUFS and reported without a
  * reason).
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -77,6 +77,12 @@ case "$FAKE_XCB_MODE" in
   ok-no-products)
     echo 'built nothing'
     exit 0;;
+  ignore-term)
+    # Ignores SIGTERM (so does its child): only the SIGKILL escalation ends it.
+    trap '' TERM
+    echo 'ignoring SIGTERM'
+    sleep 30 &
+    wait;;
   sleep-child)
     # A descendant inherits the pipes and outlives the killed parent.
     echo 'hanging with a child'
@@ -202,16 +208,32 @@ describe('buildSimulatorAgent() xcodebuild output handling', () => {
     expect(message).toContain('final line without a newline');
   }, 15_000);
 
-  it('removes logs left by exited processes, and keeps a live one', async () => {
+  it('removes day-old logs of exited processes, and keeps recent or live ones', async () => {
     fs.mkdirSync(cacheDir(), { recursive: true });
-    const dead = path.join(cacheDir(), 'xcodebuild-99999999.log');
-    const live = path.join(cacheDir(), `xcodebuild-${process.ppid}.log`);
-    fs.writeFileSync(dead, 'old failure');
-    fs.writeFileSync(live, 'another session building');
+    const dayAgo = (Date.now() - 25 * 60 * 60 * 1000) / 1000;
+    const deadOld = path.join(cacheDir(), 'xcodebuild-99999998.log');
+    const deadRecent = path.join(cacheDir(), 'xcodebuild-99999999.log');
+    const liveOld = path.join(cacheDir(), `xcodebuild-${process.ppid}.log`);
+    fs.writeFileSync(deadOld, 'old failure');
+    fs.utimesSync(deadOld, dayAgo, dayAgo);
+    // The failure an error message (e.g. init's) just pointed at.
+    fs.writeFileSync(deadRecent, 'recent failure');
+    fs.writeFileSync(liveOld, 'another session building');
+    fs.utimesSync(liveOld, dayAgo, dayAgo);
     await build('big-ok');
-    expect(fs.existsSync(dead)).toBe(false);
-    expect(fs.existsSync(live)).toBe(true);
+    expect(fs.existsSync(deadOld)).toBe(false);
+    expect(fs.existsSync(deadRecent)).toBe(true);
+    expect(fs.existsSync(liveOld)).toBe(true);
   }, 30_000);
+
+  it('escalates to SIGKILL when xcodebuild ignores SIGTERM at the timeout', async () => {
+    const started = Date.now();
+    const message = await buildError('ignore-term', { timeoutMs: 300 });
+    // 0.3 s deadline + 5 s grace + 2 s drain.
+    expect(Date.now() - started).toBeLessThan(12_000);
+    expect(message).toContain('timed out after 0.3s and was stopped');
+    expect(message).toContain('ignoring SIGTERM');
+  }, 20_000);
 
   it('keeps building when the log cannot be written', async () => {
     // A directory where the log goes: opening it fails (EISDIR), as a full
@@ -285,13 +307,28 @@ describe('ensureSimulatorAgent() options', () => {
     }
   });
 
+  it('says macOS is needed when there is no SDK because this is not a Mac', async () => {
+    existingBuild.sdk = undefined;
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    try {
+      const { ensureSimulatorAgent } = await import('../ios-simulator-build.js');
+      await expect(ensureSimulatorAgent({ quiet: true })).rejects.toThrow('iOS simulator testing needs macOS with Xcode');
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
   it('says why it cannot build when the simulator SDK cannot be detected', async () => {
     existingBuild.sdk = undefined;
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    onTestFinished(() => { Object.defineProperty(process, 'platform', platform); });
     const { ensureSimulatorAgent } = await import('../ios-simulator-build.js');
     const message = await ensureSimulatorAgent({ quiet: true }).then(() => '', (err: unknown) => (err as Error).message);
     expect(message).toContain('the iOS Simulator SDK could not be detected');
     expect(message).toContain('xcode-select');
-    expect(message).toContain(`@tapsmith/agent-ios-simulator-${process.arch}`);
+    expect(message).not.toContain('npm install');
     expect(message).not.toContain('name=iPhone');
   });
 

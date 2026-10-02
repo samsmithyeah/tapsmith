@@ -44,14 +44,21 @@ interface XcodebuildOutcome {
   spawnError?: Error;
 }
 
-/** Remove build logs left by processes that have exited (failed builds). */
+/** A failed build's log is kept at least this long, so the next run cannot remove the one an error just named. */
+const STALE_LOG_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Remove day-old build logs left by processes that have exited (failed builds). */
 function pruneStaleBuildLogs(): void {
   let entries: string[];
   try { entries = fs.readdirSync(CACHE_DIR); } catch { return; }
   for (const entry of entries) {
     const pid = Number(/^xcodebuild-(\d+)\.log$/.exec(entry)?.[1]);
     if (!pid || pid === process.pid || processAlive(pid)) continue;
-    try { fs.rmSync(path.join(CACHE_DIR, entry), { force: true }); } catch { /* best effort */ }
+    const file = path.join(CACHE_DIR, entry);
+    try {
+      if (Date.now() - fs.statSync(file).mtimeMs < STALE_LOG_AGE_MS) continue;
+      fs.rmSync(file, { force: true });
+    } catch { /* best effort */ }
   }
 }
 
@@ -330,11 +337,13 @@ export async function ensureSimulatorAgent(
         throw new Error(`Failed to build iOS simulator agent from source: ${detail}`);
       }
     }
+    if (process.platform !== 'darwin') {
+      throw new Error('No iOS simulator agent build was found. iOS simulator testing needs macOS with Xcode.');
+    }
     throw new Error(
       'No iOS simulator agent build was found, and it cannot be built here: the iOS Simulator SDK ' +
         'could not be detected (`xcrun --sdk iphonesimulator --show-sdk-version` failed). ' +
-        'Install Xcode and select it (`sudo xcode-select -s /Applications/Xcode.app`), ' +
-        `or install the prebuilt agent: npm install @tapsmith/agent-ios-simulator-${process.arch}`,
+        'Install Xcode and select it: sudo xcode-select -s /Applications/Xcode.app',
     );
   }
 
