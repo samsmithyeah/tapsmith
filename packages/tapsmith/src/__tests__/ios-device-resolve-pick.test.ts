@@ -13,6 +13,16 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
     ...actual,
+    // The async listing (describeUnreachablePhysicalDevice) goes through
+    // promisify(execFile), which calls back (err, stdout, stderr).
+    execFile: vi.fn((cmd: string, args: readonly string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+      if (cmd === 'xcrun' && args[0] === 'devicectl') {
+        fs.writeFileSync(args[args.indexOf('--json-output') + 1], devicectl.json);
+        cb(null, '', '');
+      } else {
+        cb(new Error(`unexpected command in test: ${cmd}`), '', '');
+      }
+    }),
     execFileSync: vi.fn((cmd: string, args: readonly string[]) => {
       if (cmd === 'xcrun' && args[0] === 'devicectl') {
         fs.writeFileSync(args[args.indexOf('--json-output') + 1], devicectl.json);
@@ -25,7 +35,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 const { resolvePhysicalIosDevice } = await import('../ios-device-resolve.js');
-const { describeUnreachablePhysicalDevice, isPhysicalDevice, listPhysicalDevices } = await import('../ios-devicectl.js');
+const { describeUnreachablePhysicalDevice, explainDeviceNotFound, isPhysicalDevice, listPhysicalDevices } = await import('../ios-devicectl.js');
 
 const CONNECTED = '00008140-000A1B2C3D4E001C';
 const REMEMBERED = '00008140-000F9E8D7C6B001C';
@@ -88,15 +98,24 @@ describe('describeUnreachablePhysicalDevice() (PILOT-386)', () => {
     devicectl.usb = '';
   });
 
-  it('names a remembered phone as not connected, with what to do', () => {
-    expect(describeUnreachablePhysicalDevice(REMEMBERED)).toMatch(
+  it('names a remembered phone as not connected, with what to do', async () => {
+    expect(await describeUnreachablePhysicalDevice(REMEMBERED)).toMatch(
       /^Remembered iPhone \(00008140-000F9E8D7C6B001C\) is not connected: .*Plug it in with a USB cable/,
     );
   });
 
-  it('says nothing for a connected phone, a simulator or an unknown UDID', () => {
-    expect(describeUnreachablePhysicalDevice(CONNECTED)).toBeUndefined();
-    expect(describeUnreachablePhysicalDevice('15CD8814-5BC0-4BDC-B688-E5D82BF4064C')).toBeUndefined();
-    expect(describeUnreachablePhysicalDevice('NOPE')).toBeUndefined();
+  it('says nothing for a connected phone, a simulator or an unknown UDID', async () => {
+    expect(await describeUnreachablePhysicalDevice(CONNECTED)).toBeUndefined();
+    expect(await describeUnreachablePhysicalDevice('15CD8814-5BC0-4BDC-B688-E5D82BF4064C')).toBeUndefined();
+    expect(await describeUnreachablePhysicalDevice('NOPE')).toBeUndefined();
+  });
+
+  it('explainDeviceNotFound (MCP) replaces the daemon\'s "not found" for a remembered phone, and only that', async () => {
+    const notFound = new Error(`Device ${REMEMBERED} not found. Run ListDevices first to refresh the device list.`);
+    expect(String(await explainDeviceNotFound(REMEMBERED, notFound))).toMatch(/is not connected/);
+    const other = new Error('Agent connection dropped');
+    expect(await explainDeviceNotFound(REMEMBERED, other)).toBe(other);
+    const simNotFound = new Error('Device SIM not found. Run ListDevices first to refresh the device list.');
+    expect(await explainDeviceNotFound('SIM', simNotFound)).toBe(simNotFound);
   });
 });

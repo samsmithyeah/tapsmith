@@ -72,6 +72,26 @@ export function listPhysicalDevices(): PhysicalDeviceInfo[] {
     // still produces valid JSON in the file. Swallow and try reading the file.
   }
 
+  return readDeviceListScratch(scratch);
+}
+
+/**
+ * {@link listPhysicalDevices} without blocking the event loop — for callers
+ * that run beside other sessions (a device-selection retry in a worker or a
+ * group), where a slow devicectl must not stall every other session's timers.
+ */
+async function listPhysicalDevicesAsync(): Promise<PhysicalDeviceInfo[]> {
+  const scratch = scratchJsonPath('list-devices');
+  try {
+    await execFileAsync('xcrun', ['devicectl', 'list', 'devices', '--json-output', scratch], { timeout: 15_000 });
+  } catch {
+    // As in listPhysicalDevices: the JSON file may still be valid.
+  }
+  return readDeviceListScratch(scratch);
+}
+
+/** Parse and remove a `devicectl list devices` JSON file; never throws. */
+function readDeviceListScratch(scratch: string): PhysicalDeviceInfo[] {
   if (!fs.existsSync(scratch)) return [];
   let raw: string;
   try {
@@ -182,11 +202,24 @@ export function isPhysicalDevice(udid: string): boolean {
  * "not found". Undefined when it is not such a device — connected, a
  * simulator, or unknown.
  */
-export function describeUnreachablePhysicalDevice(udid: string): string | undefined {
-  const device = listPhysicalDevices().find((d) => d.udid === udid);
+export async function describeUnreachablePhysicalDevice(udid: string): Promise<string | undefined> {
+  const device = (await listPhysicalDevicesAsync()).find((d) => d.udid === udid);
   if (!device || device.isConnected) return undefined;
   return `${device.name} (${udid}) is not connected: this Mac remembers it, but cannot reach it now. `
     + 'Plug it in with a USB cable and unlock it, then re-run. `tapsmith list-devices` shows the devices that are connected.';
+}
+
+/**
+ * `err` from selecting `udid`, or — when it is the daemon's "not found" for a
+ * phone devicectl only remembers — an error that names that cause instead of
+ * advising a ListDevices that will never list it. For paths with no selection
+ * retry of their own (MCP).
+ */
+export async function explainDeviceNotFound(udid: string, err: unknown): Promise<unknown> {
+  const message = err instanceof Error ? err.message : String(err);
+  if (!message.includes('not found. Run ListDevices')) return err;
+  const unreachable = await describeUnreachablePhysicalDevice(udid);
+  return unreachable ? new Error(unreachable) : err;
 }
 
 /**

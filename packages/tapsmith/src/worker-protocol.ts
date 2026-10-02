@@ -245,6 +245,14 @@ export const DETERMINISTIC_CAPTURE_REFUSALS = [
 // CoreSimulator stall — so the budget must fit several such attempts.
 export const DEVICE_SELECT_RETRY_BUDGET_MS = 180_000;
 export const DEVICE_SELECT_RETRY_DELAY_MS = 3_000;
+/**
+ * How long a pinned physical iPhone may look like a device devicectl only
+ * remembers (unplugged, out of range) before device selection stops retrying
+ * and says so. Long enough for a phone re-enumerating after a replug, reboot
+ * or tunnel reset; short of the full retry budget, which would otherwise be
+ * spent on a phone that is not there (PILOT-386).
+ */
+export const DEVICE_SELECT_UNREACHABLE_GRACE_MS = 30_000;
 
 /**
  * Device-selection failures worth retrying within a bounded window.

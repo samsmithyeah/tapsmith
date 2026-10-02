@@ -28,12 +28,17 @@ const mocks = vi.hoisted(() => ({
   execs: [] as string[][],
   /** Serials the daemon does not list (setDevice: "not found"). */
   unknownToDaemon: new Set<string>(),
+  /** How long a pinned phone may look unreachable before selection gives up. */
+  unreachableGraceMs: 0,
+  /** Serials devicectl reports unreachable, until removed. */
+  unreachable: new Set<string>(),
 }));
 
 // No real backoff between agent-start attempts — the retry is what matters here.
 vi.mock('../worker-protocol.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../worker-protocol.js')>()),
   AGENT_START_RETRY_DELAY_MS: 0,
+  get DEVICE_SELECT_UNREACHABLE_GRACE_MS() { return mocks.unreachableGraceMs; },
 }));
 
 vi.mock('../grpc-client.js', () => ({
@@ -94,8 +99,10 @@ vi.mock('../ios-devicectl.js', () => ({
   isPhysicalDevice: vi.fn((serial: string) => serial.startsWith('PHYS')),
   installAppOnDevice: vi.fn(async () => {}),
   isAppInstalledOnDevice: vi.fn(async () => true),
-  describeUnreachablePhysicalDevice: vi.fn((serial: string) =>
-    serial.startsWith('GONE') ? `Old iPhone (${serial}) is not connected: this Mac remembers it, but cannot reach it now.` : undefined),
+  describeUnreachablePhysicalDevice: vi.fn(async (serial: string) =>
+    serial.startsWith('GONE') || mocks.unreachable.has(serial)
+      ? `Old iPhone (${serial}) is not connected: this Mac remembers it, but cannot reach it now.`
+      : undefined),
 }));
 
 vi.mock('../ios-device-resolve.js', async (importOriginal) => ({
@@ -146,6 +153,8 @@ beforeEach(() => {
   mocks.deviceXctestrun = '/proj/ios-agent/.build-device/TapsmithAgent.xctestrun';
   mocks.execs.length = 0;
   mocks.unknownToDaemon.clear();
+  mocks.unreachableGraceMs = 0;
+  mocks.unreachable.clear();
   mocks.preflight.ensureSessionReady.mockClear();
   mocks.preflight.launchConfiguredApp.mockClear();
   mocks.preflight.probeResetCapabilities.mockClear();
@@ -395,6 +404,36 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
       { label: 'Device' },
     )).rejects.toThrow(/is not connected/);
     expect(calls).toBe(2);
+  }, 10_000);
+
+  it('keeps retrying a phone that looks unreachable only for a moment (re-enumerating), and selects it', async () => {
+    mocks.unreachableGraceMs = 30_000;
+    mocks.unknownToDaemon.add('PHYS-BACK');
+    mocks.unreachable.add('PHYS-BACK');
+    const { Device } = await import('../device.js');
+    const real = vi.mocked(Device).getMockImplementation()!;
+    vi.mocked(Device).mockImplementationOnce((...args: Parameters<typeof real>) => {
+      const device = real(...args) as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      const original = device.setDevice.getMockImplementation()!;
+      let calls = 0;
+      device.setDevice.mockImplementation(async (s: string) => {
+        // devicectl reports the phone unreachable between these attempts; it
+        // is back by the second one.
+        if (++calls === 2) {
+          mocks.unknownToDaemon.delete(s);
+          mocks.unreachable.delete(s);
+        }
+        return original(s);
+      });
+      return device as never;
+    });
+    const session = await openDeviceSession(
+      { name: 'device-1', serial: 'PHYS-BACK', daemonAddress: 'localhost:50052' },
+      makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
+      { label: 'Device' },
+    );
+    expect(session.serial).toBe('PHYS-BACK');
+    expect(mocks.devices[0].setDevice).toHaveBeenCalledTimes(2);
   }, 10_000);
 
   it('fails a physical iOS device that has no device-slice xctestrun to run', async () => {

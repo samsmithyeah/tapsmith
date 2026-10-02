@@ -22,6 +22,7 @@ import { installApp, installAppAsync, installedAppMatches, isAppInstalled, probe
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import {
   AGENT_START_RETRY_DELAY_MS,
+  DEVICE_SELECT_UNREACHABLE_GRACE_MS,
   isRetryableAgentStartError,
   retryDeviceSelection,
 } from './worker-protocol.js';
@@ -530,7 +531,7 @@ export async function openDeviceSession(
   try {
     progress(`selecting device ${spec.serial}`);
     if (opts.refreshDeviceList) await device.listDevices();
-    let checkedReachability = false;
+    let unreachableSince: number | undefined;
     await retryDeviceSelection(
       () => device.setDevice(
         spec.serial,
@@ -539,16 +540,22 @@ export async function openDeviceSession(
         networkPassthroughHosts(config.trace),
       ),
       async (err) => {
+        const message = err instanceof Error ? err.message : String(err);
         // A physical iPhone devicectl only remembers is absent from the
         // daemon's list, so its "not found" would be retried for minutes.
-        // Checked once, at the first "not found", so a healthy selection never
-        // pays for the devicectl call (PILOT-386).
-        const message = err instanceof Error ? err.message : String(err);
-        if (config.platform === 'ios' && !checkedReachability && message.includes('not found. Run ListDevices')) {
-          checkedReachability = true;
+        // Checked only on "not found" (a healthy selection never pays for the
+        // devicectl call), and given up on once the phone has looked
+        // unreachable for the grace period, so one that is re-enumerating is
+        // still picked up (PILOT-386).
+        if (config.platform === 'ios' && message.includes('not found. Run ListDevices')) {
           const { describeUnreachablePhysicalDevice } = await import('./ios-devicectl.js');
-          const unreachable = describeUnreachablePhysicalDevice(spec.serial);
-          if (unreachable) throw new Error(unreachable);
+          const unreachable = await describeUnreachablePhysicalDevice(spec.serial);
+          if (!unreachable) {
+            unreachableSince = undefined;
+          } else {
+            unreachableSince ??= Date.now();
+            if (Date.now() - unreachableSince >= DEVICE_SELECT_UNREACHABLE_GRACE_MS) throw new Error(unreachable);
+          }
         }
         progress(`device selection failed transiently, retrying: ${message}`);
       },
