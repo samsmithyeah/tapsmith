@@ -31,10 +31,55 @@ pub struct DeviceInfo {
     pub os_version: String,
 }
 
+/// An Android device adb lists but cannot use: unauthorized (the USB-debugging
+/// prompt was not accepted), offline, `no permissions (…)` (Linux without udev
+/// rules), or any other state but `device`. Reported by ListDevices so the user
+/// is told it is there and why it cannot be used, but kept out of
+/// [`DeviceManager`]'s device list so it can never be selected or auto-picked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnusableDevice {
+    pub serial: String,
+    /// adb's whole state string, e.g. `unauthorized` or `no permissions (…)`.
+    pub state: String,
+    /// The `model:` descriptor from `adb devices -l`; usually empty, since adb
+    /// omits it for devices it cannot talk to.
+    pub model: String,
+    pub is_emulator: bool,
+}
+
+/// Split `adb devices` entries into usable devices and [`UnusableDevice`]s.
+fn partition_adb_devices(
+    adb_devices: Vec<adb::AdbDevice>,
+) -> (Vec<adb::AdbDevice>, Vec<UnusableDevice>) {
+    let (online, unusable): (Vec<_>, Vec<_>) = adb_devices.into_iter().partition(|d| d.is_online());
+    let unusable = unusable
+        .into_iter()
+        .map(|d| UnusableDevice {
+            is_emulator: d.is_emulator(),
+            serial: d.serial,
+            state: d.state,
+            model: d.model,
+        })
+        .collect();
+    (online, unusable)
+}
+
+/// "R5CR1234XYZ (unauthorized), emulator-5556 (offline)".
+fn describe_unusable(devices: &[UnusableDevice]) -> String {
+    devices
+        .iter()
+        .map(|d| format!("{} ({})", d.serial, d.state))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Manages the set of known devices and tracks the active device.
 #[derive(Debug)]
 pub struct DeviceManager {
     devices: Vec<DeviceInfo>,
+    /// Android devices adb lists but cannot use, as of the last refresh. Never
+    /// part of `devices`, so never selectable.
+    unusable: Vec<UnusableDevice>,
     active_serial: Option<String>,
     /// When set, only discover devices of this platform.
     platform_filter: Option<Platform>,
@@ -45,6 +90,7 @@ impl DeviceManager {
     pub fn new() -> Self {
         Self {
             devices: Vec::new(),
+            unusable: Vec::new(),
             active_serial: None,
             platform_filter: None,
         }
@@ -54,6 +100,7 @@ impl DeviceManager {
     pub fn with_platform_filter(platform: Option<Platform>) -> Self {
         Self {
             devices: Vec::new(),
+            unusable: Vec::new(),
             active_serial: None,
             platform_filter: platform,
         }
@@ -63,14 +110,14 @@ impl DeviceManager {
     pub async fn refresh(&mut self) -> Result<&[DeviceInfo]> {
         // Collect all current device serials from both platforms
         let mut current_serials: Vec<String> = Vec::new();
+        let mut unusable: Vec<UnusableDevice> = Vec::new();
 
         // ─── Android devices via ADB ───
         if self.platform_filter != Some(Platform::Ios) {
             if let Ok(adb_devices) = adb::list_devices().await {
-                for adb_dev in &adb_devices {
-                    if !adb_dev.is_online() {
-                        continue;
-                    }
+                let (online, not_usable) = partition_adb_devices(adb_devices);
+                unusable = not_usable;
+                for adb_dev in &online {
                     current_serials.push(adb_dev.serial.clone());
 
                     if let Some(existing) =
@@ -150,7 +197,18 @@ impl DeviceManager {
             }
         }
 
-        // Mark devices no longer present as disconnected
+        // A device adb lists but cannot use is absent from `current_serials`,
+        // so an active device that turns unauthorized or offline is marked
+        // Disconnected below, exactly like one that was unplugged.
+        self.unusable = unusable;
+        self.mark_absent(&current_serials);
+
+        Ok(&self.devices)
+    }
+
+    /// Mark tracked devices missing from `current_serials` as disconnected, and
+    /// forget the disconnected ones that are not the active device.
+    fn mark_absent(&mut self, current_serials: &[String]) {
         for device in &mut self.devices {
             if !current_serials.contains(&device.serial) {
                 if device.state == ConnectionState::Active {
@@ -165,8 +223,6 @@ impl DeviceManager {
             d.state != ConnectionState::Disconnected
                 || self.active_serial.as_deref() == Some(&d.serial)
         });
-
-        Ok(&self.devices)
     }
 
     /// Set the active device by serial.
@@ -190,6 +246,13 @@ impl DeviceManager {
                 Ok(())
             }
             None => {
+                if let Some(unusable) = self.unusable.iter().find(|d| d.serial == serial) {
+                    bail!(
+                        "Device {serial} is attached but not usable: adb reports it \"{}\". \
+                         Run `tapsmith list-devices` to see how to fix it.",
+                        unusable.state
+                    );
+                }
                 bail!(
                     "Device {serial} not found. Run ListDevices first to refresh the device list."
                 );
@@ -215,6 +278,11 @@ impl DeviceManager {
         &self.devices
     }
 
+    /// Android devices adb listed but cannot use, as of the last refresh.
+    pub fn unusable_devices(&self) -> &[UnusableDevice] {
+        &self.unusable
+    }
+
     /// Add a device directly (for testing purposes).
     #[cfg(test)]
     pub(crate) fn add_device(&mut self, info: DeviceInfo) {
@@ -229,7 +297,12 @@ impl DeviceManager {
         }
 
         self.refresh().await?;
+        self.auto_pick()
+    }
 
+    /// Select the only usable device, or explain why there is not exactly one.
+    /// Unusable devices are never candidates, only named when nothing else is.
+    fn auto_pick(&mut self) -> Result<String> {
         let online: Vec<_> = self
             .devices
             .iter()
@@ -237,7 +310,14 @@ impl DeviceManager {
             .collect();
 
         match online.len() {
-            0 => bail!("No devices connected. Connect a device or start an emulator."),
+            0 if self.unusable.is_empty() => {
+                bail!("No devices connected. Connect a device or start an emulator.")
+            }
+            0 => bail!(
+                "No usable devices connected. Attached but not usable: {}. \
+                 Run `tapsmith list-devices` to see how to fix each.",
+                describe_unusable(&self.unusable)
+            ),
             1 => {
                 let serial = online[0].serial.clone();
                 self.set_active(&serial)?;
@@ -342,6 +422,109 @@ mod tests {
         assert_eq!(ConnectionState::Disconnected, ConnectionState::Disconnected);
         assert_ne!(ConnectionState::Discovered, ConnectionState::Active);
         assert_ne!(ConnectionState::Active, ConnectionState::Disconnected);
+    }
+
+    fn unusable(serial: &str, state: &str) -> UnusableDevice {
+        UnusableDevice {
+            serial: serial.to_string(),
+            state: state.to_string(),
+            model: String::new(),
+            is_emulator: serial.starts_with("emulator-"),
+        }
+    }
+
+    fn adb_dev(serial: &str, state: &str) -> adb::AdbDevice {
+        adb::AdbDevice {
+            serial: serial.to_string(),
+            state: state.to_string(),
+            model: String::new(),
+        }
+    }
+
+    #[test]
+    fn partition_keeps_non_online_devices_with_their_whole_state() {
+        let (online, unusable_devs) = partition_adb_devices(vec![
+            adb_dev("emulator-5554", "device"),
+            adb_dev("R5CR1234XYZ", "unauthorized"),
+            adb_dev("emulator-5556", "offline"),
+            adb_dev(
+                "0123ABCD",
+                "no permissions (missing udev rules?); see [http://x]",
+            ),
+        ]);
+        let online: Vec<&str> = online.iter().map(|d| d.serial.as_str()).collect();
+        assert_eq!(online, vec!["emulator-5554"]);
+        assert_eq!(
+            unusable_devs,
+            vec![
+                unusable("R5CR1234XYZ", "unauthorized"),
+                unusable("emulator-5556", "offline"),
+                unusable(
+                    "0123ABCD",
+                    "no permissions (missing udev rules?); see [http://x]"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn auto_pick_ignores_unusable_devices_beside_a_usable_one() {
+        let mut dm = DeviceManager::new();
+        dm.add_device(make_device("emulator-5554", ConnectionState::Discovered));
+        dm.unusable = vec![unusable("R5CR1234XYZ", "unauthorized")];
+        assert_eq!(dm.auto_pick().unwrap(), "emulator-5554");
+        assert_eq!(dm.active_serial(), Some("emulator-5554"));
+    }
+
+    #[test]
+    fn auto_pick_never_selects_an_unusable_device_and_names_it() {
+        let mut dm = DeviceManager::new();
+        dm.unusable = vec![
+            unusable("R5CR1234XYZ", "unauthorized"),
+            unusable("emulator-5556", "offline"),
+        ];
+        let msg = dm.auto_pick().unwrap_err().to_string();
+        assert!(dm.active_serial().is_none());
+        assert!(msg.contains("R5CR1234XYZ (unauthorized)"), "{msg}");
+        assert!(msg.contains("emulator-5556 (offline)"), "{msg}");
+        assert!(msg.contains("tapsmith list-devices"), "{msg}");
+    }
+
+    #[test]
+    fn auto_pick_with_nothing_attached_keeps_the_plain_message() {
+        let mut dm = DeviceManager::new();
+        let msg = dm.auto_pick().unwrap_err().to_string();
+        assert!(msg.contains("No devices connected"), "{msg}");
+    }
+
+    #[test]
+    fn set_active_refuses_an_unusable_device_naming_its_state() {
+        let mut dm = DeviceManager::new();
+        dm.unusable = vec![unusable("R5CR1234XYZ", "unauthorized")];
+        let msg = dm.set_active("R5CR1234XYZ").unwrap_err().to_string();
+        assert!(msg.contains("not usable"), "{msg}");
+        assert!(msg.contains("\"unauthorized\""), "{msg}");
+        assert!(dm.active_serial().is_none());
+        assert!(dm.devices().is_empty());
+    }
+
+    #[test]
+    fn active_device_turning_unauthorized_is_disconnected_not_dropped() {
+        let mut dm = DeviceManager::new();
+        dm.add_device(make_device("HT123", ConnectionState::Discovered));
+        dm.add_device(make_device("HT456", ConnectionState::Discovered));
+        dm.set_active("HT123").unwrap();
+
+        // Next refresh: adb lists HT123 as unauthorized, HT456 is unplugged.
+        dm.unusable = vec![unusable("HT123", "unauthorized")];
+        dm.mark_absent(&[]);
+
+        let dev = dm.active_device().expect("the active device stays tracked");
+        assert_eq!(dev.state, ConnectionState::Disconnected);
+        assert_eq!(dm.active_serial(), Some("HT123"));
+        // The inactive one is forgotten, as before.
+        assert_eq!(dm.devices().len(), 1);
+        assert_eq!(dm.unusable_devices()[0].serial, "HT123");
     }
 
     #[test]

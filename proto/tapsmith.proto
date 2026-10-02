@@ -381,6 +381,13 @@ message DeviceInfo {
 message ListDevicesResponse {
   string request_id = 1;
   repeated DeviceInfo devices = 2;
+  // Android devices adb lists but cannot use: unauthorized (the USB-debugging
+  // prompt was not accepted), offline, "no permissions (...)" on Linux without
+  // udev rules, or any other adb state but "device". Listed so a user is told
+  // the device is there and why it cannot be used; never selectable, and never
+  // part of `devices`. Here `state` is adb's whole state string, `platform` is
+  // "android", `model` is empty unless adb reports one, `os_version` is empty.
+  repeated DeviceInfo unusable_devices = 3;
 }
 
 message SetDeviceRequest {

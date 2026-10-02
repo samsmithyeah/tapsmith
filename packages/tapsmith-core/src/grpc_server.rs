@@ -3437,9 +3437,23 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             })
             .collect();
 
+        let unusable_devices = dm
+            .unusable_devices()
+            .iter()
+            .map(|d| proto::DeviceInfo {
+                serial: d.serial.clone(),
+                model: d.model.clone(),
+                state: d.state.clone(),
+                is_emulator: d.is_emulator,
+                platform: Platform::Android.as_str().to_string(),
+                os_version: String::new(),
+            })
+            .collect();
+
         Ok(Response::new(proto::ListDevicesResponse {
             request_id,
             devices,
+            unusable_devices,
         }))
     }
 
