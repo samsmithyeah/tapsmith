@@ -255,11 +255,19 @@ export const DEVICE_SELECT_RETRY_DELAY_MS = 3_000;
  * found" means its device refresh came back incomplete, i.e. the bounded
  * `simctl list` timed out under a CoreSimulator stall. That's a transient
  * listing failure, not a wrong serial; the next refresh sees the device.
+ *
+ * "is attached but not usable" is the daemon refusing a device adb lists in
+ * another state than `device`: an emulator that flaps to `offline` after boot
+ * or an adb reconnect, or a phone that is `authorizing` or waiting for its
+ * USB-debugging prompt to be accepted. These often clear within the window,
+ * and before the daemon named them they were retried as "not found" — so they
+ * still are; when one does not clear, the last error names its state.
  */
 export function isRetryableDeviceSelectionError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return (
     message.includes('not found. Run ListDevices') ||
+    message.includes('is attached but not usable') ||
     isRecoverableInfrastructureError(err)
   );
 }

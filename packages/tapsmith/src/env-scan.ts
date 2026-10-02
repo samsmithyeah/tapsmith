@@ -168,3 +168,14 @@ export function androidStateBlocker(state: string, serial: string): string | und
   }
   return undefined;
 }
+
+/**
+ * The fix for an Android device in any adb state but `device`: the specific
+ * advice from {@link androidStateBlocker}, or a generic one for states it has
+ * none for (`authorizing`, `recovery`, …). Shared by `list-devices` and
+ * `doctor`.
+ */
+export function androidUnusableDeviceFix(state: string, serial: string): string {
+  return androidStateBlocker(state, serial)
+    ?? `${serial} is "${state}" to adb: reconnect it, or run \`adb kill-server\` and try again`;
+}

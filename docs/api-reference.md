@@ -262,9 +262,17 @@ Install an APK on the connected device.
 await device.installApk("./app-debug.apk");
 ```
 
-### `device.listDevices(): Promise<DeviceInfo[]>`
+### `device.listDevices(): Promise<ListDevicesResponse>`
 
-List all connected Android devices and emulators.
+List the devices the daemon can see. Resolves to `{ requestId, devices, unusableDevices }`, where each
+entry is `{ serial, model, state, isEmulator, platform, osVersion }`.
+
+- `devices` are the devices Tapsmith can target, Android and iOS. A device that was selected and has since
+  gone away stays here with `state: 'Disconnected'`.
+- `unusableDevices` are Android devices adb lists but cannot use (unauthorized, offline,
+  `no permissions (…)`, …). Their `state` is adb's whole state string. Tapsmith never selects them, so
+  they cannot be passed to `setDevice`; `tapsmith list-devices` shows how to fix each one. A serial can
+  appear in both lists when two attached devices share it.
 
 ### `device.setDevice(serial: string): Promise<void>`
 
@@ -2750,7 +2758,7 @@ npx tapsmith create-avd --install-tools         # non-interactive bootstrap (CI)
 
 ### `tapsmith list-devices [--json]`
 
-Print a table of every device Tapsmith can target: Android (ADB), iOS simulators (simctl), and iOS physical devices (devicectl). Each row shows a one-line status (`Ready` or an imperative fix). `--json` prints `{ devices }`, or the [JSON error envelope](#json-output---json) when the daemon cannot be started or cannot list devices.
+Print a table of every device Tapsmith can target: Android (ADB), iOS simulators (simctl), and iOS physical devices (devicectl). Each row shows a one-line status (`Ready` or an imperative fix). An Android device adb lists but cannot use — unauthorized (the USB-debugging prompt was not accepted), offline, or `no permissions` (Linux without udev rules) — is listed as not ready with the same fix `tapsmith doctor` gives; Tapsmith never selects one for a test run. `--json` prints `{ devices }`, or the [JSON error envelope](#json-output---json) when the daemon cannot be started or cannot list devices.
 
 ```bash
 npx tapsmith list-devices
