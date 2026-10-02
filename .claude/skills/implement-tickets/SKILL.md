@@ -77,10 +77,9 @@ do (workers merge only with `merge`; you never do), and it never lowers a worker
   file's *Events*, tagged `[auto]`, and in the final report.
 - **Dependent tickets are stacked**, not left waiting for a merge nobody will do (Phase 1)
   — with `merge`, they wait for the real merge instead.
-- **Never idle while the batch is unfinished.** Between worker events you are woken by
-  their completion notifications; while only merges are pending, keep a background
-  poll running (`gh pr view <n> --json state` for each open PR) rather than ending with
-  nothing pending.
+- **Never idle while the batch is unfinished** — keep the *Heartbeat* running (Phase 3).
+  When the only thing left is a human merging, finish the batch (Phase 4) instead of
+  waiting: a later `/implement-tickets` run resumes it.
 
 ## Phase 0 — Resume or start
 
@@ -211,6 +210,18 @@ On every worker stop, read its result lines, update the table, then act:
 | `stopped-by-user` / error / no result lines | Read its state file; re-launch it once (it resumes); if it fails again, mark it held and tell the user. |
 
 Between events, keep an eye on the batch:
+
+- **Heartbeat.** Worker notifications can be missed, and a worker can hang in a wait
+  of its own. While any worker is running, keep one background heartbeat going —
+  `sleep 1800; echo "WAIT_TIMEOUT: heartbeat"` (Bash `timeout` above 30 min) — and
+  re-arm it each time it fires. On every wake, whatever woke you, re-read reality: each
+  worker's state file, branch head and PR (`gh pr view <n> --json state,headRefOid`).
+- **Silent workers.** A worker that has not returned, not changed its state file
+  (`<worktree>/.claude/state/implement-ticket/<KEY>/state.md` mtime) and not pushed for
+  **2 hours** is probably stuck in a wait: message it to report its phase and re-check
+  what it is waiting for (implement-ticket *Waiting*). No change within 30 more minutes →
+  stop it (TaskStop) and re-launch it once; it resumes from its state file. A second
+  hang → mark it held and say so.
 
 - **Merges.** Without `merge`, nobody in the batch merges; still poll, since the user may.
   When a PR in the batch merges (`gh pr view <n> --json state`), tell every
