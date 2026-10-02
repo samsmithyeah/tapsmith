@@ -1,6 +1,6 @@
 ---
 name: implement-ticket
-description: Implement a Jira ticket end to end and keep going until its PR is ready to merge. Understands the ticket and its Playwright precedent, plans the design, edge cases and test tiers up front, builds it test-first where a test can come first, then decides for itself when to run /review-loop and /qa-this-branch, when to commit, push and open a draft PR, how to answer CI failures and CodeRabbit or human review threads, and when the PR meets the ready-to-merge bar. Never merges. Resumable from its state file. Use when asked to implement, build, fix or pick up a ticket (e.g. "implement PILOT-123", "/implement-ticket PILOT-123").
+description: Implement a Jira ticket end to end and keep going until its PR is ready to merge. Understands the ticket and its Playwright precedent, plans the design, edge cases and test tiers up front, builds it test-first where a test can come first, then decides for itself when to run /review-loop and /qa-this-branch, when to commit, push and open a draft PR, how to answer CI failures and CodeRabbit or human review threads, and when the PR meets the ready-to-merge bar. Never merges unless given `merge`. Resumable from its state file. With `auto`, never asks the user anything and makes every decision itself, disclosed in the PR. Use when asked to implement, build, fix or pick up a ticket (e.g. "implement PILOT-123", "/implement-ticket PILOT-123").
 ---
 
 # implement-ticket
@@ -40,10 +40,12 @@ plan (constraints, hints, "don't touch X").
 |---|---|---|
 | `PILOT-123` (any `KEY-n`) | the ticket | required, unless resuming on a branch whose name carries it |
 | `also=<KEY>,…` | further tickets combined into this one change: each is read as an intent source (Phase 1), its ACs join the plan and QA's intent (pass `ticket=` the primary key and the others as focus), and the PR title and body carry every key. State, branch and leases stay keyed on the primary | none |
-| `autonomous` | skip the plan checkpoint; record assumptions instead of asking | interactive |
+| `auto` | never ask the user anything, at any point: every stop-and-ask becomes your own decision, disclosed in the PR, and the run ends only at a final result — see *Auto mode* | interactive |
 | `base=<ref>` | branch to build on and target. CI only triggers on PRs to `main`, so any other base is a stop-and-ask: the gate cannot be met without CI | `main` |
-| `jira` | also move the ticket (In Progress at start, In Review at the end) and comment the PR link on it | no Jira writes |
+| `after=<branch>` | stack on another ticket's unmerged branch: start from `origin/<branch>`, review and QA against it, PR still targets `<base>` — see *Stacked branches*. Used by `/implement-tickets` in auto mode for dependent tickets | off |
+| `no-jira` | make no Jira writes at all. By default the ticket moves to **In Progress** at the start, gets a comment with the PR link when the PR opens and one with the final result at the end, and is never moved to **Done** — that waits for the merge (Phase 7) | Jira updates on |
 | `leave-draft` | stop at the gate with the PR still a draft | mark it ready for review |
+| `merge` | once the gate passes, squash-merge the PR yourself (Phase 8). Overrides `leave-draft` | stop at ready; a human merges |
 | `max-qa=<n>` | cap on QA → fix cycles before escalating | `3` |
 | `worker` | run as one of several parallel workers under `/implement-tickets` — see *Worker mode* | off |
 | `worktree=<path>` | do all work in this existing worktree (the coordinator created it) | Phase 0 decides |
@@ -56,12 +58,14 @@ push that branch, open and edit its PR, mark it ready for review, reply to and r
 its review threads, and re-run its failed CI jobs. It is not authorisation for anything
 else:
 
-- **Never merge** the PR, push to `main`, force-push, delete branches, or change
-  repository settings. The gate ends at "ready"; a human merges.
+- **Never merge** the PR — unless `merge` was given, and then only as Phase 8 says —
+  and never push to `main`, force-push, delete branches, or change repository settings.
+  Without `merge` the gate ends at "ready"; a human merges.
 - **Never** bypass checks: no `--no-verify`, no skipping, deleting or weakening a test or
   assertion to go green, no `eslint-disable` without a real justification, no
   `continue-on-error`.
-- **Never write to Jira** without the `jira` token, except what the user asks for.
+- **Jira writes are limited** to moving this ticket's status and commenting the PR link and
+  result on it (none at all with `no-jira`), plus anything the user asks for.
   Follow-up tickets you would file go in the final report and the PR description as
   proposals.
 - Keep secrets, personal paths and machine-specific details out of commits and the PR —
@@ -112,7 +116,8 @@ With `worker`, you are one of several `implement-ticket` runs coordinated by
 - **Stay in your worktree.** Run every git and build command there, with absolute paths
   or `git -C <worktree>` — a subagent's shell can reset its working directory between
   calls, and a command that silently runs in the main checkout lands on the wrong branch. Never touch the main checkout, another worker's worktree, branch or PR.
-- **Never ask the user directly.** Any stop-and-ask case (below) becomes a return: write
+- **Never ask the user directly.** With `auto`, decide it yourself (*Auto mode*); you
+  return only a final result. Without `auto`, any stop-and-ask case (below) becomes a return: write
   the state file (`Phase: blocked`), release your device leases, and end with the
   `blocked` result lines and a `QUESTION:` block (Final report). The coordinator batches
   questions and sends you the answer as a message; resume from the state file when it
@@ -129,14 +134,15 @@ With `worker`, you are one of several `implement-ticket` runs coordinated by
 ## When to stop and ask a human
 
 Only these. Everything else you decide, and record the decision in the state file.
+With `auto`, not even these: each has an auto-mode decision in *Auto mode* below.
 
 1. **The ticket is ambiguous in a way that changes what gets built** (not how), and
-   neither the ticket's comments nor a Playwright precedent settles it. Interactive:
-   batch every such question into the plan checkpoint. Autonomous: take the most
-   conservative reading, record it as an assumption, and list it in the PR description.
+   neither the ticket's comments nor a Playwright precedent settles it. Batch every
+   such question into the plan checkpoint.
 2. **A public API shape has no Playwright precedent** and the ticket does not specify it.
 3. **The ticket is too big for one reviewable PR** — propose the split before building.
-4. **A loop will not converge**: `/review-loop` ends in `oscillation`; QA cycles hit
+4. **A loop will not converge**: `/review-loop` ends in `oscillation`, or keeps hitting
+   `max-rounds` without converging (Phase 4); QA cycles hit
    `max-qa`; the same CI job fails for the same branch-caused reason after three fix
    attempts.
 5. **`/qa-this-branch` returns `incomplete`** for a reason you cannot remove (device
@@ -157,6 +163,72 @@ work, poll `--pick` for up to 60 minutes). Only if it persists and QA returns
 When you stop, update the state file, say exactly what is blocked and what you need, and
 leave the branch pushed and the PR in a coherent state.
 
+## Auto mode
+
+With `auto`, nobody is watching and nobody will answer. **Never ask the user anything**:
+no AskUserQuestion, no plan checkpoint, no "shall I…?", no ending a turn to wait for a
+reply, no `blocked` result with a `QUESTION:` block. Keep going until one of the final
+results below. `auto` combines with `worker`.
+
+It changes **who decides, never what you may do**: *What you may and may not do* still
+holds in full — never merge (except per Phase 8 with `merge`), force-push, bypass a check, write to Jira beyond the status and comments,
+or disturb a device session you did not start. And it never lowers the gate: a PR is
+marked ready only when every Phase 7 item genuinely passes.
+
+**Disclose every decision a human would otherwise have made.** Log each one in the state
+file under *Decisions and assumptions*, tagged `[auto]`, and in a **Decisions made in
+auto mode** section of the PR description: the question, what you chose, the main
+alternative, and why — written so a reviewer can overturn any of them in one read.
+
+Each stop rule becomes a decision:
+
+| Rule | In auto mode |
+|---|---|
+| 1 ambiguous scope | The most conservative reading that still delivers the ticket's evident purpose. Disclose. |
+| 2 API with no Playwright precedent | Design it: the shape closest to Playwright's idioms (naming, an options object, return types, auto-waiting) and to Tapsmith's existing API, and the narrowest surface that meets the ACs — a surface is easier to grow than to take back. Disclose under the PR's decisions section as an **API decision for review**. |
+| 3 too big for one PR | Deliver the whole ticket if it can be one PR with one reviewable commit per slice and a description that walks the slices. Only if parts are genuinely separable and the whole would be unreviewable: ship the first coherent part through the gate and list the rest as proposed follow-ups. |
+| 4 `/review-loop` `oscillation` | Decide the oscillating finding on its merits, once (review-loop's own rule: pick, then stick), record that verdict in the ledger as `final` with why, and disclose it. Then run `/review-loop` again — it carries the final verdict forward — because a clean round is still required. |
+| 4 `/review-loop` not converging | As Phase 4, but instead of asking: result `best-effort`, with the ledger's last unreviewed fixes listed in the PR. |
+| 4 QA hits `max-qa` | Allow up to twice `max-qa` cycles in total. Still not `ready` → result `best-effort`. |
+| 4 same CI failure after three fixes | Prove flake or infra if you can (a control re-run of the same job on `main`, the flake signatures in memory) and disclose with the evidence; otherwise result `best-effort`. |
+| 5 QA `incomplete` | Device busy: keep doing device-free work and polling `--pick` (*Devices*) for up to 60 minutes, then once more for another 60 before re-running QA. Still `incomplete` → result `best-effort`, with QA's UNTESTED cells in the PR. An open question that a stated criterion depends on: take the reading most consistent with the ticket's purpose and Playwright, disclose, carry on. |
+| 6 human review | A human reviewer outranks your preference: make the change they ask for unless it would break a stated AC, a test or the project's rules. If it would, reply on the thread with the reason, leave it unresolved, and that gate item fails → `best-effort`. A question only the user can answer: reply with your best answer marked as an assumption. |
+| 7 non-`main` base | Build on it. CI cannot run, so the gate cannot pass: finish with local package checks and QA as the evidence, result `best-effort`, the PR saying CI never ran. |
+| 8 unreadable ticket | Try every Jira connector the session has before giving up. Never guess a ticket's content: none can read it → result `held`, nothing created. |
+
+**Never idle while unfinished.** Waiting on CI or a device, keep a background command
+running that exits when the wait is over (`gh pr checks <n> --watch`, a `--pick` poll
+loop) so you are woken — never end a turn with work left and nothing pending to resume
+it. Your final message is a report, not an offer: no "want me to…?".
+
+**Final results in auto mode** (in place of `blocked`):
+
+- `ready-to-merge` — the gate passed; the PR is marked ready (unless `leave-draft`).
+- `merged` — with `merge`: the gate passed and Phase 8 merged it.
+- `ready-stacked` — the gate passed on a stacked branch (`after=`); the PR stays draft
+  until its dependency merges (*Stacked branches*).
+- `best-effort` — a PR exists but some gate item cannot be met without a human; it stays
+  a **draft**, and the report and PR description list each unmet item and why.
+- `held` — nothing to build: the ticket is unreadable, already fixed on `<base>`, or a
+  duplicate of an open PR. Say which, with the evidence.
+
+## Stacked branches
+
+With `after=<branch>`, this ticket depends on another ticket's change that has not merged
+yet. Build on it rather than wait for a merge nobody in an auto run will do:
+
+- Phase 0: branch from `origin/<after branch>` instead of `origin/<base>`.
+- Review and QA diff against the dependency, not `<base>`: pass `base=origin/<after branch>`
+  to `/review-loop` and `base=<after branch>` to `/qa-this-branch`, so neither re-reviews
+  the other ticket's commits.
+- The PR targets `<base>` and stays a **draft**, its description opening with "Depends on
+  #<n> — merge that first; until then this diff includes its commits."
+- When the dependency merges: `git fetch origin && git merge origin/<base>` (never rebase
+  or force-push — the squash-merge's content matches the dependency's commits, so the
+  merge resolves; fix any conflict from later changes to the dependency), then re-run the
+  gate against `<base>` and mark the PR ready (with `merge`, go on to Phase 8). Until then
+  the result is `ready-stacked`.
+
 ## Phase 0 — Set up or resume
 
 1. **Resume check first.** Find where the ticket's branch is checked out, if anywhere
@@ -175,7 +247,7 @@ leave the branch pushed and the PR in a coherent state.
    (`git worktree add "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.claude/worktrees/<branch>" origin/<base>`
    — anchored on the main checkout's root via the common git dir, so it lands in the
    main `.claude/worktrees/` even when run from inside another worktree) instead of
-   touching it. Branch from `origin/<base>` using the naming in
+   touching it. Branch from `origin/<base>` (with `after=`, from `origin/<after branch>`) using the naming in
    `references/pr-and-ci.md`. With `worktree=`, the coordinator has already made a
    worktree (detached at `origin/<base>`): create your branch inside it
    (`git -C <worktree> switch -c <branch>`) and do not make another.
@@ -183,7 +255,9 @@ leave the branch pushed and the PR in a coherent state.
    (git-ignored, and unlike the session scratchpad it survives the session — so a new
    session, or a restarted coordinator, can resume). Format in `references/state.md`;
    keep it current at every phase transition and decision.
-4. With `jira`: move the ticket to In Progress.
+4. Unless `no-jira`: move the ticket to **In Progress** (the project's statuses are To Do,
+   In Progress and Done; find the transition with `getTransitionsForJiraIssue`). Skip it if
+   it is already there.
 
 ## Phase 1 — Understand
 
@@ -213,7 +287,7 @@ Write the plan file (`<state dir>/plan.md`, format in
 
 **Checkpoint.** Interactive: show the plan summary (ACs, design choice, edge cases, open
 questions) and wait for a go-ahead or corrections — this is the one planned pause. If
-there are no genuine questions, say so and continue unless the user objects. Autonomous:
+there are no genuine questions, say so and continue unless the user objects. `auto`:
 print the summary and continue.
 
 ## Phase 3 — Build, test-first where it fits
@@ -239,20 +313,28 @@ Update docs in the slice that changes the behaviour, not at the end.
 
 When the plan's slices are all built and the package checks are green:
 
-1. **`/review-loop`** — decide by the table below; pass `commit` so its fixes land as
-   commits, `worktree=<the checkout your branch is in>`, `base=origin/<base>` (after a fetch — local `<base>` may be stale, and a stale
-   base puts upstream commits in the reviewed diff), and `ledger=<state dir>/review-loop/`
-   so parallel workers never share a ledger. Read its outcome word: `clean` → go on; `max-rounds` →
-   go on, and say in the PR that the loop hit its cap; `oscillation` → stop and ask;
-   `stopped-by-user` → stop, and report where the loop was left.
+1. **`/review-loop` until clean**, unless the whole change is trivial (*When to review
+   and QA*, Phase 5). Pass `commit` so its fixes land as commits, `worktree=<the checkout your
+   branch is in>`, `base=origin/<base>` (after a fetch — local `<base>` may be stale, and
+   a stale base puts upstream commits in the reviewed diff), and
+   `ledger=<state dir>/review-loop/` — the **same** ledger every time, so parallel
+   workers never share one, and each later run continues it and carries earlier `final`
+   verdicts forward instead of re-arguing them. Leave `max-rounds` at its default. Read
+   its outcome word:
 
-   | Change | review-loop |
-   |---|---|
-   | product code (SDK, daemon, agents, proto, UI) | always, default rounds |
-   | tests, tooling or CI only | `max-rounds=3` |
-   | docs only, or a one-line fix with its test | skip; say so in the state file |
+   - `clean` → go on. Record the clean round's head SHA in the state file.
+   - `max-rounds` → **not done**: the last round's fixes have not been reviewed. If the
+     ledger's per-round FIX counts are falling, run it again (it continues the ledger for
+     up to another `max-rounds`). If they are flat or rising, or a second consecutive run
+     also hits the cap, it is not converging — usually a design problem, not a detail
+     one: stop and ask (rule 4).
+   - `oscillation` → stop and ask (rule 4).
+   - `stopped-by-user` → stop, and report where the loop was left.
 
-2. **Push and open a draft PR** (`references/pr-and-ci.md` — title, body, labels). CI
+   (`auto`: non-convergence and oscillation are decided per *Auto mode*, not asked.)
+
+2. **Push and open a draft PR** (`references/pr-and-ci.md` — title, body, labels), and
+   unless `no-jira`, comment its link on the ticket. CI
    only runs on PRs, so the PR exists to get CI going as early as it is worth the runner
    time: once the change is complete and reviewed, not for a half-built skeleton.
 3. Start watching CI in the background (`references/pr-and-ci.md` §CI) and move straight
@@ -277,18 +359,35 @@ and, if you hold device leases, `devices=<ids>` so QA uses yours first. On later
 Every QA run is a full retest — never ask QA to skip anything because a previous cycle
 passed it. For each `open_questions` item: resolve it from the ticket if you can. One
 about an **inferred** criterion is stop case 1 — take the conservative reading and
-disclose it in the PR (in worker mode that is `DEFAULT_SAFE: yes`); one that a **stated**
+disclose it in the PR; one that a **stated**
 criterion depends on is rule 5.
 
-**What a change after review or QA re-triggers:**
+### When to review and QA — your call
 
-| You changed | Re-run |
-|---|---|
-| product logic (more than a trivial, fully tested line) | `/review-loop` (`max-rounds=3`), then QA |
-| a small fix with its own new test (a few lines, no design change) | QA only — this is the one post-review logic change the gate allows without a re-review |
-| tests, docs or comments only | package checks only; QA need not re-run |
+`/review-loop` and `/qa-this-branch` are tools, not rituals: run them when they can find
+something. For each change since the last clean review (or QA), ask: *could a careful
+reviewer plausibly find a bug here that the tests would not catch?* — and for QA: *could
+this change what a user sees or how a run behaves in a way the tests do not show?*
 
-After `max-qa` cycles without `ready`/`ready-pending-ci`, stop and ask (rule 4).
+| Change | Review | QA |
+|---|---|---|
+| **trivial** — copy, wording or error-message text; a rename; a constant; a test-only tweak (a timeout, an assertion message); a one-line logic change whose effect is obvious and pinned by a test; docs and comments | skip | skip, unless the change shows up only on a device (copy on a screen QA would read) |
+| **non-trivial** — control flow, error handling, timing or concurrency, state and lifecycle, public API, anything threaded through the five run paths, a conflict resolution that combines two pieces of logic | `/review-loop` until clean (Phase 4 rules) | re-run if product behaviour changed |
+
+Treat it as non-trivial after all when trivial changes pile up in one area (together they
+are not trivial), when the "one-liner" is a second attempt at the same review or QA
+finding, or when you hesitated. When in doubt, review: a clean first round is cheap.
+
+Record each skip in the state file (`<sha> — skipped review/QA: trivial, <why>`) and list
+them in the PR's "How it was tested", so a reader sees exactly what landed after the last
+clean review and why. CodeRabbit still reviews every push, so nothing reaches the gate
+unseen by any reviewer.
+
+Batch first: collect a QA cycle's fixes (or a round of CI and thread fixes), then run one
+`/review-loop` over all of them if any is non-trivial, then push once.
+
+After `max-qa` cycles without `ready`/`ready-pending-ci`, stop and ask (rule 4) —
+with `auto`, follow *Auto mode* for rules 4 and 5.
 
 ## Phase 6 — CI and review threads
 
@@ -304,8 +403,8 @@ Work these until both are clean (`references/pr-and-ci.md` has the commands):
   leave a human's thread for the human unless they asked you to resolve it.
 
 **Batch your pushes.** Each push cancels the in-flight E2E run (`cancel-in-progress`), so
-collect fixes and push once, then wait. Any code change pushed here goes back through the
-Phase 5 re-trigger table.
+collect fixes and push once, then wait. Any code change pushed here goes through
+*When to review and QA* (Phase 5) first.
 
 ## Phase 7 — The ready-to-merge gate
 
@@ -314,14 +413,19 @@ checklist with evidence:
 
 - [ ] every AC in the plan is met or explicitly descoped in the PR with a reason;
 - [ ] every planned edge case is tested, QA'd, or listed as out of scope in the PR;
-- [ ] the last `/qa-this-branch` verdict is `ready` or `ready-pending-ci`, on a tree that
-      differs from head only by tests/docs/comments — otherwise re-run it;
-- [ ] `/review-loop` ended `clean` (or `max-rounds`, disclosed), or was skipped per the
-      table, and no product logic changed after it without a re-review — except the
-      small, individually tested fixes the Phase 5 table routes to QA only;
+- [ ] the last `/qa-this-branch` verdict is `ready` or `ready-pending-ci`, and every
+      change since it is a recorded QA skip (*When to review and QA*) — otherwise re-run it;
+      for a ticket that is trivial throughout, the recorded skip stands in for QA;
+- [ ] the last `/review-loop` run ended `clean`, and every change in
+      `git diff <its clean-round SHA>..HEAD` is a recorded trivial skip or a conflict-free
+      merge of `<base>` (for a ticket that is trivial throughout, the recorded skip stands
+      in for the loop). `max-rounds` never passes this item;
 - [ ] every CI check on head is green, the `CI` and both E2E workflows actually ran on
       head (zero checks is not green), and no job is green only because a step is advisory;
 - [ ] no unresolved review thread you can act on; no outstanding "changes requested";
+      and CodeRabbit has reviewed the head commit, not an earlier one (its latest review's
+      commit in `gh pr view <n> --json reviews`, or its summary comment naming head) —
+      if not, wait for it, or comment `@coderabbitai review` after ~15 minutes;
 - [ ] the branch merges cleanly into `<base>` (merge `<base>` in if not, then re-check);
 - [ ] every commit is signed off; the package checks pass locally;
 - [ ] `docs/api-reference.md` and other affected docs are updated;
@@ -330,8 +434,38 @@ checklist with evidence:
       limitations, assumptions, and follow-ups.
 
 Then, unless `leave-draft`: `gh pr ready`, and if that triggers a first CodeRabbit review,
-go back to Phase 6 for its threads. With `jira`: move the ticket to In Review and comment
-the PR link.
+go back to Phase 6 for its threads. Unless `no-jira`: comment the result on the ticket
+(ready to merge, or what is still open) and leave it **In Progress** — the project has no
+review status, and **Done** means merged — that happens in Phase 8 with `merge`, or when
+you see the PR merged during the run (e.g. relayed by `/implement-tickets`).
+
+## Phase 8 — Merge (only with `merge`)
+
+`merge` is the user's standing approval to merge this PR **once the Phase 7 gate passes on
+its head** — never a `best-effort`, `ready-stacked` or `blocked` PR, and never with
+`--admin` or anything else that bypasses a required check or ruleset.
+
+1. **Re-check right before merging**, on the PR as GitHub sees it now:
+   `gh pr view <n> --json headRefOid,mergeable,mergeStateStatus,reviewDecision,isDraft`.
+   The head must be the SHA the gate passed on; no "changes requested"; no new
+   unresolved thread since the gate (re-run the Phase 6 thread query).
+2. **Up to date with the base.** If `origin/<base>` has moved since the head's CI run,
+   merge it in (Keeping up with the base), push, and run the gate again on the new head —
+   CI that passed against an older `main` says nothing about the combination.
+3. **Merge**, pinned to the gated head so nothing pushed in between slips through:
+
+   ```bash
+   gh pr merge <n> --squash --match-head-commit <gated sha>
+   ```
+
+   The repo squash-merges (subject `<PR title> (#<n>)`, gh's default). Do not pass
+   `--delete-branch` — the branch stays; a human can delete it. If GitHub refuses the merge
+   (a ruleset, a required review), do not work around it: report why, and finish
+   `ready-to-merge`.
+4. **After the merge:** confirm `gh pr view <n> --json state,mergeCommit` says `MERGED`;
+   unless `no-jira`, move the ticket to **Done** and comment the merge commit; release any
+   device leases; record it in the state file (`Phase: done`). Leave the worktree in place
+   (it holds the state dir).
 
 ## Final report
 
@@ -341,25 +475,20 @@ descoped, pre-existing bugs and proposed follow-up tickets, and anything a human
 decide before merging. End with:
 
 ```
-IMPLEMENT_TICKET: <ready-to-merge|blocked|planned|stopped-by-user>
+IMPLEMENT_TICKET: <merged|ready-to-merge|ready-stacked|best-effort|held|blocked|planned|stopped-by-user>
 PR: <url or none>
 STATE: <absolute path to state.md>
 ```
 
-When `blocked`, follow with the question, written so it can be answered without reading
+`ready-stacked`, `best-effort` and `held` are `auto`-mode results (*Auto mode*); `auto`
+never returns `blocked` or `planned`. When `blocked`, follow with the question, written so it can be answered without reading
 anything else:
 
 ```
 QUESTION: <the decision needed, one paragraph, with the context that makes it answerable>
 OPTIONS: <a) … (recommended) | b) … | c) …>
 DEFAULT: <what you will do if told "use your default">
-DEFAULT_SAFE: <yes|no>
 ```
-
-`DEFAULT_SAFE: yes` only for stop case 1 (scope ambiguity where a conservative reading
-exists and can be disclosed in the PR). Cases 2–8 — an API shape with no precedent, a
-split, a loop that will not converge, QA `incomplete`, a disputed human review, a
-non-main base, an unreadable ticket — are `no`: they need a person, and a coordinator must not answer them with your default.
 
 Save durable lessons (a new environment trap, a CI flake signature, a design rule a
 reviewer taught you) to memory. Not the ticket's status — that lives in the PR.

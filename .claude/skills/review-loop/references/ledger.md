@@ -62,6 +62,10 @@ Likelihood lines so the flip is visible.
 
 The `Round N` heading's status word is what tells a resumed session where it was.
 
+A later run on the same ledger (SKILL.md step 0) appends `## Run <k> — <ISO timestamp>`
+with its own base, merge-base, change brief and focus, then continues the round
+numbering. Every run ends with its own termination record.
+
 ## Termination record
 
 When the loop stops, append:
