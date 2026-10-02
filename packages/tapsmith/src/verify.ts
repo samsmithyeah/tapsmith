@@ -68,12 +68,31 @@ export function summarizeVerifyReport(report: VerifyReport): VerifySummary {
   };
   report.suites.forEach(walk);
   return {
-    ok: report.stats.failed === 0,
+    // A run that executed nothing proves nothing about the setup (PILOT-394).
+    // A flaky test is reported as passed, so it counts as having run.
+    ok: report.stats.failed === 0 && report.stats.passed > 0,
     passed: report.stats.passed,
     failed: report.stats.failed,
     skipped: report.stats.skipped,
     duration: report.stats.duration,
     failures,
+  };
+}
+
+/**
+ * The NO_TESTS_RAN error when the run executed no test (none in the file, or
+ * every one skipped), else undefined. A run with failures did run: that is
+ * the `ok: false` result, not this. Playwright fails "No tests found" the
+ * same way; an all-skipped run counts too, since it proves nothing about the
+ * device or the app.
+ */
+export function noTestsRanError(summary: VerifySummary, testFile: string): { message: string; fix: string } | undefined {
+  if (summary.passed + summary.failed > 0) return undefined;
+  return {
+    message: summary.skipped > 0
+      ? `No tests ran: all ${summary.skipped} test(s) in ${testFile} were skipped`
+      : `No tests ran: ${testFile} has no tests`,
+    fix: `Check that testMatch (and projects, if the config has any) select ${testFile}, and that its tests are not all skipped (test.skip, or a grep / grepInvert that filters them out)`,
   };
 }
 
@@ -211,9 +230,15 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
         return;
       }
       const summary = summarizeVerifyReport(report);
+      const testFile = path.relative(config.rootDir, target);
+      const noTests = noTestsRanError(summary, testFile);
+      if (noTests) {
+        emitError(args.json, 'NO_TESTS_RAN', noTests.message, noTests.fix);
+        return;
+      }
 
       if (args.json) {
-        process.stdout.write(formatJson({ ...summary, testFile: path.relative(config.rootDir, target) }));
+        process.stdout.write(formatJson({ ...summary, testFile }));
       } else {
         console.log(summary.ok
           ? `✓ Setup verified: ${summary.passed} test(s) passed in ${(summary.duration / 1000).toFixed(1)}s`
