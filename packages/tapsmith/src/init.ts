@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import Enquirer from 'enquirer';
@@ -396,26 +395,22 @@ async function setupNetworkCapture(
 
 // ─── iOS simulator agent ───
 
-export async function ensureSimulatorAgent(
-  simulator: string | undefined,
-): Promise<{ status: 'present' | 'built' | 'failed'; error?: string }> {
-  const { findSimulatorXctestrun } = await import('./ios-device-resolve.js');
-  if (findSimulatorXctestrun()) return { status: 'present' };
+/** init's bound on the simulator agent build (the first test run has none). */
+const INIT_AGENT_BUILD_TIMEOUT_MS = 300_000;
+
+/**
+ * Make sure the iOS simulator agent is built, using the same builder (and so
+ * the same SDK-matched cache) the first test run uses. Its progress lines are
+ * suppressed so `init --json` keeps a clean stdout; its output goes to a
+ * build log the error names.
+ */
+export async function initSimulatorAgent(): Promise<{ status: 'present' | 'built' | 'failed'; error?: string }> {
   try {
-    const { resolveIosAgentDir } = await import('./build-ios-agent.js');
-    const iosAgentDir = resolveIosAgentDir();
-    const createScript = path.join(iosAgentDir, 'create-xcode-project.sh');
-    if (fs.existsSync(createScript)) {
-      try { execFileSync('sh', [createScript], { cwd: iosAgentDir, stdio: 'ignore' }); } catch { /* optional — xcodebuild will fail below if needed */ }
-    }
-    const dest = simulator ? `platform=iOS Simulator,name=${simulator}` : 'platform=iOS Simulator';
-    execFileSync('xcodebuild', [
-      'build-for-testing',
-      '-project', path.join(iosAgentDir, 'TapsmithAgent.xcodeproj'),
-      '-scheme', 'TapsmithAgentUITests',
-      '-destination', dest,
-    ], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 300_000 });
-    return { status: 'built' };
+    const { findSimulatorXctestrun } = await import('./ios-device-resolve.js');
+    const existing = findSimulatorXctestrun();
+    const { ensureSimulatorAgent } = await import('./ios-simulator-build.js');
+    const xctestrun = await ensureSimulatorAgent({ quiet: true, timeoutMs: INIT_AGENT_BUILD_TIMEOUT_MS });
+    return { status: xctestrun === existing ? 'present' : 'built' };
   } catch (err) {
     return { status: 'failed', error: err instanceof Error ? err.message : String(err) };
   }
@@ -618,9 +613,9 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
       assertConfigWritable(parsed.force);
 
       if (plan.platforms.includes('ios')) {
-        const agentResult = await ensureSimulatorAgent(plan.ios?.simulator);
+        const agentResult = await initSimulatorAgent();
         if (agentResult.status === 'failed') {
-          plan.warnings.push(`iOS simulator agent build failed (${agentResult.error ?? 'unknown error'}) — it will be retried on first test run`);
+          plan.warnings.push(`iOS simulator agent build failed (it will be retried on the first test run): ${agentResult.error ?? 'unknown error'}`);
         }
       }
 
@@ -743,11 +738,11 @@ async function runInitInner(): Promise<void> {
 
         if (buildSim) {
           console.log(dim('  Building iOS simulator agent...'));
-          const result = await ensureSimulatorAgent(iosConfig.simulator);
+          const result = await initSimulatorAgent();
           if (result.status === 'built' || result.status === 'present') {
             console.log(`  ${green('✓')} iOS simulator agent built`);
           } else if (result.error) {
-            console.log(`  ${YELLOW}⚠${RESET} Build failed: ${result.error}`);
+            console.log(`  ${YELLOW}⚠${RESET} Build failed: ${result.error.replace(/\n/g, '\n    ')}`);
           } else {
             console.log(`  ${YELLOW}⚠${RESET} Build failed`);
           }
