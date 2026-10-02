@@ -194,6 +194,34 @@ describe('generateConfig()', () => {
     expect(evaluateConfig(config).projects?.map((p) => p.name)).toEqual(['android', 'ios-device']);
   });
 
+  it('gives the device target the device build\'s own bundle id when it differs', () => {
+    const both = evaluateConfig(generateConfig(
+      ['ios'],
+      undefined,
+      {
+        appPath: './MyApp.app',
+        bundleId: 'com.example.app.dev',
+        deviceBundleId: 'com.example.app',
+        simulator: 'iPhone 17',
+        usePhysicalDevice: true,
+        deviceAppPath: './MyApp-device.app',
+      },
+      false,
+    ));
+    expect(both.projects?.map((p) => [p.name, p.use?.package])).toEqual([
+      ['ios', 'com.example.app.dev'],
+      ['ios-device', 'com.example.app'],
+    ]);
+
+    const physical = evaluateConfig(generateConfig(
+      ['ios'],
+      undefined,
+      { bundleId: 'com.example.app.dev', deviceBundleId: 'com.example.app', usePhysicalDevice: true, deviceAppPath: './MyApp-device.app' },
+      false,
+    ));
+    expect(physical.package).toBe('com.example.app');
+  });
+
   it('omits package when no bundle id is known', () => {
     const config = generateConfig(
       ['ios'],

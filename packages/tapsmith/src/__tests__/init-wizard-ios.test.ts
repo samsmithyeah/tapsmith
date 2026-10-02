@@ -84,6 +84,7 @@ describe('configureIos() (PILOT-251)', () => {
     expect(ios).toEqual({
       appPath: undefined,
       bundleId: 'com.example.device',
+      deviceBundleId: undefined,
       simulator: undefined,
       usePhysicalDevice: true,
       deviceAppPath: DEVICE_APP,
@@ -107,10 +108,44 @@ describe('configureIos() (PILOT-251)', () => {
     expect(ios).toEqual({
       appPath: SIM_APP,
       bundleId: 'com.example.sim',
+      deviceBundleId: undefined,
       simulator: 'iPhone 17',
       usePhysicalDevice: true,
       deviceAppPath: DEVICE_APP,
     });
+    expect(asked.some((m) => /bundle identifier/.test(m))).toBe(false);
+  });
+
+  it('both: same id in both builds is kept once', async () => {
+    bundleIds.set(SIM_APP, 'com.example.app');
+    bundleIds.set(DEVICE_APP, 'com.example.app');
+    script('both');
+
+    const ios = await configureIos(env);
+
+    expect(ios.bundleId).toBe('com.example.app');
+    expect(ios.deviceBundleId).toBeUndefined();
+  });
+
+  it('both: keeps the device build\'s own id when it differs from the simulator build\'s', async () => {
+    bundleIds.set(SIM_APP, 'com.example.app.dev');
+    bundleIds.set(DEVICE_APP, 'com.example.app');
+    script('both');
+
+    const ios = await configureIos(env);
+
+    expect(ios.bundleId).toBe('com.example.app.dev');
+    expect(ios.deviceBundleId).toBe('com.example.app');
+  });
+
+  it('both: falls back to the device build\'s id when the simulator build has none', async () => {
+    bundleIds.set(DEVICE_APP, 'com.example.device');
+    script('both');
+
+    const ios = await configureIos(env);
+
+    expect(ios.bundleId).toBe('com.example.device');
+    expect(ios.deviceBundleId).toBeUndefined();
     expect(asked.some((m) => /bundle identifier/.test(m))).toBe(false);
   });
 
@@ -124,6 +159,7 @@ describe('configureIos() (PILOT-251)', () => {
     expect(ios).toEqual({
       appPath: SIM_APP,
       bundleId: 'com.example.sim',
+      deviceBundleId: undefined,
       simulator: 'iPhone 17',
       usePhysicalDevice: false,
       deviceAppPath: undefined,

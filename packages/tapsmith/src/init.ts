@@ -88,6 +88,8 @@ export interface IosConfig {
   /** Simulator build. Unset only when the user runs on physical devices alone. */
   appPath?: string;
   bundleId?: string;
+  /** The device build's bundle id, when it differs from `bundleId` (per-configuration ids). */
+  deviceBundleId?: string;
   simulator?: string;
   usePhysicalDevice: boolean;
   /** Device-signed (iphoneos) build; set whenever `usePhysicalDevice` is. */
@@ -235,6 +237,7 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
 
   const usePhysicalDevice = deviceType === 'physical' || deviceType === 'both';
   let deviceAppPath: string | undefined;
+  let deviceBundleId: string | undefined;
 
   if (usePhysicalDevice) {
     console.log(`\n  ${bold('Physical iOS device preflight')}`);
@@ -300,7 +303,9 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
         return true;
       },
     });
-    bundleId ??= detectBundleId(deviceAppPath);
+    const deviceId = detectBundleId(deviceAppPath);
+    if (!bundleId) bundleId = deviceId;
+    else if (deviceId && deviceId !== bundleId) deviceBundleId = deviceId;
   }
 
   if (!bundleId) {
@@ -312,7 +317,7 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
     });
   }
 
-  return { appPath, bundleId, simulator, usePhysicalDevice, deviceAppPath };
+  return { appPath, bundleId, deviceBundleId, simulator, usePhysicalDevice, deviceAppPath };
 }
 
 function detectBundleId(appPath: string): string | undefined {
@@ -424,6 +429,7 @@ export function generateConfig(
   // device scope must not inherit either.
   const iosSim = ios?.appPath && ios.simulator ? { app: ios.appPath, simulator: ios.simulator } : undefined;
   const iosDeviceApp = ios?.usePhysicalDevice ? ios.deviceAppPath : undefined;
+  const iosDevicePkg = ios?.deviceBundleId ?? ios?.bundleId;
 
   const iosProjects = (out: string[], iosCfg: IosConfig): void => {
     if (iosSim) {
@@ -445,7 +451,7 @@ export function generateConfig(
       out.push('      workers: 1,');
       out.push('      use: {');
       out.push("        platform: 'ios',");
-      if (iosCfg.bundleId) out.push(`        package: '${esc(iosCfg.bundleId)}',`);
+      if (iosDevicePkg) out.push(`        package: '${esc(iosDevicePkg)}',`);
       out.push(`        app: '${esc(iosDeviceApp)}',`);
       out.push('      },');
       out.push('    },');
@@ -469,7 +475,8 @@ export function generateConfig(
       lines.push('  ],');
     } else {
       lines.push("  platform: 'ios',");
-      if (ios.bundleId) lines.push(`  package: '${esc(ios.bundleId)}',`);
+      const pkg = iosDeviceApp ? iosDevicePkg : ios.bundleId;
+      if (pkg) lines.push(`  package: '${esc(pkg)}',`);
       if (iosDeviceApp) {
         lines.push(`  app: '${esc(iosDeviceApp)}',`);
       } else if (ios.appPath) {
