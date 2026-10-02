@@ -156,10 +156,11 @@ export async function waitForPinnedDeviceAuthorization(
     const blocked = pinnedDeviceUnusableMessage(serial, devices, 'preflight');
     const usable = mine.some((d) => isUsableAndroidState(d.state));
     // `authorizing` is the step between: the prompt was just accepted. Once
-    // waiting, a pin briefly gone from adb is still pending — replugging the
-    // cable is how the prompt is brought back.
+    // waiting, a pin briefly gone from adb, or `offline` while its transport
+    // reconnects, is still pending — replugging the cable is how the prompt
+    // is brought back.
     const pending = !usable && (mine.some((d) => d.state === 'unauthorized' || d.state === 'authorizing')
-      || (noted && mine.length === 0));
+      || (noted && mine.every((d) => d.state === 'offline')));
     if (!pending) return blocked;
     if (now() >= deadline) {
       return mine.length === 0

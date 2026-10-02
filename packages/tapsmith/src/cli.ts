@@ -1335,7 +1335,9 @@ async function provisionDevicesForBucket(
       // refusal of an Android pin that is not connected) as the parallel path.
       const { pinnedWorkerDevices } = await import('./dispatcher.js');
       const isIos = effectiveConfig.platform === 'ios';
-      const pins = pinnedWorkerDevices(group, isIos ? [] : listConnectedDeviceSerials(), isIos, isIos ? [] : listAdbDevices())!;
+      // One adb snapshot for both lists, so a pin's state cannot change between them.
+      const adb = isIos ? [] : listAdbDevices();
+      const pins = pinnedWorkerDevices(group, adb.filter((d) => d.state === 'device').map((d) => d.serial), isIos, adb)!;
       return { serials: pins, launched: [], reusedSimulatorCount: 0 };
     }
     const pool = await provisionDevicesForBucket({ ...effectiveConfig, devices: undefined, device: undefined }, group.length, progress);

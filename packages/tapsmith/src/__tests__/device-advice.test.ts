@@ -247,6 +247,12 @@ describe('waitForPinnedDeviceAuthorization()', () => {
     expect(run.sleeps.length).toBe(4);
   });
 
+  it('keeps waiting while a replugged pin passes through offline', async () => {
+    const run = deps(sequence('unauthorized', 'offline', 'unauthorized', 'device'));
+    expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
+    expect(run.sleeps.length).toBe(3);
+  });
+
   it('does not wait when a usable device shares the pin\'s serial', async () => {
     const run = deps(() => [{ serial: 'R5C', state: 'unauthorized' }, { serial: 'R5C', state: 'device' }]);
     expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
