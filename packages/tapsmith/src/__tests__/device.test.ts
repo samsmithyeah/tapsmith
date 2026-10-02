@@ -563,7 +563,7 @@ describe('Device.currentActivity()', () => {
 
 describe('Device.setDevice()', () => {
   it('delegates directly to daemon setDevice', async () => {
-    const listDevices = vi.fn(async () => ({ requestId: '1', devices: [] }));
+    const listDevices = vi.fn(async () => ({ requestId: '1', devices: [], unusableDevices: [] }));
     const setDevice = vi.fn(async () => successResponse());
     const client = makeMockClient({ listDevices, setDevice });
     const device = new Device(client);

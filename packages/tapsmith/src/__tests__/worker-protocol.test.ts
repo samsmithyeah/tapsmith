@@ -9,6 +9,7 @@ import {
   deserializeRegExpArray,
   serializeConfig,
   configFromSerialized,
+  isRetryableDeviceSelectionError,
 } from '../worker-protocol.js';
 import type { TapsmithConfig } from '../config.js';
 import type { TestResult, SuiteResult } from '../runner.js';
@@ -269,5 +270,21 @@ describe('worker-protocol serialization', () => {
       // Children report their own runs, so the opt-out must survive the hop.
       expect(back.telemetry).toBe(false);
     });
+  });
+});
+
+describe('isRetryableDeviceSelectionError', () => {
+  it('retries the daemon refusing a device adb cannot use yet (an emulator flapping offline, a phone awaiting the prompt)', () => {
+    // The daemon's set_active wording (packages/tapsmith-core/src/device.rs).
+    for (const state of ['offline', 'authorizing', 'unauthorized']) {
+      expect(isRetryableDeviceSelectionError(new Error(
+        `Device emulator-5554 is attached but not usable: adb reports it "${state}". Run \`tapsmith list-devices\` to see how to fix it.`,
+      ))).toBe(true);
+    }
+  });
+
+  it('still retries "not found", and not an unrelated error', () => {
+    expect(isRetryableDeviceSelectionError(new Error('Device X not found. Run ListDevices first to refresh the device list.'))).toBe(true);
+    expect(isRetryableDeviceSelectionError(new Error('Invalid serial'))).toBe(false);
   });
 });
