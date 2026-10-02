@@ -180,6 +180,18 @@ describe('configureIos() (PILOT-251)', () => {
     expect(ios.deviceBundleId).toBeUndefined();
   });
 
+  it('both: asks for each build\'s id when neither can be read', async () => {
+    script('both', [
+      [/simulator build's bundle identifier/, 'com.example.app.dev'],
+      [/device build's bundle identifier/, ' com.example.app '],
+    ]);
+
+    const ios = await configureIos(env);
+
+    expect(ios.bundleId).toBe('com.example.app.dev');
+    expect(ios.deviceBundleId).toBe('com.example.app');
+  });
+
   it('simulators: never asks for a device build', async () => {
     bundleIds.set(SIM_APP, 'com.example.sim');
     script('simulators');

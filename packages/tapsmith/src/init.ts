@@ -202,7 +202,7 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
   const useSimulators = deviceType === 'simulators' || deviceType === 'both';
 
   let appPath: string | undefined;
-  let bundleId: string | undefined;
+  let simBundleId: string | undefined;
   if (useSimulators) {
     appPath = await ask<string>({
       type: 'input',
@@ -210,7 +210,7 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
       initial: './ios/build/Build/Products/Debug-iphonesimulator/MyApp.app',
       validate: (val: string) => val.trim().length > 0 || '.app path is required',
     });
-    bundleId = detectBundleId(appPath);
+    simBundleId = detectBundleId(appPath);
   }
 
   let simulator: string | undefined;
@@ -237,7 +237,7 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
 
   const usePhysicalDevice = deviceType === 'physical' || deviceType === 'both';
   let deviceAppPath: string | undefined;
-  let deviceBundleId: string | undefined;
+  let deviceBundleIdRead: string | undefined;
 
   if (usePhysicalDevice) {
     console.log(`\n  ${bold('Physical iOS device preflight')}`);
@@ -303,35 +303,34 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
         return true;
       },
     });
-    const deviceId = detectBundleId(deviceAppPath);
-    // Simulator and device builds can carry different ids (Debug vs
-    // Release), so the device id never stands in for the simulator's.
-    if (!useSimulators) bundleId = deviceId;
-    else if (deviceId && deviceId !== bundleId) deviceBundleId = deviceId;
-    else if (!deviceId && bundleId) {
-      // Device build not readable (often not built yet): confirm its id
-      // rather than assume it matches the simulator build's.
-      const typed = await ask<string>({
-        type: 'input',
-        message: 'What is your device build\'s bundle identifier?',
-        initial: bundleId,
-        validate: (val: string) => val.trim().length > 0 || 'Bundle ID is required',
-      });
-      if (typed !== bundleId) deviceBundleId = typed;
-    }
+    deviceBundleIdRead = detectBundleId(deviceAppPath);
   }
 
-  if (!bundleId) {
-    bundleId = await ask<string>({
-      type: 'input',
-      message: deviceBundleId
-        ? 'What is your simulator build\'s bundle identifier?'
-        : 'What is your app\'s bundle identifier?',
-      initial: deviceBundleId ?? 'com.example.myapp',
-      validate: (val: string) => val.trim().length > 0 || 'Bundle ID is required',
-    });
-    if (bundleId === deviceBundleId) deviceBundleId = undefined;
+  // Each build's id is read from its Info.plist, else asked for. Simulator
+  // and device builds can carry different ids (Debug vs Release), so one
+  // never silently stands in for the other; the unread one's prompt is only
+  // pre-filled with it.
+  const both = useSimulators && usePhysicalDevice;
+  const askBundleId = async (message: string, initial: string | undefined): Promise<string> => (await ask<string>({
+    type: 'input',
+    message,
+    initial: initial ?? 'com.example.myapp',
+    validate: (val: string) => val.trim().length > 0 || 'Bundle ID is required',
+  })).trim();
+  if (useSimulators && !simBundleId) {
+    simBundleId = await askBundleId(
+      both ? 'What is your simulator build\'s bundle identifier?' : 'What is your app\'s bundle identifier?',
+      deviceBundleIdRead,
+    );
   }
+  if (usePhysicalDevice && !deviceBundleIdRead) {
+    deviceBundleIdRead = await askBundleId(
+      both ? 'What is your device build\'s bundle identifier?' : 'What is your app\'s bundle identifier?',
+      simBundleId,
+    );
+  }
+  const bundleId = simBundleId ?? deviceBundleIdRead;
+  const deviceBundleId = both && deviceBundleIdRead !== simBundleId ? deviceBundleIdRead : undefined;
 
   return { appPath, bundleId, deviceBundleId, simulator, usePhysicalDevice, deviceAppPath };
 }
