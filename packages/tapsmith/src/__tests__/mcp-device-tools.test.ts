@@ -25,6 +25,7 @@ import { formatToolArgs } from '../ui-mode/components/tool-args.js';
 const hoisted = vi.hoisted(() => ({
   client: null as unknown as TapsmithGrpcClient,
   devices: [] as DeviceInfoProto[],
+  unusable: [] as DeviceInfoProto[],
   sessionSerials: null as Set<string> | null,
   requests: [] as Array<{ device?: string; project?: { name: string; platform?: string } }>,
 }));
@@ -35,7 +36,7 @@ vi.mock('../mcp/connection.js', async (importOriginal) => ({
     hoisted.requests.push(request ?? {});
     return { client: hoisted.client, device: request?.device };
   },
-  listAllDevices: async () => hoisted.devices,
+  listAllDevices: async () => ({ devices: hoisted.devices, unusable: hoisted.unusable }),
   getSessionDeviceSerials: () => hoisted.sessionSerials,
 }));
 
@@ -185,6 +186,7 @@ const SIGN_IN_XML = `
 beforeEach(() => {
   hoisted.client = makeDaemon().client;
   hoisted.devices = [];
+  hoisted.unusable = [];
   hoisted.sessionSerials = null;
   hoisted.requests = [];
 });
@@ -544,7 +546,44 @@ describe('tapsmith_list_devices', () => {
       os_version: '14',
       is_emulator: true,
       state: 'device',
+      usable: true,
     }]);
+  });
+
+  // PILOT-457: an agent asking why nothing runs saw an empty list while a
+  // phone sat there with its USB-debugging prompt unanswered.
+  it('reports attached but unusable devices with adb\'s state and the fix', async () => {
+    hoisted.devices = [deviceInfo()];
+    hoisted.unusable = [deviceInfo({ serial: 'R5CR1234XYZ', model: '', state: 'unauthorized', isEmulator: false, osVersion: '' })];
+    const listed = JSON.parse(text(await callTool('tapsmith_list_devices'))) as Array<Record<string, unknown>>;
+    expect(listed).toHaveLength(2);
+    expect(listed[0]).toMatchObject({ serial: 'emulator-5554', usable: true });
+    expect(listed[0]).not.toHaveProperty('fix');
+    expect(listed[1]).toEqual({
+      serial: 'R5CR1234XYZ',
+      model: '',
+      platform: 'android',
+      os_version: '',
+      is_emulator: false,
+      state: 'unauthorized',
+      usable: false,
+      fix: 'Accept the USB debugging prompt on the device',
+    });
+  });
+
+  it('gives no adb fix for a device the daemon only knows is Disconnected', async () => {
+    hoisted.unusable = [deviceInfo({ serial: 'GONE', state: 'Disconnected' })];
+    const listed = JSON.parse(text(await callTool('tapsmith_list_devices'))) as Array<Record<string, unknown>>;
+    expect(listed).toEqual([expect.objectContaining({ serial: 'GONE', usable: false })]);
+    expect(listed[0]).not.toHaveProperty('fix');
+  });
+
+  it('scopes unusable devices to the session like usable ones', async () => {
+    hoisted.devices = [deviceInfo({ serial: 'emulator-5556' })];
+    hoisted.unusable = [deviceInfo({ serial: 'R5CR1234XYZ', state: 'unauthorized' })];
+    hoisted.sessionSerials = new Set(['emulator-5556']);
+    const listed = JSON.parse(text(await callTool('tapsmith_list_devices'))) as Array<{ serial: string }>;
+    expect(listed.map((d) => d.serial)).toEqual(['emulator-5556']);
   });
 
   it('lists only the devices the session drives when it is scoped to some', async () => {

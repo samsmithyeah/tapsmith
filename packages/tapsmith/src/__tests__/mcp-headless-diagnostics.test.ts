@@ -22,6 +22,7 @@ import {
   isRepointing,
   takesClaimedDaemon,
   noDeviceMessage,
+  mergeDeviceLists,
   primaryDevice,
   configureMcpConnection,
   normalizeDaemonAddress,
@@ -1428,6 +1429,77 @@ describe('noDeviceMessage', () => {
     expect(noDeviceMessage('ios')).toContain('Boot a simulator');
     expect(noDeviceMessage('android')).toContain('Start an emulator');
     expect(noDeviceMessage()).toContain('Connect a device');
+  });
+
+  // PILOT-457: an attached phone whose USB-debugging prompt was never accepted
+  // is why nothing is available — say so, with doctor's advice.
+  it('names attached but unusable Android devices before the start-a-device advice', () => {
+    const unusable = [{ serial: 'R5CR1234XYZ', state: 'unauthorized', platform: 'android' }];
+    const msg = noDeviceMessage('android', undefined, [], [], 'config', unusable);
+    expect(msg).toBe(
+      'No android device is available. R5CR1234XYZ is attached, but adb reports it unauthorized. '
+      + 'Accept the USB debugging prompt on the device. Start an emulator (or connect a device) and try again.',
+    );
+  });
+
+  it('says a pinned device is attached but unusable, not missing', () => {
+    const unusable = [{ serial: 'R5CR1234XYZ', state: 'unauthorized', platform: 'android' }];
+    for (const source of ['config', 'run_tests'] as const) {
+      const msg = noDeviceMessage('android', 'R5CR1234XYZ', ['emulator-5554'], [], source, unusable);
+      expect(msg).toContain('Device R5CR1234XYZ is attached, but adb reports it unauthorized. Accept the USB debugging prompt on the device.');
+      expect(msg).not.toContain('not available');
+    }
+  });
+
+  it('still names an attached but unusable device when the pin itself is missing (a stale pin of that phone)', () => {
+    const unusable = [{ serial: 'R5CR1234XYZ', state: 'unauthorized', platform: 'android' }];
+    for (const source of ['config', 'run_tests'] as const) {
+      for (const visible of [[], ['emulator-5554']]) {
+        expect(noDeviceMessage('android', 'OLD-SERIAL', visible, [], source, unusable))
+          .toContain('R5CR1234XYZ is attached, but adb reports it unauthorized.');
+      }
+    }
+  });
+
+  it('gives the shared fix for an offline pin: no ADB restart happened here', () => {
+    const unusable = [{ serial: 'HVA9', state: 'offline', platform: 'android' }];
+    const msg = noDeviceMessage('android', 'HVA9', [], [], 'config', unusable);
+    expect(msg).toBe('Device HVA9 is attached, but adb reports it offline. Reconnect cable or run `adb kill-server`.');
+  });
+
+  it('does not call a visible pin unusable because an unusable device shares its serial', () => {
+    const unusable = [{ serial: '0123456789ABCDEF', state: 'unauthorized', platform: 'android' }];
+    const msg = noDeviceMessage('android', '0123456789ABCDEF', ['0123456789ABCDEF'], [], 'run_tests', unusable);
+    expect(msg).not.toContain('Device 0123456789ABCDEF is attached');
+  });
+
+  it('leaves the iOS wording alone', () => {
+    const unusable = [{ serial: 'R5CR1234XYZ', state: 'unauthorized', platform: 'android' }];
+    expect(noDeviceMessage('ios', undefined, [], [], 'config', unusable)).toBe(noDeviceMessage('ios'));
+  });
+});
+
+// tapsmith_list_devices merges every pooled daemon's lists (PILOT-457).
+describe('mergeDeviceLists', () => {
+  const dev = (serial: string, state: string) => ({ serial, state, model: '', platform: 'android', osVersion: '', isEmulator: false });
+
+  it('dedupes by serial, and a serial usable on any daemon is never listed unusable', () => {
+    const merged = mergeDeviceLists([
+      { devices: [dev('A', 'Discovered')], unusable: [dev('B', 'unauthorized')] },
+      { devices: [dev('B', 'Discovered'), dev('A', 'Active')], unusable: [dev('C', 'offline'), dev('C', 'offline')] },
+    ]);
+    expect(merged.devices.map((d) => d.serial)).toEqual(['A', 'B']);
+    expect(merged.unusable.map((d) => d.serial)).toEqual(['C']);
+  });
+
+  // The daemon keeps its active device as Disconnected once it turns
+  // unauthorized, and lists it under unusable too: the adb state must win.
+  it('never counts a Disconnected device as usable, preferring its adb state', () => {
+    const merged = mergeDeviceLists([
+      { devices: [dev('P', 'Disconnected'), dev('Q', 'Disconnected')], unusable: [dev('P', 'unauthorized')] },
+    ]);
+    expect(merged.devices).toEqual([]);
+    expect(merged.unusable.map((d) => [d.serial, d.state])).toEqual([['P', 'unauthorized'], ['Q', 'Disconnected']]);
   });
 });
 

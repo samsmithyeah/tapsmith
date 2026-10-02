@@ -17,7 +17,8 @@ import { findDaemonBin } from './daemon-bin.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { formatJson, jsonError, stripAnsi, type JsonCheck } from './cli-json.js';
 import { avdCaptureSupport, captureAvdFix, scanAvdImageTags, type AvdImageInfo } from './avd-images.js';
-import { androidUnusableDeviceFix, parseAdbDevicesOutput, parseSimctlDevicesJson, tryExec, type AdbDevice } from './env-scan.js';
+import { parseSimctlDevicesJson, tryExec } from './env-scan.js';
+import { androidUnusableDeviceFix, parseAdbDevicesOutput, type AdbDevice } from './adb-devices.js';
 import type { TapsmithConfig } from './config.js';
 import { emulatorNotFoundMessage, resolveEmulatorBinary, type EmulatorBinary } from './emulator.js';
 

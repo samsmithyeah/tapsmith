@@ -23,7 +23,7 @@ import { findDaemonBin } from './daemon-bin.js';
 import { TapsmithGrpcClient, type DeviceInfoProto } from './grpc-client.js';
 import { pickFreePort } from './port-utils.js';
 import { formatJson, jsonError } from './cli-json.js';
-import { androidUnusableDeviceFix } from './env-scan.js';
+import { androidUnusableDeviceFix } from './adb-devices.js';
 import {
   listPhysicalDevices,
   listUsbAttachedIosDevices,
