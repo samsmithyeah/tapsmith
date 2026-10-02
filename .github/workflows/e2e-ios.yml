@@ -472,6 +472,23 @@ jobs:
           done
           echo "Simulator state: $STATE"
 
+      # PILOT-462: the first tapsmith_snapshot of a headless MCP session must
+      # return the screen after the app's data was cleared and the simulator
+      # rebooted. A clearData that orphaned the app container used to leave
+      # the first launch after every boot without accessibility, so MCP's
+      # first device tool failed with XCUITest's "Interrupting test" while
+      # `tapsmith test` (which relaunches the app per test) never noticed.
+      # The script replays install → clear_data → reboot → reboot → first
+      # snapshot. One shard is enough; it runs before the tests so its two
+      # reboots don't land mid-shard.
+      - name: Verify first MCP snapshot after clearData and reboots
+        if: matrix.shard == 2
+        working-directory: e2e
+        timeout-minutes: 15
+        env:
+          TAPSMITH_DAEMON_LOG: /tmp/tapsmith-daemon-ios-${{ matrix.shard }}-mcp.log
+        run: node verify-mcp-first-snapshot.mjs -c tapsmith.config.ios-ci.mjs --udid "$TAPSMITH_IOS_UDID" --app ./fixtures/TapsmithTestApp.app
+
       - name: Run E2E tests
         working-directory: e2e
         env:
