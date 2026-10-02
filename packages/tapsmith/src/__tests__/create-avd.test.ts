@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { zipSync } from 'fflate';
 import {
+  avdmanagerEnv,
   cmdlineToolsPlatform,
   extractCmdlineTools,
   findSdkTool,
@@ -147,6 +148,29 @@ describe('systemImageDir()', () => {
   it('matches where sdkmanager unpacks the image', () => {
     expect(systemImageDir('/sdk', 36, 'arm64-v8a'))
       .toBe(path.join('/sdk', 'system-images', 'android-36', 'google_apis', 'arm64-v8a'));
+  });
+});
+
+describe('avdmanagerEnv()', () => {
+  const home = '/home/runner';
+
+  it('pins avdmanager to the AVD home the emulator and Tapsmith read', () => {
+    // GitHub's Ubuntu runners set XDG_CONFIG_HOME, and avdmanager then writes
+    // AVDs under ~/.config/.android/avd, where `emulator -list-avds` (and so
+    // Tapsmith's launch) never looks (PILOT-483).
+    const env = avdmanagerEnv({ PATH: '/usr/bin', XDG_CONFIG_HOME: `${home}/.config` }, home);
+    expect(env.ANDROID_AVD_HOME).toBe(path.join(home, '.android', 'avd'));
+    expect(env.PATH).toBe('/usr/bin');
+  });
+
+  it('follows the SDK variables that move the AVD home', () => {
+    expect(avdmanagerEnv({ ANDROID_USER_HOME: '/user' }, home).ANDROID_AVD_HOME).toBe(path.join('/user', 'avd'));
+    expect(avdmanagerEnv({ ANDROID_SDK_HOME: '/sdkhome' }, home).ANDROID_AVD_HOME)
+      .toBe(path.join('/sdkhome', '.android', 'avd'));
+  });
+
+  it("leaves a user's ANDROID_AVD_HOME alone", () => {
+    expect(avdmanagerEnv({ ANDROID_AVD_HOME: '/mine' }, home).ANDROID_AVD_HOME).toBe('/mine');
   });
 });
 

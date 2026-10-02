@@ -31,7 +31,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { unzipSync } from 'fflate';
 import Enquirer from 'enquirer';
-import { scanAvdImageTags } from './avd-images.js';
+import { avdHomeDir, scanAvdImageTags } from './avd-images.js';
 import { DEFAULT_API_LEVEL, DEFAULT_DEVICE_PROFILE, defaultAbi, defaultAvdName } from './avd-defaults.js';
 import type { CreateAvdCommandOptions } from './cli-program.js';
 
@@ -346,6 +346,19 @@ function toolEnv(): NodeJS.ProcessEnv {
   return process.env;
 }
 
+/**
+ * The environment `avdmanager create avd` runs in: `ANDROID_AVD_HOME` pinned
+ * to the AVD home the emulator reads and Tapsmith scans (`avdHomeDir`), unless
+ * the user set it. Without the pin, avdmanager can write the AVD somewhere
+ * the emulator never looks — on GitHub's Ubuntu runners (`XDG_CONFIG_HOME`
+ * set) it lands under `~/.config/.android/avd`, and `emulator -list-avds`,
+ * so Tapsmith's launch, cannot find the AVD just created (PILOT-483).
+ */
+export function avdmanagerEnv(env: NodeJS.ProcessEnv, homedir: string = os.homedir()): NodeJS.ProcessEnv {
+  if (env.ANDROID_AVD_HOME) return env;
+  return { ...env, ANDROID_AVD_HOME: avdHomeDir(env, homedir) };
+}
+
 // ─── Subprocess helpers ──────────────────────────────────────────────────
 
 /**
@@ -425,7 +438,7 @@ export async function createAvd(opts: CreateAvdOptions): Promise<void> {
   const avdmanager = findSdkTool('avdmanager');
   const args = ['create', 'avd', '-n', opts.name, '-k', image, '-d', opts.device];
   if (opts.force) args.push('--force');
-  await run(avdmanager, args, env, 'no\n');
+  await run(avdmanager, args, avdmanagerEnv(env), 'no\n');
 
   console.log();
   console.log(green(`✓ AVD ${opts.name} created`));

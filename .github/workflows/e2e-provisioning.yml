@@ -1,12 +1,13 @@
 name: E2E Provisioning
 
-# Tapsmith launching and booting its own devices (PILOT-483). Every job in
-# e2e-android.yml and e2e-ios.yml boots its emulator or simulator in the
+# Tapsmith launching and booting its own devices (PILOT-483). The sharded jobs
+# in e2e-android.yml and e2e-ios.yml boot their emulator or simulator in the
 # workflow first — which overlaps the boot with the installs and keeps a slow
-# runner's boot out of the test results — so Tapsmith only ever adopts a
-# device there. The path docs/ci-setup.md recommends, where Tapsmith launches
-# the emulator (`avd` + `launchEmulators`) or boots the simulator
-# (`simulator`), runs only here:
+# runner's boot out of the test results — so Tapsmith only adopts a device
+# there (Android Multi-device has Tapsmith launch its second member only).
+# Starting from nothing, the path docs/ci-setup.md recommends, where Tapsmith
+# launches the emulator (`avd` + `launchEmulators`) or boots the simulator
+# (`simulator`), runs here:
 #
 #   - Android: no emulator running; Tapsmith launches two -read-only instances
 #     of the AVD for two workers, then a rerun must reuse them.
@@ -644,7 +645,11 @@ jobs:
       # docs/api-reference.md: "non-interactive bootstrap (CI)".
       - name: Create the AVD with tapsmith create-avd
         working-directory: e2e
-        run: npx tapsmith create-avd --install-tools
+        run: |
+          npx tapsmith create-avd --install-tools
+          # Where it landed, for diagnosis: avdmanager and the emulator have
+          # disagreed about the AVD home on these runners (XDG_CONFIG_HOME).
+          ls -la ~/.android/avd ~/.config/.android/avd 2>&1 || true
 
       - name: Check nothing is running yet
         id: before

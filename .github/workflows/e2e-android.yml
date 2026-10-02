@@ -678,6 +678,7 @@ jobs:
       # The primary is pinned with --device; `bob` is not pinned, and no other
       # device is connected, so Tapsmith launches him from `avd`.
       - name: Run two-device E2E tests
+        id: two-device
         working-directory: e2e
         env:
           TAPSMITH_DAEMON_LOG: /tmp/tapsmith-daemon-android-multi.log
@@ -688,8 +689,10 @@ jobs:
 
       # Exactly one emulator in Tapsmith's manifest — bob, a live -read-only
       # launch of `avd` — and nothing running besides it and the primary.
+      # Only once the run started: an earlier failure (the primary's boot, an
+      # install) is not a provisioning result.
       - name: Check Tapsmith launched the second member
-        if: always()
+        if: always() && steps.two-device.outcome != 'skipped'
         working-directory: e2e
         run: |
           node verify-provisioning.mjs android-after \

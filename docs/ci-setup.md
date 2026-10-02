@@ -120,10 +120,11 @@ In CI, Tapsmith launches the emulator headless (no window, software GPU, cold bo
 can reuse it; a hosted runner discards it with the job.
 
 Booting in the workflow (as above with `android-emulator-runner`) overlaps the boot with your other
-setup steps, so it is usually a little faster. Tapsmith's own CI runs both setups on every relevant
-change: its main suites boot the emulator in the workflow, and a separate job starts with nothing
-running and checks that Tapsmith launched the emulators the tests ran on and left none it does not
-track, including a weekly run from a bare runner through `tapsmith create-avd --install-tools`.
+setup steps, so it is usually a little faster. Tapsmith's own CI covers both setups: its main suites
+boot the emulator in the workflow, and a separate job — run weekly and on changes to Tapsmith's
+emulator-provisioning code — starts with nothing running and checks that Tapsmith launched the
+emulators the tests ran on and left none it does not track. A weekly variant starts from a bare runner
+through `tapsmith create-avd --install-tools`.
 
 ## GitHub Actions (iOS)
 
@@ -186,7 +187,7 @@ jobs:
 ### Key Points
 
 - **macOS runner** is required for iOS simulators. GitHub provides `macos-latest` with Xcode pre-installed.
-- Tapsmith boots and manages simulators automatically -- no manual `xcrun simctl` setup needed. Tapsmith's own CI checks this on every relevant change: it starts with no simulator booted and verifies that Tapsmith booted the configured one.
+- Tapsmith boots and manages simulators automatically -- no manual `xcrun simctl` setup needed. Tapsmith's own CI checks this weekly and on changes to its simulator-provisioning code: it starts with no simulator booted and verifies that Tapsmith booted the configured one.
 - With `workers` above 1, Tapsmith clones the simulator for each extra worker. The standard 3-core GitHub-hosted macOS runner cannot run two simulators at usable speed (app installs and XCUITest launches time out), so keep `workers: 1` there or use a larger runner. Tapsmith's CI does not cover multiple simulators on hosted runners for this reason.
 - Build your app for the iOS Simulator target (not a physical device) using `build-for-testing` or your existing build pipeline.
 
