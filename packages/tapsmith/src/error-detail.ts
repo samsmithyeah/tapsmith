@@ -67,3 +67,14 @@ export function labelledMessage(label: string, message: string): string {
   const [first, ...rest] = message.split('\n');
   return withDetail(`${label}${first}`, rest);
 }
+
+/**
+ * A message's headline and the rest, for a printer that styles them
+ * differently. The detail keeps its indentation; only blank lines at its
+ * ends go (a whole-string `trim()` would also strip the first line's
+ * indent, leaving it flush-left above its indented siblings).
+ */
+export function splitHeadline(message: string): { headline: string; detail: string } {
+  const [headline, ...rest] = message.split('\n');
+  return { headline, detail: trimBlankEnds(rest).join('\n').trimEnd() };
+}

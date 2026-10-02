@@ -63,7 +63,9 @@ describe('awaitDaemonStart()', () => {
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
     expect(outcome.spawnFailed).toBe(true);
-    expect(outcome.cause).toMatch(/^could not run .*tapsmith-core: spawn .* ENOENT$/);
+    expect(outcome.cause).toMatch(/^could not run tapsmith-core: spawn .*tapsmith-core ENOENT$/);
+    // The path once: spawn's own message already names it.
+    expect(outcome.cause.split(path.join(tmpDir, 'missing')).length).toBe(2);
     capture.dispose();
   });
 

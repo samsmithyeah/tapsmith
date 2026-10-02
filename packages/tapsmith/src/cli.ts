@@ -61,6 +61,7 @@ import { isRecoverableInfrastructureError, serializeConfig } from './worker-prot
 import { findPidsOnPort, freeStaleAgentPort, pickFreePort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure } from './daemon-start.js';
+import { splitHeadline } from './error-detail.js';
 import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage, pinnedDeviceUnusableMessage, waitForPinnedDeviceAuthorization } from './device-advice.js';
 import {
   createUiLaunchSteps,
@@ -2874,9 +2875,8 @@ main().catch(async (err) => {
 
   const message = err instanceof Error ? err.message : String(err);
   if (isLaunchFailure) {
-    const [summary, ...detailLines] = message.split('\n');
+    const { headline: summary, detail: details } = splitHeadline(message);
     console.error(red(`Test run failed to start: ${summary}`));
-    const details = detailLines.join('\n').trim();
     if (details) console.error(dim(details));
     if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) {
       console.error((err as Error)?.stack ?? err);

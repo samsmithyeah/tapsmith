@@ -141,11 +141,9 @@ export async function awaitDaemonStart(
       spawnFailed: false,
     });
   };
-  // `spawnfile` is the binary as given to spawn; a spawn error's message
-  // names it too, but not every one does.
+  // A spawn error's message ("spawn <path> ENOENT") already names the binary.
   const onError = (err: Error): void => {
-    const bin = (child as ChildProcess & { spawnfile?: string }).spawnfile ?? 'tapsmith-core';
-    end({ ok: false, cause: `could not run ${bin}: ${err.message}`, spawnFailed: child.pid === undefined });
+    end({ ok: false, cause: `could not run tapsmith-core: ${err.message}`, spawnFailed: child.pid === undefined });
   };
   // Left attached: a later 'error' (a failed kill) must not crash the process.
   child.on('error', onError);

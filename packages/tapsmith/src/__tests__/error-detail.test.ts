@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { boundDetailLines, labelledMessage, withDetail } from '../error-detail.js';
+import { boundDetailLines, labelledMessage, splitHeadline, withDetail } from '../error-detail.js';
 
 // How a start error keeps its detail: a one-line headline, then the rest
 // bounded and indented under it (PILOT-463, PILOT-464).
@@ -65,5 +65,18 @@ describe('boundDetailLines()', () => {
     const [line] = boundDetailLines(['x'.repeat(5000)]);
     expect(line.length).toBeLessThanOrEqual(1001);
     expect(line.endsWith('…')).toBe(true);
+  });
+});
+
+describe('splitHeadline()', () => {
+  it('keeps the detail\'s own indentation, dropping only blank edge lines', () => {
+    expect(splitHeadline('Failed to start: exited\n  Recent daemon output:\n    Error: x\n')).toEqual({
+      headline: 'Failed to start: exited',
+      detail: '  Recent daemon output:\n    Error: x',
+    });
+  });
+
+  it('has no detail for a one-line message', () => {
+    expect(splitHeadline('boom')).toEqual({ headline: 'boom', detail: '' });
   });
 });
