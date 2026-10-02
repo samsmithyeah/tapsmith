@@ -491,6 +491,16 @@ export default defineConfig({
 });
 ```
 
+A daemon shuts down, stopping the device agents it started, when the process
+that launched it exits. That keeps a killed test run from leaving a daemon and
+its agents behind. If you start `tapsmith-core` yourself and want it to keep
+running after the shell or CI step that started it ends, pass
+`--outlive-parent` (and stop it with `kill` when you are done):
+
+```bash
+nohup tapsmith-core --port 50051 --outlive-parent &
+```
+
 ### Custom Agent APK Paths
 
 If you build the Tapsmith agent artifacts outside the default location, point Tapsmith

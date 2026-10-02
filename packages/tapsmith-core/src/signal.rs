@@ -37,6 +37,23 @@ pub fn parent_pid() -> u32 {
     unsafe { libc::getppid() as u32 }
 }
 
+/// The parent to watch for exit, or `None`: never with `--outlive-parent`,
+/// and not when the parent is already gone (ppid 1 — it died within the
+/// daemon's first moments, so there is nothing left to compare against).
+pub fn parent_to_watch(outlive_parent: bool, ppid: u32) -> Option<u32> {
+    (!outlive_parent && ppid > 1).then_some(ppid)
+}
+
+/// True when SIGHUP is ignored (as `nohup` sets it).
+pub fn sighup_ignored() -> bool {
+    // SAFETY: querying (not changing) the disposition: `act` is null.
+    unsafe {
+        let mut old: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(libc::SIGHUP, std::ptr::null(), &mut old) == 0
+            && old.sa_sigaction == libc::SIG_IGN
+    }
+}
+
 /// How often the daemon checks whether its parent is still there.
 const PARENT_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -60,6 +77,23 @@ pub async fn wait_for_parent_exit(original: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outlive_parent_disables_the_parent_watch() {
+        assert_eq!(parent_to_watch(false, 4242), Some(4242));
+        assert_eq!(parent_to_watch(true, 4242), None);
+        assert_eq!(parent_to_watch(false, 1), None);
+    }
+
+    #[test]
+    fn a_sighup_set_to_ignore_is_seen_as_ignored() {
+        // SAFETY: test-only toggling of this process's SIGHUP disposition.
+        let before = unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) };
+        assert!(sighup_ignored());
+        unsafe { libc::signal(libc::SIGHUP, libc::SIG_DFL) };
+        assert!(!sighup_ignored());
+        unsafe { libc::signal(libc::SIGHUP, before) };
+    }
 
     #[test]
     fn a_reparented_daemon_knows_its_parent_exited() {

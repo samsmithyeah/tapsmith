@@ -103,6 +103,10 @@ async fn start_agent_impl(
     is_physical: bool,
 ) -> Result<Option<IproxyHandle>> {
     let boot_start = std::time::Instant::now();
+    // Agents orphaned by a SIGKILLed daemon are stopped before we look for a
+    // running one, so we never adopt an agent the reaper is about to kill.
+    #[cfg(target_os = "macos")]
+    super::agent_registry::reap_orphans().await;
     // Check if agent is already running by trying to connect
     if !force && ping_agent(agent_port).await.is_ok() {
         info!("iOS agent is already running");
@@ -197,7 +201,7 @@ async fn start_agent_impl(
     loop {
         if tokio::time::Instant::now() > deadline {
             // Kill xcodebuild explicitly so it doesn't outlive this function.
-            let _ = child.child_mut().kill().await;
+            let _ = child.kill().await;
             // Drop the iproxy handle (if any) so the host port is freed before
             // returning. `drop(iproxy_handle)` is explicit rather than letting
             // scope-drop do it so reviewers can see the cleanup point.
@@ -233,7 +237,7 @@ async fn start_agent_impl(
                     remaining_secs = remaining.as_secs(),
                     "XCUITest runner timed out launching the target app; killing xcodebuild and relaunching"
                 );
-                let _ = child.child_mut().kill().await;
+                let _ = child.kill().await;
                 kill_existing_agents_on(udid).await;
                 if !target_bundle_id.is_empty() {
                     let _ = super::device::terminate_app(udid, target_bundle_id).await;
@@ -251,7 +255,7 @@ async fn start_agent_impl(
 
         // If xcodebuild exited, the agent won't come up on this launch.
         // try_wait is non-blocking and reaps the process if it has exited.
-        match child.child_mut().try_wait() {
+        match child.try_wait() {
             Ok(Some(status)) => {
                 let out_lines = stdout_tail.lock().unwrap().join("\n");
                 let err_lines = stderr_tail.lock().unwrap().join("\n");
@@ -313,7 +317,7 @@ async fn start_agent_impl(
                 // The tracked handle stays registered until then, so a daemon
                 // shutdown stops this agent (PILOT-299).
                 tokio::spawn(async move {
-                    let _ = child.child_mut().wait().await;
+                    let _ = child.wait().await;
                 });
                 return Ok(iproxy_handle);
             }

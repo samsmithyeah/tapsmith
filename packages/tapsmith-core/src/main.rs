@@ -60,7 +60,10 @@ struct CliArgs {
 }
 
 fn parse_args() -> CliArgs {
-    let mut args = std::env::args().skip(1);
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(mut args: impl Iterator<Item = String>) -> CliArgs {
     let mut port: u16 = 50051;
     let mut platform: Option<Platform> = None;
     let mut agent_port: Option<u16> = None;
@@ -225,11 +228,10 @@ async fn main() -> Result<()> {
 
     info!(%addr, "Starting Tapsmith gRPC server");
 
-    // A parent that is already gone (ppid 1) cannot be watched; that only
-    // happens if it died within the daemon's first moments.
-    let parent_to_watch = (!args.outlive_parent)
-        .then(signal::parent_pid)
-        .filter(|&ppid| ppid > 1);
+    let parent_to_watch = signal::parent_to_watch(args.outlive_parent, signal::parent_pid());
+    // Checked before tokio installs its own handler, which would replace a
+    // SIG_IGN inherited from `nohup`.
+    let watch_sighup = !signal::sighup_ignored();
 
     Server::builder()
         .http2_keepalive_interval(Some(Duration::from_secs(30)))
@@ -244,7 +246,7 @@ async fn main() -> Result<()> {
                 .max_encoding_message_size(64 * 1024 * 1024),
         )
         .serve_with_shutdown(addr, async move {
-            shutdown_signal(parent_to_watch).await;
+            shutdown_signal(parent_to_watch, watch_sighup).await;
             // Stop the iOS agents first, before the gRPC drain: a long-lived
             // stream can hold the drain open, and the agents must not outlive
             // the daemon either way (PILOT-299).
@@ -266,11 +268,21 @@ async fn main() -> Result<()> {
 /// the process that spawned it exiting, which is how a client that was
 /// SIGKILLed (and so never sent SIGTERM) still gets its daemon and agents
 /// stopped.
-async fn shutdown_signal(parent: Option<u32>) {
+async fn shutdown_signal(parent: Option<u32>, watch_sighup: bool) {
     use tokio::signal::unix::{signal, SignalKind};
     let ctrl_c = tokio::signal::ctrl_c();
     let mut sigterm = signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
-    let mut sighup = signal(SignalKind::hangup()).expect("Failed to install SIGHUP handler");
+    // Not installed under `nohup`: that asked for the hangup to be ignored.
+    let mut sighup = watch_sighup
+        .then(|| signal(SignalKind::hangup()).expect("Failed to install SIGHUP handler"));
+    let hangup = async {
+        match sighup.as_mut() {
+            Some(s) => {
+                s.recv().await;
+            }
+            None => std::future::pending().await,
+        }
+    };
     let parent_gone = async {
         match parent {
             Some(ppid) => crate::signal::wait_for_parent_exit(ppid).await,
@@ -281,7 +293,25 @@ async fn shutdown_signal(parent: Option<u32>) {
     tokio::select! {
         _ = ctrl_c => { info!("Received Ctrl+C, shutting down"); }
         _ = sigterm.recv() => { info!("Received SIGTERM, shutting down"); }
-        _ = sighup.recv() => { info!("Received SIGHUP, shutting down"); }
+        _ = hangup => { info!("Received SIGHUP, shutting down"); }
         _ = parent_gone => { info!("The process that started this daemon exited, shutting down"); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> CliArgs {
+        parse_args_from(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn the_daemon_watches_its_parent_unless_told_to_outlive_it() {
+        assert!(!parse(&["--port", "50051"]).outlive_parent);
+        let args = parse(&["--port", "50051", "--outlive-parent", "--platform", "ios"]);
+        assert!(args.outlive_parent);
+        assert_eq!(args.port, 50051);
+        assert_eq!(args.platform, Some(Platform::Ios));
     }
 }

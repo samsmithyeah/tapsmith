@@ -30,7 +30,7 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// How long an agent gets to exit after SIGTERM before it is SIGKILLed.
 /// xcodebuild exits in ~250 ms on SIGTERM (and its in-simulator runner with
@@ -38,8 +38,9 @@ use tracing::{debug, info, warn};
 /// whole teardown has to fit well inside that.
 const TERM_GRACE: Duration = Duration::from_secs(2);
 
-/// Bound on the `simctl terminate` belt-and-braces step for each simulator.
-const RUNNER_TERMINATE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Bound on the `simctl terminate` belt-and-braces step (all simulators run
+/// in parallel), so grace + this stays well inside the UI server's 5 s.
+const RUNNER_TERMINATE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Bundle id of the XCUITest runner app inside the simulator.
 const RUNNER_BUNDLE_ID: &str = "dev.tapsmith.agent.xctrunner";
@@ -130,7 +131,7 @@ impl TrackedAgent {
     /// Refuses — killing the child — once the daemon is shutting down, so a
     /// startup loop cannot relaunch an agent the teardown just stopped.
     pub(crate) async fn track(
-        mut child: Child,
+        child: Child,
         udid: &str,
         is_physical: bool,
         registry: &'static Registry,
@@ -145,33 +146,54 @@ impl TrackedAgent {
                 },
             );
         }
+        // The guard exists before the first await, so a caller cancelled
+        // mid-track (a dropped RPC future) still deregisters and, through
+        // `kill_on_drop`, stops the child.
+        let mut agent = Self {
+            child,
+            pid,
+            registry,
+        };
         // Checked after inserting, so a concurrent `shutdown_all` either sees
         // the entry or we see its flag: an agent can never slip between them.
         if registry.shutting_down.load(Ordering::SeqCst) {
-            let _ = child.kill().await;
-            if let Some(pid) = pid {
-                registry.remove(pid);
-            }
+            let _ = agent.kill().await;
             bail!("the daemon is shutting down; not starting an iOS agent");
         }
         if let (Some(pid), Some(path)) = (pid, pid.and_then(|p| registry.record_path(p))) {
             write_record(&path, pid, udid, is_physical).await;
         }
-        Ok(Self {
-            child,
-            pid,
-            registry,
-        })
+        Ok(agent)
     }
 
-    pub(crate) fn child_mut(&mut self) -> &mut Child {
-        &mut self.child
+    /// `Child::try_wait`, deregistering the agent as soon as it is reaped:
+    /// from then on its pid is free for reuse and must never be signalled.
+    pub(crate) fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let status = self.child.try_wait();
+        if let Ok(Some(_)) = status {
+            self.release();
+        }
+        status
     }
-}
 
-impl Drop for TrackedAgent {
-    fn drop(&mut self) {
-        if let Some(pid) = self.pid {
+    /// `Child::kill` (which also reaps), then deregister.
+    pub(crate) async fn kill(&mut self) -> std::io::Result<()> {
+        let result = self.child.kill().await;
+        self.release();
+        result
+    }
+
+    /// `Child::wait`, then deregister.
+    pub(crate) async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let status = self.child.wait().await;
+        if status.is_ok() {
+            self.release();
+        }
+        status
+    }
+
+    fn release(&mut self) {
+        if let Some(pid) = self.pid.take() {
             self.registry.remove(pid);
             if let Some(path) = self.registry.record_path(pid) {
                 // Synchronous on purpose: Drop cannot await, and this is one
@@ -179,6 +201,12 @@ impl Drop for TrackedAgent {
                 let _ = std::fs::remove_file(path);
             }
         }
+    }
+}
+
+impl Drop for TrackedAgent {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 
@@ -198,7 +226,7 @@ pub async fn shutdown_all() {
 async fn shutdown_registry<F, Fut>(registry: &Registry, grace: Duration, terminate_runner: F)
 where
     F: Fn(String) -> Fut,
-    Fut: std::future::Future<Output = ()>,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     registry.shutting_down.store(true, Ordering::SeqCst);
     let agents = registry.snapshot();
@@ -230,10 +258,11 @@ where
         .collect();
     sims.sort();
     sims.dedup();
-    let terminations: Vec<_> = sims.into_iter().map(&terminate_runner).collect();
-    for t in terminations {
-        t.await;
+    let mut terminations = tokio::task::JoinSet::new();
+    for udid in sims {
+        terminations.spawn(terminate_runner(udid));
     }
+    while terminations.join_next().await.is_some() {}
 }
 
 fn signal(pid: u32, sig: libc::c_int) {
@@ -295,12 +324,15 @@ async fn write_record(path: &Path, pid: u32, udid: &str, is_physical: bool) {
     }
 }
 
+/// This daemon's start time. Only a successful read is cached, so one slow
+/// `ps` under load does not leave every later record unprovable.
 async fn own_start_time() -> Option<String> {
-    static STARTED: tokio::sync::OnceCell<Option<String>> = tokio::sync::OnceCell::const_new();
+    static STARTED: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
     STARTED
-        .get_or_init(|| process_started(std::process::id()))
+        .get_or_try_init(|| async { process_started(std::process::id()).await.ok_or(()) })
         .await
-        .clone()
+        .ok()
+        .cloned()
 }
 
 /// A process's start time from `ps -o lstart=`, in a fixed zone and locale
@@ -322,6 +354,7 @@ async fn process_started(pid: u32) -> Option<String> {
 
 // ─── Startup reaper ───
 
+#[cfg(any(target_os = "macos", test))]
 /// What a host process looks like now, for a record's pid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Probe {
@@ -334,6 +367,7 @@ pub(crate) enum Probe {
     },
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Verdict {
     /// The daemon that wrote the record is alive: it owns the agent.
@@ -344,16 +378,17 @@ pub(crate) enum Verdict {
     Discard,
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// Decide what to do with one owner record. Pure, so every branch is tested.
 pub(crate) fn judge(record: &OwnerRecord, daemon: &Probe, agent: &Probe) -> Verdict {
     let daemon_alive = match daemon {
         Probe::Gone => false,
-        // A live daemon is proven by its start time. If `ps` could not read
-        // it, assume the daemon is ours to leave alone rather than kill a
-        // live session's agent.
-        Probe::Running { started, .. } => match (&record.daemon_started, started) {
+        // A live daemon is proven by its start time. Without one on either
+        // side, fall back to the process name, and if that is unreadable too
+        // assume the daemon is alive rather than kill a live session's agent.
+        Probe::Running { started, comm } => match (&record.daemon_started, started) {
             (Some(want), Some(have)) => want == have,
-            _ => true,
+            _ => comm.as_deref().is_none_or(|c| c.contains("tapsmith")),
         },
     };
     if daemon_alive {
@@ -376,6 +411,7 @@ pub(crate) fn judge(record: &OwnerRecord, daemon: &Probe, agent: &Probe) -> Verd
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// Host operations the reaper needs, injectable for tests.
 #[async_trait::async_trait]
 pub(crate) trait ReapHost: Send + Sync {
@@ -384,8 +420,10 @@ pub(crate) trait ReapHost: Send + Sync {
     async fn stop(&self, record: &OwnerRecord);
 }
 
+#[cfg(any(target_os = "macos", test))]
 struct RealHost;
 
+#[cfg(any(target_os = "macos", test))]
 #[async_trait::async_trait]
 impl ReapHost for RealHost {
     async fn probe(&self, pid: u32) -> Probe {
@@ -435,15 +473,25 @@ impl ReapHost for RealHost {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// Stop agents left behind by a daemon that was killed without running its
-/// teardown. Called once at daemon startup; a no-op without owner records.
+/// teardown. A no-op without owner records.
+///
+/// Runs once per daemon: started in the background at startup, and awaited
+/// by every agent start, so the reaper can never kill an orphan that a new
+/// session has just adopted through the "agent already answers" fast path.
 pub async fn reap_orphans() {
-    let Some(dir) = records_dir() else {
-        return;
-    };
-    reap_in(&dir, &RealHost).await;
+    static REAPED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+    REAPED
+        .get_or_init(|| async {
+            if let Some(dir) = records_dir() {
+                reap_in(&dir, &RealHost).await;
+            }
+        })
+        .await;
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) async fn reap_in(dir: &Path, host: &dyn ReapHost) {
     let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
         return;
@@ -458,7 +506,7 @@ pub(crate) async fn reap_in(dir: &Path, host: &dyn ReapHost) {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok());
         let Some(record) = record else {
-            debug!(path = %path.display(), "Discarding unreadable iOS agent owner record");
+            tracing::debug!(path = %path.display(), "Discarding unreadable iOS agent owner record");
             let _ = tokio::fs::remove_file(&path).await;
             continue;
         };
@@ -504,7 +552,7 @@ mod tests {
     /// on success.
     fn hand_to_reaper(mut agent: TrackedAgent) {
         tokio::spawn(async move {
-            let _ = agent.child_mut().wait().await;
+            let _ = agent.wait().await;
         });
     }
 
@@ -529,7 +577,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(registry.len(), 1);
-        agent.child_mut().wait().await.unwrap();
+        // Polled the way the startup loop does: deregistered the moment it
+        // is reaped, while the guard is still held.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while agent.try_wait().unwrap().is_none() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(registry.len(), 0);
         drop(agent);
         assert_eq!(registry.len(), 0);
     }
@@ -643,6 +697,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_track_cancelled_mid_way_leaves_nothing_registered() {
+        // With a records dir, track awaits `ps` for the owner record.
+        let dir = tempfile::tempdir().unwrap();
+        let registry = leaked(Some(dir.path().to_path_buf()));
+        let child = spawn("sleep 60");
+        let pid = child.id().unwrap();
+        // Drop the track future at that await, as a cancelled RPC would.
+        let fut = TrackedAgent::track(child, "SIM-A", false, registry);
+        let outcome = tokio::time::timeout(Duration::from_nanos(1), fut).await;
+        assert!(outcome.is_err(), "track must still have been pending");
+        assert_eq!(registry.len(), 0);
+        assert!(!dir.path().join(format!("{pid}.json")).exists());
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while alive(pid) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!alive(pid), "kill_on_drop stops the child");
+    }
+
+    #[tokio::test]
     async fn owner_record_lives_exactly_as_long_as_the_agent() {
         let dir = tempfile::tempdir().unwrap();
         let registry = leaked(Some(dir.path().to_path_buf()));
@@ -662,9 +736,10 @@ mod tests {
             record.daemon_started.is_some(),
             "daemon start time recorded"
         );
-        agent.child_mut().kill().await.unwrap();
-        drop(agent);
+        agent.kill().await.unwrap();
         assert!(!path.exists(), "record removed once the agent is reaped");
+        assert_eq!(registry.len(), 0);
+        drop(agent);
     }
 
     #[tokio::test]
@@ -676,7 +751,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(registry.len(), 1);
-        agent.child_mut().kill().await.unwrap();
+        agent.kill().await.unwrap();
     }
 
     // ─── judge ───
@@ -721,6 +796,21 @@ mod tests {
         };
         let v = judge(&record(), &daemon, &running(AGENT_START, XCODEBUILD));
         assert_eq!(v, Verdict::Keep);
+    }
+
+    #[test]
+    fn without_a_daemon_start_time_the_process_name_decides() {
+        let mut r = record();
+        r.daemon_started = None;
+        let agent = running(AGENT_START, XCODEBUILD);
+        let tapsmith = running(DAEMON_START, "/usr/local/bin/tapsmith-core");
+        assert_eq!(judge(&r, &tapsmith, &agent), Verdict::Keep);
+        // The daemon pid now belongs to something else: the orphan is reaped.
+        let other = running(
+            DAEMON_START,
+            "/Applications/Safari.app/Contents/MacOS/Safari",
+        );
+        assert_eq!(judge(&r, &other, &agent), Verdict::Reap);
     }
 
     #[test]
