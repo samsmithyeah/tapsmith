@@ -417,12 +417,11 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # No ANDROID_AVD_HOME (the other Android jobs set one): create-avd has
+      # to put the AVD where the emulator looks without it.
       - name: Set up Android SDK environment
         run: |
-          echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "ANDROID_AVD_HOME=$HOME/.config/.android/avd" >> $GITHUB_ENV
           # ANDROID_HOME is a runner-machine variable, invisible to the `env`
           # expression context the system-image cache path below uses.
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
@@ -478,21 +477,7 @@ jobs:
 
       - name: Install Android system image
         if: steps.system-image-cache.outputs.cache-hit != 'true'
-        run: echo "y" | sdkmanager --install "${{ env.ANDROID_SYSTEM_IMAGE }}"
-
-      # Not preinstalled on the runner image; see e2e-android.yml.
-      - name: Install Android emulator package
-        run: echo "y" | sdkmanager --install emulator
-
-      # The AVD exists, as on a machine that has run Tapsmith before; nothing
-      # boots it. Launching is Tapsmith's job from here.
-      - name: Create AVD
-        run: |
-          echo "no" | avdmanager create avd \
-            -n "${{ env.AVD_NAME }}" \
-            -k "${{ env.ANDROID_SYSTEM_IMAGE }}" \
-            --device "pixel_6" \
-            --force
+        run: echo "y" | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "${{ env.ANDROID_SYSTEM_IMAGE }}"
 
       - name: Install SDK dependencies
         working-directory: packages/tapsmith
@@ -506,6 +491,16 @@ jobs:
       - name: Install E2E dependencies
         working-directory: e2e
         run: npm ci
+
+      # With a cached system image and no emulator package (not preinstalled
+      # on the runner image), create-avd has to install the emulator itself,
+      # and pin the AVD home avdmanager writes to; the bare-state job covers
+      # the uncached path. Nothing boots the AVD: launching is Tapsmith's job.
+      - name: Create the AVD with tapsmith create-avd
+        working-directory: e2e
+        run: |
+          npx tapsmith create-avd --install-tools --device pixel_6
+          ls -la ~/.android/avd ~/.config/.android/avd 2>&1 || true
 
       - name: Check nothing is running yet
         id: before
