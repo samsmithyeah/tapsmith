@@ -1,0 +1,200 @@
+/**
+ * Starting a `tapsmith-core` daemon and, when that fails, saying why.
+ *
+ * A daemon that does not start used to be reported as "Is tapsmith-core
+ * installed?" whatever had happened: the daemon's output went nowhere, so a
+ * port already in use, a binary macOS refused or a bad argument all looked
+ * like a missing install. This module keeps the daemon's own words and the
+ * way it ended (PILOT-463), and shapes them with error-detail.ts so they
+ * survive every layer that reports a start failure (PILOT-464).
+ */
+
+import type { ChildProcess, StdioOptions } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { withDetail } from './error-detail.js';
+import { readDaemonLogSince } from './mcp/daemon-log.js';
+
+// ─── Capturing the daemon's output ───
+
+export interface DaemonOutputCapture {
+  /** Hand to `spawn`. */
+  stdio: StdioOptions
+  /** Close this process's copies of the descriptors once the daemon is spawned. */
+  closeParentFds(): void
+  /** What the daemon has written since it was spawned: its last lines, bounded. */
+  recentOutput(): string
+  /** The user's log file (`TAPSMITH_DAEMON_LOG`), when there is one to point at. */
+  logPath: string | undefined
+  /** Remove a temporary capture; a user's log file is never touched. */
+  dispose(): void
+}
+
+/**
+ * Where a daemon's output goes while it starts.
+ *
+ * With `logPath` (`TAPSMITH_DAEMON_LOG`) both streams are appended to it, as
+ * before, and a failure quotes what this daemon added. Without it, stderr
+ * alone goes to a private temporary file. That is where the daemon's start
+ * failures go — main's `Error: …`, argument errors, panics — while its
+ * tracing goes to stdout, which stays discarded. Not a pipe: the daemon, and
+ * every process it starts with inherited stdio, would get EPIPE once nothing
+ * reads the pipe, and an unread pipe that fills blocks them outright.
+ *
+ * The temporary file is removed by `dispose()` once the start is judged. A
+ * daemon that started keeps its descriptor to the unlinked file, which costs
+ * only what it writes to stderr — nothing, normally.
+ */
+export function captureDaemonOutput(
+  logPath: string | undefined,
+  warn: (message: string) => void,
+): DaemonOutputCapture {
+  if (logPath) {
+    try {
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      const fd = fs.openSync(logPath, 'a');
+      const startOffset = fs.fstatSync(fd).size;
+      return {
+        stdio: ['ignore', fd, fd],
+        closeParentFds: () => closeQuietly(fd),
+        recentOutput: () => readDaemonLogSince({ path: logPath, startOffset }),
+        logPath,
+        dispose: () => {},
+      };
+    } catch (err) {
+      warn(`Could not open daemon log ${logPath}; only the daemon's errors will be kept: ${messageOf(err)}`);
+    }
+  }
+  let dir: string | undefined;
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-daemon-'));
+    const file = path.join(dir, 'stderr.log');
+    const fd = fs.openSync(file, 'a', 0o600);
+    let disposed = false;
+    return {
+      stdio: ['ignore', 'ignore', fd],
+      closeParentFds: () => closeQuietly(fd),
+      recentOutput: () => (disposed ? '' : readDaemonLogSince({ path: file, startOffset: 0 })),
+      logPath: undefined,
+      dispose: () => {
+        disposed = true;
+        fs.rmSync(dir!, { recursive: true, force: true });
+      },
+    };
+  } catch {
+    // No temp dir to be had: start the daemon anyway, as before, unheard.
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    return { stdio: 'ignore', closeParentFds: () => {}, recentOutput: () => '', logPath: undefined, dispose: () => {} };
+  }
+}
+
+function closeQuietly(fd: number): void {
+  try { fs.closeSync(fd); } catch { /* already closed */ }
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// ─── Waiting for it to answer ───
+
+export type DaemonStartOutcome =
+  | { ok: true }
+  | {
+    ok: false
+    /** One line: how it ended, or that it never answered. */
+    cause: string
+    /** It could not be run at all (ENOENT, EACCES): the one case where the install is in question. */
+    spawnFailed: boolean
+  };
+
+/**
+ * Wait for a just-spawned daemon to answer, for up to `budgetMs` — and stop
+ * waiting the moment it exits or cannot be spawned, which a gRPC readiness
+ * wait alone cannot see: a daemon that died at once used to be waited out
+ * for the whole budget. `ready` is asked in windows of `windowMs` (grpc-js
+ * backs off between connection attempts, so one long wait can sleep through
+ * the moment the daemon comes up).
+ *
+ * Call it straight after `spawn`, in the same tick, so an immediate spawn
+ * error is not missed.
+ */
+export async function awaitDaemonStart(
+  child: ChildProcess,
+  ready: (timeoutMs: number) => Promise<boolean>,
+  opts: { budgetMs: number; windowMs?: number; address: string },
+): Promise<DaemonStartOutcome> {
+  let ended: DaemonStartOutcome | undefined;
+  let notifyEnded!: () => void;
+  const endedPromise = new Promise<void>((resolve) => { notifyEnded = resolve; });
+  const end = (outcome: DaemonStartOutcome): void => {
+    ended ??= outcome;
+    notifyEnded();
+  };
+  const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+    end({
+      ok: false,
+      cause: signal
+        ? `tapsmith-core was stopped by ${signal} before it answered`
+        : `tapsmith-core exited with code ${code ?? 'unknown'} before it answered`,
+      spawnFailed: false,
+    });
+  };
+  // `spawnfile` is the binary as given to spawn; a spawn error's message
+  // names it too, but not every one does.
+  const onError = (err: Error): void => {
+    const bin = (child as ChildProcess & { spawnfile?: string }).spawnfile ?? 'tapsmith-core';
+    end({ ok: false, cause: `could not run ${bin}: ${err.message}`, spawnFailed: child.pid === undefined });
+  };
+  // Left attached: a later 'error' (a failed kill) must not crash the process.
+  child.on('error', onError);
+  child.once('exit', onExit);
+  if (child.exitCode !== null || child.signalCode !== null) onExit(child.exitCode, child.signalCode);
+
+  const windowMs = opts.windowMs ?? 10_000;
+  const deadline = Date.now() + opts.budgetMs;
+  try {
+    while (!ended) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      const answered = await Promise.race([ready(Math.min(windowMs, remaining)), endedPromise.then(() => false)]);
+      if (answered) return { ok: true };
+    }
+  } finally {
+    child.off('exit', onExit);
+  }
+  return ended ?? {
+    ok: false,
+    cause: `tapsmith-core did not answer on ${opts.address} within ${opts.budgetMs / 1000}s`,
+    spawnFailed: false,
+  };
+}
+
+// ─── Saying why ───
+
+export interface DaemonStartFailureDetail {
+  cause: string
+  spawnFailed: boolean
+  /** The daemon's last lines, from {@link DaemonOutputCapture.recentOutput} or the MCP log. */
+  recentOutput: string
+  logPath?: string
+  /** Situation-specific advice (a port squatter's kill command), after the cause. */
+  hints?: string[]
+}
+
+/**
+ * `headline`, then why: the cause, any hints, the install question only when
+ * the binary could not be run, the daemon's recent output, and its log path —
+ * last, on its own line, so nothing is copied along with it.
+ */
+export function daemonStartFailure(headline: string, detail: DaemonStartFailureDetail): string {
+  const lines = [detail.cause, ...(detail.hints ?? [])];
+  if (detail.spawnFailed) {
+    lines.push('Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.');
+  }
+  const output = detail.recentOutput.split('\n').filter((line) => line.trim() !== '');
+  if (output.length > 0) lines.push('Recent daemon output:', ...output.map((line) => `  ${line}`));
+  if (detail.logPath) lines.push(`Daemon log: ${detail.logPath}`);
+  return withDetail(headline, lines);
+}

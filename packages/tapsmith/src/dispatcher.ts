@@ -18,6 +18,7 @@ import { findDaemonBin } from './daemon-bin.js';
 import { assignGroupMemberDevices, deviceGroupSize, resolveDeviceGroup, type DeviceGroupEntry } from './config.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { labelledMessage, withDetail } from './error-detail.js';
+import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, type DaemonOutputCapture } from './daemon-start.js';
 import type { TestResult, SuiteResult } from './runner.js';
 import type { TapsmithReporter, FullResult } from './reporter.js';
 import type {
@@ -136,36 +137,23 @@ export function sendToWorkerProcess(
   }
 }
 
-type DaemonStdio = 'ignore' | ['ignore', number, number];
-
-function daemonStdio(workerId: number): DaemonStdio {
+/**
+ * The log file a worker's daemon appends to under `TAPSMITH_DAEMON_LOG`:
+ * the named file for worker 0, a `.worker-N` sibling for the others.
+ */
+function daemonLogPath(workerId: number): string | undefined {
   const baseLogPath = process.env.TAPSMITH_DAEMON_LOG;
-  if (!baseLogPath) return 'ignore';
-
+  if (!baseLogPath) return undefined;
   const parsed = path.parse(baseLogPath);
-  const logPath = workerId === 0
+  return workerId === 0
     ? baseLogPath
     : path.join(parsed.dir, `${parsed.name}.worker-${workerId}${parsed.ext}`);
-  try {
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    const fd = fs.openSync(logPath, 'a');
-    return ['ignore', fd, fd];
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(
-      `${YELLOW}Failed to open daemon log ${logPath}; daemon output will be discarded: ${message}${RESET}\n`,
-    );
-    return 'ignore';
-  }
 }
 
-function closeDaemonStdioParentFds(stdio: DaemonStdio): void {
-  if (!Array.isArray(stdio)) return;
-
-  const fds = new Set(stdio.filter((entry): entry is number => typeof entry === 'number'));
-  for (const fd of fds) {
-    try { fs.closeSync(fd); } catch { /* already closed */ }
-  }
+interface SpawnedDaemon {
+  proc: ChildProcess
+  /** Its output while it starts, for the failure message; dispose once judged. */
+  output: DaemonOutputCapture
 }
 
 function spawnDaemonProcess(
@@ -174,20 +162,23 @@ function spawnDaemonProcess(
   agentPort: number,
   workerId: number,
   platform?: string,
-): ChildProcess {
-  const stdio = daemonStdio(workerId);
+): SpawnedDaemon {
+  const output = captureDaemonOutput(daemonLogPath(workerId), (message) => {
+    process.stderr.write(`${YELLOW}${message}${RESET}\n`);
+  });
   try {
-    return spawn(
+    const proc = spawn(
       daemonBin,
       [
         '--port', String(daemonPort),
         '--agent-port', String(agentPort),
         ...(platform ? ['--platform', platform] : []),
       ],
-      { stdio },
+      { stdio: output.stdio },
     );
+    return { proc, output };
   } finally {
-    closeDaemonStdioParentFds(stdio);
+    output.closeParentFds();
   }
 }
 
@@ -1204,24 +1195,35 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   }
 
   updateLaunchPhaseProgress('daemon', `Worker ${displayWorkerId(0)}: starting daemon on localhost:${firstDaemonPort}`);
-  const firstDaemon = spawnDaemonProcess(daemonBin, firstDaemonPort, firstAgentPort, displayWorkerId(0), config.platform);
+  const { proc: firstDaemon, output: firstDaemonOutput } = spawnDaemonProcess(daemonBin, firstDaemonPort, firstAgentPort, displayWorkerId(0), config.platform);
   firstDaemon.unref();
-  firstDaemon.on('error', () => {
-    // Handled by the waitForReady timeout below
-  });
 
   // Wait for daemon to be ready
   const discoveryClient = new TapsmithGrpcClient(`localhost:${firstDaemonPort}`);
-  const ready = await discoveryClient.waitForReady(10_000);
-  if (!ready) {
+  const firstDaemonStart = await awaitDaemonStart(firstDaemon, (ms) => discoveryClient.waitForReady(ms), {
+    budgetMs: 10_000,
+    address: `localhost:${firstDaemonPort}`,
+  });
+  if (!firstDaemonStart.ok) {
     firstDaemon.kill();
-    const portInUse = !(await isPortAvailable(firstDaemonPort));
-    const hint = portInUse
-      ? `Port ${firstDaemonPort} is already in use. Another Tapsmith run may be active, or a stale daemon is running.\nRun: lsof -ti tcp:${firstDaemonPort} | xargs kill`
-      : `Is tapsmith-core installed? Tried: ${daemonBin}`;
-    failStep('daemon', 'failed to start worker daemon');
-    throw new LaunchSetupError(`Failed to start worker daemon.\n${hint}`);
+    discoveryClient.close();
+    const portInUse = !firstDaemonStart.spawnFailed && !(await isPortAvailable(firstDaemonPort));
+    failStep('daemon', `failed to start worker daemon: ${firstDaemonStart.cause}`);
+    const message = daemonStartFailure('Failed to start worker daemon', {
+      ...firstDaemonStart,
+      recentOutput: firstDaemonOutput.recentOutput(),
+      logPath: firstDaemonOutput.logPath,
+      hints: portInUse
+        ? [
+          `Port ${firstDaemonPort} is already in use. Another Tapsmith run may be active, or a stale daemon is running.`,
+          `Run: lsof -ti tcp:${firstDaemonPort} | xargs kill`,
+        ]
+        : [],
+    });
+    firstDaemonOutput.dispose();
+    throw new LaunchSetupError(message);
   }
+  firstDaemonOutput.dispose();
 
   // Verify the daemon we connected to is actually OUR firstDaemon and not a
   // stale tapsmith-core left over from a previous run squatting on the same port.
@@ -2264,21 +2266,28 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
 
   const spawnWorkerDaemon = async (port: number, agent: number, describe: string): Promise<ChildProcess> => {
     opts.onProgress?.(`starting worker daemon on localhost:${port}`);
-    const proc = spawnDaemonProcess(daemonBin, port, agent, opts.displayWorkerId ?? workerId, opts.serializedConfig.platform);
+    const { proc, output } = spawnDaemonProcess(daemonBin, port, agent, opts.displayWorkerId ?? workerId, opts.serializedConfig.platform);
     proc.unref();
-    proc.on('error', (err) => {
-      process.stderr.write(`Daemon for ${describe} failed to start: ${err.message}\n`);
-    });
 
     const client = new TapsmithGrpcClient(`localhost:${port}`);
-    const ready = await client.waitForReady(10_000);
+    const started = await awaitDaemonStart(proc, (ms) => client.waitForReady(ms), {
+      budgetMs: 10_000,
+      address: `localhost:${port}`,
+    });
     client.close();
-    if (!ready) {
+    if (!started.ok) {
       try { proc.kill(); } catch { /* already dead */ }
-      const portInUse = !(await isPortAvailable(port));
-      const hint = portInUse ? ` (port ${port} is already in use)` : '';
-      throw new Error(`worker daemon on port ${port} did not become ready${hint}`);
+      const portInUse = !started.spawnFailed && !(await isPortAvailable(port));
+      const message = daemonStartFailure(`Daemon for ${describe} on port ${port} did not start`, {
+        ...started,
+        recentOutput: output.recentOutput(),
+        logPath: output.logPath,
+        hints: portInUse ? [`Port ${port} is already in use.`] : [],
+      });
+      output.dispose();
+      throw new Error(message);
     }
+    output.dispose();
     return proc;
   };
 

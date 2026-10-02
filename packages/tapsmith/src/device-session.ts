@@ -34,6 +34,7 @@ import {
 } from './session-preflight.js';
 import { satisfies, type AppResetPolicy, type PreparedState, type ResetCapabilities } from './app-reset.js';
 import { findDaemonBin } from './daemon-bin.js';
+import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, type DaemonStartOutcome } from './daemon-start.js';
 
 // ─── Types ───
 
@@ -241,13 +242,36 @@ export async function waitForDaemon(address: string, timeoutMs = 10_000): Promis
 export async function startDaemon(
   opts: SpawnDaemonOptions & { timeoutMs?: number; describe?: string },
 ): Promise<{ process: ChildProcess; address: string }> {
-  const child = spawnDaemon(opts);
-  const address = `localhost:${opts.port}`;
-  const ready = await waitForDaemon(address, opts.timeoutMs);
-  if (!ready) {
-    try { child.kill(); } catch { /* already dead */ }
-    throw new Error(`${opts.describe ?? 'daemon'} on port ${opts.port} did not become ready`);
+  // Its stderr, unless the caller routes its output elsewhere: a daemon that
+  // does not come up is reported in its own words (PILOT-463).
+  const output = opts.stdio === undefined ? captureDaemonOutput(undefined, () => {}) : undefined;
+  let child: ChildProcess;
+  try {
+    child = spawnDaemon({ ...opts, stdio: output?.stdio ?? opts.stdio });
+  } finally {
+    output?.closeParentFds();
   }
+  const address = `localhost:${opts.port}`;
+  const client = new TapsmithGrpcClient(address);
+  let started: DaemonStartOutcome;
+  try {
+    started = await awaitDaemonStart(child, (ms) => client.waitForReady(ms), {
+      budgetMs: opts.timeoutMs ?? 10_000,
+      address,
+    });
+  } finally {
+    client.close();
+  }
+  if (!started.ok) {
+    try { child.kill(); } catch { /* already dead */ }
+    const message = daemonStartFailure(`${opts.describe ?? 'daemon'} on port ${opts.port} did not start`, {
+      ...started,
+      recentOutput: output?.recentOutput() ?? '',
+    });
+    output?.dispose();
+    throw new Error(message);
+  }
+  output?.dispose();
   child.unref();
   return { process: child, address };
 }

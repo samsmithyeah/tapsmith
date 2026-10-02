@@ -28,6 +28,7 @@ import { pickResolvedDeviceName } from '../mcp/tools/device-target.js';
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
 import type { DeviceGroupEntry, TapsmithConfig } from '../config.js';
 import { findDaemonBin } from '../daemon-bin.js';
+import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure } from '../daemon-start.js';
 import { resolveChildLoader } from '../child-scripts.js';
 import { TapsmithGrpcClient } from '../grpc-client.js';
 import type { Device } from '../device.js';
@@ -1984,22 +1985,37 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       const ready = await daemonClient.waitForReady(5_000);
       if (!ready) throw new Error(`primary daemon at ${adopt.daemonAddress} is not reachable`);
     } else {
-      daemonProcess = spawn(
-        daemonBin,
-        ['--port', String(daemonPort), '--agent-port', String(agentPort),
-          ...(workerConfig.platform ? ['--platform', workerConfig.platform] : [])],
-        { stdio: 'ignore' },
-      );
-      daemonProcess.on('error', () => { /* handled by waitForReady */ });
+      // Its stderr, so a daemon that does not come up says why (PILOT-463).
+      const daemonOutput = captureDaemonOutput(undefined, () => {});
+      try {
+        daemonProcess = spawn(
+          daemonBin,
+          ['--port', String(daemonPort), '--agent-port', String(agentPort),
+            ...(workerConfig.platform ? ['--platform', workerConfig.platform] : [])],
+          { stdio: daemonOutput.stdio },
+        );
+      } finally {
+        daemonOutput.closeParentFds();
+      }
       spawned.push(daemonProcess);
 
       daemonClient = new TapsmithGrpcClient(`localhost:${daemonPort}`);
-      const ready = await daemonClient.waitForReady(10_000);
-      if (!ready) {
+      const client = daemonClient;
+      const daemonStart = await awaitDaemonStart(daemonProcess, (ms) => client.waitForReady(ms), {
+        budgetMs: 10_000,
+        address: `localhost:${daemonPort}`,
+      });
+      if (!daemonStart.ok) {
         try { daemonProcess.kill(); } catch { /* already dead */ }
         daemonClient.close();
-        throw new Error(`daemon on port ${daemonPort} did not become ready`);
+        const message = daemonStartFailure(`daemon on port ${daemonPort} did not start`, {
+          ...daemonStart,
+          recentOutput: daemonOutput.recentOutput(),
+        });
+        daemonOutput.dispose();
+        throw new Error(message);
       }
+      daemonOutput.dispose();
       // Only detach after confirmed ready so kill() works during init failure
       daemonProcess.unref();
     }

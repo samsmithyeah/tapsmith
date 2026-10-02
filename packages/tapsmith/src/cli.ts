@@ -60,6 +60,7 @@ import {
 import { isRecoverableInfrastructureError, serializeConfig } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort, pickFreePort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
+import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure } from './daemon-start.js';
 import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage, pinnedDeviceUnusableMessage, waitForPinnedDeviceAuthorization } from './device-advice.js';
 import {
   createUiLaunchSteps,
@@ -443,23 +444,20 @@ async function ensureDaemonRunning(
   const resolvedBin = process.env.TAPSMITH_DAEMON_BIN ?? daemonBin ?? findDaemonBin();
   const daemonArgs = ['--port', port];
   if (platform) daemonArgs.push('--platform', platform);
-  // Optional: redirect the spawned daemon's stdout/stderr to a file when
-  // `TAPSMITH_DAEMON_LOG=<path>` is set. Useful for debugging daemon-side
-  // behaviour (MITM proxy pre-start, `/tapsmith.pac` serves, agent startup)
-  // without spinning up a separate daemon process. Off by default — the
-  // env var is the only way to enable it.
-  let daemonStdio: 'ignore' | ['ignore', number, number] = 'ignore';
-  const daemonLogPath = process.env.TAPSMITH_DAEMON_LOG;
-  if (daemonLogPath) {
-    const fd = fs.openSync(daemonLogPath, 'a');
-    daemonStdio = ['ignore', fd, fd];
+  // `TAPSMITH_DAEMON_LOG=<path>` sends the daemon's stdout and stderr to a
+  // file, for debugging daemon-side behaviour (MITM proxy pre-start,
+  // `/tapsmith.pac` serves, agent startup). Without it only stderr is kept,
+  // and only while it starts: that is where its start failures go.
+  const output = captureDaemonOutput(process.env.TAPSMITH_DAEMON_LOG, (message) => {
+    if (progress) progress.note(message);
+    else console.error(yellow(message));
+  });
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(resolvedBin, daemonArgs, { stdio: output.stdio });
+  } finally {
+    output.closeParentFds();
   }
-  const child = spawn(resolvedBin, daemonArgs, {
-    stdio: daemonStdio,
-  });
-  child.on('error', () => {
-    // Handled below via waitForReady timeout
-  });
   child.unref();
   spawnedDaemonProcess = child;
 
@@ -470,24 +468,24 @@ async function ensureDaemonRunning(
   // comes up. Retry in bounded windows up to 60s total, bailing early if the
   // daemon process exited (crash — no point waiting out the budget).
   const newClient = new TapsmithGrpcClient(address);
-  let daemonExitCode: number | null | undefined;
-  child.on('exit', (code) => {
-    daemonExitCode = code ?? -1;
+  const outcome = await awaitDaemonStart(child, (ms) => newClient.waitForReady(ms), {
+    budgetMs: 60_000,
+    windowMs: 10_000,
+    address,
   });
-  const connectDeadline = Date.now() + 60_000;
-  let started = false;
-  while (!started && Date.now() < connectDeadline && daemonExitCode === undefined) {
-    started = await newClient.waitForReady(10_000);
-  }
-  if (!started) {
-    const reason = daemonExitCode !== undefined
-      ? `tapsmith-core exited with code ${daemonExitCode} during startup`
-      : 'failed to start tapsmith-core (not ready after 60s)';
-    progress?.fail('daemon', reason);
+  if (!outcome.ok) {
+    progress?.fail('daemon', outcome.cause);
     // Thrown, not exited: a multi-target run goes on without this target.
     newClient.close();
-    throw new Error(`Failed to start Tapsmith daemon (${reason}). Is tapsmith-core installed?`);
+    const message = daemonStartFailure('Failed to start Tapsmith daemon', {
+      ...outcome,
+      recentOutput: output.recentOutput(),
+      logPath: output.logPath,
+    });
+    output.dispose();
+    throw new Error(message);
   }
+  output.dispose();
 
   const version = (await newClient.ping()).version;
   if (progress) progress.complete('daemon', `connected to tapsmith-core v${version}`);
