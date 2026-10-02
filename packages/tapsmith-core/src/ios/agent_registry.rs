@@ -71,6 +71,11 @@ impl Registry {
         }
     }
 
+    /// True once [`shutdown_all`] has begun: no agent may be (re)started.
+    pub(crate) fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::SeqCst)
+    }
+
     fn insert(&self, pid: u32, entry: Entry) {
         self.entries.lock().unwrap().insert(pid, entry);
     }
@@ -743,6 +748,7 @@ mod tests {
         .await;
         let child = spawn("sleep 60");
         let pid = child.id().unwrap();
+        assert!(registry.is_shutting_down());
         let err = TrackedAgent::track(child, "SIM-A", false, registry)
             .await
             .err()
