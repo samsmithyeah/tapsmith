@@ -61,10 +61,11 @@ export function isUsableAndroidState(state: string): boolean {
  * debugging prompt on the device." — the advice `doctor` and `list-devices`
  * give (`androidStateBlocker`), for the test-run paths' errors.
  */
-export function describeUnusableAndroidDevice(device: AdbDevice): string {
-  const fix = androidStateBlocker(device.state, device.serial)
+export function describeUnusableAndroidDevice(device: AdbDevice, fix?: string): string {
+  const advice = fix
+    ?? androidStateBlocker(device.state, device.serial)
     ?? 'Reconnect it, or run `adb kill-server` and try again';
-  return `${device.serial} is attached, but adb reports it ${device.state}. ${fix}.`;
+  return `${device.serial} is attached, but adb reports it ${device.state}. ${advice}.`;
 }
 
 function unusableAndroid(devices: readonly AdbStateEntry[]): AdbStateEntry[] {
@@ -73,7 +74,7 @@ function unusableAndroid(devices: readonly AdbStateEntry[]): AdbStateEntry[] {
 
 /** {@link describeUnusableAndroidDevice} for each Android entry adb cannot use; usable and other-platform entries are skipped. */
 export function describeUnusableAndroidDevices(devices: readonly AdbStateEntry[]): string[] {
-  return unusableAndroid(devices).map(describeUnusableAndroidDevice);
+  return unusableAndroid(devices).map((d) => describeUnusableAndroidDevice(d));
 }
 
 /**
@@ -111,7 +112,14 @@ export function pinnedDeviceUnusableMessage(
   if (phase === 'preflight' && device.state !== 'unauthorized' && !device.state.startsWith('no permissions')) {
     return undefined;
   }
-  return `Device ${describeUnusableAndroidDevice(device)}`;
+  // After the restart, advice to restart adb would repeat what just failed.
+  // An emulator's own advice (wait for boot, or restart it) still applies.
+  const restarted = phase === 'after-recovery' && !device.serial.startsWith('emulator-')
+    && !device.state.startsWith('no permissions') && device.state !== 'unauthorized';
+  return `Device ${describeUnusableAndroidDevice(
+    device,
+    restarted ? 'Tapsmith already restarted the ADB server: reconnect the cable, or restart the device' : undefined,
+  )}`;
 }
 
 /**
@@ -140,12 +148,10 @@ export async function waitForPinnedDeviceAuthorization(
   const pollMs = deps.pollMs ?? 1_000;
   const deadline = now() + timeoutMs;
   let noted = false;
-  let lastBlocked: string | undefined;
   for (;;) {
     const devices = deps.listAdbDevices();
     const mine = devices.filter((d) => d.serial === serial);
     const blocked = pinnedDeviceUnusableMessage(serial, devices, 'preflight');
-    if (blocked) lastBlocked = blocked;
     const usable = mine.some((d) => isUsableAndroidState(d.state));
     // `authorizing` is the step between: the prompt was just accepted. Once
     // waiting, a pin briefly gone from adb is still pending — replugging the
@@ -153,7 +159,11 @@ export async function waitForPinnedDeviceAuthorization(
     const pending = !usable && (mine.some((d) => d.state === 'unauthorized' || d.state === 'authorizing')
       || (noted && mine.length === 0));
     if (!pending) return blocked;
-    if (now() >= deadline) return blocked ?? (mine.length === 0 ? lastBlocked : undefined);
+    if (now() >= deadline) {
+      return mine.length === 0
+        ? `Device ${serial} is no longer listed by adb. Reconnect it, then accept the USB debugging prompt on the device.`
+        : blocked;
+    }
     if (!noted) {
       noted = true;
       const seconds = Math.round(timeoutMs / 1000);

@@ -143,6 +143,15 @@ describe('pinnedDeviceUnusableMessage()', () => {
     expect(pinnedDeviceUnusableMessage('HVA1', adb, 'after-recovery')).toContain('adb reports it authorizing.');
   });
 
+  it('does not suggest the ADB restart that recovery has just tried', () => {
+    const offline = pinnedDeviceUnusableMessage('HVA9', [{ serial: 'HVA9', state: 'offline' }], 'after-recovery');
+    expect(offline).toContain('adb reports it offline.');
+    expect(offline).not.toContain('kill-server');
+    expect(offline).toContain('Tapsmith already restarted the ADB server');
+    const odd = pinnedDeviceUnusableMessage('HVA9', [{ serial: 'HVA9', state: 'recovery' }], 'after-recovery');
+    expect(odd).not.toContain('kill-server');
+  });
+
   it('is undefined for a usable or unlisted device', () => {
     expect(pinnedDeviceUnusableMessage('emulator-5556', adb, 'after-recovery')).toBeUndefined();
     expect(pinnedDeviceUnusableMessage('NOT-THERE', adb, 'after-recovery')).toBeUndefined();
@@ -244,6 +253,15 @@ describe('waitForPinnedDeviceAuthorization()', () => {
     expect(run.sleeps).toEqual([]);
     expect(pinnedDeviceUnusableMessage('R5C', [{ serial: 'R5C', state: 'unauthorized' }, { serial: 'R5C', state: 'device' }], 'after-recovery'))
       .toBeUndefined();
+  });
+
+  it('says the pin is gone, not "attached", when it never came back from a replug', async () => {
+    for (const first of ['unauthorized', 'authorizing']) {
+      let call = 0;
+      const run = deps(() => (call++ === 0 ? [{ serial: 'R5C', state: first }] : []));
+      const result = await waitForPinnedDeviceAuthorization('R5C', run.deps);
+      expect(result).toBe('Device R5C is no longer listed by adb. Reconnect it, then accept the USB debugging prompt on the device.');
+    }
   });
 
   it('leaves offline to the restart recovery', async () => {
