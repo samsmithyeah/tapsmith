@@ -7,7 +7,7 @@ import { androidUnusableDeviceFix } from '../../adb-devices.js';
 export function registerListDevicesTool(server: McpServer, dispatcher?: TestDispatcher): void {
   server.tool(
     'tapsmith_list_devices',
-    'List all connected mobile devices and emulators across all platforms. Returns serial numbers, platform (android/ios), model, state, and `usable`. A device that is attached but cannot be used (an Android phone whose USB-debugging prompt was not accepted, an offline emulator, …) is listed with `usable: false`, adb\'s state, and a `fix` to tell the user. Once the session has provisioned a `use.devices` group (a test run or device tool does that; listing alone does not), each member also carries its group name (e.g. "alice") and project; device tools (snapshot, tap, etc.) accept that name or the serial as their `device` parameter.',
+    'List all connected mobile devices and emulators across all platforms. Returns serial numbers, platform (android/ios), model, state, and `usable`. A device that is attached but cannot be used (an Android phone whose USB-debugging prompt was not accepted, an offline emulator, …) is listed with `usable: false`, adb\'s state, and a `fix` to tell the user. In UI mode only the UI session\'s own devices are listed. Once the session has provisioned a `use.devices` group (a test run or device tool does that; listing alone does not), each member also carries its group name (e.g. "alice") and project; device tools (snapshot, tap, etc.) accept that name or the serial as their `device` parameter.',
     {},
     async () => {
       const listed = await listAllDevices();
