@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseAdbDevicesOutput, parseSimctlDevicesJson } from '../env-scan.js';
+import { parseSimctlDevicesJson } from '../env-scan.js';
+import { parseAdbDevicesOutput } from '../adb-devices.js';
 
 describe('parseAdbDevicesOutput()', () => {
   it('parses connected devices and skips header/offline entries', () => {
@@ -20,6 +21,40 @@ describe('parseAdbDevicesOutput()', () => {
 
   it('returns empty array for header-only output', () => {
     expect(parseAdbDevicesOutput('List of devices attached\n')).toEqual([]);
+  });
+
+  // PILOT-457: the run paths kept only the first word, so `no permissions (…)`
+  // became "no" and got no advice.
+  it('keeps a multi-word state whole', () => {
+    const output = [
+      'List of devices attached',
+      '0123456789ABCDEF\tno permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html]',
+      'R5CR1234XYZ\tunauthorized',
+      '',
+    ].join('\n');
+    expect(parseAdbDevicesOutput(output)).toEqual([
+      {
+        serial: '0123456789ABCDEF',
+        state: 'no permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html]',
+      },
+      { serial: 'R5CR1234XYZ', state: 'unauthorized' },
+    ]);
+  });
+
+  it('skips adb\'s daemon start-up notices before the header', () => {
+    const output = [
+      '* daemon not running; starting now at tcp:5037',
+      '* daemon started successfully',
+      'List of devices attached',
+      'emulator-5554\tdevice',
+      '',
+    ].join('\n');
+    expect(parseAdbDevicesOutput(output)).toEqual([{ serial: 'emulator-5554', state: 'device' }]);
+  });
+
+  it('handles CRLF line endings', () => {
+    expect(parseAdbDevicesOutput('List of devices attached\r\nemulator-5554\tdevice\r\n'))
+      .toEqual([{ serial: 'emulator-5554', state: 'device' }]);
   });
 });
 

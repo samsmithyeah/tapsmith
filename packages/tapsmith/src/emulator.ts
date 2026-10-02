@@ -17,6 +17,7 @@ import { promisify } from 'node:util';
 import { isCI as runningInCi } from 'ci-info';
 import type { DeviceStrategy, EmulatorLaunchOptions } from './config.js';
 import { xmlUnescape } from './app-reset.js';
+import { parseAdbDevicesOutput } from './adb-devices.js';
 
 const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
@@ -369,23 +370,18 @@ export function isPackageInstalled(serial: string, packageName: string): boolean
 // ─── Emulator discovery ───
 
 /**
- * List devices known to ADB, including offline transports.
+ * List devices known to ADB, including offline transports, each with adb's
+ * whole state string (`device`, `unauthorized`, `offline`, `no permissions
+ * (…)`, …) — the run paths name an unusable device by it.
  */
-export function listAdbDevices(): AdbDeviceEntry[] {
+export function listAdbDevices(exec: ExecFileSyncLike = execFileSync): AdbDeviceEntry[] {
   try {
-    const output = execFileSync('adb', ['devices'], {
+    const output = exec('adb', ['devices'], {
       encoding: 'utf-8',
       timeout: 10_000,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-
-    return output
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && !line.startsWith('List of devices attached'))
-      .map((line) => line.split(/\s+/))
-      .filter((parts) => parts.length >= 2)
-      .map((parts) => ({ serial: parts[0], state: parts[1] }));
+    return parseAdbDevicesOutput(output);
   } catch {
     return [];
   }

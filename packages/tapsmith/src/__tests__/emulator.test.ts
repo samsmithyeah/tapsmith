@@ -48,6 +48,7 @@ import {
   emulatorsLaunchedThisProcess,
   waitForBoot,
   waitForSystemSettle,
+  listAdbDevices,
 } from '../emulator.js';
 
 const manifestFile = path.join(os.tmpdir(), 'tapsmith-emulators.json');
@@ -1836,3 +1837,34 @@ describe('boot waits stop when aborted', () => {
   });
 });
 
+
+// PILOT-457: the test-run paths split each line on whitespace and kept the
+// second word, so `no permissions (…)` read as "no" and got no advice.
+describe('listAdbDevices', () => {
+  const adb = (stdout: string) => vi.fn(() => stdout) as unknown as typeof import('node:child_process').execFileSync;
+
+  it('keeps the whole adb state, multi-word ones included', () => {
+    const exec = adb([
+      '* daemon not running; starting now at tcp:5037',
+      '* daemon started successfully',
+      'List of devices attached',
+      'emulator-5554\tdevice',
+      'R5CR1234XYZ\tunauthorized',
+      '0123456789ABCDEF\tno permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html]',
+      '',
+    ].join('\n'));
+    expect(listAdbDevices(exec)).toEqual([
+      { serial: 'emulator-5554', state: 'device' },
+      { serial: 'R5CR1234XYZ', state: 'unauthorized' },
+      {
+        serial: '0123456789ABCDEF',
+        state: 'no permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html]',
+      },
+    ]);
+  });
+
+  it('is empty when adb cannot be run', () => {
+    const exec = vi.fn(() => { throw new Error('spawn adb ENOENT'); }) as unknown as typeof import('node:child_process').execFileSync;
+    expect(listAdbDevices(exec)).toEqual([]);
+  });
+});

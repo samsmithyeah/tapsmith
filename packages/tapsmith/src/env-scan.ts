@@ -130,26 +130,6 @@ export function scanEnvironment(): EnvScan {
   return { nodeVersion, daemonBin, agentApk, agentTestApk, adbVersion, androidHome, xcodeVersion, simulators, avds, avdImages, isMacOS };
 }
 
-// ─── ADB device listing ───
-
-export interface AdbDevice {
-  serial: string;
-  state: string;
-}
-
-export function parseAdbDevicesOutput(output: string): AdbDevice[] {
-  return output
-    .trim()
-    .split('\n')
-    .slice(1)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && line.includes('\t'))
-    .map((line) => {
-      const [serial, state] = line.split('\t');
-      return { serial, state };
-    });
-}
-
 /**
  * What to do about an attached Android device adb cannot use, by its
  * `adb devices` state; undefined for a usable (`device`) or unknown state.
