@@ -20,18 +20,34 @@ export const ALLOWED_INSTALL_SCRIPTS = Object.freeze({
 });
 
 // `npm warn allow-scripts   <name>@<version> (<event>: <command>)` on npm
-// 11.17+, `npm warn install-scripts …` once npm 12 blocks them. The header,
-// blank and advice lines have no name@version after the run of spaces.
-const INSTALL_SCRIPT_ENTRY = /^npm warn (?:allow-scripts|install-scripts) {2,}((?:@[^\s/@]+\/)?[^\s/@]+)@(\S+)(?: \(.*\))?\s*$/i;
+// 11.17+, `npm warn install-scripts …` once npm 12 blocks them. The command
+// is not parsed: it can be anything, including the start of a multi-line
+// script whose later lines arrive as their own warn lines.
+const INSTALL_SCRIPT_LINE = /^npm warn (?:allow-scripts|install-scripts)(?: (.*))?$/i;
+const INSTALL_SCRIPT_ENTRY = /^ {2,}((?:@[^\s/@]+\/)?[^\s/@]+)@(\S+)(?:\s.*)?$/;
+const INSTALL_SCRIPT_HEADER = /^\d+ packages? (?:has|have|had) install scripts /i;
+const INSTALL_SCRIPT_ADVICE = /^Run `npm /;
 
-/** Every package an install-scripts warning in `output` names. */
+/**
+ * Every package an install-scripts warning in `output` names, and every line
+ * of that warning that is none of an entry, the header, a blank or the advice
+ * line. The check fails on the latter: a format it cannot read must not pass
+ * as "no install scripts".
+ */
 export function parseInstallScriptWarnings(output) {
   const entries = [];
+  const unrecognised = [];
   for (const line of output.split(/\r?\n/)) {
-    const match = INSTALL_SCRIPT_ENTRY.exec(line);
-    if (match) entries.push({ name: match[1], version: match[2], line });
+    const warn = INSTALL_SCRIPT_LINE.exec(line);
+    if (!warn) continue;
+    const rest = (warn[1] ?? '').trimEnd();
+    const entry = INSTALL_SCRIPT_ENTRY.exec(rest);
+    if (entry) entries.push({ name: entry[1], version: entry[2], line });
+    else if (rest !== '' && !INSTALL_SCRIPT_HEADER.test(rest) && !INSTALL_SCRIPT_ADVICE.test(rest)) {
+      unrecognised.push(line);
+    }
   }
-  return entries;
+  return { entries, unrecognised };
 }
 
 /** The entries that are not allowlisted. A `@tapsmith/` package never is. */

@@ -197,7 +197,15 @@ function checkInstallWarnings(tapsmith, core, npmVersion) {
     else console.warn(`\ncheck-clean-install: warning: ${message}`);
     return;
   }
-  const reported = parseInstallScriptWarnings(install.output);
+  const { entries: reported, unrecognised } = parseInstallScriptWarnings(install.output);
+  if (unrecognised.length > 0) {
+    fail(
+      `npm ${npmVersion} printed install-scripts warning lines this check cannot read:\n\n` +
+        unrecognised.map((line) => `  ${line}`).join('\n') +
+        '\n\nA multi-line install script, or a changed npm format. Update parseInstallScriptWarnings\n' +
+        '(scripts/clean-install-checks.mjs) so these are checked rather than skipped.',
+    );
+  }
   const disallowed = disallowedInstallScripts(reported);
   if (disallowed.length > 0) {
     fail(
@@ -251,7 +259,8 @@ function checkBinariesWithoutScripts(tapsmith, core) {
   );
   const expected = path.join(coreDir, 'tapsmith-core');
   const resolved = resolve.stdout.trim();
-  if (resolve.status !== 0 || fs.realpathSync.native(resolved || '/') !== fs.realpathSync.native(expected)) {
+  const samePath = (a, b) => fs.existsSync(a) && fs.existsSync(b) && fs.realpathSync.native(a) === fs.realpathSync.native(b);
+  if (resolve.status !== 0 || !samePath(resolved, expected)) {
     fail(
       `the installed SDK's findDaemonBin() did not resolve ${core.pkgName}/tapsmith-core after ` +
         `\`npm install --ignore-scripts\`:\n${resolve.stdout}${resolve.stderr}`,

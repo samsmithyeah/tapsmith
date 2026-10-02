@@ -12,7 +12,10 @@ export interface PackedFile {
 }
 
 export declare const ALLOWED_INSTALL_SCRIPTS: Readonly<Record<string, string>>;
-export declare function parseInstallScriptWarnings(output: string): InstallScriptEntry[];
+export declare function parseInstallScriptWarnings(output: string): {
+  entries: InstallScriptEntry[];
+  unrecognised: string[];
+};
 export declare function disallowedInstallScripts(
   entries: InstallScriptEntry[],
   allowed?: Readonly<Record<string, string>>,

@@ -44,43 +44,66 @@ npm warn install-scripts Run \`npm install-scripts ls\` to review, or \`npm inst
 
 describe('parseInstallScriptWarnings', () => {
   it('reads every package from the npm 11.17 allow-scripts warning, scoped names included', () => {
-    expect(parseInstallScriptWarnings(NPM_11_17)).toEqual([
-      { name: '@tapsmith/core-darwin-arm64', version: '0.5.0', line: expect.stringContaining('@tapsmith/core-darwin-arm64@0.5.0') },
-      { name: 'protobufjs', version: '7.6.6', line: expect.stringContaining('protobufjs@7.6.6') },
-      { name: 'esbuild', version: '0.28.2', line: expect.stringContaining('esbuild@0.28.2') },
-    ]);
+    expect(parseInstallScriptWarnings(NPM_11_17)).toEqual({
+      entries: [
+        { name: '@tapsmith/core-darwin-arm64', version: '0.5.0', line: expect.stringContaining('@tapsmith/core-darwin-arm64@0.5.0') },
+        { name: 'protobufjs', version: '7.6.6', line: expect.stringContaining('protobufjs@7.6.6') },
+        { name: 'esbuild', version: '0.28.2', line: expect.stringContaining('esbuild@0.28.2') },
+      ],
+      unrecognised: [],
+    });
   });
 
   it('reads the npm 12 install-scripts (blocked) warning too', () => {
-    expect(parseInstallScriptWarnings(NPM_12_2).map((e) => e.name)).toEqual([
-      '@tapsmith/core-darwin-arm64',
-      'protobufjs',
-      'esbuild',
-      'fsevents',
-    ]);
+    const { entries, unrecognised } = parseInstallScriptWarnings(NPM_12_2);
+    expect(entries.map((e) => e.name)).toEqual(['@tapsmith/core-darwin-arm64', 'protobufjs', 'esbuild', 'fsevents']);
+    expect(unrecognised).toEqual([]);
   });
 
   it('reads an entry whose script npm only describes', () => {
-    expect(parseInstallScriptWarnings('npm warn allow-scripts   fsevents@2.3.3 (install: (install scripts present))\n'))
+    expect(parseInstallScriptWarnings('npm warn allow-scripts   fsevents@2.3.3 (install: (install scripts present))\n').entries)
       .toEqual([{ name: 'fsevents', version: '2.3.3', line: expect.any(String) }]);
   });
 
-  it('ignores the header, blank and advice lines, and CRLF output', () => {
-    const header = 'npm warn allow-scripts 1 packages have install scripts not yet covered by allowScripts:';
-    expect(parseInstallScriptWarnings(`${header}\r\nnpm warn allow-scripts\r\n`)).toEqual([]);
-    expect(parseInstallScriptWarnings('npm warn allow-scripts   esbuild@0.28.2 (postinstall: node install.js)\r\n'))
-      .toEqual([{ name: 'esbuild', version: '0.28.2', line: expect.any(String) }]);
+  it('ignores the header (singular too), blank and advice lines, and CRLF output', () => {
+    const output = [
+      'npm warn allow-scripts 1 package has install scripts not yet covered by allowScripts:',
+      'npm warn allow-scripts   esbuild@0.28.2 (postinstall: node install.js)',
+      'npm warn allow-scripts',
+      'npm warn allow-scripts Run `npm approve-scripts --allow-scripts-pending` to review.',
+    ].join('\r\n');
+    expect(parseInstallScriptWarnings(output)).toEqual({
+      entries: [{ name: 'esbuild', version: '0.28.2', line: expect.any(String) }],
+      unrecognised: [],
+    });
+  });
+
+  it('reports the lines of a multi-line script instead of dropping the entry (real npm 11.17 output)', () => {
+    const output = [
+      'npm warn allow-scripts 1 package has install scripts not yet covered by allowScripts:',
+      'npm warn allow-scripts   @x/pp@1.0.0 (postinstall: echo a',
+      'npm warn allow-scripts echo b)',
+      'npm warn allow-scripts',
+    ].join('\n');
+    const { entries, unrecognised } = parseInstallScriptWarnings(output);
+    expect(entries.map((e) => e.name)).toEqual(['@x/pp']);
+    expect(unrecognised).toEqual(['npm warn allow-scripts echo b)']);
+  });
+
+  it('reports an entry line in a format it does not know', () => {
+    expect(parseInstallScriptWarnings('npm warn install-scripts   - weird-format entry\n').unrecognised)
+      .toEqual(['npm warn install-scripts   - weird-format entry']);
   });
 });
 
 describe('disallowedInstallScripts', () => {
   it('passes the documented third-party packages and fails our own', () => {
-    const entries = parseInstallScriptWarnings(NPM_12_2);
+    const { entries } = parseInstallScriptWarnings(NPM_12_2);
     expect(disallowedInstallScripts(entries).map((e) => e.name)).toEqual(['@tapsmith/core-darwin-arm64']);
   });
 
   it('fails a package nobody has vetted', () => {
-    const entries = parseInstallScriptWarnings('npm warn allow-scripts   left-pad@1.0.0 (postinstall: node x.js)\n');
+    const { entries } = parseInstallScriptWarnings('npm warn allow-scripts   left-pad@1.0.0 (postinstall: node x.js)\n');
     expect(disallowedInstallScripts(entries).map((e) => e.name)).toEqual(['left-pad']);
   });
 
