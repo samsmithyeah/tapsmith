@@ -116,14 +116,21 @@ pub(crate) fn global() -> &'static Registry {
 
 /// A spawned agent process, registered for as long as it is alive.
 ///
-/// Dropping it deregisters the agent and deletes its owner record. Callers
-/// only drop it once the process has been reaped (`try_wait`/`wait`/`kill`
-/// returned) — except at runtime shutdown, where the spawning `Command`'s
-/// `kill_on_drop` stops the process as the guard goes.
+/// Reaping it (`try_wait`/`wait`/`kill`) deregisters it and deletes its owner
+/// record. Dropping it while the process still runs — an RPC cancelled
+/// mid-boot drops the startup future — does not kill it: the boot carries on,
+/// as it always has, and a background waiter keeps it registered until it
+/// exits, so shutdown still stops it. Only once shutdown has begun (or the
+/// runtime is gone) does a drop let the spawning `Command`'s `kill_on_drop`
+/// stop the process.
 pub(crate) struct TrackedAgent {
-    child: Child,
+    /// Always `Some` until `Drop` hands it to the background waiter.
+    child: Option<Child>,
     pid: Option<u32>,
     registry: &'static Registry,
+    /// False for the background waiter itself, so a drop there (the runtime
+    /// tearing its tasks down) can never spawn another waiter.
+    rehome_on_drop: bool,
 }
 
 impl TrackedAgent {
@@ -150,9 +157,10 @@ impl TrackedAgent {
         // mid-track (a dropped RPC future) still deregisters and, through
         // `kill_on_drop`, stops the child.
         let mut agent = Self {
-            child,
+            child: Some(child),
             pid,
             registry,
+            rehome_on_drop: true,
         };
         // Checked after inserting, so a concurrent `shutdown_all` either sees
         // the entry or we see its flag: an agent can never slip between them.
@@ -169,7 +177,7 @@ impl TrackedAgent {
     /// `Child::try_wait`, deregistering the agent as soon as it is reaped:
     /// from then on its pid is free for reuse and must never be signalled.
     pub(crate) fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
-        let status = self.child.try_wait();
+        let status = self.child_mut().try_wait();
         if let Ok(Some(_)) = status {
             self.release();
         }
@@ -178,18 +186,24 @@ impl TrackedAgent {
 
     /// `Child::kill` (which also reaps), then deregister.
     pub(crate) async fn kill(&mut self) -> std::io::Result<()> {
-        let result = self.child.kill().await;
+        let result = self.child_mut().kill().await;
         self.release();
         result
     }
 
     /// `Child::wait`, then deregister.
     pub(crate) async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        let status = self.child.wait().await;
+        let status = self.child_mut().wait().await;
         if status.is_ok() {
             self.release();
         }
         status
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        self.child
+            .as_mut()
+            .expect("TrackedAgent child is only taken in Drop")
     }
 
     fn release(&mut self) {
@@ -206,6 +220,27 @@ impl TrackedAgent {
 
 impl Drop for TrackedAgent {
     fn drop(&mut self) {
+        // Still running and not yet reaped: keep tracking it rather than
+        // killing a boot that a retried RPC may yet adopt.
+        if self.rehome_on_drop
+            && self.pid.is_some()
+            && !self.registry.shutting_down.load(Ordering::SeqCst)
+        {
+            if let (Some(child), Ok(runtime)) =
+                (self.child.take(), tokio::runtime::Handle::try_current())
+            {
+                let mut waiter = TrackedAgent {
+                    child: Some(child),
+                    pid: self.pid.take(),
+                    registry: self.registry,
+                    rehome_on_drop: false,
+                };
+                runtime.spawn(async move {
+                    let _ = waiter.wait().await;
+                });
+                return;
+            }
+        }
         self.release();
     }
 }
@@ -217,8 +252,9 @@ impl Drop for TrackedAgent {
 /// SIGTERM first (xcodebuild then tears down its in-simulator runner itself),
 /// SIGKILL whatever is still registered after [`TERM_GRACE`], then
 /// `simctl terminate` the runner on each simulator in case it outlived its
-/// xcodebuild. A pid is only signalled while it is still registered, i.e. not
-/// yet reaped, so it cannot have been reused by another process.
+/// xcodebuild. Agents deregister the moment they are reaped, so a pid that is
+/// still registered is still ours; the only gap is the instant between
+/// `waitpid` returning and the deregistration that immediately follows it.
 pub async fn shutdown_all() {
     shutdown_registry(global(), TERM_GRACE, terminate_runner).await;
 }
@@ -314,7 +350,14 @@ async fn write_record(path: &Path, pid: u32, udid: &str, is_physical: bool) {
         if let Some(dir) = path.parent() {
             tokio::fs::create_dir_all(dir).await?;
         }
-        tokio::fs::write(path, serde_json::to_vec(&record)?).await?;
+        // Written aside and renamed into place, so a reaper in another daemon
+        // never reads a half-written record (and discards it as corrupt).
+        let tmp = path.with_extension("json.tmp");
+        tokio::fs::write(&tmp, serde_json::to_vec(&record)?).await?;
+        if let Err(e) = tokio::fs::rename(&tmp, path).await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e.into());
+        }
         anyhow::Ok(())
     }
     .await;
@@ -697,7 +740,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_track_cancelled_mid_way_leaves_nothing_registered() {
+    async fn dropping_a_running_agent_keeps_it_running_and_tracked() {
+        // An RPC cancelled mid-boot drops the startup future: the boot must
+        // carry on (a retry may adopt it), and shutdown must still stop it.
+        let dir = tempfile::tempdir().unwrap();
+        let registry = leaked(Some(dir.path().to_path_buf()));
+        let agent = TrackedAgent::track(spawn("sleep 60"), "SIM-A", false, registry)
+            .await
+            .unwrap();
+        let pid = agent.pid.unwrap();
+        drop(agent);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(alive(pid), "a dropped guard must not kill the boot");
+        assert_eq!(registry.len(), 1);
+        assert!(dir.path().join(format!("{pid}.json")).exists());
+        let calls: Calls = Arc::default();
+        shutdown_registry(
+            registry,
+            Duration::from_secs(5),
+            recording_terminator(&calls),
+        )
+        .await;
+        assert_eq!(registry.len(), 0);
+        assert!(!alive(pid));
+        assert!(!dir.path().join(format!("{pid}.json")).exists());
+    }
+
+    #[tokio::test]
+    async fn a_track_cancelled_mid_way_stays_tracked_until_it_exits() {
         // With a records dir, track awaits `ps` for the owner record.
         let dir = tempfile::tempdir().unwrap();
         let registry = leaked(Some(dir.path().to_path_buf()));
@@ -707,13 +777,16 @@ mod tests {
         let fut = TrackedAgent::track(child, "SIM-A", false, registry);
         let outcome = tokio::time::timeout(Duration::from_nanos(1), fut).await;
         assert!(outcome.is_err(), "track must still have been pending");
-        assert_eq!(registry.len(), 0);
-        assert!(!dir.path().join(format!("{pid}.json")).exists());
+        // Still tracked (so shutdown would stop it)…
+        assert_eq!(registry.len(), 1);
+        assert!(alive(pid));
+        // …and deregistered, not left behind as a dead pid, once it exits.
+        signal(pid, libc::SIGKILL);
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while alive(pid) && std::time::Instant::now() < deadline {
+        while registry.len() > 0 && std::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(!alive(pid), "kill_on_drop stops the child");
+        assert_eq!(registry.len(), 0);
     }
 
     #[tokio::test]

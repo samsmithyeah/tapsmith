@@ -141,6 +141,10 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> CliArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Sampled first, so a parent that dies while the daemon is still starting
+    // up is noticed as soon as the watch begins.
+    let startup_ppid = signal::parent_pid();
+
     // Install the ring crypto provider for rustls (required for MITM proxy TLS).
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -228,12 +232,13 @@ async fn main() -> Result<()> {
 
     info!(%addr, "Starting Tapsmith gRPC server");
 
-    let parent_to_watch = signal::parent_to_watch(args.outlive_parent, signal::parent_pid());
+    let parent_to_watch = signal::parent_to_watch(args.outlive_parent, startup_ppid);
     // Checked before tokio installs its own handler, which would replace a
     // SIG_IGN inherited from `nohup`.
     let watch_sighup = !signal::sighup_ignored();
 
-    Server::builder()
+    let (shutdown_began_tx, shutdown_began_rx) = tokio::sync::oneshot::channel::<()>();
+    let serve = Server::builder()
         .http2_keepalive_interval(Some(Duration::from_secs(30)))
         // Generous ack window: during agent startup the daemon fans out
         // simctl/xcodebuild/PlistBuddy subprocess work that can briefly starve
@@ -251,9 +256,24 @@ async fn main() -> Result<()> {
             // stream can hold the drain open, and the agents must not outlive
             // the daemon either way (PILOT-299).
             ios::agent_registry::shutdown_all().await;
-        })
-        .await
-        .context("gRPC server failed")?;
+            let _ = shutdown_began_tx.send(());
+        });
+    // The drain waits for every open connection. A client that keeps a stream
+    // open (or a worker that outlived a killed CLI) would hold it forever, and
+    // nobody escalates to SIGKILL after a parent-exit shutdown — so bound it,
+    // and still run the proxy cleanup below.
+    let drain_limit = async {
+        match shutdown_began_rx.await {
+            Ok(()) => tokio::time::sleep(DRAIN_LIMIT).await,
+            Err(_) => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        result = serve => result.context("gRPC server failed")?,
+        _ = drain_limit => {
+            warn!("gRPC connections still open {DRAIN_LIMIT:?} after shutdown began; exiting without them");
+        }
+    }
 
     // Clean up any active network proxy and WebView state before exiting
     service_handle.cleanup_network_proxy().await;
@@ -262,6 +282,11 @@ async fn main() -> Result<()> {
     info!("Tapsmith daemon shut down cleanly");
     Ok(())
 }
+
+/// How long the gRPC drain may run once shutdown has begun. Short enough that
+/// agent teardown plus drain plus proxy cleanup fit inside the 5 s the UI
+/// server gives a daemon between SIGTERM and SIGKILL.
+const DRAIN_LIMIT: Duration = Duration::from_secs(2);
 
 /// Resolves when the daemon should shut down: SIGINT, SIGTERM, SIGHUP (the
 /// terminal it was started from closed), or — unless `--outlive-parent` —
