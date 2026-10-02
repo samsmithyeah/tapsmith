@@ -245,19 +245,15 @@ jobs:
         working-directory: npm-packages/${{ matrix.pkg }}
         run: |
           npm pack --dry-run --json --ignore-scripts > /tmp/pack.json
-          node -e "
-            const parsed = require('/tmp/pack.json');
-            const [entry] = Array.isArray(parsed) ? parsed : Object.values(parsed);
-            const pkg = require('./package.json');
-            const problems = [];
-            for (const name of pkg.files) {
-              const file = entry.files.find((f) => f.path === name);
-              if (!file) problems.push(name + ' is not in the tarball');
-              else if ((file.mode & 0o111) !== 0o111) problems.push(name + ' has mode ' + (file.mode & 0o777).toString(8));
-            }
-            for (const script of ['preinstall', 'install', 'postinstall']) {
-              if (pkg.scripts && pkg.scripts[script] !== undefined) problems.push('package.json declares ' + script);
-            }
+          node --input-type=module -e "
+            import * as fs from 'node:fs';
+            import { installScriptsOf, nonExecutableFiles, packEntry } from '../../packages/tapsmith/scripts/clean-install-checks.mjs';
+            const entry = packEntry(fs.readFileSync('/tmp/pack.json', 'utf8'));
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const problems = [
+              ...nonExecutableFiles(entry.files, pkg.files),
+              ...installScriptsOf(pkg).map((script) => 'package.json declares ' + script),
+            ];
             if (problems.length) {
               console.error('Packed tarball is not installable as-is: ' + problems.join('; '));
               process.exit(1);

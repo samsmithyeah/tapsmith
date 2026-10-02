@@ -54,8 +54,16 @@ const userConfig = path.join(scratch, 'user-npmrc');
 const globalConfig = path.join(scratch, 'global-npmrc');
 fs.writeFileSync(userConfig, '');
 fs.writeFileSync(globalConfig, '');
+// `npm run` exports every non-default setting of the caller's own npmrc as
+// an npm_config_* variable, which the child npm reads back whatever userconfig
+// it is given: color=always would break the line matching below, and
+// allow-scripts or dangerously-allow-all-scripts would hide entries. Drop them
+// all and set only what the check needs.
+const inherited = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !/^npm_config_/i.test(key)),
+);
 const env = {
-  ...process.env,
+  ...inherited,
   npm_config_cache: path.join(scratch, 'cache'),
   npm_config_userconfig: userConfig,
   npm_config_globalconfig: globalConfig,
@@ -63,8 +71,8 @@ const env = {
   npm_config_update_notifier: 'false',
   npm_config_fund: 'false',
   npm_config_audit: 'false',
-  // An inherited `npm_config_ignore_scripts=true` would hide the install-scripts
-  // warning; each install below says explicitly whether scripts run.
+  npm_config_color: 'false',
+  // Each install below says explicitly whether scripts run.
   npm_config_ignore_scripts: 'false',
 };
 // Resolution must find the installed platform package, not an override.
