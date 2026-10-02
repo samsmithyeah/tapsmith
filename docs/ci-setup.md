@@ -188,7 +188,7 @@ jobs:
 
 - **macOS runner** is required for iOS simulators. GitHub provides `macos-latest` with Xcode pre-installed.
 - Tapsmith boots and manages simulators automatically -- no manual `xcrun simctl` setup needed. Tapsmith's own CI checks this weekly and on changes to its simulator-provisioning code: it starts with no simulator booted and verifies that Tapsmith booted the configured one.
-- With `workers` above 1, Tapsmith clones the simulator for each extra worker. The standard 3-core GitHub-hosted macOS runner cannot run two simulators at usable speed (app installs and XCUITest launches time out), so keep `workers: 1` there or use a larger runner. Tapsmith's CI does not cover multiple simulators on hosted runners for this reason.
+- With `workers` above 1, Tapsmith boots a simulator for each extra worker (another simulator of the same name and OS, or a clone of the configured one). The standard 3-core GitHub-hosted macOS runner cannot run two simulators at usable speed (app installs and XCUITest launches time out), so keep `workers: 1` there or use a larger runner. Tapsmith's CI does not cover multiple simulators on hosted runners for this reason.
 - Build your app for the iOS Simulator target (not a physical device) using `build-for-testing` or your existing build pipeline.
 
 ### iOS network capture on CI

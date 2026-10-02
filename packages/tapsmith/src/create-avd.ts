@@ -464,7 +464,12 @@ export async function createAvd(opts: CreateAvdOptions): Promise<void> {
   const avdmanager = findSdkTool('avdmanager');
   const args = ['create', 'avd', '-n', opts.name, '-k', image, '-d', opts.device];
   if (opts.force) args.push('--force');
-  await run(avdmanager, args, avdmanagerEnv(env), 'no\n');
+  const avdEnv = avdmanagerEnv(env);
+  // The SDK's location lookup can pass over an AVD home that does not exist
+  // yet (a fresh machine) and fall back to its own default — the very
+  // mismatch the pin is there to prevent.
+  if (avdEnv.ANDROID_AVD_HOME) fs.mkdirSync(avdEnv.ANDROID_AVD_HOME, { recursive: true });
+  await run(avdmanager, args, avdEnv, 'no\n');
 
   console.log();
   console.log(green(`✓ AVD ${opts.name} created`));
