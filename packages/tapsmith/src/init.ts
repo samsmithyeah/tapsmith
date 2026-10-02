@@ -803,17 +803,18 @@ async function runInitInner(): Promise<void> {
   // Step 9: Next steps
   console.log();
   console.log(`  ${bold('Next steps')}`);
-  console.log(`  Run your tests:     ${green('npx tapsmith test')}`);
-  console.log(`  List devices:       ${green('npx tapsmith list-devices')}`);
-  console.log(`  Health check:       ${green('npx tapsmith doctor')}`);
-
   const projects = generatedProjects(selectedPlatforms, iosConfig);
+  const steps: Array<[string, string]> = [
+    ['Run your tests', 'npx tapsmith test'],
+    ['List devices', 'npx tapsmith list-devices'],
+    ['Health check', 'npx tapsmith doctor'],
+  ];
+  const width = Math.max(...[...steps.map(([l]) => l), ...projects.map((p) => p.label)].map((l) => l.length)) + 3;
+  const step = (label: string, cmd: string): void => console.log(`  ${`${label}:`.padEnd(width)}${green(cmd)}`);
+  for (const [label, cmd] of steps) step(label, cmd);
   if (projects.length > 0) {
     console.log();
-    const width = Math.max(...projects.map((p) => p.label.length)) + 1;
-    for (const { name, label } of projects) {
-      console.log(`  ${`${label}:`.padEnd(width + 2)} ${green(`npx tapsmith test --project ${name}`)}`);
-    }
+    for (const { name, label } of projects) step(label, `npx tapsmith test --project ${name}`);
   }
 
   console.log();
