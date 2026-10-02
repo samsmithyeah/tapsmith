@@ -625,7 +625,8 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
         process.stdout.write(formatJson(result));
       } else {
         for (const f of result.filesCreated) console.log(`  ${green('✓')} ${f}`);
-        for (const w of result.warnings) console.log(`  ${YELLOW}⚠${RESET} ${w}`);
+        // A warning may span lines (a build failure's excerpt and log path).
+        for (const w of result.warnings) console.log(`  ${YELLOW}⚠${RESET} ${w.replace(/\n/g, '\n    ')}`);
         console.log();
         console.log(`  ${bold('Next steps')}`);
         for (const s of result.nextSteps) console.log(`  - ${s}`);

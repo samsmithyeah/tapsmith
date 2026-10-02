@@ -53,10 +53,31 @@ interface XcodebuildOutcome {
  * Rejects with a message naming the exit code, signal, timeout or spawn
  * failure, followed by the excerpt and the log path. The log is per process
  * (two sessions may build at once) and is removed after a successful build,
- * so only failed builds leave one behind. The messages never say
+ * so only failed builds leave one behind (the next build removes those of
+ * processes that have exited). The messages never say
  * "xcodebuild exited with": that is the daemon's agent-launch failure text,
  * which worker-protocol.ts retries as an infrastructure error.
  */
+/** Remove build logs left by processes that have exited (failed builds). */
+function pruneStaleBuildLogs(): void {
+  let entries: string[];
+  try { entries = fs.readdirSync(CACHE_DIR); } catch { return; }
+  for (const entry of entries) {
+    const pid = Number(/^xcodebuild-(\d+)\.log$/.exec(entry)?.[1]);
+    if (!pid || pid === process.pid || processAlive(pid)) continue;
+    try { fs.rmSync(path.join(CACHE_DIR, entry), { force: true }); } catch { /* best effort */ }
+  }
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 async function runXcodebuild(args: string[], logPath: string, timeoutMs: number | undefined): Promise<void> {
   const log = fs.createWriteStream(logPath);
   let logWritable = true;
@@ -91,10 +112,16 @@ async function runXcodebuild(args: string[], logPath: string, timeoutMs: number 
         partial = '';
       }
     });
-    stream.on('end', () => {
+    // 'end' on a normal finish; only 'close' when the drain destroyed it.
+    let flushed = false;
+    const flush = (): void => {
+      if (flushed) return;
+      flushed = true;
       partial += decoder.end();
       if (partial) keep(partial);
-    });
+    };
+    stream.on('end', flush);
+    stream.on('close', flush);
   };
 
   const outcome = await new Promise<XcodebuildOutcome>((resolve) => {
@@ -119,6 +146,8 @@ async function runXcodebuild(args: string[], logPath: string, timeoutMs: number 
       resolve({ code: null, signal: null, timedOut: false, spawnError: err });
     });
     child.on('exit', () => {
+      // Exited in time: the drain below must not turn it into a timeout.
+      if (timer) clearTimeout(timer);
       setTimeout(() => {
         child.stdout?.destroy();
         child.stderr?.destroy();
@@ -138,6 +167,7 @@ async function runXcodebuild(args: string[], logPath: string, timeoutMs: number 
   await new Promise<void>((resolve) => log.end(resolve));
 
   if (outcome.spawnError) {
+    fs.rmSync(logPath, { force: true });
     throw new Error(`could not start xcodebuild: ${outcome.spawnError.message}`);
   }
   if (!outcome.timedOut && outcome.code === 0) {
@@ -178,6 +208,7 @@ export async function buildSimulatorAgent(
   }
 
   fs.mkdirSync(CACHE_DIR, { recursive: true });
+  pruneStaleBuildLogs();
   const sdkMarker = path.join(CACHE_DIR, '.sdk-version');
   if (fs.existsSync(sdkMarker)) fs.rmSync(sdkMarker, { force: true });
   const buildDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-build-'));

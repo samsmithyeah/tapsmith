@@ -62,6 +62,16 @@ case "$FAKE_XCB_MODE" in
   sleep)
     echo 'hanging'
     exec sleep 30;;
+  ok-child-holds)
+    # Exits 0 at once; a descendant holds the pipes past the deadline.
+    sleep 2 &
+    products
+    echo '** TEST BUILD SUCCEEDED **'
+    exit 0;;
+  fail-child-holds)
+    sleep 5 &
+    printf 'final line without a newline'
+    exit 3;;
   sleep-child)
     # A descendant inherits the pipes and outlives the killed parent.
     echo 'hanging with a child'
@@ -176,10 +186,32 @@ describe('buildSimulatorAgent() xcodebuild output handling', () => {
     expect(message).toContain('hanging with a child');
   }, 15_000);
 
+  it('does not report a build that exited in time as timed out while a descendant holds the pipes', async () => {
+    expect(await build('ok-child-holds', { timeoutMs: 500 })).toBe(path.join(cacheDir(), XCTESTRUN));
+  }, 15_000);
+
+  it('keeps the last unterminated line when the drain closes the pipes', async () => {
+    const message = await buildError('fail-child-holds');
+    expect(message).toContain('failed (exit code 3)');
+    expect(message).toContain('final line without a newline');
+  }, 15_000);
+
+  it('removes logs left by exited processes, and keeps a live one', async () => {
+    fs.mkdirSync(cacheDir(), { recursive: true });
+    const dead = path.join(cacheDir(), 'xcodebuild-99999999.log');
+    const live = path.join(cacheDir(), `xcodebuild-${process.ppid}.log`);
+    fs.writeFileSync(dead, 'old failure');
+    fs.writeFileSync(live, 'another session building');
+    await build('big-ok');
+    expect(fs.existsSync(dead)).toBe(false);
+    expect(fs.existsSync(live)).toBe(true);
+  }, 30_000);
+
   it('says xcodebuild could not start when it is not installed', async () => {
     process.env.PATH = path.join(root, 'empty-bin');
     const message = await buildError('big-ok');
     expect(message).toMatch(/could not start xcodebuild: .*ENOENT/);
+    expect(fs.existsSync(logPath())).toBe(false);
   });
 });
 
