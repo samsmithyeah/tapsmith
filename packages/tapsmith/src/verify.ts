@@ -85,14 +85,33 @@ export function summarizeVerifyReport(report: VerifyReport): VerifySummary {
  * the `ok: false` result, not this. Playwright fails "No tests found" the
  * same way; an all-skipped run counts too, since it proves nothing about the
  * device or the app.
+ *
+ * The file was selected (an unselected one never reaches a report: the run
+ * exits "No test files found." and verify reports RUN_FAILED), so the causes
+ * left are a file with no runnable test and a grep that filters them out.
+ * The counts cover the whole run (dependency projects, or a file several
+ * projects match), so the message does not pin them on the file.
+ * `scaffolded`: the file is verify's own throwaway smoke test, already
+ * deleted by the time the error is read, so it is not named.
  */
-export function noTestsRanError(summary: VerifySummary, testFile: string): { message: string; fix: string } | undefined {
+export function noTestsRanError(
+  summary: VerifySummary,
+  testFile: string,
+  scaffolded: boolean,
+): { message: string; fix: string } | undefined {
   if (summary.passed + summary.failed > 0) return undefined;
+  const grepFix = 'a grep / grepInvert in the config (at the root or in a project) that filters out every test';
+  if (scaffolded) {
+    return {
+      message: 'No tests ran: the throwaway smoke test verify generated (the project has no test files yet) was skipped',
+      fix: `Check for ${grepFix}`,
+    };
+  }
   return {
     message: summary.skipped > 0
-      ? `No tests ran: all ${summary.skipped} test(s) in ${testFile} were skipped`
+      ? `No tests ran: running ${testFile} skipped all ${summary.skipped} test(s)`
       : `No tests ran: ${testFile} has no tests`,
-    fix: `Check that testMatch (and projects, if the config has any) select ${testFile}, and that its tests are not all skipped (test.skip, or a grep / grepInvert that filters them out)`,
+    fix: `Give ${testFile} a test that is not skipped: check for test.skip / describe.skip, and for ${grepFix}`,
   };
 }
 
@@ -231,7 +250,7 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
       }
       const summary = summarizeVerifyReport(report);
       const testFile = path.relative(config.rootDir, target);
-      const noTests = noTestsRanError(summary, testFile);
+      const noTests = noTestsRanError(summary, testFile, scaffolded !== undefined);
       if (noTests) {
         emitError(args.json, 'NO_TESTS_RAN', noTests.message, noTests.fix);
         return;

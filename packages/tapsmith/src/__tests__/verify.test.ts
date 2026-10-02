@@ -8,15 +8,15 @@ import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summ
 // runVerify spawns the real `tapsmith test`; the tests below replace that
 // child with one that writes a canned JSON report. Every other spawnSync call
 // (none today) goes to the real implementation.
-const spawnSyncMock = vi.hoisted(() => ({ impl: undefined as undefined | ((opts: SpawnSyncOptions) => void) }));
+const spawnSyncMock = vi.hoisted(() => ({ impl: undefined as undefined | ((opts: SpawnSyncOptions) => number) }));
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
     ...actual,
     spawnSync: (cmd: string, args: readonly string[], opts: SpawnSyncOptions): SpawnSyncReturns<Buffer> => {
       if (!spawnSyncMock.impl) return actual.spawnSync(cmd, args, opts) as SpawnSyncReturns<Buffer>;
-      spawnSyncMock.impl(opts);
-      return { pid: 1, output: [], stdout: Buffer.from(''), stderr: Buffer.from(''), status: 0, signal: null };
+      const status = spawnSyncMock.impl(opts);
+      return { pid: 1, output: [], stdout: Buffer.from(''), stderr: Buffer.from(''), status, signal: null };
     },
   };
 });
@@ -84,7 +84,7 @@ describe('summarizeVerifyReport()', () => {
     flaky.suites[0].tests[0] = { ...flaky.suites[0].tests[0], retry: 1 } as typeof flaky.suites[0]['tests'][0];
     const summary = summarizeVerifyReport(flaky);
     expect(summary.ok).toBe(true);
-    expect(noTestsRanError(summary, 'tests/a.test.ts')).toBeUndefined();
+    expect(noTestsRanError(summary, 'tests/a.test.ts', false)).toBeUndefined();
   });
 });
 
@@ -108,22 +108,37 @@ function reportOf(statuses: Status[]) {
 
 describe('noTestsRanError()', () => {
   it('names an empty file', () => {
-    const err = noTestsRanError(summarizeVerifyReport(reportOf([])), 'tests/a.test.ts');
+    const err = noTestsRanError(summarizeVerifyReport(reportOf([])), 'tests/a.test.ts', false);
     expect(err?.message).toBe('No tests ran: tests/a.test.ts has no tests');
-    expect(err?.fix).toMatch(/testMatch/);
-    expect(err?.fix).toMatch(/projects/);
   });
 
-  it('names a file whose tests were all skipped', () => {
-    const err = noTestsRanError(summarizeVerifyReport(reportOf(['skipped', 'skipped'])), 'tests/a.test.ts');
-    expect(err?.message).toBe('No tests ran: all 2 test(s) in tests/a.test.ts were skipped');
-    expect(err?.fix).toMatch(/skip/);
+  it('reports a run whose tests were all skipped', () => {
+    const err = noTestsRanError(summarizeVerifyReport(reportOf(['skipped', 'skipped'])), 'tests/a.test.ts', false);
+    expect(err?.message).toBe('No tests ran: running tests/a.test.ts skipped all 2 test(s)');
+  });
+
+  it('points at what can cause it: skipped tests and a grep, not file selection', () => {
+    // The file was selected: an unselected one exits "No test files found."
+    // before any report is written (RUN_FAILED), so testMatch is not the cause.
+    const err = noTestsRanError(summarizeVerifyReport(reportOf(['skipped'])), 'tests/a.test.ts', false);
+    expect(err?.fix).toMatch(/test\.skip/);
+    expect(err?.fix).toMatch(/grep/);
+    expect(err?.fix).not.toMatch(/testMatch/);
+  });
+
+  it('does not name the throwaway smoke test, which is deleted by then', () => {
+    const file = 'tests/tapsmith-verify-abc/smoke.test.ts';
+    const err = noTestsRanError(summarizeVerifyReport(reportOf(['skipped'])), file, true);
+    expect(err?.message).toMatch(/throwaway smoke test/);
+    expect(err?.message).not.toContain(file);
+    expect(err?.fix).not.toContain(file);
+    expect(err?.fix).toMatch(/grep/);
   });
 
   it('is undefined when a test passed or failed', () => {
-    expect(noTestsRanError(summarizeVerifyReport(reportOf(['passed', 'skipped'])), 'a')).toBeUndefined();
+    expect(noTestsRanError(summarizeVerifyReport(reportOf(['passed', 'skipped'])), 'a', false)).toBeUndefined();
     // Failures alone are a failed run (the ok:false result), not "nothing ran".
-    expect(noTestsRanError(summarizeVerifyReport(reportOf(['failed', 'skipped'])), 'a')).toBeUndefined();
+    expect(noTestsRanError(summarizeVerifyReport(reportOf(['failed', 'skipped'])), 'a', false)).toBeUndefined();
   });
 });
 
@@ -160,10 +175,11 @@ describe('runVerify() outcome by what the run executed', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  const childReports = (statuses: Status[]): void => {
+  const childReports = (statuses: Status[], exitStatus = 0): void => {
     spawnSyncMock.impl = (opts) => {
       const file = (opts.env as NodeJS.ProcessEnv).TAPSMITH_JSON_OUTPUT_FILE!;
       fs.writeFileSync(file, JSON.stringify(reportOf(statuses)));
+      return exitStatus;
     };
   };
   const jsonOut = (): Record<string, unknown> => {
@@ -187,9 +203,16 @@ describe('runVerify() outcome by what the run executed', () => {
     childReports(['skipped', 'skipped']);
     await runVerify({ json: false });
     const errors = errLog.mock.calls.map((c) => String(c[0]));
-    expect(errors[0]).toBe(`✗ No tests ran: all 2 test(s) in ${path.join('tests', 'a.test.ts')} were skipped`);
-    expect(errors[1]).toMatch(/^→ .*testMatch/);
+    expect(errors[0]).toBe(`✗ No tests ran: running ${path.join('tests', 'a.test.ts')} skipped all 2 test(s)`);
+    expect(errors[1]).toMatch(/^→ .*test\.skip/);
     expect(log.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(/Setup verified/);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('--json: a grep that filters out every test (the child writes its report, then exits 1) is NO_TESTS_RAN', async () => {
+    childReports(['skipped'], 1);
+    await runVerify({ json: true });
+    expect((jsonOut().error as Record<string, string>).code).toBe('NO_TESTS_RAN');
     expect(process.exitCode).toBe(1);
   });
 
