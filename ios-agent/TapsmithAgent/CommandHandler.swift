@@ -493,7 +493,7 @@ class CommandHandler {
             actionExecutor.cachedScreenSize = snapshotFinder.screenSize
         }
         waitEngine = WaitEngine(app: refreshedApp)
-        hierarchyDumper = HierarchyDumper(app: refreshedApp)
+        hierarchyDumper = HierarchyDumper(app: refreshedApp, bundleId: resolvedBundleId)
         return refreshedApp
     }
 
@@ -1727,7 +1727,7 @@ class CommandHandler {
         // ─── UI Hierarchy ───
 
         case "getUiHierarchy":
-            let xml = hierarchyDumper.dump()
+            let xml = try hierarchyDumper.dump()
             return ["hierarchy": xml]
 
         case "captureTraceState":
@@ -1762,7 +1762,7 @@ class CommandHandler {
                 } else if snapshotError != nil {
                     result["hierarchyXml"] = hierarchyDumper.dumpFallback()
                 } else {
-                    result["hierarchyXml"] = hierarchyDumper.dump()
+                    result["hierarchyXml"] = try hierarchyDumper.dump()
                 }
             }
             if hasSelector {
