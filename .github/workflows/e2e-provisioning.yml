@@ -566,9 +566,11 @@ jobs:
   # ─── Android bare state: create-avd, then launch (weekly) ──────────────
 
   # A first-time user's runner: no AVD, no cached system image, no emulator
-  # package, nothing exported beyond what docs/ci-setup.md says (adb on the
-  # PATH). `tapsmith create-avd --install-tools` has to fetch the image and
-  # create the AVD, and Tapsmith has to find the emulator binary itself.
+  # package and — as on an Android Studio install — no SDK command-line
+  # tools; beyond Java, only what docs/ci-setup.md says (adb on the PATH).
+  # `tapsmith create-avd --install-tools` has to download the cmdline-tools,
+  # fetch the image and create the AVD, and Tapsmith has to find the
+  # emulator binary itself.
   android-bare:
     name: Android bare state (create-avd, then launch)
     needs: [ build-sdk, build-daemon-linux, build-agent-android, build-test-app-android ]
@@ -585,6 +587,15 @@ jobs:
 
       - name: Put adb on the PATH
         run: echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+
+      # The runner image ships the cmdline-tools; set them aside so
+      # create-avd's own download-and-extract path runs.
+      - name: Remove the SDK command-line tools
+        run: |
+          mv "$ANDROID_HOME/cmdline-tools" "$RUNNER_TEMP/cmdline-tools-preinstalled"
+          if command -v sdkmanager || command -v avdmanager; then
+            echo "::error::sdkmanager/avdmanager still on the PATH"; exit 1
+          fi
 
       - uses: actions/setup-java@v4
         with:
