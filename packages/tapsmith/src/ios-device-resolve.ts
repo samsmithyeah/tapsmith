@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { listPhysicalDevices, listUsbAttachedIosDevices } from './ios-devicectl.js';
+import { displayPath, npmIosAgentDir, npmIosAgentVersion, tapsmithPackageVersion } from './ios-agent-paths.js';
 
 const require = createRequire(import.meta.url);
 
@@ -52,11 +53,15 @@ export function resolvePhysicalIosDevice(): string {
 }
 
 /**
- * Find the newest device-built xctestrun under `ios-agent/.build-device`,
- * walking up from `startDir` to the repo root. Returns absolute path, or
- * `undefined` when no build exists (caller decides whether to error — the
- * CLI does, after giving a clear fix-it message pointing at
- * `tapsmith ios build-agent`).
+ * Find the newest device-built xctestrun. Looks, in order:
+ *   1. `ios-agent/.build-device` in `startDir` or up to five of its parents
+ *      — a Tapsmith checkout's build (`tapsmith ios build-agent` run there);
+ *   2. `~/.tapsmith/ios-agent/.build-device` — where `tapsmith ios build-agent`
+ *      builds for an npm install (PILOT-264). Used only when that source was
+ *      extracted by this Tapsmith version: a runner built from an older
+ *      version's agent would run against this version's daemon.
+ * Returns an absolute path, or `undefined` when no usable build exists
+ * (callers explain why with {@link describeMissingDeviceXctestrun}).
  *
  * `.patched.xctestrun` files are excluded because the daemon rewrites
  * xctestrun files at runtime; selecting one as the source would cause
@@ -64,10 +69,8 @@ export function resolvePhysicalIosDevice(): string {
  * the filename exceeds the 255-byte POSIX limit.
  */
 export function findDeviceXctestrun(startDir: string): string | undefined {
-  // Walk up from startDir looking for `ios-agent/.build-device/Build/Products`.
-  // Same "try a few levels up" approach ios setup-device uses — we don't
-  // know whether the user runs from the monorepo root, an e2e subdir, or
-  // a nested package.
+  // We don't know whether the user runs from the monorepo root, an e2e
+  // subdir, or a nested package, so walk up a few levels.
   let dir = path.resolve(startDir);
   for (let i = 0; i < 6; i++) {
     const productsDir = path.join(dir, 'ios-agent', '.build-device', 'Build', 'Products');
@@ -79,7 +82,73 @@ export function findDeviceXctestrun(startDir: string): string | undefined {
     if (parent === dir) break;
     dir = parent;
   }
-  return undefined;
+  if (npmIosAgentVersion() !== tapsmithPackageVersion()) return undefined;
+  return newestIphoneosXctestrun(npmDeviceProductsDir());
+}
+
+function npmDeviceProductsDir(): string {
+  return path.join(npmIosAgentDir(), '.build-device', 'Build', 'Products');
+}
+
+/**
+ * The npm install's device build when it exists but was made by another
+ * Tapsmith version (so {@link findDeviceXctestrun} skips it). `builtBy` is
+ * undefined when the version marker is missing.
+ */
+export function staleNpmDeviceBuild(): { builtBy: string | undefined; current: string } | undefined {
+  const builtBy = npmIosAgentVersion();
+  const current = tapsmithPackageVersion();
+  if (builtBy === current) return undefined;
+  if (!newestIphoneosXctestrun(npmDeviceProductsDir())) return undefined;
+  return { builtBy, current };
+}
+
+/** Why {@link findDeviceXctestrun} found nothing from `startDir`, and what to do. */
+export function describeMissingDeviceXctestrun(startDir: string): string {
+  const npmBuild = displayPath(path.join(npmIosAgentDir(), '.build-device'));
+  const looked = `No device xctestrun found under ios-agent/.build-device in ${path.resolve(startDir)} `
+    + `or its parents, or under ${npmBuild}.`;
+  const stale = staleNpmDeviceBuild();
+  if (stale) {
+    const by = stale.builtBy ? `Tapsmith ${stale.builtBy}` : 'another Tapsmith version';
+    return `${looked} The runner under ${npmBuild} was built by ${by} (this is ${stale.current}), `
+      + `so it is not used. Rebuild it with Tapsmith ${stale.current}: run \`npx tapsmith ios build-agent\` in your project.`;
+  }
+  return `${looked} Run \`tapsmith ios build-agent\` first, or set \`iosXctestrun\` explicitly.`;
+}
+
+/**
+ * The message for an `iosXctestrun` (or `TAPSMITH_IOS_XCTESTRUN`) that
+ * points at a file that does not exist. A path into the npm install's agent
+ * directory gets the likely cause: upgrading Tapsmith re-extracts that
+ * directory, which removes the runner built in it (PILOT-264).
+ */
+export function describeMissingExplicitXctestrun(xctestrunPath: string, source: string): string {
+  const head = `The xctestrun set by ${source} does not exist: ${displayPath(xctestrunPath)}.`;
+  if (isInside(xctestrunPath, npmIosAgentDir())) {
+    return `${head} Upgrading Tapsmith replaces ${displayPath(npmIosAgentDir())}, which removes the runner built there. `
+      + 'Rebuild it with `npx tapsmith ios build-agent` in your project; `tapsmith test` then finds that build without the setting.';
+  }
+  return `${head} Fix the path, or unset it to let Tapsmith find the agent build itself.`;
+}
+
+/**
+ * A warning for an existing `iosXctestrun` inside the npm install's agent
+ * directory that an earlier Tapsmith version built. It is still used (the
+ * setting is explicit), but the next agent build or upgrade replaces it.
+ */
+export function staleExplicitXctestrunWarning(xctestrunPath: string): string | undefined {
+  if (!isInside(xctestrunPath, npmIosAgentDir())) return undefined;
+  const builtBy = npmIosAgentVersion();
+  const current = tapsmithPackageVersion();
+  if (builtBy === current) return undefined;
+  return `${displayPath(xctestrunPath)} was built by ${builtBy ? `Tapsmith ${builtBy}` : 'another Tapsmith version'} `
+    + `(this is ${current}). If the agent fails to start, rebuild it with \`tapsmith ios build-agent\`.`;
+}
+
+function isInside(file: string, dir: string): boolean {
+  const rel = path.relative(dir, path.resolve(file));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 function newestIphoneosXctestrun(productsDir: string): string | undefined {
@@ -97,9 +166,15 @@ function newestIphoneosXctestrun(productsDir: string): string | undefined {
         !e.endsWith('.patched.xctestrun'),
     )
     .map((e) => path.join(productsDir, e));
-  if (matches.length === 0) return undefined;
-  matches.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-  return matches[0];
+  // Stat each once, skipping a file removed since the readdir (an upgrade
+  // re-extracting ~/.tapsmith/ios-agent in another process).
+  const stamped: Array<{ path: string; mtime: number }> = [];
+  for (const p of matches) {
+    try { stamped.push({ path: p, mtime: fs.statSync(p).mtimeMs }); } catch { /* vanished */ }
+  }
+  if (stamped.length === 0) return undefined;
+  stamped.sort((a, b) => b.mtime - a.mtime);
+  return stamped[0].path;
 }
 
 /**

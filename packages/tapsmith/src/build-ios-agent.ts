@@ -30,10 +30,11 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { glob } from 'glob';
 import { getProfileExpiryInfo, formatExpiryWarning } from './ios-profile-expiry.js';
+import { npmIosAgentDir, npmIosAgentVersion, npmIosAgentVersionFile, tapsmithPackageVersion } from './ios-agent-paths.js';
+import { findDeviceXctestrun } from './ios-device-resolve.js';
 
 // ─── iOS agent source resolution ────────────────────────────────────────
 
@@ -45,25 +46,19 @@ import { getProfileExpiryInfo, formatExpiryWarning } from './ios-profile-expiry.
  *   2. `~/.tapsmith/ios-agent/` — previously extracted from the npm package
  *   3. Extract bundled source from the npm package to `~/.tapsmith/ios-agent/`
  */
-function getPackageVersion(): string {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '../package.json'), 'utf8'));
-    return pkg.version ?? '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
-
 export function resolveIosAgentDir(cwd?: string): string {
   // 1. Monorepo
   const monorepo = path.resolve(cwd ?? process.cwd(), 'ios-agent');
   if (fs.existsSync(path.join(monorepo, 'TapsmithAgent.xcodeproj'))) return monorepo;
 
-  // 2. Previously extracted — re-extract if version changed
-  const cached = path.join(os.homedir(), '.tapsmith', 'ios-agent');
-  const versionFile = path.join(cached, '.tapsmith-version');
-  const currentVersion = getPackageVersion();
-  const cachedVersion = fs.existsSync(versionFile) ? fs.readFileSync(versionFile, 'utf8').trim() : '';
+  // 2. Previously extracted — re-extract if version changed. Re-extracting
+  // also removes the device build under it (`.build-device`): that runner was
+  // built from the previous version's agent source. The device xctestrun
+  // lookup already refuses it and says to rebuild (PILOT-264).
+  const cached = npmIosAgentDir();
+  const versionFile = npmIosAgentVersionFile();
+  const currentVersion = tapsmithPackageVersion();
+  const cachedVersion = npmIosAgentVersion() ?? '';
 
   if (fs.existsSync(path.join(cached, 'TapsmithAgent.xcodeproj')) && cachedVersion === currentVersion) {
     return cached;
@@ -495,11 +490,37 @@ export async function buildIosAgent(options: BuildIosAgentOptions): Promise<stri
       }
     }
 
-    console.log('  Add to your ' + bold('tapsmith.config.ts') + ':');
-    console.log(`    ${dim('iosXctestrun:')} ${green("'" + path.relative(options.cwd ?? process.cwd(), newest) + "'")}`);
+    for (const line of builtRunnerConfigHint(newest, path.resolve(options.cwd ?? process.cwd()))) console.log(line);
     console.log();
   }
   return newest;
+}
+
+/**
+ * What to tell the user about configuring the runner just built. It used to
+ * print a cwd-relative `iosXctestrun`, which broke in a config whose rootDir
+ * is elsewhere (PILOT-264); `tapsmith test` now finds this build itself in the
+ * usual layouts, so say that, and give an absolute path for pinning or for a
+ * build it will not find (a custom `--derived-data-path`).
+ */
+export function builtRunnerConfigHint(xctestrun: string, cwd: string): string[] {
+  const pin = `    ${dim('iosXctestrun:')} ${green(`'${xctestrun}'`)}`;
+  if (findDeviceXctestrun(cwd) !== xctestrun) {
+    return ['  Add to your ' + bold('tapsmith.config.ts') + ' (an absolute path, so it works from any rootDir):', pin];
+  }
+  const inNpmAgentDir = !path.relative(npmIosAgentDir(), xctestrun).startsWith('..');
+  if (inNpmAgentDir) {
+    // No pin offered: upgrading Tapsmith replaces ~/.tapsmith/ios-agent, so a
+    // pinned path there would turn into a hard error, where auto-detection
+    // just asks for a rebuild.
+    return [`  ${bold('tapsmith test')} finds this runner itself — no \`iosXctestrun\` needed.`];
+  }
+  // findDeviceXctestrun walks up five parents from rootDir.
+  return [
+    `  ${bold('tapsmith test')} finds this runner itself when your config's rootDir is ${cwd} or up to five levels inside it — no \`iosXctestrun\` needed.`,
+    dim('  To pin this build instead, add to your tapsmith.config.ts:'),
+    pin,
+  ];
 }
 
 /**

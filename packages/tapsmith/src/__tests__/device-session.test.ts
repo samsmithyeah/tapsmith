@@ -91,8 +91,10 @@ vi.mock('../ios-devicectl.js', () => ({
   isAppInstalledOnDevice: vi.fn(async () => true),
 }));
 
-vi.mock('../ios-device-resolve.js', () => ({
+vi.mock('../ios-device-resolve.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../ios-device-resolve.js')>()),
   findDeviceXctestrun: vi.fn(() => mocks.deviceXctestrun),
+  describeMissingDeviceXctestrun: vi.fn((dir: string) => `No device xctestrun found under ios-agent/.build-device in ${dir} (described)`),
 }));
 
 vi.mock('../ios-simulator-build.js', () => ({
@@ -357,6 +359,49 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
       { label: 'Device' },
     )).rejects.toThrow(/No device xctestrun found under ios-agent\/.build-device/);
     expect(mocks.execs.some((e) => e[0] === 'xcrun')).toBe(false);
+  });
+
+  // PILOT-264: a hand-set xctestrun that is gone (an upgrade re-extracts
+  // ~/.tapsmith/ios-agent, removing the build) is named up front, not left
+  // to fail inside xcodebuild.
+  describe('a hand-set xctestrun that does not exist', () => {
+    const physical = { name: 'device-1', serial: 'PHYS-1', daemonAddress: 'localhost:50052' };
+    const iosConfig = (over: Partial<TapsmithConfig> = {}) =>
+      makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app', ...over });
+
+    it('refuses `iosXctestrun`, naming the path resolved against rootDir', async () => {
+      await expect(openDeviceSession(physical, iosConfig({ iosXctestrun: 'gone/Agent.xctestrun' }), { label: 'Device' }))
+        .rejects.toThrow(/The xctestrun set by `iosXctestrun` does not exist: \/proj\/gone\/Agent\.xctestrun/);
+      expect(mocks.devices[0].startAgent).not.toHaveBeenCalled();
+    });
+
+    it('refuses TAPSMITH_IOS_XCTESTRUN by name, for simulators too', async () => {
+      const saved = process.env.TAPSMITH_IOS_XCTESTRUN;
+      process.env.TAPSMITH_IOS_XCTESTRUN = '/nowhere/Agent.xctestrun';
+      try {
+        await expect(openDeviceSession(
+          { name: 'device-1', serial: 'SIM-1', daemonAddress: 'localhost:50052' },
+          iosConfig({ simulator: 'iPhone 16' }),
+          { label: 'Device' },
+        )).rejects.toThrow(/set by TAPSMITH_IOS_XCTESTRUN does not exist: \/nowhere\/Agent\.xctestrun.*unset it/);
+      } finally {
+        if (saved === undefined) delete process.env.TAPSMITH_IOS_XCTESTRUN;
+        else process.env.TAPSMITH_IOS_XCTESTRUN = saved;
+      }
+    });
+
+    it('says an upgrade removed it when the path is in the npm agent directory', async () => {
+      const os = await import('node:os');
+      const gone = `${os.homedir()}/.tapsmith/ios-agent/.build-device/Build/Products/Gone_iphoneos-arm64.xctestrun`;
+      await expect(openDeviceSession(physical, iosConfig({ iosXctestrun: gone }), { label: 'Device' }))
+        .rejects.toThrow(/does not exist: ~\/\.tapsmith\/ios-agent\/.*Upgrading Tapsmith replaces.*tapsmith ios build-agent/);
+    });
+
+    it('does not check an adopting session, whose agent is already running', async () => {
+      await openDeviceSession(physical, iosConfig({ iosXctestrun: 'gone/Agent.xctestrun' }), {
+        label: 'Run', adopt: true, adoptVerify: false, seedCapabilities: { hooksDetected: true },
+      });
+    });
   });
 });
 

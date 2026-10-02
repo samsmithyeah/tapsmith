@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { tapsmithPackageVersion } from '../ios-agent-paths.js';
 import {
+  builtRunnerConfigHint,
   matchKnownErrorHint,
   parseCodesignIdentities,
   parseXcodeTeams,
@@ -151,3 +156,59 @@ describe('matchKnownErrorHint', () => {
   });
 });
 
+
+// PILOT-264: the hint used to print a path relative to the build's cwd, which
+// broke when pasted into a config whose rootDir is elsewhere.
+describe('builtRunnerConfigHint', () => {
+  // The hint is styled for the terminal; read the words.
+  const plain = (lines: string[]) => lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  const XCTESTRUN = 'A_iphoneos26.4-arm64.xctestrun';
+  let tmp: string;
+  let savedHome: string | undefined;
+  const writeRunner = (productsDir: string) => {
+    fs.mkdirSync(productsDir, { recursive: true });
+    const file = path.join(productsDir, XCTESTRUN);
+    fs.writeFileSync(file, '<plist/>');
+    return file;
+  };
+
+  beforeEach(() => {
+    tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-hint-')));
+    fs.mkdirSync(path.join(tmp, 'home'));
+    savedHome = process.env.HOME;
+    process.env.HOME = path.join(tmp, 'home');
+  });
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('an npm build: tapsmith test finds it from anywhere; no pin offered (an upgrade would delete the pinned file)', () => {
+    const agent = path.join(tmp, 'home', '.tapsmith', 'ios-agent');
+    const runner = writeRunner(path.join(agent, '.build-device', 'Build', 'Products'));
+    fs.writeFileSync(path.join(agent, '.tapsmith-version'), tapsmithPackageVersion());
+    const app = path.join(tmp, 'app');
+    fs.mkdirSync(app);
+    const text = plain(builtRunnerConfigHint(runner, app));
+    expect(text).toMatch(/finds this runner itself — no `iosXctestrun` needed/);
+    expect(text).not.toMatch(/rootDir is/);
+    expect(text).not.toContain('iosXctestrun:');
+  });
+
+  it('a checkout build is found from rootDirs at or up to five levels inside the build directory', () => {
+    const repo = path.join(tmp, 'repo');
+    const runner = writeRunner(path.join(repo, 'ios-agent', '.build-device', 'Build', 'Products'));
+    const text = plain(builtRunnerConfigHint(runner, repo));
+    expect(text).toContain(`when your config's rootDir is ${repo} or up to five levels inside it`);
+    expect(text).toContain(`iosXctestrun: '${runner}'`);
+  });
+
+  it('a build it will not find (custom --derived-data-path) gets an absolute iosXctestrun to add', () => {
+    const runner = writeRunner(path.join(tmp, 'dd', 'Build', 'Products'));
+    const text = plain(builtRunnerConfigHint(runner, path.join(tmp, 'home')));
+    expect(text).not.toMatch(/finds this runner itself/);
+    expect(text).toMatch(/Add to your/);
+    expect(text).toContain(`iosXctestrun: '${runner}'`);
+  });
+});

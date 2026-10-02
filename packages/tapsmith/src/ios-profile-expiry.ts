@@ -24,8 +24,13 @@ import * as path from 'node:path';
 export interface ProfileExpiryInfo {
   /** Absolute ISO-8601 expiry timestamp. */
   expiresAt: string
-  /** Days from now (rounded down). Negative when already expired. */
+  /**
+   * Whole days from now, rounded toward zero: 0 within a day either side of
+   * the expiry, negative once a full day has passed since it.
+   */
   daysUntilExpiry: number
+  /** True once the expiry time has passed. */
+  expired: boolean
   /** Source profile path we read. */
   profilePath: string
 }
@@ -114,9 +119,19 @@ export function getProfileExpiryInfo(xctestrunPath: string): ProfileExpiryInfo |
   if (!expiresAtStr) return undefined;
   const expiresAt = new Date(expiresAtStr);
   if (Number.isNaN(expiresAt.getTime())) return undefined;
-  const msUntil = expiresAt.getTime() - Date.now();
-  const daysUntilExpiry = Math.floor(msUntil / (24 * 60 * 60 * 1000));
-  return { expiresAt: expiresAt.toISOString(), daysUntilExpiry, profilePath };
+  return profileExpiryInfoAt(expiresAt, profilePath);
+}
+
+/**
+ * Expiry info for a profile expiring at `expiresAt`, as seen at `now`.
+ * Days round toward zero, so a profile that expired an hour ago is expired
+ * 0 whole days ago, not 1.
+ */
+export function profileExpiryInfoAt(expiresAt: Date, profilePath: string, now: number = Date.now()): ProfileExpiryInfo {
+  const msUntil = expiresAt.getTime() - now;
+  // `|| 0` turns Math.trunc's -0 into 0.
+  const daysUntilExpiry = Math.trunc(msUntil / (24 * 60 * 60 * 1000)) || 0;
+  return { expiresAt: expiresAt.toISOString(), daysUntilExpiry, expired: msUntil < 0, profilePath };
 }
 
 /**
@@ -132,13 +147,14 @@ export const EXPIRY_WARNING_DAYS = 3;
  * the warning window.
  */
 export function formatExpiryWarning(info: ProfileExpiryInfo): string | undefined {
-  const { daysUntilExpiry } = info;
+  const { daysUntilExpiry, expired } = info;
   if (daysUntilExpiry > EXPIRY_WARNING_DAYS) return undefined;
-  if (daysUntilExpiry < 0) {
-    return `Provisioning profile expired ${Math.abs(daysUntilExpiry)} day(s) ago — re-run \`tapsmith ios build-agent\` before your next test.`;
+  if (expired) {
+    const ago = daysUntilExpiry === 0 ? 'less than a day' : `${Math.abs(daysUntilExpiry)} day(s)`;
+    return `Provisioning profile expired ${ago} ago — re-run \`tapsmith ios build-agent\` before your next test.`;
   }
   if (daysUntilExpiry === 0) {
-    return 'Provisioning profile expires TODAY — re-run `tapsmith ios build-agent` to refresh.';
+    return 'Provisioning profile expires within 24 hours — re-run `tapsmith ios build-agent` to refresh.';
   }
   return `Provisioning profile expires in ${daysUntilExpiry} day(s) — re-run \`tapsmith ios build-agent\` before it rolls.`;
 }
