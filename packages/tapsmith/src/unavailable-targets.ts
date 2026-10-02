@@ -68,6 +68,14 @@ export class UnavailableTargets {
       : undefined;
   }
 
+  /** The reason with `hint` appended to its first line; the later lines (the hints) follow. */
+  notice(signature: string, hint: string): string | undefined {
+    const reason = this.reason(signature);
+    if (reason === undefined) return undefined;
+    const [first, ...rest] = reason.split('\n');
+    return [`${first.replace(/\.$/, '')}. ${hint}`, ...rest].join('\n');
+  }
+
   /** The unavailable targets the given projects run on, each once, in first-seen order. */
   signaturesFor(
     projectNames: Iterable<string | undefined>,

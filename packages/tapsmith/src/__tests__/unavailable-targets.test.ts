@@ -21,8 +21,21 @@ describe('UnavailableTargets', () => {
 
   it('gives each target the reason its files report', () => {
     const targets = new UnavailableTargets(undefined, [[ANDROID, new Error('No online devices found.\nSet `avd`')]]);
-    expect(targets.reason(ANDROID)).toBe('Device target "android Pixel_6" could not start: No online devices found.');
+    expect(targets.reason(ANDROID)).toBe('Device target "android Pixel_6" could not start: No online devices found.\nSet `avd`');
     expect(targets.reason(IOS)).toBeUndefined();
+  });
+
+  it('adds a hint to the reason\'s first line, keeping its later lines', () => {
+    const targets = new UnavailableTargets(undefined, [
+      [IOS, new Error('xcodebuild failed (exit 65).\nerror: no signing\nLog: ~/.tapsmith/ios-simulator-agent/xcodebuild.log')],
+      [ANDROID, 'boom'],
+    ]);
+    expect(targets.notice(IOS, 'Running its tests again retries it.')).toBe(
+      'Device target "ios iPhone 17" could not start: xcodebuild failed (exit 65). Running its tests again retries it.\n'
+      + 'error: no signing\nLog: ~/.tapsmith/ios-simulator-agent/xcodebuild.log',
+    );
+    expect(targets.notice(ANDROID, 'Running its tests again retries it.'))
+      .toBe('Device target "android Pixel_6" could not start: boom. Running its tests again retries it.');
   });
 
   it('picks out the unavailable targets a run needs, once each', () => {

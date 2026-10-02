@@ -664,7 +664,8 @@ describe('coordinateBuckets()', () => {
       ['android', 'a.test.ts', '/t/a.test.ts'],
       ['android', 'b.test.ts', '/t/b.test.ts'],
     ]);
-    expect(failed[0].error?.message).toBe('Device target "android Pixel_6" could not start: No worker could start: launcher ANR');
+    // The whole reason: its later lines carry the hints.
+    expect(failed[0].error?.message).toBe('Device target "android Pixel_6" could not start: No worker could start: launcher ANR\ndetails');
     expect(result.tests.filter((t) => t.status === 'passed').map((t) => t.name)).toEqual(['ios test']);
   });
 
@@ -882,14 +883,15 @@ describe('targetStartFailureResults()', () => {
     expect(deviceTargetLabel('ios|iPhone 17')).toBe('ios iPhone 17');
   });
 
-  it('fails each file once with the first line of the reason and no dispatcher stack', () => {
+  it('fails each file once with the whole reason and no dispatcher stack', () => {
     const project = makeProject('android', 'android|Pixel_6', ['/t/a.test.ts', '/t/b.test.ts']);
     const results = targetStartFailureResults('android Pixel_6', [project], new Error('No online devices found.\nConnect a device'));
     expect(results.map((r) => [r.name, r.filePath, r.status, r.project])).toEqual([
       ['a.test.ts', '/t/a.test.ts', 'failed', 'android'],
       ['b.test.ts', '/t/b.test.ts', 'failed', 'android'],
     ]);
-    expect(results[0].error?.message).toBe('Device target "android Pixel_6" could not start: No online devices found.');
+    // The later lines carry the hints (a build excerpt, the log path).
+    expect(results[0].error?.message).toBe('Device target "android Pixel_6" could not start: No online devices found.\nConnect a device');
     expect(results[0].error?.stack).toBeUndefined();
   });
 
@@ -920,9 +922,9 @@ describe('noTargetCouldStart()', () => {
 });
 
 describe('targetUnavailableMessage()', () => {
-  it('names the target and keeps only the first line of the reason', () => {
+  it('names the target and keeps the whole reason, hint and log lines included', () => {
     expect(targetUnavailableMessage('android Pixel_6', new Error('No online devices found.\nhint')))
-      .toBe('Device target "android Pixel_6" could not start: No online devices found.');
+      .toBe('Device target "android Pixel_6" could not start: No online devices found.\nhint');
     expect(targetUnavailableMessage('ios iPhone 17', 'boom')).toBe('Device target "ios iPhone 17" could not start: boom');
   });
 });

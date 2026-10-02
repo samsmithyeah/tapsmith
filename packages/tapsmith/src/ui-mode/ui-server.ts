@@ -1788,7 +1788,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     for (const [bucket, reason] of initFailureByBucket) {
       if (uiWorkers.some((w) => w.bucketSignature === bucket)) continue;
       ctx.unavailableTargets.add(bucket, reason);
-      const message = `${ctx.unavailableTargets.reason(bucket)}. Running its tests again retries it.`;
+      const message = ctx.unavailableTargets.notice(bucket, 'Running its tests again retries it.')!;
       if (launchProgress) launchProgress.note(message);
       else console.error(`${YELLOW}${message}${RESET}`);
     }
@@ -2290,7 +2290,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       }
       const reason = ctx.unavailableTargets.reason(sig)!;
       console.error(`${YELLOW}${reason}${RESET}`);
-      broadcast({ type: 'error', message: `${reason}. Its tests fail until it starts; running them again retries it.` });
+      broadcast({ type: 'error', message: ctx.unavailableTargets.notice(sig, 'Its tests fail until it starts; running them again retries it.')! });
     }));
     // Stop must not wait out a provisioning attempt that can take minutes.
     const stopped = new Promise<'stopped'>((resolve) => { interruptRevive = () => resolve('stopped'); });
@@ -4620,7 +4620,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     for (const { signature } of ctx.unavailableTargets.entries()) {
       ws.send(JSON.stringify({
         type: 'error',
-        message: `${ctx.unavailableTargets.reason(signature)}. Its tests fail until it starts; running them again retries it.`,
+        message: ctx.unavailableTargets.notice(signature, 'Its tests fail until it starts; running them again retries it.')!,
       } satisfies ServerMessage));
     }
 

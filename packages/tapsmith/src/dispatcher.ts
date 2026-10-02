@@ -862,9 +862,13 @@ export function noTargetCouldStart(failures: Array<{ label: string; err: unknown
   );
 }
 
-/** The failure a test file of a target that could not start reports. */
+/**
+ * The failure a test file of a target that could not start reports: the
+ * whole reason, since its later lines carry the hints (advice, a build
+ * excerpt, the log path).
+ */
 export function targetUnavailableMessage(label: string, err: unknown): string {
-  return `Device target "${label}" could not start: ${messageFromUnknown(err).split('\n')[0]}`;
+  return `Device target "${label}" could not start: ${messageFromUnknown(err)}`;
 }
 
 /**

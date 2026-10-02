@@ -364,7 +364,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         if (!signature || watchWorkers.some((w) => w.bucketSignature === signature)) continue;
         if (!ctx.unavailableTargets.has(signature)) {
           ctx.unavailableTargets.add(signature, err);
-          process.stderr.write(`${YELLOW}${ctx.unavailableTargets.reason(signature)}. Running its tests again retries it.${RESET}\n`);
+          process.stderr.write(`${YELLOW}${ctx.unavailableTargets.notice(signature, 'Running its tests again retries it.')}${RESET}\n`);
         }
         workerGroups[i] = [];
       }
