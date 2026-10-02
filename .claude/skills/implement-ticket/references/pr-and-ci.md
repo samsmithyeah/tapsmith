@@ -39,9 +39,9 @@ From `origin/<base>`, named by ticket type, key lowercased:
 | Moment | Push? |
 |---|---|
 | mid-build, slices still to go | no — commits stay local |
-| build complete, `/review-loop` done | **yes**, and open the draft PR |
-| a QA cycle's fixes are all in and checked | yes, once |
-| CI or review-thread fixes | batch them, then push once |
+| build complete, `/review-loop` clean (or skipped as trivial) | **yes**, and open the draft PR |
+| a QA cycle's fixes are all in, checked, and reviewed where non-trivial | yes, once |
+| CI or review-thread fixes | batch them, `/review-loop` until clean if any is non-trivial, then push once |
 | docs/description-only tweaks while E2E is running | wait for E2E to finish, unless it is already red |
 
 Before any push: package checks green, `git status` clean, and `git log origin/<branch>..HEAD`
@@ -65,12 +65,16 @@ The body follows `.github/PULL_REQUEST_TEMPLATE.md` and recent PRs (e.g. #246):
 - **What this changes** — the rule or behaviour first, then the detail, grouped by AC or
   by ticket when one PR closes several. Say what is *not* changing when a reader would
   assume it is.
-- **How it was tested** — tiers and test files; the TDD exceptions and why; the review
+- **How it was tested** — tiers and test files; the TDD exceptions and why; changes that skipped review or QA as trivial, and why; the review
   loop's outcome and round count; the QA verdict with its **not-tested** list; the
   platforms, emulator/simulator vs physical.
 - **Known limitations / assumptions** — every assumption you made on the ticket's
   behalf, and every descoped AC or edge case.
 - **Pre-existing issues found** and **proposed follow-ups** — not fixed here.
+- **Decisions made in auto mode** (`auto` runs only) — every call a human would otherwise
+  have made: the question, the choice, the main alternative, why. API shapes designed
+  without a Playwright precedent are flagged here as **API decision for review**. A
+  `best-effort` PR also lists each unmet gate item and why.
 - **Checklist** — the template's items, ticked honestly (`[na]` where it doesn't apply).
 - End with the PR attribution lines from the system prompt.
 
@@ -125,7 +129,8 @@ gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$
 ```
 
 For each unresolved thread, decide as a review-loop triage card would — read the code,
-build the scenario, judge likelihood and impact:
+build the scenario, judge likelihood and impact, against the same FIX bar
+(review-loop's `references/triage.md`, *Verdict*):
 
 - **Fix** → with a test if behaviour changes; after pushing, reply with what changed (and
   the commit). Resolve it if it is a bot's thread; leave a human's thread for them to
@@ -159,4 +164,4 @@ git fetch origin && git merge origin/<base>     # resolve, run package checks, c
 ```
 
 A merge that changes files your branch touched is a code change: it goes through the
-Phase 5 re-trigger table like any other.
+Phase 5 *When to review and QA* like any other.
