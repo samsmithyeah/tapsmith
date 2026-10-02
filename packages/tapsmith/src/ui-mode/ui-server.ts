@@ -2239,8 +2239,15 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
    *
    * @returns how many failures were recorded.
    */
-  function failUnservableFile(file: TaggedFile, reason: string): number {
-    const tests = treeTestsOf(file);
+  function failUnservableFile(
+    file: TaggedFile,
+    reason: string,
+    /** The file was partway through on a worker that died: tests it already reported keep their result. */
+    keepReported = false,
+  ): number {
+    const tests = treeTestsOf(file).filter((t) => !keepReported || !testResults.has(resultEntryKey({
+      projectName: file.projectName, filePath: file.filePath, fullName: t.fullName,
+    })));
     if (tests.length === 0) {
       recordFileFailure(file.filePath, file.projectName, new Error(reason));
     } else {
@@ -2314,13 +2321,15 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     const stalePids = collectListeningPids(slots.flatMap(({ id, group, daemonPort }) => [
       daemonPort, ...group.slice(1).map((_, m) => memberPorts(id, m).daemonPort),
     ]));
+    // Each worker joins `uiWorkers` as soon as it is ready, so `close()` reaches
+    // it while a sibling is still starting.
     const settled = await Promise.allSettled(slots.map(({ id, group, daemonPort, agentPort }) => initializeOneWorker(
       id, group[0], daemonPort, agentPort, daemonBin, stalePids.get(daemonPort), stalePids, undefined, undefined,
       false,
       // The flag applies to a device's first setup this session, as at
       // startup — not again on every retry of a target that keeps failing.
       ctx.forceInstall && !forceInstalledSerials.has(group[0]),
-    )));
+    ).then((worker) => { uiWorkers.push(worker); return worker; })));
     if (ctx.forceInstall) for (const { group } of slots) forceInstalledSerials.add(group[0]);
     const started = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
     if (started.length === 0) {
@@ -2333,7 +2342,6 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     for (const r of settled) {
       if (r.status === 'rejected') console.error(`${YELLOW}Skipping a device of ${deviceTargetLabel(signature)}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}.${RESET}`);
     }
-    uiWorkers.push(...started);
     assignWorkerDisplayNames();
     broadcast(workersInfoMessage());
     for (const w of started) broadcastWorkerStatus(w, 'idle');
@@ -2597,7 +2605,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
           // results and the status board showed nothing — the failure existed
           // only in the number. It carries the reason the worker gave, which
           // is the actual cause (an import error, say) rather than the drain.
-          failed += failUnservableFile(f, `No worker could run this file: ${reason}`);
+          failed += failUnservableFile(f, `No worker could run this file: ${reason}`, f === inFlightFile);
           anyFailed = true;
           if (f.projectName) failedProjectsInDispatch.add(f.projectName);
         }
