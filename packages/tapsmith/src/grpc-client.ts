@@ -95,6 +95,11 @@ export interface DeviceInfoProto {
 export interface ListDevicesResponse {
   requestId: string;
   devices: DeviceInfoProto[];
+  /** Android devices adb lists but cannot use (unauthorized, offline,
+   * `no permissions (…)`, …), with adb's whole state string as `state`.
+   * Never selectable; listed only so the user can be told how to fix them.
+   * Empty from a daemon that predates the field (proto-loader defaults). */
+  unusableDevices: DeviceInfoProto[];
 }
 
 export interface PingResponse {
