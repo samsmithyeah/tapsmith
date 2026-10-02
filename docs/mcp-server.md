@@ -206,7 +206,7 @@ List all connected mobile devices and emulators across all platforms. Returns se
 
 No parameters.
 
-Returns a JSON array of device objects with `serial`, `model`, `platform` (android/ios), `os_version`, `is_emulator`, and `state`.
+Returns a JSON array of device objects with `serial`, `model`, `platform` (android/ios), `os_version`, `is_emulator`, `state`, and `usable`. Usable devices come first. A device that is attached but cannot be used — an Android phone whose USB-debugging prompt was never accepted (`unauthorized`), an `offline` device, or one without USB permission on Linux (`no permissions (…)`) — is listed with `usable: false`, adb's state as `state`, and a `fix` with the same advice `tapsmith doctor` and `tapsmith list-devices` give.
 
 ### Test execution tools (both modes)
 

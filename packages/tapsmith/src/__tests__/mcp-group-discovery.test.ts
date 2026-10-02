@@ -19,7 +19,7 @@ const hoisted = vi.hoisted(() => ({
 
 vi.mock('../mcp/connection.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../mcp/connection.js')>()),
-  listAllDevices: async () => hoisted.devices,
+  listAllDevices: async () => ({ devices: hoisted.devices, unusable: [] }),
   getSessionDeviceSerials: () => null,
 }));
 

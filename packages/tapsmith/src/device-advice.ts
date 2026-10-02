@@ -6,8 +6,7 @@
  */
 
 import type { TapsmithConfig } from './config.js';
-import type { AdbDevice } from './adb-devices.js';
-import { androidStateBlocker } from './env-scan.js';
+import { androidStateBlocker, type AdbDevice } from './adb-devices.js';
 
 type AdviceConfig = Pick<TapsmithConfig, 'avd' | 'launchEmulators'>;
 
@@ -50,7 +49,7 @@ export function workerStartAdvice(): string {
  * `ListDevicesResponse` (whose `unusable_devices` carry adb's state).
  * `platform` lets daemon entries for other platforms be passed as they are.
  */
-type AdbStateEntry = AdbDevice & { platform?: string };
+export type AdbStateEntry = AdbDevice & { platform?: string };
 
 /** Usable by Tapsmith: adb's `device` state, or the daemon's names for it. */
 function isUsableAndroidState(state: string): boolean {
@@ -72,13 +71,18 @@ function unusableAndroid(devices: readonly AdbStateEntry[]): AdbStateEntry[] {
   return devices.filter((d) => (d.platform ?? 'android') === 'android' && !isUsableAndroidState(d.state));
 }
 
+/** {@link describeUnusableAndroidDevice} for each Android entry adb cannot use; usable and other-platform entries are skipped. */
+export function describeUnusableAndroidDevices(devices: readonly AdbStateEntry[]): string[] {
+  return unusableAndroid(devices).map(describeUnusableAndroidDevice);
+}
+
 /**
  * {@link noDeviceAdvice}, preceded by every attached device adb cannot use —
  * the phone whose USB-debugging prompt was never accepted is the likeliest
  * reason a first run finds nothing.
  */
 export function attachedDeviceAdvice(config: AdviceConfig, attached: readonly AdbStateEntry[]): string {
-  return [...unusableAndroid(attached).map(describeUnusableAndroidDevice), noDeviceAdvice(config)].join(' ');
+  return [...describeUnusableAndroidDevices(attached), noDeviceAdvice(config)].join(' ');
 }
 
 /** "No online devices found." for an Android run, with {@link attachedDeviceAdvice}. */

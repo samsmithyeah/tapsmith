@@ -1429,6 +1429,31 @@ describe('noDeviceMessage', () => {
     expect(noDeviceMessage('android')).toContain('Start an emulator');
     expect(noDeviceMessage()).toContain('Connect a device');
   });
+
+  // PILOT-457: an attached phone whose USB-debugging prompt was never accepted
+  // is why nothing is available — say so, with doctor's advice.
+  it('names attached but unusable Android devices before the start-a-device advice', () => {
+    const unusable = [{ serial: 'R5CR1234XYZ', state: 'unauthorized', platform: 'android' }];
+    const msg = noDeviceMessage('android', undefined, [], [], 'config', unusable);
+    expect(msg).toBe(
+      'No android device is available. R5CR1234XYZ is attached, but adb reports it unauthorized. '
+      + 'Accept the USB debugging prompt on the device. Start an emulator (or connect a device) and try again.',
+    );
+  });
+
+  it('says a pinned device is attached but unusable, not missing', () => {
+    const unusable = [{ serial: 'R5CR1234XYZ', state: 'unauthorized', platform: 'android' }];
+    for (const source of ['config', 'run_tests'] as const) {
+      const msg = noDeviceMessage('android', 'R5CR1234XYZ', ['emulator-5554'], [], source, unusable);
+      expect(msg).toContain('Device R5CR1234XYZ is attached, but adb reports it unauthorized. Accept the USB debugging prompt on the device.');
+      expect(msg).not.toContain('not available');
+    }
+  });
+
+  it('leaves the iOS wording alone', () => {
+    const unusable = [{ serial: 'R5CR1234XYZ', state: 'unauthorized', platform: 'android' }];
+    expect(noDeviceMessage('ios', undefined, [], [], 'config', unusable)).toBe(noDeviceMessage('ios'));
+  });
 });
 
 // A config file that exists but fails to load leaves the session without a

@@ -8,6 +8,7 @@ import { findDaemonBin } from '../daemon-bin.js';
 import { pickFreePort } from '../port-utils.js';
 import { resolveDeviceGroup, primaryDevicePin, type TapsmithConfig } from '../config.js';
 import { loadMcpConfig } from './config-loader.js';
+import { describeUnusableAndroidDevices, pinnedDeviceUnusableMessage, type AdbStateEntry } from '../device-advice.js';
 import { uiPortFilePath, allUiPortFiles, mcpDaemonRegistryPath } from './port-file.js';
 
 const DEFAULT_ADDRESS = 'localhost:50051';
@@ -500,27 +501,31 @@ async function refreshUiConnections(): Promise<void> {
   await refreshDeviceIndex();
 }
 
-export async function listAllDevices(): Promise<DeviceInfoProto[]> {
+/**
+ * Every device the pooled daemons list, deduped by serial: the usable ones,
+ * and those adb lists but cannot use (`unusableDevices`: unauthorized,
+ * offline, …) — a serial usable on any daemon is usable.
+ */
+export async function listAllDevices(): Promise<{ devices: DeviceInfoProto[]; unusable: DeviceInfoProto[] }> {
   await ensureConnected();
   const perConn = await Promise.all(_connections.map(async (conn) => {
     try {
-      const { devices } = await conn.client.listDevices();
-      return devices;
+      const { devices, unusableDevices } = await conn.client.listDevices();
+      return { devices, unusable: unusableDevices ?? [] };
     } catch {
-      return [];
+      return { devices: [], unusable: [] };
     }
   }));
-  const all: DeviceInfoProto[] = [];
   const seen = new Set<string>();
-  for (const devices of perConn) {
-    for (const d of devices) {
-      if (!seen.has(d.serial)) {
-        seen.add(d.serial);
-        all.push(d);
-      }
-    }
-  }
-  return all;
+  const firstSeen = (d: DeviceInfoProto): boolean => {
+    if (seen.has(d.serial)) return false;
+    seen.add(d.serial);
+    return true;
+  };
+  // Usable lists first, so a serial usable on any daemon is never also listed unusable.
+  const devices = perConn.flatMap((c) => c.devices).filter(firstSeen);
+  const unusable = perConn.flatMap((c) => c.unusable).filter(firstSeen);
+  return { devices, unusable };
 }
 
 // ─── Discovery ───
@@ -972,11 +977,12 @@ async function ensureMemberTarget(
   }
   const serial = (await pickDevice(conn, platform, wantedSerial, exclude))?.serial;
   if (!serial) {
-    const visible = (await visibleDevices(conn, platform)).filter((s) => !exclude.includes(s));
+    const { serials, unusable } = await visibleDevices(conn, platform);
+    const visible = serials.filter((s) => !exclude.includes(s));
     discardDaemon(conn);
     await refreshDeviceIndex();
     throw new Error(
-      `${noDeviceMessage(platform, wantedSerial, visible, uiHeldDevices())} (needed for group member "${name}"; `
+      `${noDeviceMessage(platform, wantedSerial, visible, uiHeldDevices(), 'config', unusable)} (needed for group member "${name}"; `
       + `${exclude.join(', ')} already serve the group's other members)`,
     );
   }
@@ -1045,13 +1051,13 @@ async function ensurePrimaryTarget(
     // Ask what it *could* see before discarding it, so a config pinning a
     // serial that does not exist is not reported as "no device available"
     // while the device the user is looking at sits there booted.
-    const visible = await visibleDevices(conn, platform);
+    const { serials: visible, unusable } = await visibleDevices(conn, platform);
     // A daemon with no device to drive is dead weight: it would sit in the pool
     // and the shared registry, and a second unsatisfiable platform would start
     // yet another one.
     discardDaemon(conn);
     await refreshDeviceIndex();
-    throw new Error(noDeviceMessage(platform, wanted, visible, uiHeldDevices(), pinSource));
+    throw new Error(noDeviceMessage(platform, wanted, visible, uiHeldDevices(), pinSource, unusable));
   }
 
   conn.claimedBy = key;
@@ -1069,17 +1075,26 @@ async function ensurePrimaryTarget(
   return { address: conn.address, deviceSerial: serial, platform };
 }
 
-/** The serials a daemon can see for a platform; empty if it cannot be reached. */
-/** Serials the daemon lists for `platform` that no UI session holds — what a failed pick could have chosen. */
-async function visibleDevices(conn: DaemonConnection, platform: string | undefined): Promise<string[]> {
+/**
+ * Serials the daemon lists for `platform` that no UI session holds — what a
+ * failed pick could have chosen — and the attached devices adb cannot use
+ * (unauthorized, offline, …), which explain why there is none. Both empty if
+ * the daemon cannot be reached.
+ */
+async function visibleDevices(
+  conn: DaemonConnection,
+  platform: string | undefined,
+): Promise<{ serials: string[]; unusable: DeviceInfoProto[] }> {
   try {
-    const { devices } = await conn.client.listDevices();
+    const { devices, unusableDevices } = await conn.client.listDevices();
     const held = uiHeldDevices();
-    return (platform ? devices.filter((d) => d.platform === platform) : devices)
-      .map((d) => d.serial)
-      .filter((serial) => !held.has(serial));
+    const forPlatform = (list: DeviceInfoProto[]) => (platform ? list.filter((d) => d.platform === platform) : list);
+    return {
+      serials: forPlatform(devices).map((d) => d.serial).filter((serial) => !held.has(serial)),
+      unusable: forPlatform(unusableDevices ?? []),
+    };
   } catch {
-    return [];
+    return { serials: [], unusable: [] };
   }
 }
 
@@ -1129,8 +1144,20 @@ export function noDeviceMessage(
    * caller to edit a config that pins nothing sends them the wrong way.
    */
   source: 'config' | 'run_tests' = 'config',
+  /**
+   * Attached devices adb cannot use, with their adb state (the daemon's
+   * `unusableDevices`): a pin among them is attached, not missing, and any of
+   * them is the likeliest reason nothing is available (PILOT-457).
+   */
+  unusable: readonly AdbStateEntry[] = [],
 ): string {
-  const what = platform ? `No ${platform} device is available.` : 'No device is available.';
+  const relevant = platform ? unusable.filter((d) => (d.platform ?? platform) === platform) : unusable;
+  if (wanted) {
+    const blocked = pinnedDeviceUnusableMessage(wanted, relevant, 'after-recovery');
+    if (blocked) return blocked;
+  }
+  const attached = describeUnusableAndroidDevices(relevant);
+  const what = [platform ? `No ${platform} device is available.` : 'No device is available.', ...attached].join(' ');
   // The devices are there, but a UI session is driving every one of them. Telling
   // the user to boot a simulator beside the one they are looking at would send
   // them the wrong way — say who has the devices instead.
