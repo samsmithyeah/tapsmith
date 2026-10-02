@@ -407,7 +407,9 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
   }, 10_000);
 
   it('gives up with the not-connected error once the phone has stayed unreachable past the grace period', async () => {
-    mocks.unreachableGraceMs = 1;
+    // Shorter than the 3 s retry delay: the first retry is inside the grace,
+    // the second past it, however the clock ticks.
+    mocks.unreachableGraceMs = 2_000;
     mocks.unknownToDaemon.add('PHYS-GONE');
     mocks.unreachable.add('PHYS-GONE');
     await expect(openDeviceSession(
