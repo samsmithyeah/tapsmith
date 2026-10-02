@@ -85,6 +85,10 @@ claude mcp add tapsmith-ios -- npx tapsmith mcp-server --config tapsmith.config.
 
 If a UI server is already running, stdio mode will detect it and suggest connecting via HTTP instead. Use HTTP mode when you want the agent and browser UI to share one visible session; use stdio when you want a standalone agent-owned session.
 
+The session ends when the client closes the server's stdin or sends it SIGINT, SIGTERM or SIGHUP. Either way the server stops any run in progress, stops the daemon it started (and so that daemon's device agent) unless another MCP session in the project is still using it, and exits 0.
+
+The daemon's output goes to `~/.tapsmith/daemons/mcp-daemon-<project-hash>.log` (one file per project directory, rotated past 5 MB), or to the file named by [`TAPSMITH_DAEMON_LOG`](environment-variables.md). The server's own stderr names the file when it starts a daemon, and quotes the daemon's last lines when one fails to start.
+
 ## Tool Reference
 
 ### Choosing a device

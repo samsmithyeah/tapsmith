@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as http from 'node:http';
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess, type StdioOptions } from 'node:child_process';
 import { withFileLockSync } from '../file-lock.js';
 import { TapsmithGrpcClient, type DeviceInfoProto } from '../grpc-client.js';
 import { findDaemonBin } from '../daemon-bin.js';
@@ -9,6 +9,7 @@ import { pickFreePort } from '../port-utils.js';
 import { resolveDeviceGroup, primaryDevicePin, type TapsmithConfig } from '../config.js';
 import { loadMcpConfig } from './config-loader.js';
 import { uiPortFilePath, allUiPortFiles, mcpDaemonRegistryPath } from './port-file.js';
+import { openDaemonLog, readDaemonLogSince } from './daemon-log.js';
 
 const DEFAULT_ADDRESS = 'localhost:50051';
 
@@ -807,20 +808,29 @@ async function startDaemon(platform?: string): Promise<DaemonConnection | null> 
   // process group, a Ctrl-C in the starter's shell is delivered to the group and
   // kills the daemon anyway, before any of that reasoning runs. `unref` only
   // stops it holding *our* event loop open, which is a different problem.
-  const daemonProcess = spawn(bin, daemonArgs, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+  // Output goes to a log file, not a pipe back to us. The daemon is meant to
+  // outlive this server when a peer adopts it, and once we exit a pipe has no
+  // reader: the daemon's writes fail with EPIPE for the rest of its life, and
+  // its logs are gone anyway (PILOT-453).
+  const daemonLog = openDaemonLog(log);
+  const stdio: StdioOptions = daemonLog ? ['ignore', daemonLog.fd, daemonLog.fd] : 'ignore';
+  let daemonProcess: ChildProcess;
+  try {
+    daemonProcess = spawn(bin, daemonArgs, { stdio, detached: true });
+  } finally {
+    // The child has its own copy; ours would only leak a descriptor per daemon.
+    if (daemonLog) {
+      try { fs.closeSync(daemonLog.fd); } catch { /* already closed */ }
+    }
+  }
   daemonProcess.unref();
   daemonProcess.on('error', (err) => { log(`Daemon process error: ${err.message}`); });
-  daemonProcess.stderr?.on('data', (data: Buffer) => { log(`Daemon: ${data.toString().trim()}`); });
-  // `unref` on the child does not cover its pipes — they are separate handles,
-  // and a piped stderr with a listener holds the event loop open on its own.
-  // This daemon is meant to outlive us when a peer adopts it, and the MCP
-  // server exits by draining rather than by `process.exit` when its client
-  // disconnects: without this the session's node process would sit there until
-  // the daemon it deliberately left running finally died. Reading continues —
-  // `unref` only stops the handle keeping the loop alive.
-  // Typed `Readable`, which has no `unref`; the pipe behind it is a `Socket`,
-  // which does. Optional call so a future stdio change cannot throw here.
-  (daemonProcess.stderr as unknown as { unref?: () => void } | null)?.unref?.();
+  const logNote = daemonLog ? ` — log: ${daemonLog.path}` : '';
+  /** A failed start quotes what the daemon said, since it no longer says it here. */
+  const failureDetail = (): string => {
+    const tail = daemonLog ? readDaemonLogSince(daemonLog) : '';
+    return tail ? `\nDaemon output (${daemonLog?.path}):\n${tail}` : logNote;
+  };
 
   const address = `127.0.0.1:${port}`;
   const client = new TapsmithGrpcClient(address);
@@ -828,16 +838,16 @@ async function startDaemon(platform?: string): Promise<DaemonConnection | null> 
   if (!started) {
     client.close();
     daemonProcess.kill();
-    log('Failed to start daemon. Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.');
+    log(`Failed to start daemon. Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.${failureDetail()}`);
     return null;
   }
 
   try {
     const { version } = await client.ping();
-    log(`Started daemon v${version} on port ${port} (agent ${agentPort})${platform ? ` [${platform}]` : ''}`);
+    log(`Started daemon v${version} on port ${port} (agent ${agentPort})${platform ? ` [${platform}]` : ''}${logNote}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`Daemon started but did not respond: ${msg}`);
+    log(`Daemon started but did not respond: ${msg}${failureDetail()}`);
     client.close();
     daemonProcess.kill();
     return null;
