@@ -1125,7 +1125,8 @@ pub async fn get_app_container(udid: &str, bundle_id: &str) -> Result<String> {
 /// Clear an app's data container by removing user data.
 /// Clears Documents, tmp, and all of Library so that app-managed
 /// persisted state is recreated fresh on next use.
-/// Preserves the container structure itself.
+/// Preserves the container structure itself, including the container
+/// manager's own top-level files (see [`is_container_manager_file`]).
 #[instrument]
 pub async fn clear_container(container_path: &str) -> Result<()> {
     use std::path::Path;
@@ -1145,6 +1146,9 @@ pub async fn clear_container(container_path: &str) -> Result<()> {
         let name_str = name.to_string_lossy();
         // Skip Library — we handle it separately below.
         if name_str == "Library" {
+            continue;
+        }
+        if is_container_manager_file(&name_str) {
             continue;
         }
         if path.is_dir() {
@@ -1169,6 +1173,18 @@ pub async fn clear_container(container_path: &str) -> Result<()> {
     }
     info!(container_path, "Cleared app data container");
     Ok(())
+}
+
+/// Whether a top-level entry of a data container belongs to the simulator's
+/// container manager rather than to the app — today exactly
+/// `.com.apple.mobile_container_manager.metadata.plist`, the record that ties
+/// the directory to its app. Deleting it orphans the container: a later boot
+/// reaps the directory and the app gets a bare re-created one whose first
+/// launch after every boot has no accessibility server, so XCUITest cannot see
+/// the app (PILOT-462). A fresh install has it, so keeping it is what "clear
+/// the app's data" means.
+fn is_container_manager_file(name: &str) -> bool {
+    name.starts_with(".com.apple.")
 }
 
 // ─── Simulator Keychain Helpers ───
@@ -1889,5 +1905,47 @@ mod tests {
         assert_ne!(a, b);
         // Both live under the OS temp dir so they get auto-cleaned.
         assert!(a.starts_with(std::env::temp_dir()));
+    }
+
+    /// PILOT-462: clearing must keep the container manager's metadata plist.
+    /// Deleting it orphans the container — a later boot reaps it and the app
+    /// gets a bare re-created one whose first launch after every boot has no
+    /// accessibility server ("Interrupting test" on the first snapshot).
+    #[tokio::test]
+    async fn clear_container_keeps_container_manager_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let metadata = root.join(".com.apple.mobile_container_manager.metadata.plist");
+        std::fs::write(&metadata, b"metadata").unwrap();
+        for sub in [
+            "Documents",
+            "tmp",
+            "SystemData",
+            "Library/Preferences",
+            "Library/Caches",
+        ] {
+            std::fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        std::fs::write(root.join("Documents/user.db"), b"x").unwrap();
+        std::fs::write(root.join("tmp/scratch"), b"x").unwrap();
+        std::fs::write(root.join("SystemData/state"), b"x").unwrap();
+        std::fs::write(root.join("Library/Preferences/app.plist"), b"x").unwrap();
+        std::fs::write(root.join("stray-file"), b"x").unwrap();
+
+        clear_container(root.to_str().unwrap()).await.unwrap();
+
+        assert_eq!(std::fs::read(&metadata).unwrap(), b"metadata");
+        // Everything the app wrote is still cleared, and the top-level
+        // directories a fresh install has are still there, empty.
+        for sub in ["Documents", "tmp", "SystemData", "Library"] {
+            let path = root.join(sub);
+            assert!(path.is_dir(), "{sub} should exist");
+            assert_eq!(
+                std::fs::read_dir(&path).unwrap().count(),
+                0,
+                "{sub} should be empty"
+            );
+        }
+        assert!(!root.join("stray-file").exists());
     }
 }
