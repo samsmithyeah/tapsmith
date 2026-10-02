@@ -779,7 +779,11 @@ async function pickUnissuedPort(): Promise<number> {
  * @internal — exported for unit testing.
  */
 export function daemonSpawnArgs(port: string, agentPort: string, platform?: string): string[] {
-  const args = ['--port', port, '--agent-port', agentPort];
+  // `--outlive-parent`: a daemon otherwise shuts down (stopping its agents)
+  // when the process that spawned it exits (PILOT-299). This one is detached
+  // so it can outlive this session and be adopted from the registry — see
+  // startDaemon below.
+  const args = ['--port', port, '--agent-port', agentPort, '--outlive-parent'];
   if (platform) args.push('--platform', platform);
   return args;
 }
