@@ -276,13 +276,17 @@ where
     }
     info!(count = agents.len(), "Stopping iOS agents before exit");
 
+    // "Still running" is asked of the process itself, not of the registry:
+    // an agent deregisters only when its holder next polls it, which a
+    // startup loop stuck in a ping may not do for seconds.
+    let running = |pid: u32| registry.contains(pid) && !has_exited(pid);
     for (pid, _) in &agents {
-        signal(*pid, libc::SIGTERM);
+        if running(*pid) {
+            signal(*pid, libc::SIGTERM);
+        }
     }
     let deadline = tokio::time::Instant::now() + grace;
-    while agents.iter().any(|(pid, _)| registry.contains(*pid))
-        && tokio::time::Instant::now() < deadline
-    {
+    while agents.iter().any(|(pid, _)| running(*pid)) && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     // Runners of agents that exited on SIGTERM went with their xcodebuild;
@@ -291,7 +295,7 @@ where
     // replacement daemon may already be starting an agent on that simulator.
     let mut sims: Vec<String> = Vec::new();
     for (pid, entry) in &agents {
-        if registry.contains(*pid) {
+        if running(*pid) {
             warn!(pid, udid = %entry.udid, "iOS agent ignored SIGTERM; killing it");
             signal(*pid, libc::SIGKILL);
             if !entry.is_physical {
@@ -306,6 +310,35 @@ where
         terminations.spawn(terminate_runner(udid));
     }
     while terminations.join_next().await.is_some() {}
+}
+
+/// Whether our child `pid` has exited, without reaping it (`WNOWAIT`), so
+/// its holder still collects it and the pid cannot be reused in between.
+/// A pid that is no longer our child (already reaped) counts as exited:
+/// there is nothing left to signal.
+fn has_exited(pid: u32) -> bool {
+    // id_t is u32 on macOS and Linux.
+    let id: libc::id_t = pid;
+    // SAFETY: waitid only writes into `info`; WNOWAIT leaves the child
+    // waitable by its owner.
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        let rc = libc::waitid(
+            libc::P_PID,
+            id,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        );
+        if rc != 0 {
+            return true;
+        }
+        // With WNOHANG, si_pid stays 0 while the child is still running.
+        #[cfg(target_os = "linux")]
+        let exited_pid = info.si_pid();
+        #[cfg(not(target_os = "linux"))]
+        let exited_pid = info.si_pid;
+        exited_pid != 0
+    }
 }
 
 fn signal(pid: u32, sig: libc::c_int) {
@@ -671,6 +704,53 @@ mod tests {
 
     /// A child that ignores SIGTERM.
     const STUBBORN: &str = "trap '' TERM; while :; do sleep 1; done";
+
+    #[tokio::test]
+    async fn an_agent_nobody_is_polling_is_not_mistaken_for_one_that_ignored_sigterm() {
+        // The startup loop may be stuck in a ping and not reap its agent for
+        // seconds: the agent exits on SIGTERM all the same, so no SIGKILL
+        // and no udid-wide runner terminate.
+        let registry = leaked(None);
+        let mut agent = TrackedAgent::track(spawn("sleep 60"), "SIM-A", false, registry)
+            .await
+            .unwrap();
+        let calls: Calls = Arc::default();
+        let started = std::time::Instant::now();
+        shutdown_registry(
+            registry,
+            Duration::from_secs(3),
+            recording_terminator(&calls),
+        )
+        .await;
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "should not wait out the grace for an agent that already exited"
+        );
+        assert!(calls.lock().unwrap().is_empty());
+        // Its holder still reaps it normally.
+        assert!(agent.wait().await.is_ok());
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn has_exited_tells_a_running_child_from_an_exited_one_without_reaping_it() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        assert!(!has_exited(pid));
+        child.kill().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !has_exited(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(has_exited(pid));
+        // Not reaped by the probe: the owner can still wait for it.
+        assert!(child.try_wait().unwrap().is_some());
+        // And once reaped, it is still "exited".
+        assert!(has_exited(pid));
+    }
 
     #[tokio::test]
     async fn shutdown_kills_an_agent_that_ignores_sigterm() {

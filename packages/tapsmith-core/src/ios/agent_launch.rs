@@ -199,12 +199,14 @@ async fn start_agent_impl(
     // full RPC round trip; the first attempt has usually warmed the simulator.
     let mut relaunches_left: u32 = 1;
     loop {
-        // The daemon is shutting down (and has just SIGTERMed this agent):
-        // stop here rather than reading its exit as a crash and running the
-        // relaunch sequence, which would kill the app and burn the shutdown
-        // budget on a spawn that is then refused.
+        // The daemon is shutting down (and is stopping this agent): stop here
+        // rather than reading its exit as a crash and running the relaunch
+        // sequence, which would kill the app and burn the shutdown budget on a
+        // spawn that is then refused. Wait for the exit rather than SIGKILLing:
+        // the teardown's SIGTERM lets xcodebuild take its runner down with it,
+        // and the teardown escalates on its own if it has to.
         if super::agent_registry::global().is_shutting_down() {
-            let _ = child.kill().await;
+            let _ = child.wait().await;
             drop(iproxy_handle);
             bail!("The daemon is shutting down; stopped starting the iOS agent on {udid}");
         }
