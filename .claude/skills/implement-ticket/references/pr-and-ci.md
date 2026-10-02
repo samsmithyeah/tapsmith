@@ -84,14 +84,9 @@ the branch is a gate failure.
 
 ## CI
 
-Watch in the background, so QA and other work continue meanwhile:
-
-```bash
-# first wait until checks have registered — right after a push, gh reports "no checks
-# reported" and exits at once, which looks like a finished (or failed) watch
-until [ "$(gh pr view <n> --json statusCheckRollup -q '.statusCheckRollup | length')" -gt 0 ]; do sleep 20; done
-gh pr checks <n> --watch --fail-fast --interval 60   # run both in the background; returns at the first failure
-```
+Watch in the background, so QA and other work continue meanwhile, with the deadline
+recipes below (*Waiting recipes*) — never a bare `gh pr checks --watch`: it also waits on
+bot checks like `CodeRabbit`, whose status can sit at pending forever.
 
 Judge only runs on the **head SHA** (`gh pr view <n> --json headRefOid`) — older runs are
 history. For any job you rely on that has `continue-on-error` steps, check the step
@@ -150,9 +145,59 @@ gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t
 
 CodeRabbit is recall-biased like the review-loop reviewer: expect some invalid findings,
 and give each a reasoned reply rather than blanket agreement. If it has not reviewed
-within ~15 minutes of the PR opening (it may skip drafts), comment `@coderabbitai review`
-on the PR. A human's "changes requested" (`reviewDecision: CHANGES_REQUESTED`) blocks the
+within the deadline (*Waiting recipes*; it may skip drafts — its status then reads
+`Review skipped`), comment `@coderabbitai review` on the PR. A human's "changes requested" (`reviewDecision: CHANGES_REQUESTED`) blocks the
 gate until they re-review.
+
+## Waiting recipes
+
+Each runs in the background (`run_in_background`, Bash `timeout` 7200000) and ends with
+`WAIT_DONE: …` or `WAIT_TIMEOUT: …` (exit 124). SKILL.md *Waiting* has the deadlines and
+what to do on a timeout. A failed `gh` call (network, rate limit, wrong directory) means
+"unknown, keep waiting" — never "done". Set `R`, `n` and `head` first:
+
+```bash
+R=tapsmith/tapsmith; n=<pr>; head=$(gh pr view $n -R $R --json headRefOid -q .headRefOid)
+```
+
+**CI checks registered** (right after a push `gh` reports no checks, which looks like a
+finished watch). CI means checks with a workflow; DCO, CodeRabbit and other apps have none:
+
+```bash
+end=$((SECONDS+600))
+until [ "$(gh pr checks $n -R $R --json workflow -q '[.[] | select(.workflow != "")] | length' 2>/dev/null || echo 0)" -gt 0 ]; do
+  [ $SECONDS -ge $end ] && { echo "WAIT_TIMEOUT: no CI checks registered for $head"; exit 124; }
+  sleep 20
+done; echo "WAIT_DONE: CI checks registered for $head"
+```
+
+**CI finished on this head** (returns at the first failure, or as soon as head moves):
+
+```bash
+end=$((SECONDS+6000))
+while :; do
+  now=$(gh pr view $n -R $R --json headRefOid -q .headRefOid 2>/dev/null) || now=$head
+  [ "$now" = "$head" ] || { echo "WAIT_DONE: head moved off $head"; exit 0; }
+  b=$(gh pr checks $n -R $R --json workflow,bucket -q '[.[] | select(.workflow != "") | .bucket]' 2>/dev/null) || b=""
+  case "$b" in *'"fail"'*) echo "WAIT_DONE: a CI check failed on $head"; exit 0;; esac
+  case "$b" in ""|"[]"|*'"pending"'*) ;; *) echo "WAIT_DONE: CI finished on $head"; exit 0;; esac
+  [ $SECONDS -ge $end ] && { echo "WAIT_TIMEOUT: CI still pending on $head"; exit 124; }
+  sleep 60
+done
+```
+
+**CodeRabbit reviewed this head** — its commit status, which ends `Review completed` (or
+`Review skipped`, which is not a review):
+
+```bash
+end=$((SECONDS+1800))
+while :; do
+  s=$(gh api repos/$R/commits/$head/status -q '.statuses[] | select(.context=="CodeRabbit") | .state + " " + .description' 2>/dev/null) || s=""
+  case "$s" in pending*|"") ;; *) echo "WAIT_DONE: CodeRabbit $s on $head"; exit 0;; esac
+  [ $SECONDS -ge $end ] && { echo "WAIT_TIMEOUT: CodeRabbit ${s:-has no status} on $head"; exit 124; }
+  sleep 60
+done
+```
 
 ## Keeping up with the base
 

@@ -108,6 +108,34 @@ busy (only without `--wait`). Only exit 0 means you hold the lease. Still no dev
 that is stop rule 5. Before you block or finish, stop any such waiter that is still
 running (TaskStop), then release whatever it may have acquired.
 
+## Waiting
+
+Runs have hung for hours on a wait whose event never came or was missed: CodeRabbit's
+status sitting at "Review in progress" long after the PR merged, `gh pr checks --watch`
+waiting forever on that bot check, a watcher still watching a SHA that a later push
+replaced. So **every wait has a deadline**, in every mode:
+
+- **A wait is a background command that ends by itself** — with `WAIT_DONE: …` when the
+  thing happened, or `WAIT_TIMEOUT: …` (exit 124) at its deadline. Never a bare
+  `--watch`, never an `until` loop without a deadline, and never ending a turn "waiting"
+  with no such command running to wake you. Give the Bash call a `timeout` above the
+  deadline (the background maximum is 2 hours), so the deadline, not the harness, ends it.
+  Recipes: `references/pr-and-ci.md` §Waiting recipes.
+- **On waking, for whatever reason, re-read the real state** (`gh pr view`, `gh pr checks`,
+  the lease list) before acting. A watcher's last line is a hint: it may describe an old
+  head, or the event may have happened while you were busy elsewhere.
+- **On `WAIT_TIMEOUT`, diagnose and choose**: re-arm (still making progress), nudge (a
+  re-run or re-trigger, once), or record it as an unmet item and go on — never re-arm
+  the same wait forever.
+
+| Waiting for | Deadline | On timeout |
+|---|---|---|
+| CI checks to register after a push | 10 min | `gh run list --branch <branch> --limit 5`: no run for head → close and reopen the PR once (`gh pr close <n> && gh pr reopen <n>`, which re-fires its workflows); still none → infra (below) |
+| CI (workflow checks) on one head | 100 min per watch; re-arm up to twice while jobs are moving | jobs `queued` over 60 min with no runner, or running far past their usual time → cancel and re-run that run once (`gh run cancel <id>`, then `gh run rerun <id>`); still stuck → infra: tell the user (interactive) or `best-effort` with the evidence (`auto`) |
+| CodeRabbit's review of head | 30 min, then comment `@coderabbitai review` and wait 30 more | record in the PR "CodeRabbit did not review <sha> (status: …)". The gate item is then met by the clean `/review-loop` on head — CodeRabbit is a second opinion, not the gate |
+| a device | as *Devices* says (60 min of polling) | as *Devices* says |
+| a human (a re-review, an answer) | do not wait | report it; the gate item stays unmet |
+
 ## Worker mode
 
 With `worker`, you are one of several `implement-ticket` runs coordinated by
@@ -196,10 +224,8 @@ Each stop rule becomes a decision:
 | 7 non-`main` base | Build on it. CI cannot run, so the gate cannot pass: finish with local package checks and QA as the evidence, result `best-effort`, the PR saying CI never ran. |
 | 8 unreadable ticket | Try every Jira connector the session has before giving up. Never guess a ticket's content: none can read it → result `held`, nothing created. |
 
-**Never idle while unfinished.** Waiting on CI or a device, keep a background command
-running that exits when the wait is over (`gh pr checks <n> --watch`, a `--pick` poll
-loop) so you are woken — never end a turn with work left and nothing pending to resume
-it. Your final message is a report, not an offer: no "want me to…?".
+**Never idle while unfinished** — every wait follows *Waiting* (deadlines, re-check on
+wake). Your final message is a report, not an offer: no "want me to…?".
 
 **Final results in auto mode** (in place of `blocked`):
 
@@ -423,9 +449,9 @@ checklist with evidence:
 - [ ] every CI check on head is green, the `CI` and both E2E workflows actually ran on
       head (zero checks is not green), and no job is green only because a step is advisory;
 - [ ] no unresolved review thread you can act on; no outstanding "changes requested";
-      and CodeRabbit has reviewed the head commit, not an earlier one (its latest review's
-      commit in `gh pr view <n> --json reviews`, or its summary comment naming head) —
-      if not, wait for it, or comment `@coderabbitai review` after ~15 minutes;
+      and CodeRabbit has reviewed the head commit, not an earlier one (its `CodeRabbit`
+      commit status on head reads `Review completed`), or did not within the deadline
+      in *Waiting* and the PR says so;
 - [ ] the branch merges cleanly into `<base>` (merge `<base>` in if not, then re-check);
 - [ ] every commit is signed off; the package checks pass locally;
 - [ ] `docs/api-reference.md` and other affected docs are updated;
