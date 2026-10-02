@@ -116,12 +116,14 @@ export function pinnedDeviceUnusableMessage(
   }
   // After the restart, advice to restart adb would repeat what just failed.
   // An emulator's own advice (wait for boot, or restart it) still applies.
-  const restarted = phase === 'after-adb-restart' && !device.serial.startsWith('emulator-')
-    && !device.state.startsWith('no permissions') && device.state !== 'unauthorized';
-  return `Device ${describeUnusableAndroidDevice(
-    device,
-    restarted ? 'Tapsmith already restarted the ADB server: reconnect the cable, or restart the device' : undefined,
-  )}`;
+  const emulator = device.serial.startsWith('emulator-');
+  const restarted = phase === 'after-adb-restart'
+    && !device.state.startsWith('no permissions') && device.state !== 'unauthorized'
+    && !(emulator && device.state === 'offline');
+  const afterRestart = emulator
+    ? 'Tapsmith already restarted the ADB server: restart the emulator'
+    : 'Tapsmith already restarted the ADB server: reconnect the cable, or restart the device';
+  return `Device ${describeUnusableAndroidDevice(device, restarted ? afterRestart : undefined)}`;
 }
 
 /**
@@ -155,7 +157,8 @@ export async function waitForPinnedDeviceAuthorization(
     const mine = devices.filter((d) => d.serial === serial);
     const blocked = pinnedDeviceUnusableMessage(serial, devices, 'preflight');
     const usable = mine.some((d) => isUsableAndroidState(d.state));
-    // `authorizing` is the step between: the prompt was just accepted. Once
+    // `authorizing` is adb trying its stored keys, before the phone shows the
+    // prompt (`unauthorized`) — or just after it was accepted. Once
     // waiting, a pin briefly gone from adb, or `offline` while its transport
     // reconnects, is still pending — replugging the cable is how the prompt
     // is brought back.
@@ -170,9 +173,7 @@ export async function waitForPinnedDeviceAuthorization(
     if (!noted) {
       noted = true;
       const seconds = Math.round(timeoutMs / 1000);
-      deps.onWaiting(mine.some((d) => d.state === 'unauthorized')
-        ? `${serial} is unauthorized: accept the USB debugging prompt on the device. Waiting up to ${seconds} s…`
-        : `Waiting up to ${seconds} s for adb to finish authorizing ${serial}…`);
+      deps.onWaiting(`Waiting up to ${seconds} s for ${serial} to be authorized: accept the USB debugging prompt on the device.`);
     }
     await deps.sleep(Math.max(0, Math.min(pollMs, deadline - now())));
   }

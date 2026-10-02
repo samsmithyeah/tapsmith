@@ -152,6 +152,15 @@ describe('pinnedDeviceUnusableMessage()', () => {
     expect(odd).not.toContain('kill-server');
   });
 
+  it('does not advise the restart to an emulator after it either', () => {
+    const msg = pinnedDeviceUnusableMessage('emulator-5554', [{ serial: 'emulator-5554', state: 'authorizing' }], 'after-adb-restart');
+    expect(msg).not.toContain('kill-server');
+    expect(msg).toContain('restart the emulator');
+    // Its own advice still applies when it has some.
+    expect(pinnedDeviceUnusableMessage('emulator-5554', [{ serial: 'emulator-5554', state: 'offline' }], 'after-adb-restart'))
+      .toContain('Wait for the emulator to finish booting');
+  });
+
   it('is undefined for a usable or unlisted device', () => {
     expect(pinnedDeviceUnusableMessage('emulator-5556', adb, 'any')).toBeUndefined();
     expect(pinnedDeviceUnusableMessage('NOT-THERE', adb, 'any')).toBeUndefined();
@@ -228,12 +237,13 @@ describe('waitForPinnedDeviceAuthorization()', () => {
     expect(polls).toBeLessThanOrEqual(4);
   });
 
-  it('does not ask for a prompt that was already accepted (authorizing)', async () => {
-    const run = deps(sequence('authorizing', 'device'));
+  // adb shows `authorizing` while it tries its stored keys — before it gives
+  // up, sends its public key and the phone shows the prompt (`unauthorized`).
+  it('asks for the prompt when the first poll sees authorizing', async () => {
+    const run = deps(sequence('authorizing', 'unauthorized', 'device'));
     expect(await waitForPinnedDeviceAuthorization('R5C', run.deps)).toBeUndefined();
     expect(run.notes).toHaveLength(1);
-    expect(run.notes[0]).not.toMatch(/accept/i);
-    expect(run.notes[0]).toContain('authoriz');
+    expect(run.notes[0]).toContain('accept the USB debugging prompt');
   });
 
   it('keeps waiting while the pin is briefly gone (the cable replugged to bring the prompt back)', async () => {
