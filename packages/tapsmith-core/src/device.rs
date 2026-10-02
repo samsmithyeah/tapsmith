@@ -231,7 +231,17 @@ impl DeviceManager {
         // `devices` (kept as Disconnected), and must not be made Active again.
         // The SDK retries device selection on "is attached but not usable"
         // (worker-protocol.ts isRetryableDeviceSelectionError) — keep the text.
-        if let Some(unusable) = self.unusable.iter().find(|d| d.serial == serial) {
+        // A present, usable device with the same serial wins: cheap phones can
+        // share one (`0123456789ABCDEF`), and adb lists each transport.
+        let usable_present = self
+            .devices
+            .iter()
+            .any(|d| d.serial == serial && d.state != ConnectionState::Disconnected);
+        if let Some(unusable) = self
+            .unusable
+            .iter()
+            .find(|d| d.serial == serial && !usable_present)
+        {
             bail!(
                 "Device {serial} is attached but not usable: adb reports it \"{}\". \
                  Run `tapsmith list-devices` to see how to fix it.",
@@ -506,10 +516,20 @@ mod tests {
         let mut dm = DeviceManager::new();
         dm.unusable = vec![unusable("R5CR1234XYZ", "unauthorized")];
         let msg = dm.set_active("R5CR1234XYZ").unwrap_err().to_string();
-        assert!(msg.contains("not usable"), "{msg}");
+        // The SDK retries on this exact phrase (worker-protocol.ts).
+        assert!(msg.contains("is attached but not usable"), "{msg}");
         assert!(msg.contains("\"unauthorized\""), "{msg}");
         assert!(dm.active_serial().is_none());
         assert!(dm.devices().is_empty());
+    }
+
+    #[test]
+    fn a_usable_device_sharing_its_serial_with_an_unusable_one_can_be_selected() {
+        let mut dm = DeviceManager::new();
+        dm.add_device(make_device("0123456789ABCDEF", ConnectionState::Discovered));
+        dm.unusable = vec![unusable("0123456789ABCDEF", "unauthorized")];
+        dm.set_active("0123456789ABCDEF").unwrap();
+        assert_eq!(dm.active_device().unwrap().state, ConnectionState::Active);
     }
 
     #[test]
