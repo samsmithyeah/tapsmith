@@ -285,14 +285,26 @@ export async function runMcpServer(
   configureMcpConnection({ configFile: options.configFile });
   const dispatcher = new HeadlessTestDispatcher({ configFile: options.configFile });
   let cleanedUp = false;
-  const signalHandler = (): void => {
+  let exiting = false;
+  /**
+   * Clean up, then exit 0 once stderr has flushed — the one way this server
+   * ends, whether the client signalled it or just closed stdin.
+   */
+  const shutdown = (): void => {
     cleanup();
-    if (runtimeOptions.exitOnSigint ?? true) process.exit(0);
+    if (!(runtimeOptions.exitOnSigint ?? true) || exiting) return;
+    exiting = true;
+    // On macOS a piped stderr is asynchronous: exiting straight away can drop
+    // the "Client disconnected" line and the daemon notes before them. The
+    // write callback fires once everything queued ahead of it is flushed.
+    process.stderr.write('', () => process.exit(0));
   };
   function cleanup(): void {
     if (cleanedUp) return;
     cleanedUp = true;
-    for (const signal of SHUTDOWN_SIGNALS) process.off(signal, signalHandler);
+    for (const signal of SHUTDOWN_SIGNALS) process.off(signal, shutdown);
+    process.stdin.off('end', onStdinClosed);
+    process.stdin.off('close', onStdinClosed);
     stopActivityMonitor();
     dispatcher.dispose();
     closeAllClients();
@@ -301,10 +313,24 @@ export async function runMcpServer(
   // its server with SIGTERM on shutdown, and node's default handling for it
   // terminates the process without running any of this — orphaning the daemon
   // (and its device agent) that the session started.
-  for (const signal of SHUTDOWN_SIGNALS) process.once(signal, signalHandler);
+  for (const signal of SHUTDOWN_SIGNALS) process.once(signal, shutdown);
 
   const server = createMcpServer({ events, dispatcher });
   attachMcpClientEventReporting(server, events, cleanup);
+
+  // Stdin EOF is the stdio transport's *primary* shutdown signal: the MCP spec
+  // has a client close the server's stdin, wait for it to exit, and only then
+  // fall back to SIGTERM — and a client killed outright closes the pipe without
+  // signalling anything. The SDK's server transport never listens for it
+  // (only `data` and `error`), so without this the server ran forever after
+  // its client left, keeping the `--outlive-parent` daemon it started and that
+  // daemon's device agent alive (PILOT-453). Closing the server runs `onclose`,
+  // which reports the disconnect and cleans up like any other close.
+  function onStdinClosed(): void {
+    void server.close().catch(() => {}).finally(shutdown);
+  }
+  process.stdin.once('end', onStdinClosed);
+  process.stdin.once('close', onStdinClosed);
 
   const transport = new StdioServerTransport();
   try {

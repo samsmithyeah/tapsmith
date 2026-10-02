@@ -184,6 +184,45 @@ describe('tapsmith mcp-server over real stdio', () => {
     await exited;
     expect({ code: child.exitCode, signal: child.signalCode }).toEqual({ code: 0, signal: null });
   }, START_TIMEOUT_MS);
+
+  it('shuts down and exits 0 when its client closes stdin without signalling (PILOT-453)', async () => {
+    // Not every client signals its server: many just close the pipe and walk
+    // away. The server used to ignore that EOF and run forever — and with it
+    // the daemon it started (`--outlive-parent`) and that daemon's device
+    // agent, holding the simulator until something killed them by hand.
+    const child = spawnServer();
+    const out = collect(child);
+    const exited = once(child, 'exit', START_TIMEOUT_MS);
+
+    child.stdin.write(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'raw-probe', version: '1.0.0' } },
+    })}\n`);
+    await waitFor(() => out.stdout.includes('"id":1'), START_TIMEOUT_MS);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
+    await waitFor(() => out.stderr.includes('raw-probe'), START_TIMEOUT_MS);
+    child.stdin.end();
+
+    await exited;
+    expect({ code: child.exitCode, signal: child.signalCode }).toEqual({ code: 0, signal: null });
+    // It went through the shutdown path, not out by accident.
+    expect(out.stderr).toContain('Client disconnected');
+  }, START_TIMEOUT_MS);
+
+  it('exits on stdin EOF even before a client ever initialized', async () => {
+    // A client that spawns the server and dies before its handshake leaves the
+    // same pipe closed behind it; the server must not wait on it forever.
+    const child = spawnServer();
+    const out = collect(child);
+    const exited = once(child, 'exit', START_TIMEOUT_MS);
+    await waitFor(() => out.stderr.includes('MCP server running on stdio transport'), START_TIMEOUT_MS);
+    child.stdin.end();
+
+    await exited;
+    expect({ code: child.exitCode, signal: child.signalCode }).toEqual({ code: 0, signal: null });
+  }, START_TIMEOUT_MS);
 });
 
 describe('tapsmith mcp-server arguments', () => {
