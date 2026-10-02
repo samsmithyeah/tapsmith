@@ -158,8 +158,18 @@ export async function awaitDaemonStart(
     while (!ended) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
-      const answered = await Promise.race([ready(Math.min(windowMs, remaining)), endedPromise.then(() => false)]);
+      const window = Math.min(windowMs, remaining);
+      const windowEnd = Date.now() + window;
+      const answered = await Promise.race([ready(window), endedPromise.then(() => false)]);
       if (answered) return { ok: true };
+      // A wait that gave up early (a closed channel) must not become a busy
+      // loop: sit out the rest of the window, still watching for an exit.
+      const rest = windowEnd - Date.now();
+      if (!ended && rest > 0) {
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([new Promise<void>((resolve) => { timer = setTimeout(resolve, rest); }), endedPromise]);
+        clearTimeout(timer);
+      }
     }
   } finally {
     child.off('exit', onExit);

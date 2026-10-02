@@ -15,10 +15,11 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }));
 
 let waitForReady: () => Promise<boolean>;
+let ping: () => Promise<{ version: string; agentConnected?: boolean }>;
 vi.mock('../grpc-client.js', () => ({
   TapsmithGrpcClient: class {
     waitForReady(): Promise<boolean> { return waitForReady(); }
-    ping(): Promise<{ version: string }> { return Promise.resolve({ version: 'test' }); }
+    ping(): Promise<{ version: string; agentConnected?: boolean }> { return ping(); }
     close(): void {}
   },
 }));
@@ -32,13 +33,24 @@ vi.mock('../port-utils.js', async (importOriginal) => ({
   pickFreePort: () => pickPort(),
 }));
 
-const { startDaemon, closeAllClients } = await import('../mcp/connection.js');
+const { startDaemon, closeAllClients, ensureConnected } = await import('../mcp/connection.js');
 const { mcpDaemonLogPath } = await import('../mcp/port-file.js');
 
 class FakeDaemon extends EventEmitter {
-  pid = 99999;
-  kill = vi.fn(() => true);
+  pid: number | undefined = 99999;
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+  // Like a real one, a killed daemon exits.
+  kill = vi.fn(() => {
+    if (this.exitCode === null && this.signalCode === null) this.exitWith(null, 'SIGTERM');
+    return true;
+  });
   unref(): void {}
+  exitWith(code: number | null, signal: NodeJS.Signals | null = null): void {
+    this.exitCode = code;
+    this.signalCode = signal;
+    setImmediate(() => this.emit('exit', code, signal));
+  }
 }
 
 let tmpDir: string;
@@ -54,6 +66,7 @@ beforeEach(() => {
   delete process.env.TAPSMITH_DAEMON_LOG;
   spawnMock.mockReset();
   pickPort = () => Promise.resolve(nextPort++);
+  ping = () => Promise.resolve({ version: 'test', agentConnected: true });
   stderr = '';
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
     stderr += String(chunk);
@@ -67,6 +80,39 @@ afterEach(() => {
   if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
   if (savedLog === undefined) delete process.env.TAPSMITH_DAEMON_LOG; else process.env.TAPSMITH_DAEMON_LOG = savedLog;
   fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+// What the MCP client sees: the tool result, not the server's stderr, which
+// few clients show (PILOT-463).
+describe('ensureConnected', () => {
+  it('puts the daemon\'s own error in the tool error when the daemon it starts exits', async () => {
+    // Nothing is running, so the session starts a daemon, which dies.
+    waitForReady = () => Promise.resolve(false);
+    spawnMock.mockImplementation((_bin: string, _args: string[], opts: { stdio: [string, number, number] }) => {
+      const daemon = new FakeDaemon();
+      fs.writeSync(opts.stdio[2], 'Error: tapsmith-core refused to start: mitmproxy not found\n');
+      daemon.exitWith(1);
+      return daemon;
+    });
+
+    const err = await ensureConnected().then(() => undefined, (e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    const message = (err as Error).message;
+    expect(message).toContain('Error: tapsmith-core refused to start: mitmproxy not found');
+    expect(message).toContain(`Daemon log: ${mcpDaemonLogPath()}`);
+    expect(message).not.toContain('Is tapsmith-core installed?');
+  });
+
+  it('says why a daemon it found could not be used', async () => {
+    // A daemon answers on the default port, but its ping fails.
+    waitForReady = () => Promise.resolve(true);
+    ping = () => Promise.reject(new Error('14 UNAVAILABLE: Connection dropped'));
+
+    const err = await ensureConnected().then(() => undefined, (e: unknown) => e);
+    expect((err as Error).message).toContain('Could not connect to the daemon at localhost:50051: 14 UNAVAILABLE: Connection dropped');
+    expect((err as Error).message).not.toContain('installed');
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('startDaemon', () => {
@@ -91,18 +137,58 @@ describe('startDaemon', () => {
     expect(stderr).toContain(`log: ${mcpDaemonLogPath()}`);
   });
 
-  it('quotes the daemon\'s log when it never answers', async () => {
+  it('fails with the daemon\'s own words and its log path when it exits, without asking about the install', async () => {
     const daemon = new FakeDaemon();
     spawnMock.mockImplementation((_bin: string, _args: string[], opts: { stdio: [string, number, number] }) => {
       fs.writeSync(opts.stdio[2], 'Error: address already in use\n');
+      daemon.exitWith(1);
       return daemon;
     });
-    waitForReady = () => Promise.resolve(false);
+    // Never answers: only the exit can end the wait, and it must, at once.
+    waitForReady = () => new Promise(() => {});
 
-    expect(await startDaemon()).toBeNull();
-    expect(daemon.kill).toHaveBeenCalled();
-    expect(stderr).toContain('Failed to start daemon');
+    const err = await startDaemon('ios').then(() => undefined, (e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message.split('\n')).toEqual([
+      'Failed to start a ios daemon',
+      '  tapsmith-core exited with code 1 before it answered',
+      '  Recent daemon output:',
+      '    Error: address already in use',
+      `  Daemon log: ${mcpDaemonLogPath()}`,
+    ]);
+    // The server's stderr still says it too.
     expect(stderr).toContain('Error: address already in use');
+  });
+
+  it('asks whether tapsmith-core is installed when it could not be run', async () => {
+    const daemon = new FakeDaemon();
+    daemon.pid = undefined;
+    spawnMock.mockImplementation(() => {
+      setImmediate(() => daemon.emit('error', Object.assign(new Error('spawn /fake/tapsmith-core ENOENT'), { code: 'ENOENT' })));
+      return daemon;
+    });
+    waitForReady = () => new Promise(() => {});
+
+    const err = await startDaemon().then(() => undefined, (e: unknown) => e);
+    expect((err as Error).message).toContain('spawn /fake/tapsmith-core ENOENT');
+    expect((err as Error).message).toContain('Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN');
+  });
+
+  it('says it did not answer when it neither answers nor exits', async () => {
+    const daemon = new FakeDaemon();
+    spawnMock.mockImplementation(() => daemon);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    try {
+      waitForReady = () => new Promise((resolve) => setTimeout(() => resolve(false), 10_000));
+      const starting = startDaemon().then(() => undefined, (e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(10_001);
+      const err = await starting;
+      expect((err as Error).message).toMatch(/tapsmith-core did not answer on 127\.0\.0\.1:\d+ within 10s/);
+      expect((err as Error).message).not.toContain('installed');
+      expect(daemon.kill).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('still starts the daemon, output discarded, when the log cannot be opened', async () => {
