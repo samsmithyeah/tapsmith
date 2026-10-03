@@ -578,6 +578,7 @@ export function discoverySelectsDevice(opts: { uiMode: boolean }): boolean {
 let _discoveryFailures: string[] = [];
 
 async function discover(): Promise<void> {
+  const generation = _sessionGeneration;
   _discoveryFailures = [];
   // A config that fails to load leaves discovery without one; the session's
   // tools report the load error.
@@ -743,11 +744,22 @@ async function discover(): Promise<void> {
       }
     }));
     _connections.push(...newConns.filter((c): c is DaemonConnection => c !== null));
-    await refreshDeviceIndex();
-    return;
+    if (_connections.length > 0) {
+      await refreshDeviceIndex();
+      return;
+    }
+    // Every daemon that answered the probe then failed to connect — stale,
+    // wedged, or not a Tapsmith daemon at all. That leaves us exactly where
+    // finding none does, so do what finding none does (PILOT-489). Their
+    // failures stay recorded, for the error if our own start fails too.
+    log('No daemon found could be used, starting one...');
   }
 
-  // 7. No live daemons — start our own
+  // A session that closed while we were probing must not get a daemon: it
+  // would be spawned detached, registered, and never stopped.
+  if (generation !== _sessionGeneration) return;
+
+  // 7. No usable daemon — start our own
   let conn: DaemonConnection | null;
   try {
     conn = await startDaemon(config?.platform);
