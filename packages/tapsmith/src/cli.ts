@@ -60,7 +60,7 @@ import {
 import { isRecoverableInfrastructureError, serializeConfig } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort, pickFreePort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
-import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure } from './daemon-start.js';
+import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary } from './daemon-start.js';
 import { splitHeadline } from './error-detail.js';
 import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage, pinnedDeviceUnusableMessage, waitForPinnedDeviceAuthorization } from './device-advice.js';
 import {
@@ -453,14 +453,16 @@ async function ensureDaemonRunning(
     if (progress) progress.note(message);
     else console.error(yellow(message));
   });
-  let child: ReturnType<typeof spawn>;
+  let spawned: ReturnType<typeof spawnDaemonBinary>;
   try {
-    child = spawn(resolvedBin, daemonArgs, { stdio: output.stdio });
+    spawned = spawnDaemonBinary(resolvedBin, daemonArgs, { stdio: output.stdio });
   } finally {
     output.closeParentFds();
   }
-  child.unref();
-  spawnedDaemonProcess = child;
+  if (spawned.ok) {
+    spawned.child.unref();
+    spawnedDaemonProcess = spawned.child;
+  }
 
   // Wait for daemon to be ready. First-exec of a freshly-downloaded unsigned
   // binary on a loaded CI runner can take ~30s before the listener binds
@@ -469,11 +471,13 @@ async function ensureDaemonRunning(
   // comes up. Retry in bounded windows up to 60s total, bailing early if the
   // daemon process exited (crash — no point waiting out the budget).
   const newClient = new TapsmithGrpcClient(address);
-  const outcome = await awaitDaemonStart(child, (ms) => newClient.waitForReady(ms), {
-    budgetMs: 60_000,
-    windowMs: 10_000,
-    address,
-  });
+  const outcome = spawned.ok
+    ? await awaitDaemonStart(spawned.child, (ms) => newClient.waitForReady(ms), {
+      budgetMs: 60_000,
+      windowMs: 10_000,
+      address,
+    })
+    : spawned;
   if (!outcome.ok) {
     progress?.fail('daemon', outcome.cause);
     // Thrown, not exited: a multi-target run goes on without this target.

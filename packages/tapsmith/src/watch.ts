@@ -12,14 +12,14 @@
  * @see PILOT-120
  */
 
-import { fork, spawn, type ChildProcess } from 'node:child_process';
+import { fork, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { minimatch } from 'minimatch';
 import { type TapsmithConfig } from './config.js';
 import { findDaemonBin } from './daemon-bin.js';
-import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure } from './daemon-start.js';
+import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary, type DaemonStartFailed } from './daemon-start.js';
 import type { Device } from './device.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { createReporters, ReporterDispatcher, type FullResult, type TapsmithReporter } from './reporter.js';
@@ -426,9 +426,17 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     }
     // Its stderr, so a daemon that does not come up says why (PILOT-463).
     const daemonOutput = captureDaemonOutput(undefined, () => {});
-    let daemonProcess: ChildProcess;
+    const startFailure = (outcome: DaemonStartFailed): Error => {
+      const message = daemonStartFailure(`daemon on port ${daemonPort} did not start`, {
+        ...outcome,
+        recentOutput: daemonOutput.recentOutput(),
+      });
+      daemonOutput.dispose();
+      return new Error(message);
+    };
+    let daemonSpawn: ReturnType<typeof spawnDaemonBinary>;
     try {
-      daemonProcess = spawn(
+      daemonSpawn = spawnDaemonBinary(
         daemonBin,
         ['--port', String(daemonPort), '--agent-port', String(agentPort),
           ...(workerConfig.platform ? ['--platform', workerConfig.platform] : [])],
@@ -437,6 +445,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     } finally {
       daemonOutput.closeParentFds();
     }
+    if (!daemonSpawn.ok) throw startFailure(daemonSpawn);
+    const daemonProcess = daemonSpawn.child;
     spawned.push(daemonProcess);
 
     const daemonClient = new TapsmithGrpcClient(`localhost:${daemonPort}`);
@@ -447,12 +457,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     daemonClient.close();
     if (!daemonStart.ok) {
       try { daemonProcess.kill(); } catch { /* already dead */ }
-      const message = daemonStartFailure(`daemon on port ${daemonPort} did not start`, {
-        ...daemonStart,
-        recentOutput: daemonOutput.recentOutput(),
-      });
-      daemonOutput.dispose();
-      throw new Error(message);
+      throw startFailure(daemonStart);
     }
     daemonOutput.dispose();
     // Only detach after confirmed ready so kill() works during init failure

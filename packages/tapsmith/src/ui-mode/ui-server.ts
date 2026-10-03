@@ -16,7 +16,7 @@ import { NetworkReplayBuffer } from './network-replay.js';
 import * as http from 'node:http';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { execFileSync, fork, spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, fork, type ChildProcess } from 'node:child_process';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { McpEventEmitter } from '../mcp/events.js';
@@ -28,7 +28,7 @@ import { pickResolvedDeviceName } from '../mcp/tools/device-target.js';
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
 import type { DeviceGroupEntry, TapsmithConfig } from '../config.js';
 import { findDaemonBin } from '../daemon-bin.js';
-import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure } from '../daemon-start.js';
+import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary, type DaemonStartFailed } from '../daemon-start.js';
 import { resolveChildLoader } from '../child-scripts.js';
 import { TapsmithGrpcClient } from '../grpc-client.js';
 import type { Device } from '../device.js';
@@ -1987,8 +1987,17 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     } else {
       // Its stderr, so a daemon that does not come up says why (PILOT-463).
       const daemonOutput = captureDaemonOutput(undefined, () => {});
+      const startFailure = (outcome: DaemonStartFailed): Error => {
+        const message = daemonStartFailure(`daemon on port ${daemonPort} did not start`, {
+          ...outcome,
+          recentOutput: daemonOutput.recentOutput(),
+        });
+        daemonOutput.dispose();
+        return new Error(message);
+      };
+      let daemonSpawn: ReturnType<typeof spawnDaemonBinary>;
       try {
-        daemonProcess = spawn(
+        daemonSpawn = spawnDaemonBinary(
           daemonBin,
           ['--port', String(daemonPort), '--agent-port', String(agentPort),
             ...(workerConfig.platform ? ['--platform', workerConfig.platform] : [])],
@@ -1997,6 +2006,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       } finally {
         daemonOutput.closeParentFds();
       }
+      if (!daemonSpawn.ok) throw startFailure(daemonSpawn);
+      daemonProcess = daemonSpawn.child;
       spawned.push(daemonProcess);
 
       daemonClient = new TapsmithGrpcClient(`localhost:${daemonPort}`);
@@ -2008,12 +2019,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       if (!daemonStart.ok) {
         try { daemonProcess.kill(); } catch { /* already dead */ }
         daemonClient.close();
-        const message = daemonStartFailure(`daemon on port ${daemonPort} did not start`, {
-          ...daemonStart,
-          recentOutput: daemonOutput.recentOutput(),
-        });
-        daemonOutput.dispose();
-        throw new Error(message);
+        throw startFailure(daemonStart);
       }
       daemonOutput.dispose();
       // Only detach after confirmed ready so kill() works during init failure
