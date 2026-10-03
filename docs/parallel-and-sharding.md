@@ -45,7 +45,7 @@ export default defineConfig({
 
 With this configuration, Tapsmith launches repeated read-only instances of the specified AVD -- one per worker. The AVD must already exist on your system (`avdmanager list avd` to check). Read-only instances share the same base snapshot, so they boot quickly and do not interfere with each other.
 
-The emulators boot side by side rather than one after another, up to one per two CPU cores at a time, since each boot keeps several cores busy. Each one is started once the one before it has started up, because two instances of one AVD started at the same moment can crash. If one fails to boot, the ones already booting carry on and the run uses the ones that came up. An AVD that failed is not launched again in that run. Each launch takes its own console port, so two Tapsmith runs on one machine (UI mode beside `tapsmith test`, for example) never launch onto the same port.
+The emulators boot side by side rather than one after another, up to one per two CPU cores at a time (at least one), since each boot keeps several cores busy. Each one is started once the one before it has started up, because two instances of one AVD started at the same moment can crash. If one fails to boot, the ones already booting carry on and the run uses the ones that came up. An AVD that failed is not launched again in that run. Each launch takes its own console port, so two Tapsmith runs on one machine (UI mode beside `tapsmith test`, for example) never launch onto the same port.
 
 If you have devices or emulators already running and want Tapsmith to use them before launching new ones, set `deviceStrategy: "prefer-connected"`:
 

@@ -886,6 +886,13 @@ export interface PortReservation {
 const reservedPorts = new Set<number>();
 
 /**
+ * Settles once the most recently spawned launch in this process has started
+ * up, whichever provisionEmulators call spawned it — concurrent calls (two
+ * device targets in one run) wait on each other too (PILOT-495).
+ */
+let startupGate: Promise<void> = Promise.resolve();
+
+/**
  * Whether nothing listens on loopback `port`. A running emulator listens on
  * 127.0.0.1 for its console and adb ports, so binding there fails while it
  * runs. (A wildcard bind would not: macOS lets it share the port.)
@@ -1991,9 +1998,6 @@ export async function provisionEmulators(opts: {
   const sideBySideAllowanceMs = (laneCount - 1) * CONCURRENT_BOOT_ALLOWANCE_MS;
   const bootTimeoutMs = EMULATOR_BOOT_TIMEOUT_MS + sideBySideAllowanceMs;
   const stabilityTimeoutMs = DEFAULT_DEVICE_STABILITY_TIMEOUT_MS + sideBySideAllowanceMs;
-
-  /** Settles once the most recently spawned launch has started up. */
-  let startupGate: Promise<void> = Promise.resolve();
 
   /**
    * Launch and boot one emulator, trying each candidate AVD that has not

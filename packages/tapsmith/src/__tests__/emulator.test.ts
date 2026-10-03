@@ -2143,6 +2143,27 @@ describe('provisionEmulators boots emulators side by side', () => {
     expect((await provision).allSerials).toEqual(['emulator-5554', 'emulator-5556']);
   });
 
+  it('makes a concurrent call wait for the other call\'s launch to start up as well', async () => {
+    const spawned: string[] = [];
+    let firstStarted!: () => void;
+    const deps = {
+      ...base,
+      launchEmulator: (avd: string, port: number) => { spawned.push(serialForPort(port)); return makeLaunchedEmulator(avd, port); },
+      waitForEmulatorStartup: (emu: import('../emulator.js').LaunchedEmulator) => emu.port === 5554
+        ? new Promise<void>((resolve) => { firstStarted = resolve; })
+        : Promise.resolve(),
+      waitForBoot: async () => undefined,
+    };
+    const a = provisionEmulators({ existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined }, deps);
+    const b = provisionEmulators({ existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined }, deps);
+    await vi.waitFor(() => expect(spawned).toEqual(['emulator-5554']));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(spawned).toEqual(['emulator-5554']);
+    firstStarted();
+    await Promise.all([a, b]);
+    expect(spawned).toEqual(['emulator-5554', 'emulator-5556']);
+  });
+
   it('boots no more at once than the host allows, and still boots them all', async () => {
     const boots = controlledBoots();
     const provision = provisionEmulators(
