@@ -229,6 +229,21 @@ describe('startDaemon', () => {
     expect((err as Error).message).toContain('Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN');
   });
 
+  it('reports a binary for another architecture (spawn throws) through the same formatted error, with its log path', async () => {
+    spawnMock.mockImplementation(() => {
+      throw Object.assign(new Error('spawn ENOEXEC'), { code: 'ENOEXEC', errno: -8, syscall: 'spawn' });
+    });
+
+    const err = await startDaemon('android').then(() => undefined, (e: unknown) => e);
+    const lines = (err as Error).message.split('\n');
+    expect(lines[0]).toBe('Failed to start a android daemon: could not run tapsmith-core: /fake/tapsmith-core is not an executable for this machine (ENOEXEC)');
+    expect(lines[1]).toContain(`than this Node (${process.platform}-${process.arch})`);
+    expect(lines.at(-1)).toBe(`  Daemon log: ${mcpDaemonLogPath()}`);
+    expect((err as Error).message).not.toContain('Is tapsmith-core installed?');
+    // The server's stderr says it too.
+    expect(stderr).toContain('is not an executable for this machine');
+  });
+
   it('says it did not answer when it neither answers nor exits', async () => {
     const daemon = new FakeDaemon();
     spawnMock.mockImplementation(() => daemon);

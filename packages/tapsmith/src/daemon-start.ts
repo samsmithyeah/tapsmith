@@ -9,7 +9,7 @@
  * survive every layer that reports a start failure (PILOT-464).
  */
 
-import type { ChildProcess, StdioOptions } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -97,17 +97,66 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// ─── Waiting for it to answer ───
+// ─── Spawning it ───
 
-export type DaemonStartOutcome =
-  | { ok: true }
-  | {
-    ok: false
-    /** One line: how it ended, or that it never answered. */
-    cause: string
-    /** It could not be run at all (ENOENT, EACCES): the one case where the install is in question. */
-    spawnFailed: boolean
-  };
+export interface DaemonStartFailed {
+  ok: false
+  /** One line: how it ended, or that it never answered. */
+  cause: string
+  /** It could not be run at all (ENOENT, EACCES): the one case where the install is in question. */
+  spawnFailed: boolean
+  /** What to do about a binary that could not be run, in place of the install question. */
+  spawnHint?: string
+}
+
+export type DaemonStartOutcome = { ok: true } | DaemonStartFailed;
+
+/**
+ * macOS's "Bad CPU type in executable". Node has no name for it, so it
+ * arrives as `Unknown system error -86`.
+ */
+const DARWIN_EBADARCH = -86;
+
+/**
+ * Spawn `tapsmith-core`. Most failures to run it — a missing binary (ENOENT),
+ * one without execute permission (EACCES) — arrive later, as the child's
+ * `error` event, which {@link awaitDaemonStart} reports. A few make `spawn`
+ * throw instead: a binary for another architecture or platform (ENOEXEC,
+ * macOS's EBADARCH), with a message that does not even name the file
+ * ("spawn ENOEXEC"). Those come back here as a failed start, so every caller
+ * reports them through its usual {@link daemonStartFailure} path (PILOT-490).
+ *
+ * Only the spawn syscall's own errors are caught: a bad argument is a bug in
+ * the caller, and still throws.
+ */
+export function spawnDaemonBinary(
+  bin: string,
+  args: readonly string[],
+  options: SpawnOptions,
+): { ok: true; child: ChildProcess } | DaemonStartFailed {
+  try {
+    return { ok: true, child: spawn(bin, args, options) };
+  } catch (err) {
+    const errno = err as NodeJS.ErrnoException;
+    if (!(err instanceof Error) || errno.syscall !== 'spawn') throw err;
+    const wrongArch = errno.code === 'ENOEXEC' || (process.platform === 'darwin' && errno.errno === DARWIN_EBADARCH);
+    if (!wrongArch) {
+      // The shape of spawn's own asynchronous errors: "spawn <path> <code>".
+      return { ok: false, cause: `could not run tapsmith-core: spawn ${bin} ${errno.code ?? errno.message}`, spawnFailed: true };
+    }
+    const target = `${process.platform}-${process.arch}`;
+    return {
+      ok: false,
+      cause: `could not run tapsmith-core: ${bin} is not an executable for this machine (${errno.code === 'ENOEXEC' ? 'ENOEXEC' : 'EBADARCH'})`,
+      spawnFailed: true,
+      spawnHint: `It is built for another platform or architecture than this Node (${target}), or it is damaged. `
+        + `Reinstall Tapsmith with this Node so npm fetches @tapsmith/core-${target}, `
+        + `or set TAPSMITH_DAEMON_BIN to a tapsmith-core built for ${target}.`,
+    };
+  }
+}
+
+// ─── Waiting for it to answer ───
 
 /**
  * Wait for a just-spawned daemon to answer, for up to `budgetMs` — and stop
@@ -189,6 +238,8 @@ export interface DaemonStartFailureDetail {
   logPath?: string
   /** Situation-specific advice (a port squatter's kill command), after the cause. */
   hints?: string[]
+  /** Replaces the install question for a binary that could not be run (see {@link spawnDaemonBinary}). */
+  spawnHint?: string
 }
 
 /**
@@ -200,7 +251,7 @@ export function daemonStartFailure(headline: string, detail: DaemonStartFailureD
   // The cause on the headline: a launch-progress row shows only that line.
   const lines = [...(detail.hints ?? [])];
   if (detail.spawnFailed) {
-    lines.push('Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.');
+    lines.push(detail.spawnHint ?? 'Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.');
   }
   const output = detail.recentOutput.split('\n').filter((line) => line.trim() !== '');
   if (output.length > 0) lines.push('Recent daemon output:', ...output.map((line) => `  ${line}`));

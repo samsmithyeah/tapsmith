@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as http from 'node:http';
-import { spawn, execFileSync, type ChildProcess, type StdioOptions } from 'node:child_process';
+import { execFileSync, type ChildProcess, type StdioOptions } from 'node:child_process';
 import { withFileLockSync } from '../file-lock.js';
 import { TapsmithGrpcClient, type DeviceInfoProto } from '../grpc-client.js';
 import { findDaemonBin } from '../daemon-bin.js';
@@ -11,7 +11,7 @@ import { loadMcpConfig } from './config-loader.js';
 import { describeUnusableAndroidDevices, pinnedDeviceUnusableMessage, type AdbStateEntry } from '../device-advice.js';
 import { uiPortFilePath, allUiPortFiles, mcpDaemonRegistryPath } from './port-file.js';
 import { openDaemonLog, readDaemonLogSince } from './daemon-log.js';
-import { awaitDaemonStart, daemonStartFailure } from '../daemon-start.js';
+import { awaitDaemonStart, daemonStartFailure, spawnDaemonBinary, type DaemonStartFailed } from '../daemon-start.js';
 import { withDetail } from '../error-detail.js';
 
 const DEFAULT_ADDRESS = 'localhost:50051';
@@ -891,17 +891,15 @@ export async function startDaemon(
   // its logs are gone anyway (PILOT-453).
   const daemonLog = openDaemonLog(log);
   const stdio: StdioOptions = daemonLog ? ['ignore', daemonLog.fd, daemonLog.fd] : 'ignore';
-  let daemonProcess: ChildProcess;
+  let daemonSpawn: ReturnType<typeof spawnDaemonBinary>;
   try {
-    daemonProcess = spawn(bin, daemonArgs, { stdio, detached: true });
+    daemonSpawn = spawnDaemonBinary(bin, daemonArgs, { stdio, detached: true });
   } finally {
     // The child has its own copy; ours would only leak a descriptor per daemon.
     if (daemonLog) {
       try { fs.closeSync(daemonLog.fd); } catch { /* already closed */ }
     }
   }
-  daemonProcess.unref();
-  daemonProcess.on('error', (err) => { log(`Daemon process error: ${err.message}`); });
   const logNote = daemonLog ? ` — log: ${daemonLog.path}` : '';
   /**
    * A failed start quotes what the daemon said, since it no longer says it
@@ -909,12 +907,11 @@ export async function startDaemon(
    * default log, so a daemon starting alongside this one may have written
    * lines there too.
    */
-  const startFailure = (cause: string, spawnFailed: boolean): Error => {
+  const startFailure = (outcome: DaemonStartFailed): Error => {
     const message = daemonStartFailure(
       `Failed to start a ${platform ?? 'Tapsmith'} daemon${member ? ` for group member "${member}"` : ''}`,
       {
-        cause,
-        spawnFailed,
+        ...outcome,
         recentOutput: daemonLog ? readDaemonLogSince(daemonLog) : '',
         logPath: daemonLog?.path,
         hints: daemonLog ? [] : ['Its output was discarded: the daemon log could not be opened.'],
@@ -923,6 +920,10 @@ export async function startDaemon(
     log(message);
     return new Error(message);
   };
+  if (!daemonSpawn.ok) throw startFailure(daemonSpawn);
+  const daemonProcess = daemonSpawn.child;
+  daemonProcess.unref();
+  daemonProcess.on('error', (err) => { log(`Daemon process error: ${err.message}`); });
 
   // Until it is in `_connections`, only this set lets `closeAllClients` find
   // it: a client that leaves during the seconds a daemon takes to answer would
@@ -942,7 +943,7 @@ export async function startDaemon(
       client.close();
       daemonProcess.kill();
       if (sessionClosed()) return null;
-      throw startFailure(started.cause, started.spawnFailed);
+      throw startFailure(started);
     }
 
     try {
@@ -953,7 +954,7 @@ export async function startDaemon(
       client.close();
       daemonProcess.kill();
       if (sessionClosed()) return null;
-      throw startFailure(`tapsmith-core started but did not respond: ${msg}`, false);
+      throw startFailure({ ok: false, cause: `tapsmith-core started but did not respond: ${msg}`, spawnFailed: false });
     }
 
     if (sessionClosed()) {
