@@ -313,8 +313,15 @@ const FIND_SIMULATOR_ATTEMPTS = 4;
 const FIND_SIMULATOR_RETRY_DELAY_MS = 3000;
 
 /**
- * Provision a simulator for testing: find by name, boot if needed, install app.
- * Returns the UDID of the booted simulator.
+ * Provision a simulator for testing: find by name, and boot it and wait for
+ * the boot to finish if it is not booted. Returns its UDID.
+ *
+ * The app is not installed here: the session that opens on the simulator
+ * installs it, in the background, and is the one that decides whether the
+ * install was a fresh one. Installing here as well blocked the boot behind a
+ * second install, and left a pristine CI simulator looking as if it already
+ * held the app, so its startup launch cleared the data and restarted the app
+ * for nothing (PILOT-496).
  *
  * The lookup is retried: `simctl list` can transiently fail or return an
  * empty device set while CoreSimulator is busy (concurrent boots on CI
@@ -325,7 +332,6 @@ const FIND_SIMULATOR_RETRY_DELAY_MS = 3000;
  */
 export function provisionSimulator(
   simulatorName: string,
-  appPath?: string,
   retry: { attempts: number; delayMs: number } = {
     attempts: FIND_SIMULATOR_ATTEMPTS,
     delayMs: FIND_SIMULATOR_RETRY_DELAY_MS,
@@ -345,10 +351,11 @@ export function provisionSimulator(
 
   if (sim.state !== 'Booted') {
     bootSimulator(sim.udid);
-  }
-
-  if (appPath) {
-    installApp(sim.udid, appPath);
+    // As provisionSimulators does: what follows (the daemon's device
+    // selection, the install, the agent start) would otherwise race a
+    // simulator that is `Booted` but not up. A timeout is not fatal — they
+    // retry on their own.
+    waitForSimulatorBootComplete(sim.udid);
   }
 
   return sim.udid;

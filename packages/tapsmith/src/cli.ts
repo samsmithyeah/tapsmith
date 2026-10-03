@@ -1029,7 +1029,7 @@ async function ensureSequentialTargetDevice(
 
     // Boot the simulator
     try {
-      const udid = provisionSimulator(simulatorName, config.app);
+      const udid = provisionSimulator(simulatorName);
       return { selectedSerial: udid, launched: [] };
     } catch (e) {
       throw new Error(`Failed to provision iOS simulator: ${(e as Error).message}`);

@@ -274,7 +274,12 @@ describe('findSimulator', () => {
 // ─── provisionSimulator ───
 
 describe('provisionSimulator', () => {
-  it('boots a shutdown simulator and installs app', () => {
+  it('boots a shutdown simulator and waits for the boot, without installing the app (PILOT-496)', () => {
+    // The session installs the app itself (asynchronously, and it decides
+    // whether the install was a fresh one). Installing here as well blocked
+    // the boot step, and left a pristine CI simulator looking as if it
+    // already held the app — so the startup launch cleared its data and
+    // restarted it for nothing.
     const calls: string[][] = [];
     mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       const a = args as string[];
@@ -285,10 +290,37 @@ describe('provisionSimulator', () => {
       return '' as unknown as Buffer;
     });
 
-    const udid = provisionSimulator('iPhone 16', '/app.app');
+    const udid = provisionSimulator('iPhone 16');
     expect(udid).toBe('A');
-    expect(calls.some((c) => c.includes('boot'))).toBe(true);
-    expect(calls.some((c) => c.includes('install'))).toBe(true);
+    const simctl = calls.filter((c) => c[0] === 'xcrun' && c[1] === 'simctl').map((c) => c[2]);
+    expect(simctl).toEqual(['list', 'boot', 'bootstatus']);
+    expect(calls.find((c) => c[2] === 'bootstatus')).toEqual(['xcrun', 'simctl', 'bootstatus', 'A', '-b']);
+  });
+
+  it('still returns the simulator when the boot wait times out', () => {
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') {
+        return makeSimctlOutput([{ udid: 'A', name: 'iPhone 16', state: 'Shutdown' }]) as unknown as Buffer;
+      }
+      if (cmd === 'xcrun' && args?.[1] === 'bootstatus') throw new Error('ETIMEDOUT');
+      return '' as unknown as Buffer;
+    });
+
+    expect(provisionSimulator('iPhone 16')).toBe('A');
+  });
+
+  it('neither boots nor waits for a simulator that is already booted', () => {
+    const simctl: string[] = [];
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl') simctl.push(args[1]);
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') {
+        return makeSimctlOutput([{ udid: 'B', name: 'iPhone 16', state: 'Booted' }]) as unknown as Buffer;
+      }
+      return '' as unknown as Buffer;
+    });
+
+    expect(provisionSimulator('iPhone 16')).toBe('B');
+    expect(simctl).toEqual(['list']);
   });
 
   it('throws when no simulator matches after exhausting lookup retries', () => {
@@ -300,7 +332,7 @@ describe('provisionSimulator', () => {
       }
       return '' as unknown as Buffer;
     });
-    expect(() => provisionSimulator('iPhone 99', undefined, { attempts: 3, delayMs: 1 }))
+    expect(() => provisionSimulator('iPhone 99', { attempts: 3, delayMs: 1 }))
       .toThrow(/No iOS simulator found/);
     expect(listCalls).toBe(3);
   });
@@ -319,7 +351,7 @@ describe('provisionSimulator', () => {
       return '' as unknown as Buffer;
     });
 
-    const udid = provisionSimulator('iPhone 17', undefined, { attempts: 4, delayMs: 1 });
+    const udid = provisionSimulator('iPhone 17', { attempts: 4, delayMs: 1 });
     expect(udid).toBe('B');
     expect(listCalls).toBe(2);
   });
