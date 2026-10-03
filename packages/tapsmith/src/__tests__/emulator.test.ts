@@ -752,6 +752,18 @@ describe('emulator utilities', () => {
       expect(reclaimOrphanedEmulators(stuck.deps).killed).toEqual(['emulator-5554']);
     });
 
+    it('records an interrupted launch as ready once a later run reuses it', () => {
+      const h = harness({
+        entries: [entry({ booting: true, ownerPid: 5150 })],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+        listener: { 'emulator-5554': 4242 },
+      });
+      expect(reclaimOrphanedEmulators(h.deps).reusable).toEqual(['emulator-5554']);
+      expect(h.written).toEqual([[{ ...entry(), ownerPid: 5150 }]]);
+    });
+
     it('leaves another run\'s booting emulator out of the heuristic pass too', () => {
       const h = harness({
         entries: [entry({ booting: true, ownerPid: 5150 })],
@@ -1281,6 +1293,8 @@ function makeLaunchedEmulator(
  */
 const fakeReservedPorts = new Set<number>();
 const unprobedPorts = {
+  // A fake launch has no console port to wait for.
+  waitForEmulatorStartup: async () => undefined,
   reserveEmulatorPort: async (used: ReadonlySet<number>) => {
     let port = 5554;
     while (used.has(port) || fakeReservedPorts.has(port)) port += 2;
@@ -2098,6 +2112,35 @@ describe('provisionEmulators boots emulators side by side', () => {
     expect(killEmulator.mock.calls).toEqual([['emulator-5556']]);
     expect(warnings).toContain('Skipping launched emulator emulator-5556 (Pixel): Emulator emulator-5556 did not boot within 120s.');
     expect(warnings).toContain('Unable to provision additional emulator 2/3; AVD Pixel did not start healthy (see above).');
+  });
+
+  it('spawns each launch only once the one before it has started up', async () => {
+    const boots = controlledBoots();
+    const spawned: string[] = [];
+    let firstStarted!: () => void;
+    const provision = provisionEmulators(
+      { existingSerials: [], workers: 2, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      {
+        ...base,
+        launchConcurrency: 2,
+        launchEmulator: (avd, port) => { spawned.push(serialForPort(port)); return makeLaunchedEmulator(avd, port); },
+        waitForEmulatorStartup: (emu) => emu.port === 5554
+          ? new Promise<void>((resolve) => { firstStarted = resolve; })
+          : Promise.resolve(),
+        waitForBoot: boots.waitForBoot,
+      },
+    );
+    await boots.untilStarted(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(spawned).toEqual(['emulator-5554']);
+    firstStarted();
+    await boots.untilStarted(2);
+    // Started up, the first keeps booting while the second boots beside it.
+    expect(spawned).toEqual(['emulator-5554', 'emulator-5556']);
+    expect(boots.maxInFlight()).toBe(2);
+    boots.pending.get('emulator-5554')!.resolve();
+    boots.pending.get('emulator-5556')!.resolve();
+    expect((await provision).allSerials).toEqual(['emulator-5554', 'emulator-5556']);
   });
 
   it('boots no more at once than the host allows, and still boots them all', async () => {

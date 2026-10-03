@@ -312,7 +312,13 @@ export function reclaimOrphanedEmulators(
               : '')
             + `${RESET}\n`);
         reusable.push(entry.serial);
-        surviving.push(entry);
+        // A launch interrupted mid-boot that has since booted: ready now.
+        if (entry.booting) {
+          const { booting: _booting, ...ready } = entry;
+          surviving.push(ready);
+        } else {
+          surviving.push(entry);
+        }
         continue;
       }
       process.stderr.write(
@@ -892,6 +898,38 @@ function isLoopbackPortFree(port: number): Promise<boolean> {
       server.close(() => resolve(true));
     });
   });
+}
+
+/** Whether something accepts connections on loopback `port`. Never binds it. */
+function isLoopbackPortListening(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port });
+    socket.setTimeout(1_000);
+    socket.once('connect', () => { socket.destroy(); resolve(true); });
+    socket.once('timeout', () => { socket.destroy(); resolve(false); });
+    socket.once('error', () => resolve(false));
+  });
+}
+
+/** How long a launch waits, at most, for the one started before it to get going. */
+const EMULATOR_STARTUP_WAIT_MS = 30_000;
+
+/**
+ * Wait until a just-spawned emulator has started up — its console port
+ * accepts connections — or it exits, or {@link EMULATOR_STARTUP_WAIT_MS}
+ * passes. Two instances of one AVD spawned at the same moment can crash
+ * the second during startup (seen as SIGSEGV on Linux CI, PILOT-495), so
+ * each launch waits for the one before it to get this far; the boots then
+ * overlap from there.
+ */
+async function waitForEmulatorStartup(emu: LaunchedEmulator): Promise<void> {
+  const deadline = Date.now() + EMULATOR_STARTUP_WAIT_MS;
+  let exited = false;
+  void emu.exited.then(() => { exited = true; });
+  while (!exited && Date.now() < deadline) {
+    if (await isLoopbackPortListening(emu.port)) return;
+    await sleep(500);
+  }
 }
 
 /**
@@ -1809,6 +1847,8 @@ interface ProvisionDeps {
   killEmulator: (serial: string) => void
   findEmulatorPid: (serial: string) => number | undefined
   reserveEmulatorPort: (usedPorts: ReadonlySet<number>) => Promise<PortReservation>
+  /** Settles once a just-spawned emulator has started up (or will not). */
+  waitForEmulatorStartup: (emu: LaunchedEmulator) => Promise<void>
   /** How many emulators boot at once. */
   launchConcurrency: number
 }
@@ -1872,6 +1912,7 @@ export async function provisionEmulators(opts: {
     killEmulator: deps.killEmulator ?? killEmulator,
     findEmulatorPid: deps.findEmulatorPid ?? findEmulatorPid,
     reserveEmulatorPort: deps.reserveEmulatorPort ?? reserveEmulatorPort,
+    waitForEmulatorStartup: deps.waitForEmulatorStartup ?? waitForEmulatorStartup,
     launchConcurrency: deps.launchConcurrency ?? defaultLaunchConcurrency(),
   };
   const needed = workers - existingSerials.length;
@@ -1951,6 +1992,9 @@ export async function provisionEmulators(opts: {
   const bootTimeoutMs = EMULATOR_BOOT_TIMEOUT_MS + sideBySideAllowanceMs;
   const stabilityTimeoutMs = DEFAULT_DEVICE_STABILITY_TIMEOUT_MS + sideBySideAllowanceMs;
 
+  /** Settles once the most recently spawned launch has started up. */
+  let startupGate: Promise<void> = Promise.resolve();
+
   /**
    * Launch and boot one emulator, trying each candidate AVD that has not
    * already failed. Its failures are its own: they never stop the others.
@@ -1970,13 +2014,20 @@ export async function provisionEmulators(opts: {
       // Never again in this call, even once the reservation is released.
       usedPorts.add(port);
 
+      // Spawn only once the launch before this one has started up.
+      const previousStarted = startupGate;
+      let markStarted!: () => void;
+      startupGate = new Promise<void>((resolve) => { markStarted = resolve; });
+
       let emu: LaunchedEmulator | undefined;
       const stopWaiting = new AbortController();
       let booting = true;
       let booted = false;
       try {
+        await previousStarted;
         emu = resolvedDeps.launchEmulator(candidateAvd, port, settings, emulator.command);
         const launchedEmu = emu;
+        void resolvedDeps.waitForEmulatorStartup(launchedEmu).catch(() => undefined).finally(markStarted);
         // Recorded at once, not when every boot is done: an interrupted run
         // leaves it recorded, so the next run reuses or stops it (PILOT-441).
         recordLaunchedEmulators([launchedEmu], { booting: true });
@@ -2053,6 +2104,8 @@ export async function provisionEmulators(opts: {
         // Booted ones stay registered until provisionEmulators hands them
         // back, so an interrupt in the meantime stops them too.
         if (emu !== undefined && !booted) bootingThisProcess.delete(emu.serial);
+        // Never spawned: let the next launch go ahead.
+        if (emu === undefined) markStarted();
         await reservation.release();
       }
     }
