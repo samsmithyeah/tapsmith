@@ -2185,20 +2185,28 @@ describe('provisionEmulators boots emulators side by side', () => {
     expect(after.map((e) => [e.serial, e.booting ?? false])).toEqual([['emulator-5554', false]]);
   });
 
-  it('gives each boot the budget of a boot alone, times how many boot at once', async () => {
+  it('gives each boot and stability check the budget of one alone, times how many boot at once', async () => {
     const budgets: Array<number | undefined> = [];
+    const stability: Array<number | undefined> = [];
     const waitForBoot = async (_serial: string, timeoutMs?: number) => { budgets.push(timeoutMs); };
+    const waitForDeviceStability = async (serial: string, timeoutMs?: number) => {
+      stability.push(timeoutMs);
+      return { serial, healthy: true };
+    };
     await provisionEmulators(
       { existingSerials: [], workers: 3, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
-      { ...base, launchConcurrency: 2, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot },
+      { ...base, launchConcurrency: 2, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot, waitForDeviceStability },
     );
     expect(budgets).toEqual([2, 2, 2].map((n) => n * EMULATOR_BOOT_TIMEOUT_MS));
+    expect(stability).toEqual([40_000, 40_000, 40_000]);
     budgets.length = 0;
+    stability.length = 0;
     await provisionEmulators(
       { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
-      { ...base, launchConcurrency: 4, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot },
+      { ...base, launchConcurrency: 4, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot, waitForDeviceStability },
     );
     expect(budgets).toEqual([EMULATOR_BOOT_TIMEOUT_MS]);
+    expect(stability).toEqual([20_000]);
   });
 
   it('gives two concurrent provisioning calls distinct ports and logs (PILOT-439)', async () => {

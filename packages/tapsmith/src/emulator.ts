@@ -1936,9 +1936,10 @@ export async function provisionEmulators(opts: {
   // Boots side by side share the host's CPU — and its event loop, which one
   // boot's synchronous post-boot checks hold for many seconds while another
   // boot's polls wait — so each gets the budget a boot alone would, times how
-  // many boot at once.
+  // many boot at once. The same goes for the stability checks after it.
   const laneCount = Math.min(Math.max(1, resolvedDeps.launchConcurrency), needed);
   const bootTimeoutMs = EMULATOR_BOOT_TIMEOUT_MS * laneCount;
+  const stabilityTimeoutMs = DEFAULT_DEVICE_STABILITY_TIMEOUT_MS * laneCount;
 
   /**
    * Launch and boot one emulator, trying each candidate AVD that has not
@@ -2004,7 +2005,7 @@ export async function provisionEmulators(opts: {
             if (stopWaiting.signal.aborted) return;
             const health = await resolvedDeps.waitForDeviceStability(
               launchedEmu.serial,
-              DEFAULT_DEVICE_STABILITY_TIMEOUT_MS,
+              stabilityTimeoutMs,
               resolvedDeps.probeDeviceHealth,
               stopWaiting.signal,
             );
