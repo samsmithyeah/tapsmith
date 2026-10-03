@@ -400,6 +400,17 @@ describe('installAppIfAbsent (PILOT-496)', () => {
     expect(simctl).toEqual(['get_app_container']);
   });
 
+  it('does not install when the lookup fails for another reason (simulator not ready)', () => {
+    const simctl: string[] = [];
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl') simctl.push(args[1]);
+      if (args?.[1] === 'get_app_container') throw exited(149);
+      return '' as unknown as Buffer;
+    });
+    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toBe(false);
+    expect(simctl).toEqual(['get_app_container']);
+  });
+
   it('reports no install when every install attempt fails, so the session installs it', () => {
     mockedExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
       if (args?.[1] === 'get_app_container') throw exited(2);

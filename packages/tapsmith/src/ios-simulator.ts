@@ -260,6 +260,9 @@ export function isAppInstalled(udid: string, bundleId: string): boolean {
   }
 }
 
+/** `simctl get_app_container`'s exit status for an app that is not installed (ENOENT). */
+const SIMCTL_APP_NOT_INSTALLED_EXIT = 2;
+
 /**
  * Install the app on a simulator that does not have it, straight after the
  * simulator booted. Returns true when it did, so the session that opens next
@@ -272,9 +275,10 @@ export function isAppInstalled(udid: string, bundleId: string): boolean {
  * before the agent started pushed the agent past its startup bound (PILOT-496).
  */
 export function installAppIfAbsent(udid: string, appPath: string, bundleId: string): boolean {
-  // Only a definite "not installed" counts. A lookup that timed out on a busy
-  // simulator says nothing, and installing over an app that is there keeps
-  // its data — calling that fresh would skip the startup clear.
+  // Only a definite "not installed" counts: simctl's ENOENT exit. A lookup
+  // that timed out or failed some other way on a busy simulator says nothing,
+  // and installing over an app that is there keeps its data — calling that
+  // fresh would skip the startup clear.
   try {
     execFileSync('xcrun', ['simctl', 'get_app_container', udid, bundleId, 'app'], {
       timeout: 30_000,
@@ -283,7 +287,7 @@ export function installAppIfAbsent(udid: string, appPath: string, bundleId: stri
     return false;
   } catch (err) {
     const { signal, status } = err as { signal?: string | null; status?: number | null };
-    if (signal || typeof status !== 'number') return false;
+    if (signal || status !== SIMCTL_APP_NOT_INSTALLED_EXIT) return false;
   }
   try {
     installApp(udid, appPath);
