@@ -1039,12 +1039,14 @@ async function ensureSequentialTargetDevice(
 
     // Boot the simulator
     try {
-      const udid = provisionSimulator(simulatorName);
+      const { udid, bootComplete } = provisionSimulator(simulatorName);
       // Installed now, while the simulator is still settling, rather than
       // right before the agent starts: on a hosted runner the first launch
       // of a just-installed app then pushed the agent past its startup bound.
       // Reported as fresh so the session neither re-checks it nor clears it.
-      const appInstalledFresh = !!config.app && !!config.package
+      // Not on a simulator whose boot wait timed out: one still booting can
+      // report an installed app as absent.
+      const appInstalledFresh = bootComplete && !!config.app && !!config.package
         && installAppIfAbsent(udid, path.resolve(config.rootDir, config.app), config.package);
       return { selectedSerial: udid, launched: [], appInstalledFresh };
     } catch (e) {

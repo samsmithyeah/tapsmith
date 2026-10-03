@@ -351,7 +351,8 @@ const FIND_SIMULATOR_RETRY_DELAY_MS = 3000;
 
 /**
  * Provision a simulator for testing: find by name, and boot it and wait for
- * the boot to finish if it is not booted. Returns its UDID.
+ * the boot to finish if it is not booted. Returns its UDID, and whether the
+ * boot is known to be complete (false when the wait timed out).
  *
  * The app is not installed here; the caller decides (`installAppIfAbsent`).
  *
@@ -368,7 +369,7 @@ export function provisionSimulator(
     attempts: FIND_SIMULATOR_ATTEMPTS,
     delayMs: FIND_SIMULATOR_RETRY_DELAY_MS,
   },
-): string {
+): { udid: string; bootComplete: boolean } {
   let sim = findSimulator(simulatorName);
   for (let attempt = 1; !sim && attempt < retry.attempts; attempt++) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retry.delayMs);
@@ -386,11 +387,12 @@ export function provisionSimulator(
     // As provisionSimulators does: what follows (the daemon's device
     // selection, the install, the agent start) would otherwise race a
     // simulator that is `Booted` but not up. A timeout is not fatal — they
-    // retry on their own.
-    waitForSimulatorBootComplete(sim.udid);
+    // retry on their own — but it is reported: a simulator still booting
+    // cannot be trusted to say which apps it holds.
+    return { udid: sim.udid, bootComplete: waitForSimulatorBootComplete(sim.udid) };
   }
 
-  return sim.udid;
+  return { udid: sim.udid, bootComplete: true };
 }
 
 /**

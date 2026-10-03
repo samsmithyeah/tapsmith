@@ -291,8 +291,7 @@ describe('provisionSimulator', () => {
       return '' as unknown as Buffer;
     });
 
-    const udid = provisionSimulator('iPhone 16');
-    expect(udid).toBe('A');
+    expect(provisionSimulator('iPhone 16')).toEqual({ udid: 'A', bootComplete: true });
     const simctl = calls.filter((c) => c[0] === 'xcrun' && c[1] === 'simctl').map((c) => c[2]);
     expect(simctl).toEqual(['list', 'boot', 'bootstatus']);
     expect(calls.find((c) => c[2] === 'bootstatus')).toEqual(['xcrun', 'simctl', 'bootstatus', 'A', '-b']);
@@ -307,7 +306,9 @@ describe('provisionSimulator', () => {
       return '' as unknown as Buffer;
     });
 
-    expect(provisionSimulator('iPhone 16')).toBe('A');
+    // Reported, so the caller does not trust what a still-booting simulator
+    // says about its installed apps.
+    expect(provisionSimulator('iPhone 16')).toEqual({ udid: 'A', bootComplete: false });
   });
 
   it('neither boots nor waits for a simulator that is already booted', () => {
@@ -320,7 +321,7 @@ describe('provisionSimulator', () => {
       return '' as unknown as Buffer;
     });
 
-    expect(provisionSimulator('iPhone 16')).toBe('B');
+    expect(provisionSimulator('iPhone 16')).toEqual({ udid: 'B', bootComplete: true });
     expect(simctl).toEqual(['list']);
   });
 
@@ -352,8 +353,7 @@ describe('provisionSimulator', () => {
       return '' as unknown as Buffer;
     });
 
-    const udid = provisionSimulator('iPhone 17', { attempts: 4, delayMs: 1 });
-    expect(udid).toBe('B');
+    expect(provisionSimulator('iPhone 17', { attempts: 4, delayMs: 1 }).udid).toBe('B');
     expect(listCalls).toBe(2);
   });
 });
