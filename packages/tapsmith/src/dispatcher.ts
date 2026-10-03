@@ -31,6 +31,7 @@ import {
   clearOfflineEmulatorTransports,
   provisionEmulators,
   forceCleanupEmulators,
+  emulatorsBootingThisProcess,
   filterHealthyDevices,
   getRunningAvdName,
   cleanupStaleEmulators,
@@ -1293,9 +1294,12 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         killAgentRunnersForSimulators([...udids]);
       }
     }
-    // 3. Shut down / delete the worker simulators and emulators.
-    if (launchedEmulators.length > 0) {
-      forceCleanupEmulators(launchedEmulators);
+    // 3. Shut down / delete the worker simulators and emulators — including
+    //    any still booting: interrupted mid-provisioning, they were never
+    //    handed to a worker and would otherwise be left running (PILOT-441).
+    const stillBooting = emulatorsBootingThisProcess();
+    if (launchedEmulators.length > 0 || stillBooting.length > 0) {
+      forceCleanupEmulators([...launchedEmulators, ...stillBooting]);
     }
     if (clonedSimulators.length > 0) {
       forceCleanupSimulators(clonedSimulators);
