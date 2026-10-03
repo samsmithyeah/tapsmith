@@ -185,18 +185,24 @@ function isReachable(connProps: Record<string, unknown>): boolean {
   return typeof connProps['transportType'] === 'string' && connProps['transportType'] !== '';
 }
 
+/** A simulator UDID; physical ones are `8-16` or 40 hex digits. */
+const SIMULATOR_UDID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i;
+
 /**
  * Returns true if `udid` matches a physical iOS device currently listed by
  * devicectl. Used by the CLI to branch install/launch between simctl and
  * devicectl paths.
+ *
+ * A simulator-shaped UDID is answered without devicectl: no physical
+ * device's hardware UDID has that shape, and a simulator session asks this
+ * several times during setup. On a hosted macOS runner whose simulator was
+ * just booted, each of those devicectl calls ran into its 15 s timeout
+ * (PILOT-496).
  */
 export function isPhysicalDevice(udid: string): boolean {
-  if (!udid) return false;
+  if (!udid || SIMULATOR_UDID.test(udid)) return false;
   return listPhysicalDevices().some((d) => d.udid === udid);
 }
-
-/** A simulator UDID; physical ones are `8-16` or 40 hex digits. */
-const SIMULATOR_UDID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i;
 
 /**
  * Why `udid` cannot be used, when it is a physical device devicectl only
