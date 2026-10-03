@@ -10,7 +10,10 @@
 //   - a Tapsmith package that declares an install script at all, or a daemon
 //     binary that is not executable straight from the tarball, with or without
 //     `--ignore-scripts` (PILOT-437);
-//   - compiled unit tests (`__tests__`) in the tarball (PILOT-438).
+//   - compiled unit tests (`__tests__`) in the tarball (PILOT-438);
+//   - an installed `tapsmith mcp-server` that cannot serve the
+//     `tapsmith://api-reference` resource docs/agents.md points agents at,
+//     because the build stopped bundling docs/api-reference.md (PILOT-359).
 //
 // The host platform's @tapsmith/core-* package is packed from npm-packages/
 // with stub binaries in place of the Rust build, so the check exercises this
@@ -241,7 +244,7 @@ function checkBinariesWithoutScripts(tapsmith, core) {
   if (install.status !== 0) {
     console.error(install.output);
     fail(`npm install --ignore-scripts ${tapsmith.filename} failed (exit ${install.status}).`);
-    return;
+    return undefined;
   }
   const coreDir = path.join(project, 'node_modules', ...core.pkgName.split('/'));
   for (const bin of core.binaries) {
@@ -274,6 +277,47 @@ function checkBinariesWithoutScripts(tapsmith, core) {
         `\`npm install --ignore-scripts\`:\n${resolve.stdout}${resolve.stderr}`,
     );
   }
+  return project;
+}
+
+/**
+ * The installed package's MCP server must list and serve tapsmith://api-reference.
+ * Only dist/ is published, so this fails if the build stops copying
+ * docs/api-reference.md into it (PILOT-359). It uses the installed SDK and the
+ * installed MCP SDK, in process, so it needs neither a daemon nor a device.
+ * `project` is the --ignore-scripts install checkBinariesWithoutScripts made.
+ */
+function checkMcpApiReference(project) {
+  const modules = path.join(project, 'node_modules');
+  const script = `
+    const { createMcpServer } = await import(${JSON.stringify(path.join(modules, 'tapsmith/dist/mcp/index.js'))});
+    // Bare specifiers resolve from the project, so this is the MCP SDK the
+    // installed tapsmith depends on.
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
+    const [serverSide, clientSide] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'clean-install', version: '0.0.0' });
+    await Promise.all([createMcpServer().connect(serverSide), client.connect(clientSide)]);
+    if (!client.getServerCapabilities()?.resources) throw new Error('the server advertises no resources');
+    const { resources } = await client.listResources();
+    if (!resources.some((r) => r.uri === 'tapsmith://api-reference')) {
+      throw new Error('resources/list has no tapsmith://api-reference: ' + JSON.stringify(resources.map((r) => r.uri)));
+    }
+    const { contents } = await client.readResource({ uri: 'tapsmith://api-reference' });
+    const text = contents[0]?.text ?? '';
+    if (!text.startsWith('# ')) throw new Error('resources/read returned no markdown: ' + JSON.stringify(text.slice(0, 80)));
+    console.log(text.length);
+    process.exit(0);
+  `;
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: project, env, encoding: 'utf8' });
+  if (run.status !== 0) {
+    fail(
+      `the installed package's MCP server does not serve tapsmith://api-reference (docs/agents.md tells agents to ` +
+        `read it). The build must copy docs/api-reference.md into dist/docs/:\n${run.stdout}${run.stderr}`,
+    );
+    return;
+  }
+  console.log(`check-clean-install: the installed MCP server serves tapsmith://api-reference (${run.stdout.trim()} chars).`);
 }
 
 // ─── Main ───
@@ -285,13 +329,14 @@ try {
   const tapsmith = packTapsmith();
   const core = packHostCorePackage();
   checkInstallWarnings(tapsmith, core, npmVersion);
-  checkBinariesWithoutScripts(tapsmith, core);
+  const installed = checkBinariesWithoutScripts(tapsmith, core);
+  if (installed) checkMcpApiReference(installed);
   if (failures.length > 0) {
     exitCode = 1;
   } else {
     console.log(
       `check-clean-install: ${tapsmith.filename} installs into an empty project with no deprecation warnings, ` +
-        `no Tapsmith install scripts and a runnable daemon binary (npm ${npmVersion}).`,
+        `no Tapsmith install scripts, a runnable daemon binary and its MCP API reference (npm ${npmVersion}).`,
     );
   }
 } catch (err) {

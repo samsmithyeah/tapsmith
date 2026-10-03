@@ -125,6 +125,11 @@ describe('tapsmith mcp-server over real stdio', () => {
 
       // Still alive and answering after an error result.
       expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+
+      // The resource docs/agents.md points agents at. It never registered, so
+      // resources/list was a "Method not found" error (PILOT-359).
+      const { resources } = await client.listResources();
+      expect(resources.map((r) => r.uri)).toContain('tapsmith://api-reference');
     } finally {
       await client.close();
     }

@@ -18,6 +18,7 @@ import { registerListTestsTool } from './tools/list-tests.js';
 import { registerStopTestsTool } from './tools/stop-tests.js';
 import { registerSessionInfoTool } from './tools/session-info.js';
 import { registerWatchTool } from './tools/watch.js';
+import { registerApiReferenceResource } from './api-reference.js';
 import { closeAllClients, configureMcpConnection } from './connection.js';
 import { readSdkVersion } from '../telemetry.js';
 import { mcpActivityFilePath, uiPortFilePath } from './port-file.js';
@@ -100,23 +101,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
     registerWatchTool(server, dispatcher);
   }
 
-  // Register API reference as a resource
-  // import.meta.dirname points to dist/mcp/ or src/mcp/ depending on build vs tsx
-  const apiRefPath = path.resolve(import.meta.dirname, '../../../docs/api-reference.md');
-  if (fs.existsSync(apiRefPath)) {
-    server.resource(
-      'Tapsmith API Reference',
-      'tapsmith://api-reference',
-      { description: 'Complete API reference for the Tapsmith mobile testing framework. Read this to understand available methods when writing tests.', mimeType: 'text/markdown' },
-      () => ({
-        contents: [{
-          uri: 'tapsmith://api-reference',
-          text: fs.readFileSync(apiRefPath, 'utf-8'),
-          mimeType: 'text/markdown',
-        }],
-      }),
-    );
-  }
+  registerApiReferenceResource(server);
 
   return server;
 }
