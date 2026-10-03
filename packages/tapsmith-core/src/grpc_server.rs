@@ -7240,26 +7240,32 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // container-manager metadata; keep this container's own
                 // (PILOT-462). bsdtar's --exclude is not anchored, so the
                 // files are put back after the extract rather than excluded.
-                let output = ios::device::keeping_container_manager_files(&container, async {
-                    tokio::process::Command::new("tar")
-                        .args([
-                            "xzf",
-                            local_path,
-                            "-C",
-                            &container,
-                            "--exclude",
-                            &member_pattern,
-                            "--exclude",
-                            &format!("{member_pattern}/*"),
-                            "--exclude",
-                            member,
-                            "--exclude",
-                            &format!("{member}/*"),
-                        ])
-                        .output()
+                // Spawned, so a cancelled request (its future dropped
+                // mid-extract) still finishes the extract and the put-back
+                // instead of leaving the archive's record in the container.
+                let output = {
+                    let container = container.clone();
+                    let local_path = local_path.clone();
+                    let excludes = [
+                        member_pattern.clone(),
+                        format!("{member_pattern}/*"),
+                        member.to_string(),
+                        format!("{member}/*"),
+                    ];
+                    tokio::spawn(async move {
+                        ios::device::keeping_container_manager_files(&container, async {
+                            let mut tar = tokio::process::Command::new("tar");
+                            tar.args(["xzf", local_path.as_str(), "-C", container.as_str()]);
+                            for pattern in &excludes {
+                                tar.args(["--exclude", pattern.as_str()]);
+                            }
+                            tar.output().await
+                        })
                         .await
-                })
-                .await;
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(std::io::Error::other(e)))
+                };
 
                 match output {
                     Ok(out) if out.status.success() => {
