@@ -11,6 +11,8 @@ import { loadMcpConfig } from './config-loader.js';
 import { describeUnusableAndroidDevices, pinnedDeviceUnusableMessage, type AdbStateEntry } from '../device-advice.js';
 import { uiPortFilePath, allUiPortFiles, mcpDaemonRegistryPath } from './port-file.js';
 import { openDaemonLog, readDaemonLogSince } from './daemon-log.js';
+import { awaitDaemonStart, daemonStartFailure } from '../daemon-start.js';
+import { withDetail } from '../error-detail.js';
 
 const DEFAULT_ADDRESS = 'localhost:50051';
 
@@ -155,10 +157,11 @@ export async function ensureConnected(device?: string): Promise<TapsmithGrpcClie
   }
 
   if (_connections.length === 0) {
-    throw new Error(
-      'No Tapsmith daemons found or started. Is tapsmith-core installed? ' +
-      'Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.',
-    );
+    // Why, in the tool result: few MCP clients show the server's stderr,
+    // where these reasons used to be the only place they appeared (PILOT-463).
+    throw new Error(_discoveryFailures.length > 0
+      ? withDetail('No Tapsmith daemon is available', _discoveryFailures.flatMap((m) => m.split('\n')))
+      : 'No Tapsmith daemon is available: the session closed while one was starting.');
   }
 
   _ready = true;
@@ -567,7 +570,15 @@ export function discoverySelectsDevice(opts: { uiMode: boolean }): boolean {
   return opts.uiMode;
 }
 
+/**
+ * Why the last discovery ended with no daemon to use, for the error
+ * `ensureConnected` throws: the start failure in the daemon's own words, a
+ * failed setup, a found daemon that could not be reached.
+ */
+let _discoveryFailures: string[] = [];
+
 async function discover(): Promise<void> {
+  _discoveryFailures = [];
   // A config that fails to load leaves discovery without one; the session's
   // tools report the load error.
   const config = await loadMcpConfig(_configFile).then((result) => result.config).catch(() => null);
@@ -726,6 +737,7 @@ async function discover(): Promise<void> {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log(`Failed to connect to daemon at ${address}: ${msg}`);
+        _discoveryFailures.push(`Could not connect to the daemon at ${address}: ${msg}`);
         client.close();
         return null;
       }
@@ -736,7 +748,13 @@ async function discover(): Promise<void> {
   }
 
   // 7. No live daemons — start our own
-  const conn = await startDaemon(config?.platform);
+  let conn: DaemonConnection | null;
+  try {
+    conn = await startDaemon(config?.platform);
+  } catch (err) {
+    _discoveryFailures.push(err instanceof Error ? err.message : String(err));
+    return;
+  }
   if (!conn) return;
 
   try {
@@ -753,6 +771,7 @@ async function discover(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`Daemon started but setup failed: ${msg}`);
+    _discoveryFailures.push(`Started a daemon, but setting it up failed: ${msg}`);
     // `removeConnection` already unregisters a daemon we started; a second call
     // would take the registry lock again, and that lock blocks the event loop.
     removeConnection(conn);
@@ -821,8 +840,18 @@ export function daemonSpawnArgs(port: string, agentPort: string, platform?: stri
   return args;
 }
 
-/** @internal — exported for unit testing. */
-export async function startDaemon(platform?: string): Promise<DaemonConnection | null> {
+/**
+ * Start a daemon and add it to the pool. Throws when it does not start, with
+ * the daemon's own output and log path in the message; null only when the
+ * session closed while it was starting.
+ *
+ * @internal — exported for unit testing.
+ */
+export async function startDaemon(
+  platform?: string,
+  /** The group member it is for, named in the failure. */
+  member?: string,
+): Promise<DaemonConnection | null> {
   const generation = _sessionGeneration;
   const sessionClosed = (): boolean => generation !== _sessionGeneration;
   log(platform ? `Starting a ${platform} daemon...` : 'No daemon found, starting one...');
@@ -862,12 +891,25 @@ export async function startDaemon(platform?: string): Promise<DaemonConnection |
   daemonProcess.unref();
   daemonProcess.on('error', (err) => { log(`Daemon process error: ${err.message}`); });
   const logNote = daemonLog ? ` — log: ${daemonLog.path}` : '';
-  /** A failed start quotes what the daemon said, since it no longer says it here. */
-  const failureDetail = (): string => {
-    const tail = daemonLog ? readDaemonLogSince(daemonLog) : '';
-    // "Recent", not "its": sessions in a project share the default log, so a
-    // daemon starting alongside this one may have written lines here too.
-    return tail ? `\nRecent daemon log (${daemonLog?.path}):\n${tail}` : logNote;
+  /**
+   * A failed start quotes what the daemon said, since it no longer says it
+   * here — "recent" output, not "its": sessions in a project share the
+   * default log, so a daemon starting alongside this one may have written
+   * lines there too.
+   */
+  const startFailure = (cause: string, spawnFailed: boolean): Error => {
+    const message = daemonStartFailure(
+      `Failed to start a ${platform ?? 'Tapsmith'} daemon${member ? ` for group member "${member}"` : ''}`,
+      {
+        cause,
+        spawnFailed,
+        recentOutput: daemonLog ? readDaemonLogSince(daemonLog) : '',
+        logPath: daemonLog?.path,
+        hints: daemonLog ? [] : ['Its output was discarded: the daemon log could not be opened.'],
+      },
+    );
+    log(message);
+    return new Error(message);
   };
 
   // Until it is in `_connections`, only this set lets `closeAllClients` find
@@ -878,12 +920,17 @@ export async function startDaemon(platform?: string): Promise<DaemonConnection |
   try {
     const address = `127.0.0.1:${port}`;
     const client = new TapsmithGrpcClient(address);
-    const started = await client.waitForReady(10_000);
-    if (!started) {
+    // Ends early when the daemon exits or cannot be spawned, which a gRPC
+    // readiness wait cannot see.
+    const started = await awaitDaemonStart(daemonProcess, (ms) => client.waitForReady(ms), {
+      budgetMs: 10_000,
+      address,
+    });
+    if (!started.ok) {
       client.close();
       daemonProcess.kill();
-      log(`Failed to start daemon. Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.${failureDetail()}`);
-      return null;
+      if (sessionClosed()) return null;
+      throw startFailure(started.cause, started.spawnFailed);
     }
 
     try {
@@ -891,10 +938,10 @@ export async function startDaemon(platform?: string): Promise<DaemonConnection |
       log(`Started daemon v${version} on port ${port} (agent ${agentPort})${platform ? ` [${platform}]` : ''}${logNote}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log(`Daemon started but did not respond: ${msg}${failureDetail()}`);
       client.close();
       daemonProcess.kill();
-      return null;
+      if (sessionClosed()) return null;
+      throw startFailure(`tapsmith-core started but did not respond: ${msg}`, false);
     }
 
     if (sessionClosed()) {
@@ -1032,10 +1079,8 @@ async function ensureMemberTarget(
 ): Promise<PlatformTargetMember> {
   const platform = config.platform;
   assertNotHeldByUi(wantedSerial, uiHeldDevices(), name);
-  const conn = await startDaemon(platform);
-  if (!conn) {
-    throw new Error(`Failed to start a ${platform ?? 'Tapsmith'} daemon for group member "${name}". Is tapsmith-core installed?`);
-  }
+  const conn = await startDaemon(platform, name);
+  if (!conn) throw new Error(`The session closed while a daemon for group member "${name}" was starting.`);
   const serial = (await pickDevice(conn, platform, wantedSerial, exclude))?.serial;
   if (!serial) {
     const { serials, unusable } = await visibleDevices(conn, platform);
@@ -1103,9 +1148,7 @@ async function ensurePrimaryTarget(
   // Nothing reusable serves this platform — daemons are per-platform, so start
   // one dedicated to it.
   const conn = await startDaemon(platform);
-  if (!conn) {
-    throw new Error(`Failed to start a ${platform ?? 'Tapsmith'} daemon. Is tapsmith-core installed?`);
-  }
+  if (!conn) throw new Error(`The session closed while a ${platform ?? 'Tapsmith'} daemon was starting.`);
 
   const serial = (await pickDevice(conn, platform, wanted, exclude))?.serial;
   if (!serial) {

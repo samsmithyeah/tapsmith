@@ -19,6 +19,7 @@ import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { minimatch } from 'minimatch';
 import { type TapsmithConfig } from './config.js';
 import { findDaemonBin } from './daemon-bin.js';
+import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure } from './daemon-start.js';
 import type { Device } from './device.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { createReporters, ReporterDispatcher, type FullResult, type TapsmithReporter } from './reporter.js';
@@ -423,22 +424,37 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     if (members.length !== groupNames.length - 1) {
       throw new Error(`worker ${id}: config declares a device group of ${groupNames.length} but ${members.length + 1} device(s) were provisioned for it`);
     }
-    const daemonProcess = spawn(
-      daemonBin,
-      ['--port', String(daemonPort), '--agent-port', String(agentPort),
-        ...(workerConfig.platform ? ['--platform', workerConfig.platform] : [])],
-      { stdio: 'ignore' },
-    );
-    daemonProcess.on('error', () => { /* handled by waitForReady */ });
+    // Its stderr, so a daemon that does not come up says why (PILOT-463).
+    const daemonOutput = captureDaemonOutput(undefined, () => {});
+    let daemonProcess: ChildProcess;
+    try {
+      daemonProcess = spawn(
+        daemonBin,
+        ['--port', String(daemonPort), '--agent-port', String(agentPort),
+          ...(workerConfig.platform ? ['--platform', workerConfig.platform] : [])],
+        { stdio: daemonOutput.stdio },
+      );
+    } finally {
+      daemonOutput.closeParentFds();
+    }
     spawned.push(daemonProcess);
 
     const daemonClient = new TapsmithGrpcClient(`localhost:${daemonPort}`);
-    const ready = await daemonClient.waitForReady(10_000);
+    const daemonStart = await awaitDaemonStart(daemonProcess, (ms) => daemonClient.waitForReady(ms), {
+      budgetMs: 10_000,
+      address: `localhost:${daemonPort}`,
+    });
     daemonClient.close();
-    if (!ready) {
+    if (!daemonStart.ok) {
       try { daemonProcess.kill(); } catch { /* already dead */ }
-      throw new Error(`daemon on port ${daemonPort} did not become ready`);
+      const message = daemonStartFailure(`daemon on port ${daemonPort} did not start`, {
+        ...daemonStart,
+        recentOutput: daemonOutput.recentOutput(),
+      });
+      daemonOutput.dispose();
+      throw new Error(message);
     }
+    daemonOutput.dispose();
     // Only detach after confirmed ready so kill() works during init failure
     daemonProcess.unref();
 

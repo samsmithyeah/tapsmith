@@ -87,7 +87,7 @@ If a UI server is already running, stdio mode will detect it and suggest connect
 
 The session ends when the client closes the server's stdin or sends it SIGINT, SIGTERM or SIGHUP. Either way the server stops any run in progress, stops the daemon it started (and so that daemon's device agent) unless another MCP session in the project is still using it, and exits 0.
 
-The daemon's output goes to `~/.tapsmith/daemons/mcp-daemon-<project-hash>.log` (one file per project directory; when a daemon starts and the file is over 5 MB, it is first moved to `.1`), or to the file named by [`TAPSMITH_DAEMON_LOG`](environment-variables.md). The server's own stderr names the file when it starts a daemon, and quotes the daemon's last lines when one fails to start.
+The daemon's output goes to `~/.tapsmith/daemons/mcp-daemon-<project-hash>.log` (one file per project directory; when a daemon starts and the file is over 5 MB, it is first moved to `.1`), or to the file named by [`TAPSMITH_DAEMON_LOG`](environment-variables.md). The server's own stderr names the file when it starts a daemon. When one fails to start, the tool's error says why: how the daemon ended, its last lines from this file, and the file's path.
 
 ## Tool Reference
 

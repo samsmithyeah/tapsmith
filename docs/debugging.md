@@ -656,6 +656,8 @@ TAPSMITH_DAEMON_LOG=daemon.log npx tapsmith test
 
 This redirects the daemon's stdout and stderr to the specified file. Useful when you need to share daemon logs with someone, or when the daemon output scrolls past too quickly in the terminal.
 
+You don't need it to find out why a daemon failed to start. Without it, Tapsmith keeps the daemon's stderr while it starts, and the start error quotes the daemon's last lines. With it, the error quotes what that daemon wrote to the file and gives the file's path.
+
 The headless MCP server (`tapsmith mcp-server`) always writes its daemons' output to a file: this one when it is set, otherwise `~/.tapsmith/daemons/mcp-daemon-<project-hash>.log`. The server logs the path on its stderr when it starts a daemon.
 
 ### `RUST_LOG`
