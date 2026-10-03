@@ -50,6 +50,7 @@ import {
   listAdbDevices,
   reserveEmulatorPort,
   emulatorsBootingThisProcess,
+  EMULATOR_BOOT_TIMEOUT_MS,
 } from '../emulator.js';
 import lockfile from 'proper-lockfile';
 
@@ -2146,23 +2147,58 @@ describe('provisionEmulators boots emulators side by side', () => {
     );
     await boots.untilStarted(3);
     boots.pending.get('emulator-5554')!.resolve();
-    await vi.waitFor(() => expect(emulatorsBootingThisProcess().map((emu) => emu.serial)).toEqual(['emulator-5556', 'emulator-5558']));
+    const readManifestFile = () => JSON.parse(fs.readFileSync(manifestFile, 'utf-8')) as Array<Record<string, unknown>>;
+    await vi.waitFor(() => expect(readManifestFile().find((e) => e.serial === 'emulator-5554')?.booting).toBeUndefined());
 
     // Interrupted here, every spawned emulator is on record: the first ready,
-    // the others still booting under this process.
-    const midway = JSON.parse(fs.readFileSync(manifestFile, 'utf-8')) as Array<Record<string, unknown>>;
-    expect(midway.map((e) => [e.serial, e.pid, e.booting ?? false, e.ownerPid])).toEqual([
+    // the others still booting under this process…
+    expect(readManifestFile().map((e) => [e.serial, e.pid, e.booting ?? false, e.ownerPid]).sort()).toEqual([
       ['emulator-5554', 55540, false, process.pid],
       ['emulator-5556', 55560, true, process.pid],
       ['emulator-5558', 55580, true, process.pid],
     ]);
+    // …and an interrupted run stops all three, the booted one included:
+    // none has been handed to the caller yet.
+    expect(emulatorsBootingThisProcess().map((emu) => emu.serial)).toEqual(['emulator-5554', 'emulator-5556', 'emulator-5558']);
 
     boots.pending.get('emulator-5556')!.reject(new Error('boot timed out'));
     boots.pending.get('emulator-5558')!.resolve();
     await provision;
-    const after = JSON.parse(fs.readFileSync(manifestFile, 'utf-8')) as Array<Record<string, unknown>>;
-    expect(after.map((e) => [e.serial, e.booting ?? false])).toEqual([['emulator-5554', false], ['emulator-5558', false]]);
+    const after = readManifestFile();
+    expect(after.map((e) => [e.serial, e.booting ?? false]).sort()).toEqual([['emulator-5554', false], ['emulator-5558', false]]);
     expect(emulatorsBootingThisProcess()).toEqual([]);
+  });
+
+  it('records a booted emulator even when another run rewrote the manifest during its boot', async () => {
+    const boots = controlledBoots();
+    const provision = provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      { ...base, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot: boots.waitForBoot },
+    );
+    await boots.untilStarted(1);
+    // Another run's reclaim read the manifest before this launch was recorded,
+    // and wrote back what it had seen.
+    fs.writeFileSync(manifestFile, '[]');
+    boots.pending.get('emulator-5554')!.resolve();
+    await provision;
+    const after = JSON.parse(fs.readFileSync(manifestFile, 'utf-8')) as Array<Record<string, unknown>>;
+    expect(after.map((e) => [e.serial, e.booting ?? false])).toEqual([['emulator-5554', false]]);
+  });
+
+  it('gives each boot the budget of a boot alone, times how many boot at once', async () => {
+    const budgets: Array<number | undefined> = [];
+    const waitForBoot = async (_serial: string, timeoutMs?: number) => { budgets.push(timeoutMs); };
+    await provisionEmulators(
+      { existingSerials: [], workers: 3, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      { ...base, launchConcurrency: 2, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot },
+    );
+    expect(budgets).toEqual([2, 2, 2].map((n) => n * EMULATOR_BOOT_TIMEOUT_MS));
+    budgets.length = 0;
+    await provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      { ...base, launchConcurrency: 4, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot },
+    );
+    expect(budgets).toEqual([EMULATOR_BOOT_TIMEOUT_MS]);
   });
 
   it('gives two concurrent provisioning calls distinct ports and logs (PILOT-439)', async () => {

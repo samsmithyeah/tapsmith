@@ -111,14 +111,13 @@ export function recordLaunchedEmulators(
   writeManifest([...existing, ...newEntries]);
 }
 
-/** Mark recorded emulators as booted: from now on any run may reuse them. */
+/**
+ * Record emulators as booted: from now on any run may reuse them. Written
+ * afresh rather than edited in place, because the manifest is not locked:
+ * another run's reclaim may have rewritten it without the booting entry.
+ */
 function markLaunchedEmulatorsReady(launched: LaunchedEmulator[]): void {
-  const serials = new Set(launched.map((emu) => emu.serial));
-  writeManifest(readManifest().map((entry) => {
-    if (!serials.has(entry.serial) || !entry.booting) return entry;
-    const { booting: _booting, ...ready } = entry;
-    return ready;
-  }));
+  recordLaunchedEmulators(launched);
 }
 
 /**
@@ -1934,6 +1933,13 @@ export async function provisionEmulators(opts: {
     logProgress(`Launching ${needed} emulator(s) from available AVDs (${launchCandidates.join(', ')})${existingNote}...`);
   }
 
+  // Boots side by side share the host's CPU — and its event loop, which one
+  // boot's synchronous post-boot checks hold for many seconds while another
+  // boot's polls wait — so each gets the budget a boot alone would, times how
+  // many boot at once.
+  const laneCount = Math.min(Math.max(1, resolvedDeps.launchConcurrency), needed);
+  const bootTimeoutMs = EMULATOR_BOOT_TIMEOUT_MS * laneCount;
+
   /**
    * Launch and boot one emulator, trying each candidate AVD that has not
    * already failed. Its failures are its own: they never stop the others.
@@ -1956,6 +1962,7 @@ export async function provisionEmulators(opts: {
       let emu: LaunchedEmulator | undefined;
       const stopWaiting = new AbortController();
       let booting = true;
+      let booted = false;
       try {
         emu = resolvedDeps.launchEmulator(candidateAvd, port, settings, emulator.command);
         const launchedEmu = emu;
@@ -1992,7 +1999,7 @@ export async function provisionEmulators(opts: {
 
         await Promise.race([
           (async () => {
-            await resolvedDeps.waitForBoot(launchedEmu.serial, undefined, stopWaiting.signal);
+            await resolvedDeps.waitForBoot(launchedEmu.serial, bootTimeoutMs, stopWaiting.signal);
             // The race may already have been lost to an exit: probe no further.
             if (stopWaiting.signal.aborted) return;
             const health = await resolvedDeps.waitForDeviceStability(
@@ -2008,6 +2015,7 @@ export async function provisionEmulators(opts: {
           exitedDuringBoot,
         ]);
         markLaunchedEmulatorsReady([launchedEmu]);
+        booted = true;
         return launchedEmu;
       } catch (err) {
         if (emu === undefined) throw err;
@@ -2031,7 +2039,9 @@ export async function provisionEmulators(opts: {
       } finally {
         booting = false;
         stopWaiting.abort();
-        if (emu !== undefined) bootingThisProcess.delete(emu.serial);
+        // Booted ones stay registered until provisionEmulators hands them
+        // back, so an interrupt in the meantime stops them too.
+        if (emu !== undefined && !booted) bootingThisProcess.delete(emu.serial);
         await reservation.release();
       }
     }
@@ -2048,7 +2058,7 @@ export async function provisionEmulators(opts: {
   // at once on a small host would push every one past its boot timeout.
   const results: Array<LaunchedEmulator | undefined> = new Array(needed).fill(undefined);
   let nextIndex = 0;
-  const lanes = Array.from({ length: Math.min(Math.max(1, resolvedDeps.launchConcurrency), needed) }, async () => {
+  const lanes = Array.from({ length: laneCount }, async () => {
     while (nextIndex < needed) {
       const index = nextIndex++;
       results[index] = await launchOne(index);
@@ -2059,6 +2069,8 @@ export async function provisionEmulators(opts: {
   const settled = await Promise.allSettled(lanes);
   const failure = settled.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
   const launched = results.filter((emu): emu is LaunchedEmulator => emu !== undefined);
+  // Handed back now: the caller owns them from here.
+  for (const emu of launched) bootingThisProcess.delete(emu.serial);
   if (failure) {
     for (const emu of launched) launchedThisProcess.set(emu.serial, emu);
     throw failure.reason;
@@ -2146,12 +2158,16 @@ export function emulatorsLaunchedThisProcess(): LaunchedEmulator[] {
   return [...launchedThisProcess.values()];
 }
 
-/** Emulators this process has spawned and is still waiting on to boot. */
+/**
+ * Emulators this process has spawned that `provisionEmulators` has not yet
+ * handed back: still booting, or booted while others in its batch boot.
+ */
 const bootingThisProcess = new Map<string, LaunchedEmulator>();
 
 /**
- * Emulators this process is still booting — for an interrupted run to stop:
- * they were never handed to a worker, so nothing else will (PILOT-441).
+ * Emulators a provisioning in progress has launched and not yet handed back
+ * — for an interrupted run to stop: the caller does not know about them yet,
+ * so nothing else will (PILOT-441).
  */
 export function emulatorsBootingThisProcess(): LaunchedEmulator[] {
   return [...bootingThisProcess.values()];
