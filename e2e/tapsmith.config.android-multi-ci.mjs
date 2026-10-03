@@ -29,14 +29,9 @@ export default defineConfig({
     {
       name: "pair",
       testMatch: ["**/multi-device/**/*.test.ts"],
-      // The workflow boots both emulators up front and names the member's
-      // serial; unset locally, so Tapsmith picks or launches one instead.
-      use: {
-        devices: [
-          { name: "alice" },
-          { name: "bob", device: process.env.TAPSMITH_ANDROID_MEMBER || undefined },
-        ],
-      },
+      // The workflow boots only the primary (pinned with --device); Tapsmith
+      // launches bob from `avd` itself, the path this job checks.
+      use: { devices: [{ name: "alice" }, { name: "bob" }] },
     },
   ],
 })

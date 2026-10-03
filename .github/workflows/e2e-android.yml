@@ -511,9 +511,12 @@ jobs:
   # A `use.devices` project drives two emulators per test. It gets its own
   # job rather than a shard: the matrix boots one emulator per runner, and a
   # two-user test halves the parallelism of whatever hosts it. The workflow
-  # boots the first emulator exactly as a shard does; Tapsmith launches the
-  # second instance of the AVD itself (`avd` + `launchEmulators`) — the same
-  # path a developer machine takes.
+  # boots the primary (`alice`) the way a shard does; Tapsmith launches the
+  # second member (`bob`) itself, as a -read-only instance of the config's
+  # `avd` (`launchEmulators` is on by default with `avd`) — the path a user's
+  # CI takes, with a cold emulator booting beside one that is already busy.
+  # "Check Tapsmith launched the second member" fails the job if bob was
+  # anything but that launch (PILOT-483).
   e2e-multi-device:
     name: Multi-device
     needs: [ build-sdk, build-daemon, build-agent, build-test-app ]
@@ -601,13 +604,16 @@ jobs:
       - name: Install Android emulator package
         run: echo "y" | sdkmanager --install emulator
 
-      # Two AVDs from the same image, one per group member. A second
-      # `-read-only` instance of a single AVD never registered with adb on
-      # these runners; two independent writable instances boot the way the
-      # shard jobs' single emulator does.
+      # Two AVDs from the same image. The primary boots from its own AVD
+      # because the emulator refuses a -read-only instance beside a writable
+      # instance of the same AVD ("Another emulator instance is running"), and
+      # the workflow's boot is writable on purpose: a -read-only emulator on a
+      # Tapsmith-style port would look like one Tapsmith launched to its
+      # stale-emulator cleanup. `AVD_NAME` (the config's `avd`) is left for
+      # Tapsmith to launch.
       - name: Create two AVDs
         run: |
-          for NAME in "${{ env.AVD_NAME }}" "${{ env.AVD_NAME }}-2"; do
+          for NAME in "${{ env.AVD_NAME }}" "${{ env.AVD_NAME }}_Primary"; do
             echo "no" | avdmanager create avd \
               -n "$NAME" \
               -k "${{ env.ANDROID_SYSTEM_IMAGE }}" \
@@ -615,60 +621,46 @@ jobs:
               --force
           done
 
-      # Both members of the group boot here, side by side, rather than letting
-      # Tapsmith launch the second: a cold emulator started after the first one
-      # is already up (and the app installed) has blown through the 120 s boot
-      # wait on these 4-core runners. Two cold boots in parallel finish while
-      # the SDK and E2E dependencies install.
-      - name: Boot two emulators
+      # Only the primary boots here, overlapping the installs below; the second
+      # member is Tapsmith's to launch during the test run.
+      - name: Boot the primary emulator
         run: |
-          nohup emulator -avd "${{ env.AVD_NAME }}" -port 5554 \
+          nohup emulator -avd "${{ env.AVD_NAME }}_Primary" -port 5554 \
             -no-window -no-audio -no-snapshot-save \
             -gpu swiftshader_indirect \
             -no-boot-anim \
             -memory 3072 \
             &>/tmp/emulator-5554.log &
-          nohup emulator -avd "${{ env.AVD_NAME }}-2" -port 5556 \
-            -no-window -no-audio -no-snapshot-save \
-            -gpu swiftshader_indirect \
-            -no-boot-anim \
-            -memory 3072 \
-            &>/tmp/emulator-5556.log &
-          echo "Waiting for both emulators to boot..."
+          echo "Waiting for the primary emulator to boot..."
           # Polling `getprop` (not `adb wait-for-device`, which blocks forever
           # for a serial that never registers) keeps a dead emulator a bounded
-          # failure with its log attached.
-          for SERIAL in emulator-5554 emulator-5556; do
-            # Per emulator: a slow first boot must not eat into the second's budget.
-            TIMEOUT=300
-            BOOT=""
-
-            # Wall-clock bounded — see the single-emulator job for why a
-            # counter decremented per iteration is not a timeout.
-            DEADLINE=$(( $(date +%s) + TIMEOUT ))
-            while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-              BOOT=$(timeout 10 adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-              if [ "$BOOT" = "1" ]; then break; fi
-              sleep 2
-            done
-            # One final read before giving up: the sleep can carry the loop
-            # past the deadline while the emulator finished booting inside it,
-            # leaving BOOT stale. Same guard as the single-emulator jobs.
-            if [ "$BOOT" != "1" ]; then
-              BOOT=$(timeout 10 adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-            fi
-            if [ "$BOOT" != "1" ]; then
-              echo "::error::$SERIAL failed to boot within 300s"
-              adb devices
-              tail -40 "/tmp/$SERIAL.log"
-              exit 1
-            fi
-            # Disable animations for test stability
-            adb -s "$SERIAL" shell settings put global window_animation_scale 0
-            adb -s "$SERIAL" shell settings put global transition_animation_scale 0
-            adb -s "$SERIAL" shell settings put global animator_duration_scale 0
-            echo "$SERIAL booted and ready ($(adb -s "$SERIAL" shell getprop ro.build.display.id))"
+          # failure with its log attached. Wall-clock bounded — see the
+          # single-emulator job for why a counter decremented per iteration is
+          # not a timeout.
+          SERIAL=emulator-5554
+          BOOT=""
+          DEADLINE=$(( $(date +%s) + 300 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            BOOT=$(timeout 10 adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$BOOT" = "1" ]; then break; fi
+            sleep 2
           done
+          # One final read before giving up: the sleep can carry the loop
+          # past the deadline while the emulator finished booting inside it.
+          if [ "$BOOT" != "1" ]; then
+            BOOT=$(timeout 10 adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+          fi
+          if [ "$BOOT" != "1" ]; then
+            echo "::error::$SERIAL failed to boot within 300s"
+            adb devices
+            tail -40 "/tmp/$SERIAL.log"
+            exit 1
+          fi
+          # Disable animations for test stability
+          adb -s "$SERIAL" shell settings put global window_animation_scale 0
+          adb -s "$SERIAL" shell settings put global transition_animation_scale 0
+          adb -s "$SERIAL" shell settings put global animator_duration_scale 0
+          echo "$SERIAL booted and ready ($(adb -s "$SERIAL" shell getprop ro.build.display.id))"
 
       - name: Install SDK dependencies
         working-directory: packages/tapsmith
@@ -683,18 +675,29 @@ jobs:
         working-directory: e2e
         run: npm ci
 
-      # The primary is pinned with --device and the member through the CI
-      # config (`TAPSMITH_ANDROID_MEMBER` → `bob.device`), so the group is
-      # exactly the two emulators booted above.
+      # The primary is pinned with --device; `bob` is not pinned, and no other
+      # device is connected, so Tapsmith launches him from `avd`.
       - name: Run two-device E2E tests
+        id: two-device
         working-directory: e2e
         env:
-          TAPSMITH_ANDROID_MEMBER: emulator-5556
           TAPSMITH_DAEMON_LOG: /tmp/tapsmith-daemon-android-multi.log
         run: |
           npx tapsmith test -c tapsmith.config.android-multi-ci.mjs \
             --trace on \
             --device emulator-5554
+
+      # Exactly one emulator in Tapsmith's manifest — bob, a live -read-only
+      # launch of `avd` — and nothing running besides it and the primary.
+      # Only once the run started: an earlier failure (the primary's boot, an
+      # install) is not a provisioning result.
+      - name: Check Tapsmith launched the second member
+        if: always() && steps.two-device.outcome != 'skipped'
+        working-directory: e2e
+        run: |
+          node verify-provisioning.mjs android-after \
+            --avd "${{ env.AVD_NAME }}" --expect-launched 1 \
+            --external emulator-5554
 
       # The daemon log, the agent's `am instrument` output and a logcat dump
       # are the only record of an agent that died before the first test ran
@@ -704,7 +707,7 @@ jobs:
         if: always()
         run: |
           mkdir -p e2e/tapsmith-results
-          for log in /tmp/tapsmith-daemon-android-multi*.log; do
+          for log in /tmp/tapsmith-daemon-android-multi*.log /tmp/tapsmith-emulator-*.log; do
             [ -e "$log" ] || continue
             cp "$log" e2e/tapsmith-results/
           done

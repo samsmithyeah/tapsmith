@@ -8,7 +8,7 @@ To run Tapsmith tests in CI, you need:
 
 1. Node.js 22+ installed.
 2. The Tapsmith daemon binary (installed automatically with `npm install tapsmith`).
-3. **Android**: An Android emulator running in headless mode and ADB on the PATH.
+3. **Android**: ADB on the PATH, and either an AVD for Tapsmith to launch (see [Letting Tapsmith launch the emulator](#letting-tapsmith-launch-the-emulator)) or an emulator you start yourself.
 4. **iOS**: A macOS runner with Xcode installed (simulators are managed by Tapsmith).
 
 ## GitHub Actions (Android)
@@ -79,6 +79,55 @@ jobs:
 - The `android-emulator-runner` action handles downloading the system image, creating the AVD, and starting the emulator. Your test command runs in the `script` parameter after the emulator boots.
 - The `if: always()` on the upload step ensures screenshots are uploaded even when tests fail.
 
+### Letting Tapsmith launch the emulator
+
+Instead of starting the emulator in the workflow, you can give Tapsmith an AVD and let it launch
+the emulator itself — the same setup as on a developer machine, and the one
+[parallel workers](#parallel-workers) need:
+
+```typescript
+// tapsmith.config.ts
+import { defineConfig } from "tapsmith";
+
+export default defineConfig({
+  apk: "./app-debug.apk",
+  package: "com.example.myapp",
+  avd: "Tapsmith_Phone_API_36", // launchEmulators defaults to true when avd is set
+  timeout: 60_000,
+});
+```
+
+```yaml
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Put adb on the PATH
+        run: echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+
+      # Downloads the Google APIs system image and creates Tapsmith_Phone_API_36.
+      - name: Create AVD
+        run: npx tapsmith create-avd --install-tools
+
+      - name: Run Tapsmith tests
+        run: npx tapsmith test
+```
+
+In CI, Tapsmith launches the emulator headless (no window, software GPU, cold boot) and waits up to
+5 minutes for it to boot. The emulator is left running after the run so a rerun on the same machine
+can reuse it; a hosted runner discards it with the job. On a self-hosted runner that keeps its state
+between jobs, create the AVD once instead of in every run: `create-avd` refuses to overwrite an
+existing AVD unless you pass `--force`.
+
+Booting in the workflow (as above with `android-emulator-runner`) overlaps the boot with your other
+setup steps, so it is usually a little faster. Tapsmith's own CI covers both setups: its main suites
+boot the emulator in the workflow, and a separate job — run weekly and on changes to Tapsmith's
+emulator-provisioning code — starts with nothing running and checks that Tapsmith launched the
+emulators the tests ran on and left none it does not track. A weekly variant starts from a bare runner
+through `tapsmith create-avd --install-tools`.
+
 ## GitHub Actions (iOS)
 
 iOS tests require a macOS runner with Xcode installed. Tapsmith manages simulator lifecycle automatically.
@@ -140,7 +189,8 @@ jobs:
 ### Key Points
 
 - **macOS runner** is required for iOS simulators. GitHub provides `macos-latest` with Xcode pre-installed.
-- Tapsmith boots and manages simulators automatically -- no manual `xcrun simctl` setup needed.
+- Tapsmith boots and manages simulators automatically -- no manual `xcrun simctl` setup needed. Tapsmith's own CI checks this weekly and on changes to its simulator-provisioning code: it starts with no simulator booted and verifies that Tapsmith booted the configured one.
+- With `workers` above 1, Tapsmith boots a simulator for each extra worker (another simulator of the same name and OS, or a clone of the configured one). The standard 3-core GitHub-hosted macOS runner cannot run two simulators at usable speed (app installs and XCUITest launches time out), so keep `workers: 1` there or use a larger runner. Tapsmith's CI does not cover multiple simulators on hosted runners for this reason.
 - Build your app for the iOS Simulator target (not a physical device) using `build-for-testing` or your existing build pipeline.
 
 ### iOS network capture on CI

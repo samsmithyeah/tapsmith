@@ -199,14 +199,13 @@ Device groups work in every run mode. Each mode holds one group per worker:
 - **CI.** Give group tests their own job rather than a shard: the per-shard
   matrix boots one device per runner. Tapsmith's own `Multi-device` jobs in
   `e2e-android.yml` and `e2e-ios.yml` run a suite (`e2e/tests/multi-device/`)
-  in which two users chat through a server the test hosts. Both jobs boot
-  the group's two devices up front and pin the member with `device` (from an
-  environment variable the workflow exports): a second cold device launched
-  on demand once the primary is up can outlast the boot and agent-start
-  waits on a busy hosted runner. Two booted simulators also exceed what a
-  standard hosted macOS runner can drive at usable speed, so the iOS job is
-  currently manual-only (`workflow_dispatch`); it needs a larger runner to
-  run per-PR. Those jobs run the
+  in which two users chat through a server the test hosts. The Android job
+  boots the primary in the workflow and lets Tapsmith launch the second
+  member from `avd`, as a user's CI would. The iOS job boots both simulators
+  up front and pins the member with `device` (from an environment variable
+  the workflow exports); two booted simulators exceed what a standard hosted
+  macOS runner can drive at usable speed, so that job is currently
+  manual-only (`workflow_dispatch`) and needs a larger runner to run per-PR. Those jobs run the
   `e2e/tapsmith.config.{android,ios}-multi-ci.mjs` configs, whose app paths
   point at the artifacts the workflow stages under `e2e/fixtures/`; the
   `*-multi.mjs` configs beside them are the local-development versions that

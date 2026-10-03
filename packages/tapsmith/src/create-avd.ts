@@ -31,7 +31,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { unzipSync } from 'fflate';
 import Enquirer from 'enquirer';
-import { scanAvdImageTags } from './avd-images.js';
+import { avdHomeDir, scanAvdImageTags } from './avd-images.js';
 import { DEFAULT_API_LEVEL, DEFAULT_DEVICE_PROFILE, defaultAbi, defaultAvdName } from './avd-defaults.js';
 import type { CreateAvdCommandOptions } from './cli-program.js';
 
@@ -68,6 +68,29 @@ export interface CreateAvdOptions {
 /** sdkmanager package path for the Google APIs (rootable) system image. */
 export function systemImagePackage(api: number, abi: string): string {
   return `system-images;android-${api};google_apis;${abi}`;
+}
+
+/**
+ * The SDK packages `createAvd` has to install with sdkmanager: the system
+ * image unless it is already unpacked, and the emulator unless it is present.
+ * The emulator is no explicit dependency of anything else here: the image
+ * install pulls it in, so with the image already there (a cached image on a
+ * CI runner) nothing would — and avdmanager then refuses to create the AVD
+ * ("\"emulator\" package must be installed!"), and Tapsmith has nothing to
+ * launch it with. With no SDK root known, sdkmanager resolves its own and
+ * only the image is asked for.
+ */
+export function sdkPackagesToInstall(
+  sdkRoot: string | undefined,
+  api: number,
+  abi: string,
+  exists: (dir: string) => boolean = fs.existsSync,
+): string[] {
+  if (!sdkRoot) return [systemImagePackage(api, abi)];
+  const packages: string[] = [];
+  if (!exists(systemImageDir(sdkRoot, api, abi))) packages.push(systemImagePackage(api, abi));
+  if (!exists(path.join(sdkRoot, 'emulator'))) packages.push('emulator');
+  return packages;
 }
 
 // avdmanager rejects names outside this set.
@@ -346,6 +369,19 @@ function toolEnv(): NodeJS.ProcessEnv {
   return process.env;
 }
 
+/**
+ * The environment `avdmanager create avd` runs in: `ANDROID_AVD_HOME` pinned
+ * to the AVD home the emulator reads and Tapsmith scans (`avdHomeDir`), unless
+ * the user set it. Without the pin, avdmanager can write the AVD somewhere
+ * the emulator never looks — on GitHub's Ubuntu runners (`XDG_CONFIG_HOME`
+ * set) it lands under `~/.config/.android/avd`, and `emulator -list-avds`,
+ * so Tapsmith's launch, cannot find the AVD just created (PILOT-483).
+ */
+export function avdmanagerEnv(env: NodeJS.ProcessEnv, homedir: string = os.homedir()): NodeJS.ProcessEnv {
+  if (env.ANDROID_AVD_HOME) return env;
+  return { ...env, ANDROID_AVD_HOME: avdHomeDir(env, homedir) };
+}
+
 // ─── Subprocess helpers ──────────────────────────────────────────────────
 
 /**
@@ -405,19 +441,22 @@ export async function createAvd(opts: CreateAvdOptions): Promise<void> {
   }
 
   const sdkRoot = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
-  const imageAlreadyInstalled = !!sdkRoot && fs.existsSync(systemImageDir(sdkRoot, opts.api, opts.abi));
+  const packages = sdkPackagesToInstall(sdkRoot, opts.api, opts.abi);
 
-  await ensureSdkTools(opts, sdkRoot, !imageAlreadyInstalled);
+  await ensureSdkTools(opts, sdkRoot, packages.length > 0);
   const env = toolEnv();
 
   console.log();
-  if (imageAlreadyInstalled) {
+  if (packages.length === 0) {
     console.log(`${bold('Step 1/2')} System image already installed ${dim(`(${image})`)}`);
   } else {
     const sdkmanager = findSdkTool('sdkmanager');
-    console.log(`${bold('Step 1/2')} Install system image ${dim(`(${image})`)}`);
+    const what = packages.includes(image)
+      ? `Install system image ${dim(`(${packages.join(', ')})`)}`
+      : `System image already installed; install the Android emulator ${dim('(emulator)')}`;
+    console.log(`${bold('Step 1/2')} ${what}`);
     console.log(dim('sdkmanager may prompt you to accept the Android SDK license.'));
-    await run(sdkmanager, [image], env);
+    await run(sdkmanager, packages, env);
   }
 
   console.log();
@@ -425,7 +464,12 @@ export async function createAvd(opts: CreateAvdOptions): Promise<void> {
   const avdmanager = findSdkTool('avdmanager');
   const args = ['create', 'avd', '-n', opts.name, '-k', image, '-d', opts.device];
   if (opts.force) args.push('--force');
-  await run(avdmanager, args, env, 'no\n');
+  const avdEnv = avdmanagerEnv(env);
+  // The SDK's location lookup can pass over an AVD home that does not exist
+  // yet (a fresh machine) and fall back to its own default — the very
+  // mismatch the pin is there to prevent.
+  if (avdEnv.ANDROID_AVD_HOME) fs.mkdirSync(avdEnv.ANDROID_AVD_HOME, { recursive: true });
+  await run(avdmanager, args, avdEnv, 'no\n');
 
   console.log();
   console.log(green(`✓ AVD ${opts.name} created`));
