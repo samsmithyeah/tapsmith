@@ -361,11 +361,16 @@ describe('provisionSimulator', () => {
 // ─── installAppIfAbsent ───
 
 describe('installAppIfAbsent (PILOT-496)', () => {
+  /** How execFileSync fails when the command exits non-zero. */
+  const exited = (status: number) => Object.assign(new Error(`exit ${status}`), { status, signal: null });
+  /** How execFileSync fails when it kills a command at its timeout. */
+  const timedOut = () => Object.assign(new Error('ETIMEDOUT'), { status: null, signal: 'SIGTERM' });
+
   it('installs an app the simulator lacks and reports a fresh install', () => {
     const simctl: string[] = [];
     mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === 'xcrun' && args?.[0] === 'simctl') simctl.push(args[1]);
-      if (args?.[1] === 'get_app_container') throw new Error('No such app');
+      if (args?.[1] === 'get_app_container') throw exited(2);
       return '' as unknown as Buffer;
     });
     expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toBe(true);
@@ -382,9 +387,23 @@ describe('installAppIfAbsent (PILOT-496)', () => {
     expect(simctl).toEqual(['get_app_container']);
   });
 
+  it('does not install when the lookup times out: the app may be there, with data', () => {
+    // Installing over it keeps the data; reporting that as fresh would skip
+    // the startup clear and run the first test against stale state.
+    const simctl: string[] = [];
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl') simctl.push(args[1]);
+      if (args?.[1] === 'get_app_container') throw timedOut();
+      return '' as unknown as Buffer;
+    });
+    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toBe(false);
+    expect(simctl).toEqual(['get_app_container']);
+  });
+
   it('reports no install when every install attempt fails, so the session installs it', () => {
     mockedExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
-      if (args?.[1] === 'get_app_container' || args?.[1] === 'install') throw new Error('installd not ready');
+      if (args?.[1] === 'get_app_container') throw exited(2);
+      if (args?.[1] === 'install') throw new Error('installd not ready');
       return '' as unknown as Buffer;
     });
     expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toBe(false);

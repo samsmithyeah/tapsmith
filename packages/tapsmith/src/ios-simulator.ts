@@ -272,7 +272,19 @@ export function isAppInstalled(udid: string, bundleId: string): boolean {
  * before the agent started pushed the agent past its startup bound (PILOT-496).
  */
 export function installAppIfAbsent(udid: string, appPath: string, bundleId: string): boolean {
-  if (isAppInstalled(udid, bundleId)) return false;
+  // Only a definite "not installed" counts. A lookup that timed out on a busy
+  // simulator says nothing, and installing over an app that is there keeps
+  // its data — calling that fresh would skip the startup clear.
+  try {
+    execFileSync('xcrun', ['simctl', 'get_app_container', udid, bundleId, 'app'], {
+      timeout: 30_000,
+      stdio: 'ignore',
+    });
+    return false;
+  } catch (err) {
+    const { signal, status } = err as { signal?: string | null; status?: number | null };
+    if (signal || typeof status !== 'number') return false;
+  }
   try {
     installApp(udid, appPath);
     return true;
