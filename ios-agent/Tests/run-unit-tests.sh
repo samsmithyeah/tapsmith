@@ -52,3 +52,9 @@ xcrun swiftc -sdk "$SDK" \
   TapsmithAgent/TouchPlanClock.swift \
   -o "$OUT/touch-plan-clock-tests"
 "$OUT/touch-plan-clock-tests"
+
+xcrun swiftc -sdk "$SDK" \
+  Tests/LaunchAccessibilityCheckTests/main.swift \
+  TapsmithAgent/LaunchAccessibilityCheck.swift \
+  -o "$OUT/launch-accessibility-check-tests"
+"$OUT/launch-accessibility-check-tests"

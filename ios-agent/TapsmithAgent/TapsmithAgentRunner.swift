@@ -104,6 +104,9 @@ class TapsmithAgentRunner: XCTestCase {
             app.terminate()
             app.launch()
         }
+        if LaunchAccessibilityCheck.shouldCheck(attachToRunningApp: attachToRunningApp, bundleId: bundleId) {
+            ensureAccessibilityReachable(app, bundleId: bundleId)
+        }
         // Step 3: Property-based disable on this instance AFTER launch().
         QuiescenceDisabler.disable(for: app)
         NSLog("[TapsmithAgent] Quiescence disabled")
@@ -113,7 +116,7 @@ class TapsmithAgentRunner: XCTestCase {
         let snapshotFinder = SnapshotElementFinder(app: app)
         let actionExecutor = ActionExecutor(app: app)
         let waitEngine = WaitEngine(app: app)
-        let hierarchyDumper = HierarchyDumper(app: app)
+        let hierarchyDumper = HierarchyDumper(app: app, bundleId: bundleId)
         let commandHandler = CommandHandler(
             app: app,
             elementFinder: elementFinder,
@@ -130,6 +133,46 @@ class TapsmithAgentRunner: XCTestCase {
         // Block forever — the socket server runs on its own dispatch queue
         // and this test method must not return to keep the XCTest runner alive.
         socketServer?.start()
+    }
+
+    /// Before reporting ready, make sure the app just launched can be seen
+    /// through accessibility, relaunching it if not (PILOT-462; see
+    /// LaunchAccessibilityCheck). A healthy app costs one snapshot (~50 ms);
+    /// an unreachable one ~8 s of XCTest retries plus a relaunch, instead of
+    /// failing the first command after ~16 s.
+    private func ensureAccessibilityReachable(_ app: XCUIApplication, bundleId: String) {
+        var attempt = 0
+        let outcome = LaunchAccessibilityCheck.run(
+            probe: {
+                attempt += 1
+                let started = Date()
+                var probeError: Error?
+                // snapshot() reports through a Swift error; anything XCTest
+                // raises as an NSException instead is caught too.
+                let objcError = ObjCExceptionCatcher.catchException {
+                    do {
+                        _ = try app.snapshot()
+                    } catch {
+                        probeError = error
+                    }
+                }
+                let description = probeError.map { "\($0)" } ?? objcError?.localizedDescription
+                let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
+                NSLog("[TapsmithAgent] Accessibility probe \(attempt) (\(elapsed)s): \(description ?? "ok")")
+                return description
+            },
+            relaunch: {
+                NSLog("[TapsmithAgent] \(bundleId) has no accessibility server after launch; relaunching it")
+                app.terminate()
+                app.launch()
+            })
+        switch outcome {
+        case .reachable, .otherError:
+            break
+        case .unreachable:
+            NSLog("[TapsmithAgent] \(bundleId) is still not reachable through accessibility after "
+                + "\(LaunchAccessibilityCheck.maxRelaunches) relaunches; continuing startup")
+        }
     }
 
     override func tearDown() {

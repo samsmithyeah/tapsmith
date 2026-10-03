@@ -8,17 +8,28 @@ import Foundation
 /// individual IPC round-trips for each property access).
 class HierarchyDumper {
     private let app: XCUIApplication
+    private let bundleId: String
 
-    init(app: XCUIApplication) {
+    init(app: XCUIApplication, bundleId: String = "") {
         self.app = app
+        self.bundleId = bundleId
     }
 
     /// Dump the full UI hierarchy as an XML string using snapshot.
-    func dump() -> String {
+    ///
+    /// Throws when the app has no accessibility server (`kAXErrorAPIDisabled`,
+    /// PILOT-462): the XCUIElement fallback would hit the same missing server,
+    /// spend ~8 s retrying and end in XCTest's "Interrupting test" exception,
+    /// so the caller gets an actionable error instead.
+    func dump() throws -> String {
         do {
             let snapshot = try app.snapshot()
             return dump(from: snapshot)
         } catch {
+            if LaunchAccessibilityCheck.isAccessibilityUnreachable("\(error)") {
+                NSLog("[HierarchyDumper] Snapshot failed, app not reachable through accessibility: \(error)")
+                throw AgentError.actionFailed(LaunchAccessibilityCheck.unreachableMessage(bundleId: bundleId))
+            }
             NSLog("[HierarchyDumper] Snapshot failed, falling back to XCUIElement traversal: \(error)")
             return dumpFallback()
         }

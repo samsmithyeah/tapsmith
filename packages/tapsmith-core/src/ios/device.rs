@@ -1125,7 +1125,8 @@ pub async fn get_app_container(udid: &str, bundle_id: &str) -> Result<String> {
 /// Clear an app's data container by removing user data.
 /// Clears Documents, tmp, and all of Library so that app-managed
 /// persisted state is recreated fresh on next use.
-/// Preserves the container structure itself.
+/// Preserves the container structure itself, including the container
+/// manager's own top-level files (see [`is_container_manager_file`]).
 #[instrument]
 pub async fn clear_container(container_path: &str) -> Result<()> {
     use std::path::Path;
@@ -1145,6 +1146,9 @@ pub async fn clear_container(container_path: &str) -> Result<()> {
         let name_str = name.to_string_lossy();
         // Skip Library — we handle it separately below.
         if name_str == "Library" {
+            continue;
+        }
+        if is_container_manager_file(&name_str) {
             continue;
         }
         if path.is_dir() {
@@ -1169,6 +1173,90 @@ pub async fn clear_container(container_path: &str) -> Result<()> {
     }
     info!(container_path, "Cleared app data container");
     Ok(())
+}
+
+/// Whether a top-level entry of a data container belongs to the simulator's
+/// container manager rather than to the app — today exactly
+/// `.com.apple.mobile_container_manager.metadata.plist`, the record that ties
+/// the directory to its app. Deleting it orphans the container: a later boot
+/// reaps the directory and the app gets a bare re-created one whose first
+/// launch after every boot has no accessibility server, so XCUITest cannot see
+/// the app (PILOT-462). A fresh install has it, so keeping it is what "clear
+/// the app's data" means.
+fn is_container_manager_file(name: &str) -> bool {
+    name.starts_with(".com.apple.")
+}
+
+/// The container manager's own top-level files in a data container, read so
+/// they can be put back after something else (an app-state archive) has been
+/// extracted over the container. See [`put_back_container_manager_files`].
+pub async fn read_container_manager_files(
+    container_path: &str,
+) -> Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
+    let mut files = Vec::new();
+    let mut entries = tokio::fs::read_dir(container_path).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let name = entry.file_name();
+        if is_container_manager_file(&name.to_string_lossy()) && entry.path().is_file() {
+            files.push((entry.path(), tokio::fs::read(entry.path()).await?));
+        }
+    }
+    Ok(files)
+}
+
+/// Make the container's top-level container-manager files exactly `saved`
+/// again: rewrite each saved file and remove any other `.com.apple.*` file
+/// that appeared at the top level. An app-state archive is `tar -C <container> .`
+/// of the *source* container, so it carries that container's
+/// `.com.apple.mobile_container_manager.metadata.plist` (its own UUID); laid
+/// over another simulator's container, or the same app after a reinstall, it
+/// would replace this container's record with a foreign one — the same class
+/// of damage [`clear_container`] avoids (PILOT-462).
+pub async fn put_back_container_manager_files(
+    container_path: &str,
+    saved: &[(std::path::PathBuf, Vec<u8>)],
+) -> Result<()> {
+    // Write the container's own records back first, so a failure removing an
+    // extra never leaves the foreign copy in place.
+    for (path, bytes) in saved {
+        tokio::fs::write(path, bytes).await?;
+    }
+    let mut entries = tokio::fs::read_dir(container_path).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if is_container_manager_file(&entry.file_name().to_string_lossy())
+            && path.is_file()
+            && !saved.iter().any(|(p, _)| p == &path)
+        {
+            tokio::fs::remove_file(&path).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Run `extract` (something that writes over the container, such as an
+/// app-state `tar xzf`) and then put the container's own container-manager
+/// files back as they were. If they cannot be read first, nothing is put back:
+/// with no record of what was there, "put back" would delete the live metadata
+/// plist — the very damage this guards against.
+pub async fn keeping_container_manager_files<T>(
+    container_path: &str,
+    extract: impl std::future::Future<Output = T>,
+) -> T {
+    let saved = match read_container_manager_files(container_path).await {
+        Ok(files) => Some(files),
+        Err(e) => {
+            warn!(container_path, error = %e, "Could not read container-manager files; leaving them to the extract");
+            None
+        }
+    };
+    let result = extract.await;
+    if let Some(saved) = saved {
+        if let Err(e) = put_back_container_manager_files(container_path, &saved).await {
+            warn!(container_path, error = %e, "Could not put back container-manager files after extract");
+        }
+    }
+    result
 }
 
 // ─── Simulator Keychain Helpers ───
@@ -1889,5 +1977,122 @@ mod tests {
         assert_ne!(a, b);
         // Both live under the OS temp dir so they get auto-cleaned.
         assert!(a.starts_with(std::env::temp_dir()));
+    }
+
+    /// PILOT-462: clearing must keep the container manager's metadata plist.
+    /// Deleting it orphans the container — a later boot reaps it and the app
+    /// gets a bare re-created one whose first launch after every boot has no
+    /// accessibility server ("Interrupting test" on the first snapshot).
+    #[tokio::test]
+    async fn clear_container_keeps_container_manager_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let metadata = root.join(".com.apple.mobile_container_manager.metadata.plist");
+        std::fs::write(&metadata, b"metadata").unwrap();
+        for sub in [
+            "Documents",
+            "tmp",
+            "SystemData",
+            "Library/Preferences",
+            "Library/Caches",
+        ] {
+            std::fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        std::fs::write(root.join("Documents/user.db"), b"x").unwrap();
+        std::fs::write(root.join("tmp/scratch"), b"x").unwrap();
+        std::fs::write(root.join("SystemData/state"), b"x").unwrap();
+        std::fs::write(root.join("Library/Preferences/app.plist"), b"x").unwrap();
+        std::fs::write(root.join("stray-file"), b"x").unwrap();
+
+        clear_container(root.to_str().unwrap()).await.unwrap();
+
+        assert_eq!(std::fs::read(&metadata).unwrap(), b"metadata");
+        // Everything the app wrote is still cleared, and the top-level
+        // directories a fresh install has are still there, empty.
+        for sub in ["Documents", "tmp", "SystemData", "Library"] {
+            let path = root.join(sub);
+            assert!(path.is_dir(), "{sub} should exist");
+            assert_eq!(
+                std::fs::read_dir(&path).unwrap().count(),
+                0,
+                "{sub} should be empty"
+            );
+        }
+        assert!(!root.join("stray-file").exists());
+    }
+
+    /// R1-F1: an app-state archive extracted over the container must not
+    /// replace (or add) the container manager's records.
+    #[tokio::test]
+    async fn container_manager_files_survive_an_archive_extract() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let live = root.join(".com.apple.mobile_container_manager.metadata.plist");
+        std::fs::write(&live, b"live-uuid").unwrap();
+        std::fs::create_dir_all(root.join("Library")).unwrap();
+        std::fs::write(root.join("Library/.com.apple.nested"), b"app").unwrap();
+
+        let saved = read_container_manager_files(root.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(saved.len(), 1);
+
+        // What `tar xzf <foreign archive>` does to the container.
+        std::fs::write(&live, b"foreign-uuid").unwrap();
+        std::fs::write(root.join(".com.apple.other"), b"foreign").unwrap();
+        std::fs::write(root.join("Library/.com.apple.nested"), b"restored").unwrap();
+
+        put_back_container_manager_files(root.to_str().unwrap(), &saved)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&live).unwrap(), b"live-uuid");
+        assert!(!root.join(".com.apple.other").exists());
+        // Only top-level container-manager files are touched.
+        assert_eq!(
+            std::fs::read(root.join("Library/.com.apple.nested")).unwrap(),
+            b"restored"
+        );
+    }
+
+    /// R2-F1: when the container-manager files cannot be read first, the
+    /// extract must not be followed by a "put back" of nothing, which would
+    /// delete the live metadata plist.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unreadable_container_manager_files_are_left_to_the_extract() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let live = root.join(".com.apple.mobile_container_manager.metadata.plist");
+        std::fs::write(&live, b"live-uuid").unwrap();
+        let unreadable = root.join(".com.apple.unreadable");
+        std::fs::write(&unreadable, b"x").unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&unreadable).is_ok() {
+            return; // running as root: the read cannot be made to fail
+        }
+
+        let root_str = root.to_str().unwrap();
+        keeping_container_manager_files(root_str, async {}).await;
+
+        assert_eq!(std::fs::read(&live).unwrap(), b"live-uuid");
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn keeping_container_manager_files_wraps_the_extract() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let live = root.join(".com.apple.mobile_container_manager.metadata.plist");
+        std::fs::write(&live, b"live-uuid").unwrap();
+        let root_str = root.to_str().unwrap().to_string();
+        let out = keeping_container_manager_files(&root_str, async {
+            std::fs::write(&live, b"foreign-uuid").unwrap();
+            42
+        })
+        .await;
+        assert_eq!(out, 42);
+        assert_eq!(std::fs::read(&live).unwrap(), b"live-uuid");
     }
 }
