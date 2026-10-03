@@ -127,6 +127,12 @@ export interface OpenDeviceSessionOptions {
    */
   freshDevice?: boolean
   /**
+   * The app under test was just installed, fresh, onto this iOS simulator by
+   * whatever booted it (`installAppIfAbsent`). The session takes that install
+   * as it is: no build check, no reinstall, and a fresh-install startup launch.
+   */
+  appInstalledFresh?: boolean
+  /**
    * The daemon already holds this device with the agent running and the app
    * launched (the sequential CLI's primary setup). Skip install / agent /
    * launch: connect, re-select, verify the session and probe capabilities.
@@ -380,6 +386,7 @@ async function installAppUnderTest(
   opts: {
     freshDevice?: boolean
     forceInstall?: boolean
+    appInstalledFresh?: boolean
     onProgress?: (m: string) => void
     onPhase?: OpenDeviceSessionOptions['onPhase']
   },
@@ -445,6 +452,11 @@ async function installAppUnderTest(
     progress('app install complete');
     phase('install', 'complete', `installed ${path.basename(resolvedApp)} on ${serial}`);
     return { freshInstall: !wasInstalled };
+  }
+  if (opts.appInstalledFresh) {
+    progress('app install complete');
+    phase('install', 'complete', `installed ${path.basename(resolvedApp)} while booting the simulator`);
+    return { freshInstall: true };
   }
   // Skip only when the installed bundle is byte-identical — simulator state
   // can outlive a run, and a presence-only skip silently tests a stale build.
@@ -617,6 +629,7 @@ export async function openDeviceSession(
     const install = await installAppUnderTest(config, device, spec.serial, {
       freshDevice: opts.freshDevice,
       forceInstall: opts.forceInstall,
+      appInstalledFresh: opts.appInstalledFresh,
       onProgress: progress,
       onPhase: phase,
     });

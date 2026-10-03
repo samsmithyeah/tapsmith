@@ -33,6 +33,7 @@ import {
   waitForSimulatorBootComplete,
   installApp,
   isAppInstalled,
+  installAppIfAbsent,
   findSimulator,
   provisionSimulator,
   createSimulator,
@@ -355,6 +356,39 @@ describe('provisionSimulator', () => {
     expect(udid).toBe('B');
     expect(listCalls).toBe(2);
   });
+});
+
+// ─── installAppIfAbsent ───
+
+describe('installAppIfAbsent (PILOT-496)', () => {
+  it('installs an app the simulator lacks and reports a fresh install', () => {
+    const simctl: string[] = [];
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl') simctl.push(args[1]);
+      if (args?.[1] === 'get_app_container') throw new Error('No such app');
+      return '' as unknown as Buffer;
+    });
+    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toBe(true);
+    expect(simctl).toEqual(['get_app_container', 'install']);
+  });
+
+  it('leaves an installed app to the session, which checks the build', () => {
+    const simctl: string[] = [];
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl') simctl.push(args[1]);
+      return '' as unknown as Buffer;
+    });
+    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toBe(false);
+    expect(simctl).toEqual(['get_app_container']);
+  });
+
+  it('reports no install when every install attempt fails, so the session installs it', () => {
+    mockedExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
+      if (args?.[1] === 'get_app_container' || args?.[1] === 'install') throw new Error('installd not ready');
+      return '' as unknown as Buffer;
+    });
+    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toBe(false);
+  }, 15_000);
 });
 
 // ─── createSimulator / cloneSimulator / deleteSimulator ───

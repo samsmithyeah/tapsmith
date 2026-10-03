@@ -261,6 +261,27 @@ export function isAppInstalled(udid: string, bundleId: string): boolean {
 }
 
 /**
+ * Install the app on a simulator that does not have it, straight after the
+ * simulator booted. Returns true when it did, so the session that opens next
+ * can take it as a fresh install (no data to clear) instead of checking and
+ * reinstalling it. An app already there is left to the session's build check;
+ * a failed install returns false and leaves the install to the session too.
+ *
+ * Done here rather than only in the session: on a hosted CI runner a freshly
+ * installed app's first launch was slow enough that installing it right
+ * before the agent started pushed the agent past its startup bound (PILOT-496).
+ */
+export function installAppIfAbsent(udid: string, appPath: string, bundleId: string): boolean {
+  if (isAppInstalled(udid, bundleId)) return false;
+  try {
+    installApp(udid, appPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * True when the app installed on the simulator has a main executable
  * byte-identical to the candidate bundle's. Presence alone is not a safe
  * install-skip signal: simulator state can outlive a run (CI runners have
@@ -316,12 +337,7 @@ const FIND_SIMULATOR_RETRY_DELAY_MS = 3000;
  * Provision a simulator for testing: find by name, and boot it and wait for
  * the boot to finish if it is not booted. Returns its UDID.
  *
- * The app is not installed here: the session that opens on the simulator
- * installs it, in the background, and is the one that decides whether the
- * install was a fresh one. Installing here as well blocked the boot behind a
- * second install, and left a pristine CI simulator looking as if it already
- * held the app, so its startup launch cleared the data and restarted the app
- * for nothing (PILOT-496).
+ * The app is not installed here; the caller decides (`installAppIfAbsent`).
  *
  * The lookup is retried: `simctl list` can transiently fail or return an
  * empty device set while CoreSimulator is busy (concurrent boots on CI
