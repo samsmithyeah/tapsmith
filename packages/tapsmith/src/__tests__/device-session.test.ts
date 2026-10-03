@@ -340,6 +340,25 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     expect(device.startAgent).toHaveBeenCalledWith('com.example.app', '/agents/agent.apk', '/agents/agent-test.apk', '/derived/TapsmithAgent.xctestrun', '/proj/Build/App.app', false);
   });
 
+  it('trusts an install made right after the simulator booted: no recheck, no reinstall, and a fresh-install launch (PILOT-496)', async () => {
+    // The sequential CLI installs the app straight after booting a simulator
+    // that lacked it. The session must neither check and reinstall it nor
+    // treat it as pre-existing, which cleared its data and restarted it.
+    mocks.simAppMatches = false;
+    const { isAppInstalled } = await import('../ios-simulator.js');
+    vi.mocked(isAppInstalled).mockClear();
+    const seen = phases();
+    await openDeviceSession(
+      { name: 'device-1', serial: 'SIM-1', daemonAddress: 'localhost:50052' },
+      makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
+      { label: 'Device', appInstalledFresh: true, onPhase: (p, s, d) => seen.push([p, s, d]) },
+    );
+    expect(mocks.simInstalls).toBe(0);
+    expect(isAppInstalled).not.toHaveBeenCalled();
+    expect(seen).toContainEqual(['install', 'complete', 'installed App.app while booting the simulator']);
+    expect(mocks.preflight.launchConfiguredApp).toHaveBeenCalledWith(expect.anything(), 'startup launch', { freshInstall: true });
+  });
+
   it('surfaces a simulator install failure that lands while the agent is still resolving, not as an unhandled rejection', async () => {
     mocks.simAppMatches = false;
     const { installAppAsync } = await import('../ios-simulator.js');

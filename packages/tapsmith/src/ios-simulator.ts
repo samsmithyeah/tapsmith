@@ -260,6 +260,53 @@ export function isAppInstalled(udid: string, bundleId: string): boolean {
   }
 }
 
+/** `simctl get_app_container`'s exit status for an app that is not installed (ENOENT). */
+const SIMCTL_APP_NOT_INSTALLED_EXIT = 2;
+
+/**
+ * Install the app on a simulator that does not have it, straight after the
+ * simulator booted. `installed` is true when it did, so the session that
+ * opens next can take it as a fresh install (no data to clear) instead of
+ * checking and reinstalling it. An app already there is left to the session's
+ * build check, and so is anything uncertain: a lookup or install that fails
+ * leaves the install to the session. `outcome` says which, for the progress
+ * line.
+ *
+ * Done here rather than only in the session: on a hosted CI runner a freshly
+ * installed app's first launch was slow enough that installing it right
+ * before the agent started pushed the agent past its startup bound (PILOT-496).
+ */
+export function installAppIfAbsent(
+  udid: string,
+  appPath: string,
+  bundleId: string,
+): { installed: boolean; outcome: string } {
+  // Only a definite "not installed" counts: simctl's ENOENT exit. A lookup
+  // that timed out or failed some other way on a busy simulator says nothing,
+  // and installing over an app that is there keeps its data — calling that
+  // fresh would skip the startup clear.
+  try {
+    execFileSync('xcrun', ['simctl', 'get_app_container', udid, bundleId, 'app'], {
+      timeout: 30_000,
+      stdio: 'ignore',
+    });
+    return { installed: false, outcome: 'already installed' };
+  } catch (err) {
+    const { signal, status } = err as { signal?: string | null; status?: number | null };
+    if (signal) return { installed: false, outcome: 'could not tell whether it is installed (lookup timed out)' };
+    if (status !== SIMCTL_APP_NOT_INSTALLED_EXIT) {
+      return { installed: false, outcome: `could not tell whether it is installed (simctl exit ${status ?? 'unknown'})` };
+    }
+  }
+  try {
+    installApp(udid, appPath);
+    return { installed: true, outcome: 'installed' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message.split('\n')[0] : String(err);
+    return { installed: false, outcome: `install failed (${message})` };
+  }
+}
+
 /**
  * True when the app installed on the simulator has a main executable
  * byte-identical to the candidate bundle's. Presence alone is not a safe
@@ -313,8 +360,11 @@ const FIND_SIMULATOR_ATTEMPTS = 4;
 const FIND_SIMULATOR_RETRY_DELAY_MS = 3000;
 
 /**
- * Provision a simulator for testing: find by name, boot if needed, install app.
- * Returns the UDID of the booted simulator.
+ * Provision a simulator for testing: find by name, and boot it and wait for
+ * the boot to finish if it is not booted. Returns its UDID, and whether the
+ * boot is known to be complete (false when the wait timed out).
+ *
+ * The app is not installed here; the caller decides (`installAppIfAbsent`).
  *
  * The lookup is retried: `simctl list` can transiently fail or return an
  * empty device set while CoreSimulator is busy (concurrent boots on CI
@@ -325,12 +375,11 @@ const FIND_SIMULATOR_RETRY_DELAY_MS = 3000;
  */
 export function provisionSimulator(
   simulatorName: string,
-  appPath?: string,
   retry: { attempts: number; delayMs: number } = {
     attempts: FIND_SIMULATOR_ATTEMPTS,
     delayMs: FIND_SIMULATOR_RETRY_DELAY_MS,
   },
-): string {
+): { udid: string; bootComplete: boolean } {
   let sim = findSimulator(simulatorName);
   for (let attempt = 1; !sim && attempt < retry.attempts; attempt++) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retry.delayMs);
@@ -343,15 +392,15 @@ export function provisionSimulator(
     );
   }
 
-  if (sim.state !== 'Booted') {
-    bootSimulator(sim.udid);
-  }
-
-  if (appPath) {
-    installApp(sim.udid, appPath);
-  }
-
-  return sim.udid;
+  if (sim.state !== 'Booted') bootSimulator(sim.udid);
+  // As provisionSimulators does: what follows (the daemon's device
+  // selection, the install, the agent start) would otherwise race a
+  // simulator that is `Booted` but not up. Also when it was found `Booted`:
+  // another process may have just booted it. A timeout is not fatal — they
+  // retry on their own — but it is reported: a simulator still booting
+  // cannot be trusted to say which apps it holds. On a settled simulator the
+  // wait returns at once.
+  return { udid: sim.udid, bootComplete: waitForSimulatorBootComplete(sim.udid) };
 }
 
 /**

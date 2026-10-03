@@ -677,6 +677,7 @@ async function setupSequentialDevice(
         client,
         forceInstall,
         freshDevice: deviceJustLaunched,
+        appInstalledFresh: target.appInstalledFresh,
         // Headless CI emulators have no lockscreen; iOS never needed it here.
         skipWakeUnlock: cfg.platform !== 'ios' && isCI,
         readinessAttempts: 3,
@@ -966,7 +967,12 @@ function listConnectedDeviceSerials(): string[] {
 async function ensureSequentialTargetDevice(
   config: Awaited<ReturnType<typeof loadConfig>>,
   progress?: LaunchProgressSink,
-): Promise<{ selectedSerial?: string; launched: LaunchedEmulator[] }> {
+): Promise<{
+  selectedSerial?: string
+  launched: LaunchedEmulator[]
+  /** The iOS simulator was booted here and the app installed onto it fresh. */
+  appInstalledFresh?: boolean
+}> {
   // The first `use.devices` member's pin, or root `device` — not `config.device`
   // alone, which left a group pinning both members with its primary auto-picked.
   const pinned = primaryDevicePin(config);
@@ -990,7 +996,7 @@ async function ensureSequentialTargetDevice(
 
   // ─── iOS: use simulator instead of ADB device ───
   if (config.platform === 'ios') {
-    const { listBootedSimulators, provisionSimulator, cleanupStaleSimulators } = await import('./ios-simulator.js');
+    const { listBootedSimulators, provisionSimulator, cleanupStaleSimulators, installAppIfAbsent } = await import('./ios-simulator.js');
     // If no simulator is configured, try to auto-resolve a single paired
     // physical device. Mirrors how simulators are picked by name — the
     // user should not have to hand-parse `devicectl` JSON in their config.
@@ -1033,8 +1039,27 @@ async function ensureSequentialTargetDevice(
 
     // Boot the simulator
     try {
-      const udid = provisionSimulator(simulatorName, config.app);
-      return { selectedSerial: udid, launched: [] };
+      progress?.update('primary-device', { state: 'running', detail: `booting ${simulatorName}` });
+      const { udid, bootComplete } = provisionSimulator(simulatorName);
+      // Installed now, while the simulator is still settling, rather than
+      // right before the agent starts: on a hosted runner the first launch
+      // of a just-installed app then pushed the agent past its startup bound.
+      // Reported as fresh so the session neither re-checks it nor clears it.
+      // Not on a simulator whose boot wait timed out: one still booting can
+      // report an installed app as absent.
+      let appInstalledFresh = false;
+      if (config.app && config.package) {
+        const app = path.resolve(config.rootDir, config.app);
+        if (!bootComplete) {
+          progress?.update('primary-device', { state: 'running', detail: `${simulatorName} is still booting; the app is installed after selection` });
+        } else {
+          progress?.update('primary-device', { state: 'running', detail: `installing ${path.basename(app)} on the booted ${simulatorName}` });
+          const early = installAppIfAbsent(udid, app, config.package);
+          appInstalledFresh = early.installed;
+          progress?.update('primary-device', { state: 'running', detail: `${path.basename(app)}: ${early.outcome}` });
+        }
+      }
+      return { selectedSerial: udid, launched: [], appInstalledFresh };
     } catch (e) {
       throw new Error(`Failed to provision iOS simulator: ${(e as Error).message}`);
     }
