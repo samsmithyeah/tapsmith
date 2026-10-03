@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { initArgsFromOptions, resolveInitPlan, executeInitPlan, assertConfigWritable, InitError } from '../init-noninteractive.js';
+import { needsSimulatorAgent } from '../init.js';
 import type { EnvScan } from '../env-scan.js';
 import type { InitCommandOptions } from '../cli-program.js';
 
@@ -225,6 +226,20 @@ describe('resolveInitPlan()', () => {
     );
     expect(plan.ios?.usePhysicalDevice).toBe(false);
     expect(plan.warnings.some((w) => w.includes('physical'))).toBe(true);
+  });
+
+  it('builds the simulator agent for the simulator plan iOS both resolves to (PILOT-465)', () => {
+    const plan = resolveInitPlan(
+      initArgs({ yes: true, platform: 'ios', deviceType: 'both' }),
+      baseEnv,
+      detectStubs,
+    );
+    expect(needsSimulatorAgent(plan.ios)).toBe(true);
+  });
+
+  it('does not build the simulator agent for an Android-only plan (PILOT-465)', () => {
+    const plan = resolveInitPlan(initArgs({ yes: true, platform: 'android' }), baseEnv, detectStubs);
+    expect(needsSimulatorAgent(plan.ios)).toBe(false);
   });
 
   it('omits avd with a warning when none available', () => {

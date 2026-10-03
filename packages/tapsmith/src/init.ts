@@ -432,6 +432,15 @@ function iosTargets(ios: IosConfig | undefined): { sim?: { app: string; simulato
 }
 
 /**
+ * Whether init should build the iOS simulator agent: only for a plan with a
+ * simulator target (the one generateConfig() writes). A physical-only plan
+ * needs the signed device build (`tapsmith ios build-agent`) instead.
+ */
+export function needsSimulatorAgent(ios: IosConfig | undefined): boolean {
+  return iosTargets(ios).sim !== undefined;
+}
+
+/**
  * The `--project` names generateConfig() writes, with a label for the
  * wizard's next steps. Empty when the config has no projects.
  */
@@ -612,7 +621,7 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
       const { assertConfigWritable } = await import('./init-noninteractive.js');
       assertConfigWritable(parsed.force);
 
-      if (plan.platforms.includes('ios')) {
+      if (needsSimulatorAgent(plan.ios)) {
         const agentResult = await initSimulatorAgent();
         if (agentResult.status === 'failed') {
           plan.warnings.push(`iOS simulator agent build failed (it will be retried on the first test run): ${agentResult.error ?? 'unknown error'}`);
@@ -726,7 +735,7 @@ async function runInitInner(): Promise<void> {
   const enableNetwork = await setupNetworkCapture(selectedPlatforms, env, androidConfig, iosHasPhysicalDevice);
 
   // Step 6: iOS simulator agent check
-  if (selectedPlatforms.includes('ios') && iosConfig && (iosConfig.simulator || !iosConfig.usePhysicalDevice)) {
+  if (needsSimulatorAgent(iosConfig)) {
     try {
       const { findSimulatorXctestrun } = await import('./ios-device-resolve.js');
       const xctestrun = findSimulatorXctestrun();

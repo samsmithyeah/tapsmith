@@ -13,7 +13,7 @@ const { findSimulatorXctestrun, ensureSimulatorAgent } = vi.hoisted(() => ({
 vi.mock('../ios-device-resolve.js', () => ({ findSimulatorXctestrun }));
 vi.mock('../ios-simulator-build.js', () => ({ ensureSimulatorAgent }));
 
-const { initSimulatorAgent } = await import('../init.js');
+const { initSimulatorAgent, needsSimulatorAgent } = await import('../init.js');
 
 const CACHED = '/home/.tapsmith/ios-simulator-agent/TapsmithAgentUITests_iphonesimulator27.0-arm64.xctestrun';
 
@@ -49,5 +49,29 @@ describe('initSimulatorAgent()', () => {
     findSimulatorXctestrun.mockReturnValue(undefined);
     ensureSimulatorAgent.mockRejectedValue(new Error(message));
     expect(await initSimulatorAgent()).toEqual({ status: 'failed', error: message });
+  });
+});
+
+// PILOT-465: both init paths build the simulator agent only for a plan with
+// an iOS simulator target, the same rule generateConfig() writes one by.
+describe('needsSimulatorAgent()', () => {
+  const sim = { appPath: './ios/MyApp.app', bundleId: 'com.example.myapp', simulator: 'iPhone 17' };
+
+  it('builds for a simulator-only plan', () => {
+    expect(needsSimulatorAgent({ ...sim, usePhysicalDevice: false })).toBe(true);
+  });
+
+  it('skips a physical-only plan', () => {
+    expect(needsSimulatorAgent({
+      bundleId: 'com.example.myapp', usePhysicalDevice: true, deviceAppPath: './ios/Release-iphoneos/MyApp.app',
+    })).toBe(false);
+  });
+
+  it('builds for a mixed simulator and physical plan', () => {
+    expect(needsSimulatorAgent({ ...sim, usePhysicalDevice: true, deviceAppPath: './ios/Release-iphoneos/MyApp.app' })).toBe(true);
+  });
+
+  it('skips a plan without iOS', () => {
+    expect(needsSimulatorAgent(undefined)).toBe(false);
   });
 });
