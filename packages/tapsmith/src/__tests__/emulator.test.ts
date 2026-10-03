@@ -2185,7 +2185,7 @@ describe('provisionEmulators boots emulators side by side', () => {
     expect(after.map((e) => [e.serial, e.booting ?? false])).toEqual([['emulator-5554', false]]);
   });
 
-  it('gives each boot and stability check the budget of one alone, times how many boot at once', async () => {
+  it('allows each boot and stability check extra time for every boot beside it, without multiplying the whole budget', async () => {
     const budgets: Array<number | undefined> = [];
     const stability: Array<number | undefined> = [];
     const waitForBoot = async (_serial: string, timeoutMs?: number) => { budgets.push(timeoutMs); };
@@ -2194,11 +2194,12 @@ describe('provisionEmulators boots emulators side by side', () => {
       return { serial, healthy: true };
     };
     await provisionEmulators(
-      { existingSerials: [], workers: 3, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
-      { ...base, launchConcurrency: 2, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot, waitForDeviceStability },
+      { existingSerials: [], workers: 4, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      { ...base, launchConcurrency: 3, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot, waitForDeviceStability },
     );
-    expect(budgets).toEqual([2, 2, 2].map((n) => n * EMULATOR_BOOT_TIMEOUT_MS));
-    expect(stability).toEqual([40_000, 40_000, 40_000]);
+    // Three at a time: 30 s more for each of the two others.
+    expect(budgets).toEqual(Array(4).fill(EMULATOR_BOOT_TIMEOUT_MS + 60_000));
+    expect(stability).toEqual(Array(4).fill(80_000));
     budgets.length = 0;
     stability.length = 0;
     await provisionEmulators(

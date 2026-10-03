@@ -1821,6 +1821,13 @@ function defaultLaunchConcurrency(): number {
   return Math.max(1, Math.floor(os.availableParallelism() / 2));
 }
 
+/**
+ * The extra time a boot (and its stability checks) gets for each other boot
+ * running beside it: about how long one boot's synchronous post-boot checks
+ * hold the event loop on a busy host.
+ */
+const CONCURRENT_BOOT_ALLOWANCE_MS = 30_000;
+
 /** How long a launch that exited 0 gets to show a backgrounded emulator on its console port. */
 const CLEAN_EXIT_GRACE_MS = 5_000;
 
@@ -1933,13 +1940,16 @@ export async function provisionEmulators(opts: {
     logProgress(`Launching ${needed} emulator(s) from available AVDs (${launchCandidates.join(', ')})${existingNote}...`);
   }
 
-  // Boots side by side share the host's CPU — and its event loop, which one
-  // boot's synchronous post-boot checks hold for many seconds while another
-  // boot's polls wait — so each gets the budget a boot alone would, times how
-  // many boot at once. The same goes for the stability checks after it.
+  // Boots side by side share the host's event loop, which one boot's
+  // synchronous post-boot checks hold for tens of seconds while the others'
+  // polls wait. So each boot, and the stability checks after it, gets an
+  // allowance for every other boot running beside it — not a multiple of the
+  // whole budget, which would leave a wedged boot holding the batch for many
+  // minutes on a host that boots many at once.
   const laneCount = Math.min(Math.max(1, resolvedDeps.launchConcurrency), needed);
-  const bootTimeoutMs = EMULATOR_BOOT_TIMEOUT_MS * laneCount;
-  const stabilityTimeoutMs = DEFAULT_DEVICE_STABILITY_TIMEOUT_MS * laneCount;
+  const sideBySideAllowanceMs = (laneCount - 1) * CONCURRENT_BOOT_ALLOWANCE_MS;
+  const bootTimeoutMs = EMULATOR_BOOT_TIMEOUT_MS + sideBySideAllowanceMs;
+  const stabilityTimeoutMs = DEFAULT_DEVICE_STABILITY_TIMEOUT_MS + sideBySideAllowanceMs;
 
   /**
    * Launch and boot one emulator, trying each candidate AVD that has not
