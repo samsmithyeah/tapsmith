@@ -12,7 +12,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { spawn, execFileSync, type ChildProcess, type StdioOptions } from 'node:child_process';
+import { execFileSync, type ChildProcess, type StdioOptions } from 'node:child_process';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { deviceGroupSize, type TapsmithConfig } from './config.js';
@@ -34,7 +34,7 @@ import {
 } from './session-preflight.js';
 import { satisfies, type AppResetPolicy, type PreparedState, type ResetCapabilities } from './app-reset.js';
 import { findDaemonBin } from './daemon-bin.js';
-import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, type DaemonStartOutcome } from './daemon-start.js';
+import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary, type DaemonStartFailed, type DaemonStartOutcome } from './daemon-start.js';
 
 // ─── Types ───
 
@@ -212,17 +212,11 @@ export function resolveDaemonBin(config: Pick<TapsmithConfig, 'daemonBin' | 'roo
   return raw.includes(path.sep) || raw.startsWith('.') ? path.resolve(config.rootDir, raw) : raw;
 }
 
-/**
- * Spawn a `tapsmith-core` daemon on `port`, forwarding its agent on
- * `agentPort`. Does not wait for readiness — see {@link waitForDaemon}.
- */
-export function spawnDaemon(opts: SpawnDaemonOptions): ChildProcess {
-  const bin = opts.daemonBin ?? 'tapsmith-core';
+/** A daemon on `port`, forwarding its agent on `agentPort`. */
+function daemonArgs(opts: SpawnDaemonOptions): string[] {
   const args = ['--port', String(opts.port), '--agent-port', String(opts.agentPort)];
   if (opts.platform) args.push('--platform', opts.platform);
-  const child = spawn(bin, args, { stdio: opts.stdio ?? 'ignore' });
-  child.on('error', () => { /* surfaced by waitForDaemon */ });
-  return child;
+  return args;
 }
 
 /** Wait for a daemon to answer on `address`; false when it does not. */
@@ -245,12 +239,22 @@ export async function startDaemon(
   // Its stderr, unless the caller routes its output elsewhere: a daemon that
   // does not come up is reported in its own words (PILOT-463).
   const output = opts.stdio === undefined ? captureDaemonOutput(undefined, () => {}) : undefined;
-  let child: ChildProcess;
+  const startFailure = (outcome: DaemonStartFailed): Error => {
+    const message = daemonStartFailure(`${opts.describe ?? 'daemon'} on port ${opts.port} did not start`, {
+      ...outcome,
+      recentOutput: output?.recentOutput() ?? '',
+    });
+    output?.dispose();
+    return new Error(message);
+  };
+  let spawned: ReturnType<typeof spawnDaemonBinary>;
   try {
-    child = spawnDaemon({ ...opts, stdio: output?.stdio ?? opts.stdio });
+    spawned = spawnDaemonBinary(opts.daemonBin ?? 'tapsmith-core', daemonArgs(opts), { stdio: output?.stdio ?? opts.stdio ?? 'ignore' });
   } finally {
     output?.closeParentFds();
   }
+  if (!spawned.ok) throw startFailure(spawned);
+  const child = spawned.child;
   const address = `localhost:${opts.port}`;
   const client = new TapsmithGrpcClient(address);
   let started: DaemonStartOutcome;
@@ -264,12 +268,7 @@ export async function startDaemon(
   }
   if (!started.ok) {
     try { child.kill(); } catch { /* already dead */ }
-    const message = daemonStartFailure(`${opts.describe ?? 'daemon'} on port ${opts.port} did not start`, {
-      ...started,
-      recentOutput: output?.recentOutput() ?? '',
-    });
-    output?.dispose();
-    throw new Error(message);
+    throw startFailure(started);
   }
   output?.dispose();
   child.unref();
