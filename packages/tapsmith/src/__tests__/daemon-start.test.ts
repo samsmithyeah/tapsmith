@@ -1,10 +1,24 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure } from '../daemon-start.js';
+import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary } from '../daemon-start.js';
+
+// spawn is real unless a test makes it throw, the way it does for a binary of
+// another architecture (PILOT-490).
+const spawnThrows = vi.hoisted(() => ({ error: undefined as Error | undefined }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: (...args: Parameters<typeof actual.spawn>) => {
+      if (spawnThrows.error) throw spawnThrows.error;
+      return actual.spawn(...args);
+    },
+  };
+});
 
 // What `tapsmith test` says when its daemon does not start: the daemon's own
 // words, and "Is tapsmith-core installed?" only when it could not be run at
@@ -18,6 +32,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  spawnThrows.error = undefined;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -154,5 +169,91 @@ describe('daemonStartFailure()', () => {
     expect(daemonStartFailure('Failed', {
       cause: 'exited', spawnFailed: false, recentOutput: '', hints: ['Port 50052 is already in use.', 'Run: lsof -ti tcp:50052 | xargs kill'],
     }).split('\n')).toEqual(['Failed: exited', '  Port 50052 is already in use.', '  Run: lsof -ti tcp:50052 | xargs kill']);
+  });
+});
+
+// ─── spawn throwing (PILOT-490) ───
+
+/** What Node throws from spawn() itself: an ErrnoException with no path in its message. */
+function spawnError(code: string, errno: number): Error {
+  return Object.assign(new Error(`spawn ${code}`), { code, errno, syscall: 'spawn' });
+}
+
+/** Run `fn` as if on `platform`. */
+function onPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...original, value: platform });
+  try {
+    return fn();
+  } finally {
+    Object.defineProperty(process, 'platform', original);
+  }
+}
+
+describe('spawnDaemonBinary()', () => {
+  it('hands back the child when spawn succeeds', async () => {
+    const spawned = spawnDaemonBinary(fakeDaemon('exit 3'), [], { stdio: 'ignore' });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) return;
+    const code = await new Promise((resolve) => spawned.child.once('exit', resolve));
+    expect(code).toBe(3);
+  });
+
+  it('turns ENOEXEC into a failed start naming the binary and this machine\'s architecture', () => {
+    spawnThrows.error = spawnError('ENOEXEC', -8);
+    const target = `${process.platform}-${process.arch}`;
+    expect(spawnDaemonBinary('/x/tapsmith-core', ['--port', '1'], { stdio: 'ignore' })).toEqual({
+      ok: false,
+      cause: 'could not run tapsmith-core: /x/tapsmith-core is not an executable for this machine (ENOEXEC)',
+      spawnFailed: true,
+      spawnHint: `It is built for another platform or architecture than this Node (${target}), or it is damaged. `
+        + `Reinstall Tapsmith with this Node so npm fetches @tapsmith/core-${target}, `
+        + `or set TAPSMITH_DAEMON_BIN to a tapsmith-core built for ${target}.`,
+    });
+  });
+
+  it('names macOS\'s "Bad CPU type" (errno -86, which Node cannot name) EBADARCH', () => {
+    spawnThrows.error = Object.assign(new Error('spawn Unknown system error -86'), { code: 'Unknown system error -86', errno: -86, syscall: 'spawn' });
+    const spawned = onPlatform('darwin', () => spawnDaemonBinary('/x/tapsmith-core', [], { stdio: 'ignore' }));
+    expect(spawned).toMatchObject({
+      ok: false,
+      cause: 'could not run tapsmith-core: /x/tapsmith-core is not an executable for this machine (EBADARCH)',
+      spawnHint: expect.stringContaining('TAPSMITH_DAEMON_BIN'),
+    });
+  });
+
+  it('reports any other spawn errno in spawn\'s own "spawn <path> <code>" shape, with the install question', () => {
+    spawnThrows.error = spawnError('E2BIG', -7);
+    const spawned = spawnDaemonBinary('/x/tapsmith-core', [], { stdio: 'ignore' });
+    expect(spawned).toEqual({ ok: false, cause: 'could not run tapsmith-core: spawn /x/tapsmith-core E2BIG', spawnFailed: true });
+  });
+
+  it('rethrows what is not a spawn failure: a bad argument is the caller\'s bug', () => {
+    spawnThrows.error = Object.assign(new TypeError('The "file" argument must be of type string'), { code: 'ERR_INVALID_ARG_TYPE' });
+    expect(() => spawnDaemonBinary('/x/tapsmith-core', [], { stdio: 'ignore' })).toThrow(TypeError);
+  });
+
+  // The real thing: macOS's posix_spawn refuses a file that is no executable
+  // format at all. (Linux's execvp hands it to /bin/sh instead, which exits
+  // 126 — an ordinary exit, with the shell's complaint on stderr.)
+  it.runIf(process.platform === 'darwin')('catches a real binary macOS cannot execute', () => {
+    const bin = path.join(tmpDir, 'tapsmith-core');
+    fs.writeFileSync(bin, Buffer.from([0xde, 0xad, 0xbe, 0xef, 0x00, 0x01]), { mode: 0o755 });
+    expect(spawnDaemonBinary(bin, [], { stdio: 'ignore' })).toMatchObject({
+      ok: false,
+      cause: `could not run tapsmith-core: ${bin} is not an executable for this machine (ENOEXEC)`,
+      spawnFailed: true,
+    });
+  });
+
+  it('reads, formatted, as a start failure with the architecture hint in place of the install question', () => {
+    spawnThrows.error = spawnError('ENOEXEC', -8);
+    const spawned = spawnDaemonBinary('/x/tapsmith-core', [], { stdio: 'ignore' });
+    if (spawned.ok) throw new Error('expected a failed spawn');
+    const lines = daemonStartFailure('Failed to start Tapsmith daemon', { ...spawned, recentOutput: '' }).split('\n');
+    expect(lines).toEqual([
+      'Failed to start Tapsmith daemon: could not run tapsmith-core: /x/tapsmith-core is not an executable for this machine (ENOEXEC)',
+      `  ${spawned.spawnHint}`,
+    ]);
   });
 });

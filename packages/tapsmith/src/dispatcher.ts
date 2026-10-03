@@ -8,7 +8,7 @@
  * @see PILOT-106
  */
 
-import { fork, spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { fork, execFileSync, type ChildProcess } from 'node:child_process';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -18,7 +18,7 @@ import { findDaemonBin } from './daemon-bin.js';
 import { assignGroupMemberDevices, deviceGroupSize, resolveDeviceGroup, type DeviceGroupEntry } from './config.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { labelledMessage, withDetail } from './error-detail.js';
-import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, type DaemonOutputCapture } from './daemon-start.js';
+import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary, type DaemonOutputCapture, type DaemonStartFailed } from './daemon-start.js';
 import type { TestResult, SuiteResult } from './runner.js';
 import type { TapsmithReporter, FullResult } from './reporter.js';
 import type {
@@ -152,7 +152,8 @@ function daemonLogPath(workerId: number): string | undefined {
 }
 
 interface SpawnedDaemon {
-  proc: ChildProcess
+  /** The daemon, or why it could not be run at all. */
+  spawned: ReturnType<typeof spawnDaemonBinary>
   /** Its output while it starts, for the failure message; dispose once judged. */
   output: DaemonOutputCapture
 }
@@ -168,7 +169,7 @@ function spawnDaemonProcess(
     process.stderr.write(`${YELLOW}${message}${RESET}\n`);
   });
   try {
-    const proc = spawn(
+    const spawned = spawnDaemonBinary(
       daemonBin,
       [
         '--port', String(daemonPort),
@@ -177,7 +178,7 @@ function spawnDaemonProcess(
       ],
       { stdio: output.stdio },
     );
-    return { proc, output };
+    return { spawned, output };
   } finally {
     output.closeParentFds();
   }
@@ -1196,7 +1197,26 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   }
 
   updateLaunchPhaseProgress('daemon', `Worker ${displayWorkerId(0)}: starting daemon on localhost:${firstDaemonPort}`);
-  const { proc: firstDaemon, output: firstDaemonOutput } = spawnDaemonProcess(daemonBin, firstDaemonPort, firstAgentPort, displayWorkerId(0), config.platform);
+  const { spawned: firstDaemonSpawn, output: firstDaemonOutput } = spawnDaemonProcess(daemonBin, firstDaemonPort, firstAgentPort, displayWorkerId(0), config.platform);
+  const firstDaemonFailure = async (outcome: DaemonStartFailed): Promise<LaunchSetupError> => {
+    const portInUse = !outcome.spawnFailed && !(await isPortAvailable(firstDaemonPort));
+    failStep('daemon', `failed to start worker daemon: ${outcome.cause}`);
+    const message = daemonStartFailure('Failed to start worker daemon', {
+      ...outcome,
+      recentOutput: firstDaemonOutput.recentOutput(),
+      logPath: firstDaemonOutput.logPath,
+      hints: portInUse
+        ? [
+          `Port ${firstDaemonPort} is already in use. Another Tapsmith run may be active, or a stale daemon is running.`,
+          `Run: lsof -ti tcp:${firstDaemonPort} | xargs kill`,
+        ]
+        : [],
+    });
+    firstDaemonOutput.dispose();
+    return new LaunchSetupError(message);
+  };
+  if (!firstDaemonSpawn.ok) throw await firstDaemonFailure(firstDaemonSpawn);
+  const firstDaemon = firstDaemonSpawn.child;
   firstDaemon.unref();
 
   // Wait for daemon to be ready
@@ -1208,21 +1228,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   if (!firstDaemonStart.ok) {
     firstDaemon.kill();
     discoveryClient.close();
-    const portInUse = !firstDaemonStart.spawnFailed && !(await isPortAvailable(firstDaemonPort));
-    failStep('daemon', `failed to start worker daemon: ${firstDaemonStart.cause}`);
-    const message = daemonStartFailure('Failed to start worker daemon', {
-      ...firstDaemonStart,
-      recentOutput: firstDaemonOutput.recentOutput(),
-      logPath: firstDaemonOutput.logPath,
-      hints: portInUse
-        ? [
-          `Port ${firstDaemonPort} is already in use. Another Tapsmith run may be active, or a stale daemon is running.`,
-          `Run: lsof -ti tcp:${firstDaemonPort} | xargs kill`,
-        ]
-        : [],
-    });
-    firstDaemonOutput.dispose();
-    throw new LaunchSetupError(message);
+    throw await firstDaemonFailure(firstDaemonStart);
   }
   firstDaemonOutput.dispose();
 
@@ -2270,7 +2276,20 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
 
   const spawnWorkerDaemon = async (port: number, agent: number, describe: string): Promise<ChildProcess> => {
     opts.onProgress?.(`starting worker daemon on localhost:${port}`);
-    const { proc, output } = spawnDaemonProcess(daemonBin, port, agent, opts.displayWorkerId ?? workerId, opts.serializedConfig.platform);
+    const { spawned, output } = spawnDaemonProcess(daemonBin, port, agent, opts.displayWorkerId ?? workerId, opts.serializedConfig.platform);
+    const startFailure = async (outcome: DaemonStartFailed): Promise<Error> => {
+      const portInUse = !outcome.spawnFailed && !(await isPortAvailable(port));
+      // "port in use" on the headline, which is all a progress row shows.
+      const message = daemonStartFailure(`Daemon for ${describe} on port ${port}${portInUse ? ' (already in use)' : ''} did not start`, {
+        ...outcome,
+        recentOutput: output.recentOutput(),
+        logPath: output.logPath,
+      });
+      output.dispose();
+      return new Error(message);
+    };
+    if (!spawned.ok) throw await startFailure(spawned);
+    const proc = spawned.child;
     proc.unref();
 
     const client = new TapsmithGrpcClient(`localhost:${port}`);
@@ -2281,15 +2300,7 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     client.close();
     if (!started.ok) {
       try { proc.kill(); } catch { /* already dead */ }
-      const portInUse = !started.spawnFailed && !(await isPortAvailable(port));
-      // "port in use" on the headline, which is all a progress row shows.
-      const message = daemonStartFailure(`Daemon for ${describe} on port ${port}${portInUse ? ' (already in use)' : ''} did not start`, {
-        ...started,
-        recentOutput: output.recentOutput(),
-        logPath: output.logPath,
-      });
-      output.dispose();
-      throw new Error(message);
+      throw await startFailure(started);
     }
     output.dispose();
     return proc;
