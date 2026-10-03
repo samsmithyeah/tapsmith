@@ -441,8 +441,9 @@ earlier run is reused as it was launched. When it is headless and this run would
 window (or the other way round), the run says so. To relaunch it with the current
 options, stop it with `adb -s <serial> emu kill` and run again.
 
-The emulator's output goes to `tapsmith-emulator-<port>.log` in the system temp
-directory. If the emulator exits while it is booting, the run reports why straight away,
+The emulator's output goes to a log file of its own in the system temp directory, named
+`tapsmith-emulator-<port>-<pid>-<n>.log` after its console port, the Tapsmith process and
+the launch. If the emulator exits while it is booting, the run reports why straight away,
 instead of waiting for the boot timeout. The most common case is an AVD that is already
 open writable, from Android Studio for example: the emulator will not start a read-only
 instance beside it, so close that emulator or point `avd` at another AVD.

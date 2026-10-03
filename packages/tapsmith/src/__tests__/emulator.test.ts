@@ -16,7 +16,6 @@ vi.mock('node:os', async (importOriginal) => {
   return { ...actual, tmpdir, default: { ...actual, tmpdir } };
 });
 import {
-  findAvailablePort,
   serialForPort,
   readUiHierarchyViaAdb,
   detectBlockingSystemDialog,
@@ -49,7 +48,11 @@ import {
   waitForBoot,
   waitForSystemSettle,
   listAdbDevices,
+  reserveEmulatorPort,
+  emulatorsBootingThisProcess,
+  EMULATOR_BOOT_TIMEOUT_MS,
 } from '../emulator.js';
+import lockfile from 'proper-lockfile';
 
 const manifestFile = path.join(os.tmpdir(), 'tapsmith-emulators.json');
 
@@ -74,24 +77,6 @@ describe('emulator utilities', () => {
   });
   afterEach(() => {
     try { fs.unlinkSync(manifestFile); } catch { /* ok */ }
-  });
-
-  describe('findAvailablePort', () => {
-    it('returns base port when no ports are used', () => {
-      expect(findAvailablePort(new Set())).toBe(5554);
-    });
-
-    it('skips used ports', () => {
-      expect(findAvailablePort(new Set([5554]))).toBe(5556);
-    });
-
-    it('skips multiple used ports', () => {
-      expect(findAvailablePort(new Set([5554, 5556, 5558]))).toBe(5560);
-    });
-
-    it('finds first gap in used ports', () => {
-      expect(findAvailablePort(new Set([5554, 5558]))).toBe(5556);
-    });
   });
 
   describe('serialForPort', () => {
@@ -662,7 +647,7 @@ describe('emulator utilities', () => {
   });
 
   describe('reclaimOrphanedEmulators', () => {
-    const entry = (overrides: Partial<{ serial: string, pid: number, avd: string, port: number }> = {}) => ({
+    const entry = (overrides: Partial<{ serial: string, pid: number, avd: string, port: number, booting: boolean, ownerPid: number }> = {}) => ({
       serial: 'emulator-5554',
       pid: 4242,
       avd: 'Pixel_API_36',
@@ -729,6 +714,69 @@ describe('emulator utilities', () => {
       }
     });
 
+    it('leaves an emulator another live run is still booting alone (PILOT-441)', () => {
+      const h = harness({
+        entries: [entry({ booting: true, ownerPid: 5150 })],
+        // Mid-boot: adb shows it offline, and its health would fail.
+        adb: [{ serial: 'emulator-5554', state: 'offline' }],
+        alive: [4242, 5150],
+        argv: { 4242: tapsmithArgv() },
+        listener: { 'emulator-5554': 4242 },
+        healthy: false,
+      });
+      const result = reclaimOrphanedEmulators(h.deps);
+      expect(result).toEqual({ reusable: [], killed: [], undetermined: [], booting: ['emulator-5554'] });
+      expect(h.killEmulator).not.toHaveBeenCalled();
+      expect(h.killProcess).not.toHaveBeenCalled();
+      expect(h.written).toEqual([[entry({ booting: true, ownerPid: 5150 })]]);
+    });
+
+    it('judges a booting record like any other once the run that launched it has gone', () => {
+      // The run was interrupted mid-boot; its emulator finished booting since.
+      const h = harness({
+        entries: [entry({ booting: true, ownerPid: 5150 })],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+        listener: { 'emulator-5554': 4242 },
+      });
+      expect(reclaimOrphanedEmulators(h.deps).reusable).toEqual(['emulator-5554']);
+
+      const stuck = harness({
+        entries: [entry({ booting: true, ownerPid: 5150 })],
+        adb: [{ serial: 'emulator-5554', state: 'offline' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+        listener: { 'emulator-5554': 4242 },
+      });
+      expect(reclaimOrphanedEmulators(stuck.deps).killed).toEqual(['emulator-5554']);
+    });
+
+    it('records an interrupted launch as ready once a later run reuses it', () => {
+      const h = harness({
+        entries: [entry({ booting: true, ownerPid: 5150 })],
+        adb: [{ serial: 'emulator-5554', state: 'device' }],
+        alive: [4242],
+        argv: { 4242: tapsmithArgv() },
+        listener: { 'emulator-5554': 4242 },
+      });
+      expect(reclaimOrphanedEmulators(h.deps).reusable).toEqual(['emulator-5554']);
+      expect(h.written).toEqual([[{ ...entry(), ownerPid: 5150 }]]);
+    });
+
+    it('leaves another run\'s booting emulator out of the heuristic pass too', () => {
+      const h = harness({
+        entries: [entry({ booting: true, ownerPid: 5150 })],
+        adb: [{ serial: 'emulator-5554', state: 'offline' }],
+        alive: [4242, 5150],
+        argv: { 4242: tapsmithArgv() },
+        listener: { 'emulator-5554': 4242 },
+      });
+      const result = cleanupStaleEmulators('Pixel_API_36', { ...h.deps, resolveAvdName: () => 'Pixel_API_36', waitForAdbSettle: () => undefined });
+      expect(result.killed).toEqual([]);
+      expect(h.killEmulator).not.toHaveBeenCalled();
+    });
+
     it('drops a dead entry and leaves a foreign emulator on the same serial running', () => {
       const h = harness({
         entries: [entry({ pid: 999991 })],
@@ -737,7 +785,7 @@ describe('emulator utilities', () => {
         argv: { 7777: userArgv },
       });
       const result = reclaimOrphanedEmulators(h.deps);
-      expect(result).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(result).toEqual({ reusable: [], killed: [], undetermined: [], booting: [] });
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.killProcess).not.toHaveBeenCalled();
       expect(h.written).toEqual([[]]);
@@ -745,7 +793,7 @@ describe('emulator utilities', () => {
 
     it('drops a dead entry whose serial is gone, killing nothing', () => {
       const h = harness({ entries: [entry({ pid: 999991 })] });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [], booting: [] });
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.written).toEqual([[]]);
     });
@@ -758,7 +806,7 @@ describe('emulator utilities', () => {
         argv: { 4242: ['/usr/bin/node', 'server.js'] },
         healthy: false,
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [], booting: [] });
       expect(h.killProcess).not.toHaveBeenCalled();
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.written).toEqual([[]]);
@@ -771,7 +819,7 @@ describe('emulator utilities', () => {
         alive: [4242],
         argv: { 4242: userArgv },
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [], booting: [] });
       expect(h.probeDeviceHealth).not.toHaveBeenCalled();
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.killProcess).not.toHaveBeenCalled();
@@ -786,7 +834,7 @@ describe('emulator utilities', () => {
         argv: {},
         healthy: false,
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: ['emulator-5554'] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: ['emulator-5554'], booting: [] });
       expect(h.probeDeviceHealth).not.toHaveBeenCalled();
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.killProcess).not.toHaveBeenCalled();
@@ -800,7 +848,7 @@ describe('emulator utilities', () => {
         alive: [4242],
         argv: {},
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: ['emulator-5554'] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: ['emulator-5554'], booting: [] });
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.killProcess).not.toHaveBeenCalled();
     });
@@ -813,7 +861,7 @@ describe('emulator utilities', () => {
         alive: [4242],
         argv: { 4242: tapsmithArgv() },
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: ['emulator-5554'], killed: [], undetermined: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: ['emulator-5554'], killed: [], undetermined: [], booting: [] });
       expect(h.written).toEqual([[e]]);
       expect(h.killEmulator).not.toHaveBeenCalled();
     });
@@ -827,7 +875,7 @@ describe('emulator utilities', () => {
         listener: { 'emulator-5554': 4242 },
         healthy: false,
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: ['emulator-5554'], undetermined: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: ['emulator-5554'], undetermined: [], booting: [] });
       expect(h.killEmulator).toHaveBeenCalledWith('emulator-5554');
       expect(h.killProcess).toHaveBeenCalledWith(4242);
       expect(h.written).toEqual([[]]);
@@ -842,7 +890,7 @@ describe('emulator utilities', () => {
         listener: { 'emulator-5554': 7777 },
         healthy: false,
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [], booting: [] });
       expect(h.killProcess).toHaveBeenCalledWith(4242);
       expect(h.killEmulator).not.toHaveBeenCalled();
       expect(h.written).toEqual([[]]);
@@ -881,7 +929,7 @@ describe('emulator utilities', () => {
         alive: [4242],
         argv: { 4242: tapsmithArgv() },
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: ['emulator-5554'], undetermined: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: ['emulator-5554'], undetermined: [], booting: [] });
       expect(h.killProcess).toHaveBeenCalledWith(4242);
       expect(h.killEmulator).not.toHaveBeenCalled();
     });
@@ -893,7 +941,7 @@ describe('emulator utilities', () => {
         alive: [4242],
         argv: { 4242: tapsmithArgv() },
       });
-      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [] });
+      expect(reclaimOrphanedEmulators(h.deps)).toEqual({ reusable: [], killed: [], undetermined: [], booting: [] });
       expect(h.killEmulator).not.toHaveBeenCalled();
     });
   });
@@ -1047,7 +1095,7 @@ describe('emulator utilities', () => {
       await provisionEmulators(
         { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined },
         {
-          resolveEmulatorBinary: foundEmulator,
+          resolveEmulatorBinary: foundEmulator, ...unprobedPorts,
           listAdbDevices: () => [{ serial: 'emulator-5554', state: 'offline' }],
           listAvds: () => ['Pixel'],
           getRunningAvdName: () => undefined,
@@ -1076,7 +1124,7 @@ describe('emulator utilities', () => {
           launchOptions: undefined,
         },
         {
-          resolveEmulatorBinary: foundEmulator,
+          resolveEmulatorBinary: foundEmulator, ...unprobedPorts,
           listAdbDevices: () => [],
           listAvds: () => ['Broken_API_35', 'Pixel_9_API_35'],
           getRunningAvdName: () => undefined,
@@ -1110,7 +1158,7 @@ describe('emulator utilities', () => {
           launchOptions: undefined,
         },
         {
-          resolveEmulatorBinary: foundEmulator,
+          resolveEmulatorBinary: foundEmulator, ...unprobedPorts,
           listAdbDevices: () => [],
           listAvds: () => ['Broken_API_35'],
           getRunningAvdName: () => undefined,
@@ -1139,7 +1187,7 @@ describe('emulator utilities', () => {
           launchOptions: undefined,
         },
         {
-          resolveEmulatorBinary: foundEmulator,
+          resolveEmulatorBinary: foundEmulator, ...unprobedPorts,
           listAdbDevices: () => [],
           listAvds: () => ['Pixel_9_API_35', 'Small_Phone_API_35'],
           getRunningAvdName: (serial) => serial === 'emulator-5554' ? 'Pixel_9_API_35' : undefined,
@@ -1171,7 +1219,7 @@ describe('emulator utilities', () => {
           launchOptions: undefined,
         },
         {
-          resolveEmulatorBinary: foundEmulator,
+          resolveEmulatorBinary: foundEmulator, ...unprobedPorts,
           listAdbDevices: () => [],
           listAvds: () => ['Pixel_9_API_35'],
           getRunningAvdName: () => 'Small_Phone_API_35',
@@ -1238,6 +1286,22 @@ function makeLaunchedEmulator(
     },
   } as unknown as import('../emulator.js').LaunchedEmulator;
 }
+
+/**
+ * An in-memory port reservation: no lock directories and no probing of the
+ * real loopback ports, where an emulator may well be running on this machine.
+ */
+const fakeReservedPorts = new Set<number>();
+const unprobedPorts = {
+  // A fake launch has no console port to wait for.
+  waitForEmulatorStartup: async () => undefined,
+  reserveEmulatorPort: async (used: ReadonlySet<number>) => {
+    let port = 5554;
+    while (used.has(port) || fakeReservedPorts.has(port)) port += 2;
+    fakeReservedPorts.add(port);
+    return { port, release: async () => { fakeReservedPorts.delete(port); } };
+  },
+};
 
 function foundEmulator(): import('../emulator.js').EmulatorBinary {
   return { command: '/sdk/emulator/emulator', found: true, tried: ['/sdk/emulator/emulator'] };
@@ -1438,9 +1502,12 @@ describe('launchEmulator process and early exit', () => {
 
   it.skipIf(process.platform === 'win32')('never writes its log through a planted symlink', async () => {
     const victim = path.join(os.tmpdir(), 'victim.txt');
-    const logPath = path.join(os.tmpdir(), 'tapsmith-emulator-5596.log');
-    fs.rmSync(logPath, { force: true });
-    fs.symlinkSync(victim, logPath);
+    // Every name this process's next launches on port 5596 could use.
+    for (let n = 1; n <= 200; n++) {
+      const logPath = path.join(os.tmpdir(), `tapsmith-emulator-5596-${process.pid}-${n}.log`);
+      fs.rmSync(logPath, { force: true });
+      fs.symlinkSync(victim, logPath);
+    }
     fs.writeFileSync(victim, 'ERROR | Another emulator instance is running.');
     const emu = launchEmulator('Pixel', 5596, { headless: true, args: [] }, fakeEmulator('ERROR | boom', 1));
     const exit = await emu.exited;
@@ -1449,6 +1516,18 @@ describe('launchEmulator process and early exit', () => {
     expect(emu.logPath).toBeUndefined();
     expect(describeEmulatorExit(exit, emu, { command: 'x', found: true, tried: [] }))
       .toBe('The emulator exited during boot (exit code 1).');
+  });
+
+  it.skipIf(process.platform === 'win32')('gives every launch its own log, even on the same port (PILOT-439)', async () => {
+    const first = launchEmulator('Pixel', 5598, { headless: true, args: [] }, fakeEmulator('first launch', 1));
+    const second = launchEmulator('Pixel', 5598, { headless: true, args: [] }, fakeEmulator('second launch', 1));
+    await Promise.all([first.exited, second.exited]);
+    expect(first.logPath).toBeDefined();
+    expect(second.logPath).toBeDefined();
+    expect(first.logPath).not.toBe(second.logPath);
+    expect(path.basename(first.logPath!)).toMatch(/^tapsmith-emulator-5598-\d+-\d+\.log$/);
+    expect(fs.readFileSync(first.logPath!, 'utf-8')).toBe('first launch\n');
+    expect(fs.readFileSync(second.logPath!, 'utf-8')).toBe('second launch\n');
   });
 
   it('reports a binary that cannot be spawned as not found, with the paths tried', async () => {
@@ -1505,6 +1584,7 @@ describe('describeEmulatorExit', () => {
 
 describe('provisionEmulators launch failures', () => {
   const base = {
+    ...unprobedPorts,
     listAdbDevices: () => [],
     listAvds: () => ['Pixel'],
     getRunningAvdName: () => undefined,
@@ -1569,7 +1649,7 @@ describe('provisionEmulators launch failures', () => {
       { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined },
       {
         ...base,
-        resolveEmulatorBinary: foundEmulator,
+        resolveEmulatorBinary: foundEmulator, ...unprobedPorts,
         launchEmulator: () => emu,
         // The emulator dies during the post-boot settle, which then returns.
         waitForBoot: async () => {
@@ -1593,7 +1673,7 @@ describe('provisionEmulators launch failures', () => {
       { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined },
       {
         ...base,
-        resolveEmulatorBinary: foundEmulator,
+        resolveEmulatorBinary: foundEmulator, ...unprobedPorts,
         launchEmulator: () => emu,
         waitForBoot: async () => { await new Promise((resolve) => setTimeout(resolve, 20)); },
         killEmulator: vi.fn(),
@@ -1616,7 +1696,7 @@ describe('provisionEmulators launch failures', () => {
         },
         {
           ...base,
-          resolveEmulatorBinary: foundEmulator,
+          resolveEmulatorBinary: foundEmulator, ...unprobedPorts,
           launchEmulator: () => emu,
           // Would run the whole boot timeout unless aborted.
           waitForBoot: (_serial, _timeout, signal) => new Promise((_resolve, reject) => {
@@ -1644,7 +1724,7 @@ describe('provisionEmulators launch failures', () => {
       { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined },
       {
         ...base,
-        resolveEmulatorBinary: foundEmulator,
+        resolveEmulatorBinary: foundEmulator, ...unprobedPorts,
         launchEmulator: () => emu,
         waitForBoot: async (_serial, _timeout, signal) => { bootSignal = signal; },
         killEmulator: vi.fn(),
@@ -1662,12 +1742,12 @@ describe('provisionEmulators launch failures', () => {
     let launches = 0;
     await provisionEmulators(
       { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined },
-      { ...base, resolveEmulatorBinary: foundEmulator, launchEmulator: () => (launches++ === 0 ? good : bad),
+      { ...base, resolveEmulatorBinary: foundEmulator, ...unprobedPorts, launchEmulator: () => (launches++ === 0 ? good : bad),
         waitForBoot: async () => undefined, killEmulator: vi.fn() },
     );
     await provisionEmulators(
       { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined },
-      { ...base, resolveEmulatorBinary: foundEmulator, launchEmulator: () => bad,
+      { ...base, resolveEmulatorBinary: foundEmulator, ...unprobedPorts, launchEmulator: () => bad,
         waitForBoot: async () => { throw new Error('boot timed out'); }, killEmulator: vi.fn() },
     );
     const serials = emulatorsLaunchedThisProcess().map((emu) => emu.serial);
@@ -1703,7 +1783,7 @@ describe('provisionEmulators launch failures', () => {
       { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: { headless: true, args: ['-memory', '4096'] } },
       {
         ...base,
-        resolveEmulatorBinary: foundEmulator,
+        resolveEmulatorBinary: foundEmulator, ...unprobedPorts,
         launchEmulator: (avd, port, settings, emulator) => {
           launches.push({ settings, emulator });
           return makeLaunchedEmulator(avd, port);
@@ -1727,7 +1807,7 @@ describe('provisionEmulators launch failures', () => {
         },
         {
           ...base,
-          resolveEmulatorBinary: foundEmulator,
+          resolveEmulatorBinary: foundEmulator, ...unprobedPorts,
           launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port),
           waitForBoot: async () => undefined,
           killEmulator: vi.fn(),
@@ -1752,7 +1832,7 @@ describe('provisionEmulators launch failures', () => {
         },
         {
           ...base,
-          resolveEmulatorBinary: foundEmulator,
+          resolveEmulatorBinary: foundEmulator, ...unprobedPorts,
           launchEmulator: (avd, port, settings) => {
             headless.push(settings.headless);
             return makeLaunchedEmulator(avd, port);
@@ -1866,5 +1946,362 @@ describe('listAdbDevices', () => {
   it('is empty when adb cannot be run', () => {
     const exec = vi.fn(() => { throw new Error('spawn adb ENOENT'); }) as unknown as typeof import('node:child_process').execFileSync;
     expect(listAdbDevices(exec)).toEqual([]);
+  });
+});
+
+
+// ─── Console port reservation (PILOT-439) ───
+
+describe('reserveEmulatorPort', () => {
+  const allFree = async () => true;
+  const held: Array<() => Promise<void>> = [];
+  afterEach(async () => {
+    for (const release of held.splice(0)) await release().catch(() => undefined);
+  });
+
+  it('reserves the first port nothing uses', async () => {
+    const reservation = await reserveEmulatorPort(new Set(), { isPortFree: allFree });
+    held.push(reservation.release);
+    expect(reservation.port).toBe(5554);
+  });
+
+  it('gives concurrent reservations in one process distinct ports', async () => {
+    const reservations = await Promise.all([
+      reserveEmulatorPort(new Set(), { isPortFree: allFree }),
+      reserveEmulatorPort(new Set(), { isPortFree: allFree }),
+      reserveEmulatorPort(new Set([5554]), { isPortFree: allFree }),
+    ]);
+    held.push(...reservations.map((r) => r.release));
+    const ports = reservations.map((r) => r.port);
+    expect(new Set(ports).size).toBe(3);
+    expect(ports.every((port) => port % 2 === 0 && port >= 5554)).toBe(true);
+  });
+
+  it('skips a port another process holds the lock for', async () => {
+    // Another Tapsmith process mid-launch on 5554: its lock is a directory in the temp dir.
+    const lockTarget = path.join(os.tmpdir(), 'tapsmith-emulator-port-5554');
+    const releaseOther = await lockfile.lock(lockTarget, { realpath: false });
+    held.push(releaseOther);
+    const reservation = await reserveEmulatorPort(new Set(), { isPortFree: allFree });
+    held.push(reservation.release);
+    expect(reservation.port).toBe(5556);
+  });
+
+  it('skips a port whose console or adb port is already bound', async () => {
+    const bound = new Set([5554, 5557]);
+    const reservation = await reserveEmulatorPort(new Set(), { isPortFree: async (port) => !bound.has(port) });
+    held.push(reservation.release);
+    // 5554 is taken; 5556's adb port (5557) is taken.
+    expect(reservation.port).toBe(5558);
+  });
+
+  it('frees the port again once released', async () => {
+    const first = await reserveEmulatorPort(new Set(), { isPortFree: allFree });
+    await first.release();
+    const again = await reserveEmulatorPort(new Set(), { isPortFree: allFree });
+    held.push(again.release);
+    expect(again.port).toBe(5554);
+  });
+
+  it('says so when no console port is left', async () => {
+    const used = new Set<number>();
+    for (let port = 5554; port <= 5682; port += 2) used.add(port);
+    await expect(reserveEmulatorPort(used, { isPortFree: allFree }))
+      .rejects.toThrow('No free emulator console port between 5554 and 5682');
+  });
+
+  it('probes the real loopback ports by default', async () => {
+    const net = await import('node:net');
+    const server = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      // An ephemeral even port pair is hard to pick portably; occupy 5680's adb port instead.
+      server.listen({ host: '127.0.0.1', port: 5681, exclusive: true }, () => resolve());
+    }).catch(() => undefined);
+    try {
+      const used = new Set<number>();
+      for (let port = 5554; port < 5680; port += 2) used.add(port);
+      if (server.listening) {
+        // 5680 is unusable (its adb port is bound), and 5682 is the last one.
+        const reservation = await reserveEmulatorPort(used);
+        held.push(reservation.release);
+        expect(reservation.port).not.toBe(5680);
+      }
+    } finally {
+      server.close();
+    }
+  });
+});
+
+
+// ─── Booting emulators side by side (PILOT-495) ───
+
+describe('provisionEmulators boots emulators side by side', () => {
+  const base = {
+    ...unprobedPorts,
+    resolveEmulatorBinary: foundEmulator,
+    listAdbDevices: () => [],
+    listAvds: () => ['Pixel'],
+    getRunningAvdName: () => undefined,
+    probeDeviceHealth: (serial: string) => ({ serial, healthy: true }),
+    waitForDeviceStability: async (serial: string) => ({ serial, healthy: true }),
+    killEmulator: vi.fn(),
+  };
+
+  /** A boot wait that finishes only when the test says so, counting how many are in flight. */
+  function controlledBoots() {
+    const pending = new Map<string, { resolve: () => void, reject: (err: Error) => void }>();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const started: string[] = [];
+    let onStart: (() => void) | undefined;
+    const waitForBoot = (serial: string) => new Promise<void>((resolve, reject) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      started.push(serial);
+      pending.set(serial, {
+        resolve: () => { inFlight--; resolve(); },
+        reject: (err) => { inFlight--; reject(err); },
+      });
+      onStart?.();
+    });
+    const untilStarted = (count: number) => new Promise<void>((resolve) => {
+      const check = () => { if (started.length >= count) resolve(); };
+      onStart = check;
+      check();
+    });
+    return { waitForBoot, pending, started, untilStarted, maxInFlight: () => maxInFlight };
+  }
+
+  beforeEach(() => {
+    try { fs.unlinkSync(manifestFile); } catch { /* ok */ }
+  });
+
+  it('starts every launch before any boot finishes, and keeps them in order', async () => {
+    const boots = controlledBoots();
+    const provision = provisionEmulators(
+      { existingSerials: [], workers: 2, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      { ...base, launchConcurrency: 4, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot: boots.waitForBoot },
+    );
+    await boots.untilStarted(2);
+    expect(boots.maxInFlight()).toBe(2);
+    // The second finishes first; the result keeps launch order.
+    boots.pending.get('emulator-5556')!.resolve();
+    boots.pending.get('emulator-5554')!.resolve();
+    const result = await provision;
+    expect(result.allSerials).toEqual(['emulator-5554', 'emulator-5556']);
+  });
+
+  it('keeps the emulators that boot when another one fails', async () => {
+    const boots = controlledBoots();
+    const killEmulator = vi.fn();
+    const warnings: string[] = [];
+    const provision = provisionEmulators(
+      {
+        existingSerials: [], workers: 3, avd: 'Pixel', launchOptions: undefined,
+        onProgress: (message, level) => { if (level === 'warning') warnings.push(message); },
+      },
+      { ...base, killEmulator, launchConcurrency: 3, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot: boots.waitForBoot },
+    );
+    await boots.untilStarted(3);
+    boots.pending.get('emulator-5556')!.reject(new Error('Emulator emulator-5556 did not boot within 120s'));
+    boots.pending.get('emulator-5554')!.resolve();
+    boots.pending.get('emulator-5558')!.resolve();
+    const result = await provision;
+    expect(result.allSerials).toEqual(['emulator-5554', 'emulator-5558']);
+    expect(killEmulator.mock.calls).toEqual([['emulator-5556']]);
+    expect(warnings).toContain('Skipping launched emulator emulator-5556 (Pixel): Emulator emulator-5556 did not boot within 120s.');
+    expect(warnings).toContain('Unable to provision additional emulator 2/3; AVD Pixel did not start healthy (see above).');
+  });
+
+  it('spawns each launch only once the one before it has started up', async () => {
+    const boots = controlledBoots();
+    const spawned: string[] = [];
+    let firstStarted!: () => void;
+    const provision = provisionEmulators(
+      { existingSerials: [], workers: 2, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      {
+        ...base,
+        launchConcurrency: 2,
+        launchEmulator: (avd, port) => { spawned.push(serialForPort(port)); return makeLaunchedEmulator(avd, port); },
+        waitForEmulatorStartup: (emu) => emu.port === 5554
+          ? new Promise<void>((resolve) => { firstStarted = resolve; })
+          : Promise.resolve(),
+        waitForBoot: boots.waitForBoot,
+      },
+    );
+    await boots.untilStarted(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(spawned).toEqual(['emulator-5554']);
+    firstStarted();
+    await boots.untilStarted(2);
+    // Started up, the first keeps booting while the second boots beside it.
+    expect(spawned).toEqual(['emulator-5554', 'emulator-5556']);
+    expect(boots.maxInFlight()).toBe(2);
+    boots.pending.get('emulator-5554')!.resolve();
+    boots.pending.get('emulator-5556')!.resolve();
+    expect((await provision).allSerials).toEqual(['emulator-5554', 'emulator-5556']);
+  });
+
+  it('makes a concurrent call wait for the other call\'s launch to start up as well', async () => {
+    const spawned: string[] = [];
+    let firstStarted!: () => void;
+    const deps = {
+      ...base,
+      launchEmulator: (avd: string, port: number) => { spawned.push(serialForPort(port)); return makeLaunchedEmulator(avd, port); },
+      waitForEmulatorStartup: (emu: import('../emulator.js').LaunchedEmulator) => emu.port === 5554
+        ? new Promise<void>((resolve) => { firstStarted = resolve; })
+        : Promise.resolve(),
+      waitForBoot: async () => undefined,
+    };
+    const a = provisionEmulators({ existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined }, deps);
+    const b = provisionEmulators({ existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined }, deps);
+    await vi.waitFor(() => expect(spawned).toEqual(['emulator-5554']));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(spawned).toEqual(['emulator-5554']);
+    firstStarted();
+    await Promise.all([a, b]);
+    expect(spawned).toEqual(['emulator-5554', 'emulator-5556']);
+  });
+
+  it('boots no more at once than the host allows, and still boots them all', async () => {
+    const boots = controlledBoots();
+    const provision = provisionEmulators(
+      { existingSerials: [], workers: 3, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      { ...base, launchConcurrency: 2, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot: boots.waitForBoot },
+    );
+    await boots.untilStarted(2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(boots.started).toEqual(['emulator-5554', 'emulator-5556']);
+    boots.pending.get('emulator-5554')!.resolve();
+    await boots.untilStarted(3);
+    boots.pending.get('emulator-5556')!.resolve();
+    boots.pending.get('emulator-5558')!.resolve();
+    const result = await provision;
+    expect(boots.maxInFlight()).toBe(2);
+    expect(result.allSerials).toEqual(['emulator-5554', 'emulator-5556', 'emulator-5558']);
+  });
+
+  it('does not relaunch an AVD that already failed for a launch still waiting its turn', async () => {
+    const launchedAvds: string[] = [];
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const result = await provisionEmulators(
+        { existingSerials: [], workers: 2, launchOptions: undefined, onProgress: () => undefined },
+        {
+          ...base,
+          listAvds: () => ['Broken', 'Pixel'],
+          launchConcurrency: 1,
+          launchEmulator: (avd, port) => { launchedAvds.push(avd); return makeLaunchedEmulator(avd, port); },
+          waitForBoot: async (serial) => { if (serial === 'emulator-5554') throw new Error('boot timed out'); },
+        },
+      );
+      expect(launchedAvds).toEqual(['Broken', 'Pixel', 'Pixel']);
+      expect(result.allSerials).toEqual(['emulator-5556', 'emulator-5558']);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it('records each emulator as soon as it is spawned, and stops tracking failed ones (PILOT-441)', async () => {
+    const boots = controlledBoots();
+    const provision = provisionEmulators(
+      { existingSerials: [], workers: 3, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      { ...base, launchConcurrency: 3, launchEmulator: (avd, port) => ({ ...makeLaunchedEmulator(avd, port), process: { pid: port * 10, kill: vi.fn() } } as unknown as import('../emulator.js').LaunchedEmulator), waitForBoot: boots.waitForBoot },
+    );
+    await boots.untilStarted(3);
+    boots.pending.get('emulator-5554')!.resolve();
+    const readManifestFile = () => JSON.parse(fs.readFileSync(manifestFile, 'utf-8')) as Array<Record<string, unknown>>;
+    await vi.waitFor(() => expect(readManifestFile().find((e) => e.serial === 'emulator-5554')?.booting).toBeUndefined());
+
+    // Interrupted here, every spawned emulator is on record: the first ready,
+    // the others still booting under this process…
+    expect(readManifestFile().map((e) => [e.serial, e.pid, e.booting ?? false, e.ownerPid]).sort()).toEqual([
+      ['emulator-5554', 55540, false, process.pid],
+      ['emulator-5556', 55560, true, process.pid],
+      ['emulator-5558', 55580, true, process.pid],
+    ]);
+    // …and an interrupted run stops all three, the booted one included:
+    // none has been handed to the caller yet.
+    expect(emulatorsBootingThisProcess().map((emu) => emu.serial)).toEqual(['emulator-5554', 'emulator-5556', 'emulator-5558']);
+
+    boots.pending.get('emulator-5556')!.reject(new Error('boot timed out'));
+    boots.pending.get('emulator-5558')!.resolve();
+    await provision;
+    const after = readManifestFile();
+    expect(after.map((e) => [e.serial, e.booting ?? false]).sort()).toEqual([['emulator-5554', false], ['emulator-5558', false]]);
+    expect(emulatorsBootingThisProcess()).toEqual([]);
+  });
+
+  it('records a booted emulator even when another run rewrote the manifest during its boot', async () => {
+    const boots = controlledBoots();
+    const provision = provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      { ...base, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot: boots.waitForBoot },
+    );
+    await boots.untilStarted(1);
+    // Another run's reclaim read the manifest before this launch was recorded,
+    // and wrote back what it had seen.
+    fs.writeFileSync(manifestFile, '[]');
+    boots.pending.get('emulator-5554')!.resolve();
+    await provision;
+    const after = JSON.parse(fs.readFileSync(manifestFile, 'utf-8')) as Array<Record<string, unknown>>;
+    expect(after.map((e) => [e.serial, e.booting ?? false])).toEqual([['emulator-5554', false]]);
+  });
+
+  it('allows each boot and stability check extra time for every boot beside it, without multiplying the whole budget', async () => {
+    const budgets: Array<number | undefined> = [];
+    const stability: Array<number | undefined> = [];
+    const waitForBoot = async (_serial: string, timeoutMs?: number) => { budgets.push(timeoutMs); };
+    const waitForDeviceStability = async (serial: string, timeoutMs?: number) => {
+      stability.push(timeoutMs);
+      return { serial, healthy: true };
+    };
+    await provisionEmulators(
+      { existingSerials: [], workers: 4, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      { ...base, launchConcurrency: 3, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot, waitForDeviceStability },
+    );
+    // Three at a time: 30 s more for each of the two others.
+    expect(budgets).toEqual(Array(4).fill(EMULATOR_BOOT_TIMEOUT_MS + 60_000));
+    expect(stability).toEqual(Array(4).fill(80_000));
+    budgets.length = 0;
+    stability.length = 0;
+    await provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      { ...base, launchConcurrency: 4, launchEmulator: (avd, port) => makeLaunchedEmulator(avd, port), waitForBoot, waitForDeviceStability },
+    );
+    expect(budgets).toEqual([EMULATOR_BOOT_TIMEOUT_MS]);
+    expect(stability).toEqual([20_000]);
+  });
+
+  it('gives two concurrent provisioning calls distinct ports and logs (PILOT-439)', async () => {
+    const script = path.join(os.tmpdir(), 'fake-emulator-backgrounds.sh');
+    // A launcher that backgrounds the emulator: prints and exits 0.
+    fs.writeFileSync(script, '#!/bin/sh\nprintf "%s\\n" "$4"\nexit 0\n', { mode: 0o755 });
+    const launches: import('../emulator.js').LaunchedEmulator[] = [];
+    const deps = {
+      ...base,
+      // The real reservation (lock directories and all), without probing loopback.
+      reserveEmulatorPort: (used: ReadonlySet<number>) => reserveEmulatorPort(used, { isPortFree: async () => true }),
+      launchConcurrency: 1,
+      launchEmulator: (avd: string, port: number, settings: import('../emulator.js').EmulatorLaunchSettings) => {
+        const emu = launchEmulator(avd, port, settings, script);
+        launches.push(emu);
+        return emu;
+      },
+      findEmulatorPid: () => 1,
+      waitForBoot: async () => { await new Promise((resolve) => setTimeout(resolve, 20)); },
+    };
+    const [a, b] = await Promise.all([
+      provisionEmulators({ existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: { headless: true }, onProgress: () => undefined }, deps),
+      provisionEmulators({ existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: { headless: true }, onProgress: () => undefined }, deps),
+    ]);
+    await Promise.all(launches.map((emu) => emu.exited));
+    expect(new Set([...a.allSerials, ...b.allSerials]).size).toBe(2);
+    const logs = launches.map((emu) => emu.logPath);
+    expect(logs.every((log) => log !== undefined)).toBe(true);
+    expect(new Set(logs).size).toBe(2);
+    // Each log holds its own launch's output: the -port value the script echoes.
+    expect(launches.map((emu) => fs.readFileSync(emu.logPath!, 'utf-8').trim())).toEqual(launches.map((emu) => String(emu.port)));
   });
 });

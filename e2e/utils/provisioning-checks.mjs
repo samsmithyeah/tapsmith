@@ -179,6 +179,11 @@ export function checkAndroidAfter({ processes, adbDevices, manifest, avd, expect
         + `on port ${e.port} with -read-only: ${proc.args}`,
       )
     }
+    // Recorded at spawn as booting, and marked ready once healthy (PILOT-441):
+    // still booting after the run means the launch never finished.
+    if (e.booting) {
+      failures.push(`The manifest still records ${e.serial} as booting after the run.`)
+    }
     const device = adbBySerial.get(e.serial)
     if (!device) {
       failures.push(`Tapsmith launched ${e.serial}, but adb does not list it.`)
