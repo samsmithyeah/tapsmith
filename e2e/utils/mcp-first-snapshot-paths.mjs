@@ -77,8 +77,12 @@ function changedFilesSince(baseSha) {
     // The shard job's checkout is shallow; fetch just the base commit. A diff
     // of two trees needs no shared history.
     execFileSync("git", ["fetch", "--no-tags", "--depth=1", "origin", baseSha], { stdio: "ignore" })
-    const out = execFileSync("git", ["diff", "--name-only", baseSha, "HEAD"], { encoding: "utf8" })
-    return out.split("\n").map((l) => l.trim()).filter(Boolean)
+    // --no-renames: a rename lists both the old and the new path, so moving a
+    // file out of a guarded directory still counts. -z: paths come unquoted.
+    const out = execFileSync("git", ["diff", "--name-only", "--no-renames", "-z", baseSha, "HEAD"], {
+      encoding: "utf8",
+    })
+    return out.split("\0").filter(Boolean)
   } catch (err) {
     console.log(`could not diff against ${baseSha}: ${err instanceof Error ? err.message : err}`)
     return null

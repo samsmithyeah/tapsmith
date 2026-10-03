@@ -3,9 +3,9 @@
  * requests, and on a pull request only when it touches the guarded code.
  */
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
 import assert from "node:assert/strict"
@@ -72,30 +72,81 @@ test("every guarded path exists, so a rename can't silently drop it from the fil
   for (const p of GUARDED_PATHS) assert.ok(existsSync(join(root, p)), p)
 })
 
-test("the CLI writes run=false for a non-guarded diff and run=true for a guarded one", () => {
+// git with a clean environment: no GIT_DIR/GIT_WORK_TREE leaking in from a
+// caller (a hook), and no signing from the user's global config.
+function cleanEnv(extra = {}) {
+  const env = { ...process.env, ...extra }
+  for (const k of Object.keys(env)) if (k.startsWith("GIT_")) delete env[k]
+  return env
+}
+
+function scratchRepo() {
   const repo = mkdtempSync(join(tmpdir(), "mcp-paths-"))
-  const script = fileURLToPath(new URL("../mcp-first-snapshot-paths.mjs", import.meta.url))
-  const git = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" }).trim()
+  const git = (...a) =>
+    execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "user.email=t@t", "-c", "user.name=t", ...a], {
+      cwd: repo,
+      encoding: "utf8",
+      env: cleanEnv(),
+    }).trim()
+  git("init", "-q")
+  return { repo, git }
+}
+
+const SCRIPT = fileURLToPath(new URL("../mcp-first-snapshot-paths.mjs", import.meta.url))
+
+function runCli(repo, baseSha) {
+  const out = join(repo, `out-${Math.random()}`)
+  execFileSync(process.execPath, [SCRIPT], {
+    cwd: repo,
+    env: cleanEnv({ EVENT_NAME: "pull_request", BASE_SHA: baseSha, GITHUB_OUTPUT: out }),
+  })
+  return readFileSync(out, "utf8").trim()
+}
+
+function commitFile(repo, git, file) {
+  mkdirSync(dirname(join(repo, file)), { recursive: true })
+  writeFileSync(join(repo, file), file)
+  git("add", "-A")
+  git("commit", "-q", "-m", file)
+}
+
+test("the CLI writes run=false for a non-guarded diff and run=true for a guarded one", () => {
+  const { repo, git } = scratchRepo()
   try {
-    git("init", "-q")
-    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base")
+    git("commit", "-q", "--allow-empty", "-m", "base")
     const base = git("rev-parse", "HEAD")
     // The CLI fetches the base from origin; point origin at the repo itself.
     git("remote", "add", "origin", repo)
-    const run = (file) => {
-      execFileSync("mkdir", ["-p", join(repo, file, "..")])
-      execFileSync("touch", [join(repo, file)])
-      git("add", "-A")
-      git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", file)
-      const out = join(repo, `out-${Math.random()}`)
-      execFileSync(process.execPath, [script], {
-        cwd: repo,
-        env: { ...process.env, EVENT_NAME: "pull_request", BASE_SHA: base, GITHUB_OUTPUT: out },
-      })
-      return readFileSync(out, "utf8").trim()
-    }
-    assert.equal(run("docs/a.md"), "run=false")
-    assert.equal(run("ios-agent/X.swift"), "run=true")
+    commitFile(repo, git, "docs/a.md")
+    assert.equal(runCli(repo, base), "run=false")
+    commitFile(repo, git, "ios-agent/X.swift")
+    assert.equal(runCli(repo, base), "run=true")
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test("moving a file out of a guarded directory runs the check", () => {
+  const { repo, git } = scratchRepo()
+  try {
+    commitFile(repo, git, "ios-agent/A.swift")
+    const base = git("rev-parse", "HEAD")
+    git("remote", "add", "origin", repo)
+    mkdirSync(join(repo, "other"))
+    git("mv", "ios-agent/A.swift", "other/A.swift")
+    git("commit", "-q", "-m", "move")
+    assert.equal(runCli(repo, base), "run=true")
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test("a base commit that cannot be fetched runs the check", () => {
+  const { repo, git } = scratchRepo()
+  try {
+    commitFile(repo, git, "docs/a.md")
+    git("remote", "add", "origin", repo)
+    assert.equal(runCli(repo, "0123456789abcdef0123456789abcdef01234567"), "run=true")
   } finally {
     rmSync(repo, { recursive: true, force: true })
   }
