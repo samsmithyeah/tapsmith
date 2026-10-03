@@ -11,10 +11,12 @@
 import { createHash } from 'node:crypto';
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { promisify } from 'node:util';
 import { isCI as runningInCi } from 'ci-info';
+import lockfile from 'proper-lockfile';
 import type { DeviceStrategy, EmulatorLaunchOptions } from './config.js';
 import { xmlUnescape } from './app-reset.js';
 import { parseAdbDevicesOutput } from './adb-devices.js';
@@ -40,6 +42,14 @@ interface EmulatorManifestEntry {
   avd: string
   port: number
   launchedAt: string
+  /**
+   * Still booting: recorded at spawn so an interrupted launch is never
+   * orphaned (PILOT-441), and cleared once it boots healthy. While its
+   * launching process (`ownerPid`) lives, no other run touches it.
+   */
+  booting?: boolean
+  /** The Tapsmith process that launched it. */
+  ownerPid?: number
 }
 
 function manifestPath(): string {
@@ -80,16 +90,34 @@ function isProcessAlive(pid: number): boolean {
  * Record launched emulators in the PID manifest so a future run can clean
  * them up if this process dies without running its cleanup code.
  */
-export function recordLaunchedEmulators(launched: LaunchedEmulator[]): void {
-  const existing = readManifest();
+export function recordLaunchedEmulators(
+  launched: LaunchedEmulator[],
+  /** `booting`: just spawned, not yet booted — see `EmulatorManifestEntry.booting`. */
+  options: { booting?: boolean } = {},
+): void {
+  const serials = new Set(launched.map((emu) => emu.serial));
+  // Replace any older record of the same serial: that emulator is gone, or
+  // this one could not have its console port.
+  const existing = readManifest().filter((entry) => !serials.has(entry.serial));
   const newEntries: EmulatorManifestEntry[] = launched.map((emu) => ({
     serial: emu.serial,
     pid: emu.process.pid ?? -1,
     avd: emu.avd,
     port: emu.port,
     launchedAt: new Date().toISOString(),
+    ownerPid: process.pid,
+    ...(options.booting ? { booting: true } : {}),
   }));
   writeManifest([...existing, ...newEntries]);
+}
+
+/**
+ * Record emulators as booted: from now on any run may reuse them. Written
+ * afresh rather than edited in place, because the manifest is not locked:
+ * another run's reclaim may have rewritten it without the booting entry.
+ */
+function markLaunchedEmulatorsReady(launched: LaunchedEmulator[]): void {
+  recordLaunchedEmulators(launched);
 }
 
 /**
@@ -111,6 +139,11 @@ export interface ReclaimResult {
    * read: kept in the manifest, and neither reused nor killed this run.
    */
   undetermined: string[]
+  /**
+   * Serials another live Tapsmith process (or a concurrent launch in this
+   * one) is still booting: kept, and left alone.
+   */
+  booting: string[]
 }
 
 interface ReclaimDeps {
@@ -196,7 +229,7 @@ export function reclaimOrphanedEmulators(
 ): ReclaimResult {
   const d = resolveReclaimDeps(deps);
   const entries = d.readManifest();
-  if (entries.length === 0) return { reusable: [], killed: [], undetermined: [] };
+  if (entries.length === 0) return { reusable: [], killed: [], undetermined: [], booting: [] };
 
   // Deduplicate entries by serial — the manifest can accumulate duplicates
   // if previous runs crashed between record and unrecord.
@@ -208,11 +241,21 @@ export function reclaimOrphanedEmulators(
   const reusable: string[] = [];
   const killed: string[] = [];
   const undetermined: string[] = [];
+  const booting: string[] = [];
   const surviving: EmulatorManifestEntry[] = [];
   const adbDevices = d.listAdbDevices();
   const adbDeviceMap = new Map(adbDevices.map((device) => [device.serial, device]));
 
   for (const entry of uniqueBySerial.values()) {
+    // Mid-boot in a run that is still going: unhealthy only because it has
+    // not finished booting, and not this run's to reuse or stop. Once its
+    // launcher has gone (an interrupted run), it is judged like any other.
+    if (entry.booting && entry.ownerPid !== undefined && d.isProcessAlive(entry.ownerPid)) {
+      surviving.push(entry);
+      booting.push(entry.serial);
+      continue;
+    }
+
     const inAdb = adbDeviceMap.get(entry.serial);
     const alive = entry.pid > 0 && d.isProcessAlive(entry.pid);
     const argv = alive ? d.readProcessArgs(entry.pid) : undefined;
@@ -269,7 +312,13 @@ export function reclaimOrphanedEmulators(
               : '')
             + `${RESET}\n`);
         reusable.push(entry.serial);
-        surviving.push(entry);
+        // A launch interrupted mid-boot that has since booted: ready now.
+        if (entry.booting) {
+          const { booting: _booting, ...ready } = entry;
+          surviving.push(ready);
+        } else {
+          surviving.push(entry);
+        }
         continue;
       }
       process.stderr.write(
@@ -293,7 +342,7 @@ export function reclaimOrphanedEmulators(
 
   // Write back only the surviving healthy entries
   d.writeManifest(surviving);
-  return { reusable, killed, undetermined };
+  return { reusable, killed, undetermined, booting };
 }
 
 type ExecFileSyncLike = typeof execFileSync
@@ -452,7 +501,7 @@ export function cleanupStaleEmulators(
 
   // Phase 1: manifest-based reclaim/kill (precise)
   const reclaim = reclaimOrphanedEmulators(d, wantedHeadless);
-  const handled = new Set([...reclaim.reusable, ...reclaim.killed, ...reclaim.undetermined]);
+  const handled = new Set([...reclaim.reusable, ...reclaim.killed, ...reclaim.undetermined, ...reclaim.booting]);
 
   // Phase 2: heuristic cleanup for Tapsmith emulators the manifest missed
   // (the manifest is not written atomically, so concurrent runs can lose an
@@ -814,19 +863,142 @@ export function getRunningAvdName(serial: string): string | undefined {
 
 // ─── Emulator port management ───
 
-/** Base port for emulator console (even ports: 5554, 5556, 5558, ...) */
+/** Console ports the emulator accepts: even ports from 5554 to 5682 (`emulator -port`). */
 const BASE_EMULATOR_PORT = 5554;
+const MAX_EMULATOR_PORT = 5682;
 
 /**
- * Find the next available emulator console port.
- * Emulator ports must be even numbers. The ADB serial will be `emulator-{port}`.
+ * How long a port lock stays valid without its holder refreshing it.
+ * proper-lockfile refreshes it from a timer every half of this; a synchronous
+ * adb probe during the boot can hold the event loop for several seconds, so
+ * the window is generous. A holder that dies frees the port after it.
  */
-export function findAvailablePort(usedPorts: Set<number>): number {
-  let port = BASE_EMULATOR_PORT;
-  while (usedPorts.has(port)) {
-    port += 2;
+const PORT_LOCK_STALE_MS = 60_000;
+
+/** A console port held for one launch until `release` (PILOT-439). */
+export interface PortReservation {
+  port: number
+  /** Frees the port for other launches. Safe to call more than once. */
+  release: () => Promise<void>
+}
+
+/** Ports some launch in this process holds right now, whichever call made it. */
+const reservedPorts = new Set<number>();
+
+/**
+ * Settles once the most recently spawned launch in this process has started
+ * up, whichever provisionEmulators call spawned it — concurrent calls (two
+ * device targets in one run) wait on each other too (PILOT-495).
+ */
+let startupGate: Promise<void> = Promise.resolve();
+
+/**
+ * Whether nothing listens on loopback `port`. A running emulator listens on
+ * 127.0.0.1 for its console and adb ports, so binding there fails while it
+ * runs. (A wildcard bind would not: macOS lets it share the port.)
+ */
+function isLoopbackPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.listen({ host: '127.0.0.1', port, exclusive: true }, () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+/** Whether something accepts connections on loopback `port`. Never binds it. */
+function isLoopbackPortListening(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port });
+    socket.setTimeout(1_000);
+    socket.once('connect', () => { socket.destroy(); resolve(true); });
+    socket.once('timeout', () => { socket.destroy(); resolve(false); });
+    socket.once('error', () => resolve(false));
+  });
+}
+
+/** How long a launch waits, at most, for the one started before it to get going. */
+const EMULATOR_STARTUP_WAIT_MS = 30_000;
+
+/**
+ * Wait until a just-spawned emulator has started up — its console port
+ * accepts connections — or it exits, or {@link EMULATOR_STARTUP_WAIT_MS}
+ * passes. Two instances of one AVD spawned at the same moment can crash
+ * the second during startup (seen as SIGSEGV on Linux CI, PILOT-495), so
+ * each launch waits for the one before it to get this far; the boots then
+ * overlap from there.
+ */
+async function waitForEmulatorStartup(emu: LaunchedEmulator): Promise<void> {
+  const deadline = Date.now() + EMULATOR_STARTUP_WAIT_MS;
+  let exited = false;
+  void emu.exited.then(() => { exited = true; });
+  while (!exited && Date.now() < deadline) {
+    if (await isLoopbackPortListening(emu.port)) return;
+    await sleep(500);
   }
-  return port;
+}
+
+/**
+ * Reserve an emulator console port for one launch (PILOT-439).
+ *
+ * Picking a port that merely looks free left a window, between choosing it
+ * and the emulator binding it, in which another launch could choose it too —
+ * another Tapsmith process (UI mode beside `tapsmith test`, parallel CI jobs
+ * on one host) or a concurrent launch in this one — and both runs would then
+ * wait on the same `emulator-<port>`. So a port is taken only when:
+ *
+ * - no launch in this process holds it (claimed before any await, so
+ *   concurrent callers can never pick the same one);
+ * - this process gets the port's lock, a directory in the temp dir that
+ *   every Tapsmith process takes before launching on that port (broken
+ *   after {@link PORT_LOCK_STALE_MS} if its holder died);
+ * - nothing listens on the console port or the adb port beside it — which
+ *   catches an emulator another process launched earlier, once it is up.
+ *
+ * Hold the reservation until the boot has finished or failed: by then the
+ * emulator holds the port itself, or nothing does.
+ */
+export async function reserveEmulatorPort(
+  usedPorts: ReadonlySet<number>,
+  deps: { isPortFree?: (port: number) => Promise<boolean> } = {},
+): Promise<PortReservation> {
+  const isPortFree = deps.isPortFree ?? isLoopbackPortFree;
+  for (let port = BASE_EMULATOR_PORT; port <= MAX_EMULATOR_PORT; port += 2) {
+    if (usedPorts.has(port) || reservedPorts.has(port)) continue;
+    reservedPorts.add(port);
+    let unlock: (() => Promise<void>) | undefined;
+    try {
+      unlock = await lockfile.lock(path.join(os.tmpdir(), `tapsmith-emulator-port-${port}`), {
+        realpath: false,
+        stale: PORT_LOCK_STALE_MS,
+        // Losing the lock (a blocked event loop let it go stale) only weakens
+        // the guard; proper-lockfile's default would throw from a timer.
+        onCompromised: () => undefined,
+      });
+      if (await isPortFree(port) && await isPortFree(port + 1)) {
+        const heldLock = unlock;
+        let released = false;
+        return {
+          port,
+          release: async () => {
+            if (released) return;
+            released = true;
+            reservedPorts.delete(port);
+            await heldLock().catch(() => undefined);
+          },
+        };
+      }
+    } catch {
+      // Locked by another launch, or the temp dir is unusable: try the next port.
+    }
+    reservedPorts.delete(port);
+    await unlock?.().catch(() => undefined);
+  }
+  throw new Error(
+    `No free emulator console port between ${BASE_EMULATOR_PORT} and ${MAX_EMULATOR_PORT}: `
+    + 'every one is in use or being launched on. Stop emulators you no longer need (adb -s <serial> emu kill).',
+  );
 }
 
 /**
@@ -1122,9 +1294,18 @@ export function isTapsmithLaunchedEmulator(
   return TAPSMITH_EMULATOR_IDENTITY_FLAGS.every((flag) => argv.includes(flag));
 }
 
-/** Where a launched emulator's output goes: one file per console port, overwritten per launch. */
+/** Numbers this process's launches, so each gets its own log file. */
+let launchSequence = 0;
+
+/**
+ * Where a launched emulator's output goes: a file of its own, named for the
+ * console port, this process and the launch (PILOT-439). A name per port alone
+ * let two launches on one port write to the same file, so an early-exit
+ * message could quote the other launch's output.
+ */
 function emulatorLogPath(port: number): string {
-  return path.join(os.tmpdir(), `tapsmith-emulator-${port}.log`);
+  launchSequence += 1;
+  return path.join(os.tmpdir(), `tapsmith-emulator-${port}-${process.pid}-${launchSequence}.log`);
 }
 
 /**
@@ -1145,10 +1326,10 @@ export function launchEmulator(
   // and writing to a pipe nobody reads any more would kill it (SIGPIPE).
   let logFd: number | undefined;
   try {
-    // O_NOFOLLOW: the temp dir may be shared, so never write through a link
-    // someone planted at this predictable name.
-    const { O_WRONLY, O_CREAT, O_TRUNC, O_NOFOLLOW } = fs.constants;
-    logFd = fs.openSync(logPath, O_WRONLY | O_CREAT | O_TRUNC | (O_NOFOLLOW ?? 0), 0o600);
+    // O_EXCL (with O_NOFOLLOW for good measure): the temp dir may be shared,
+    // so never write through a link or into a file someone planted at this name.
+    const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants;
+    logFd = fs.openSync(logPath, O_WRONLY | O_CREAT | O_EXCL | (O_NOFOLLOW ?? 0), 0o600);
   } catch {
     // Unwritable tmpdir — launch without a log rather than not at all.
   }
@@ -1672,7 +1853,27 @@ interface ProvisionDeps {
   ) => Promise<DeviceHealthResult>
   killEmulator: (serial: string) => void
   findEmulatorPid: (serial: string) => number | undefined
+  reserveEmulatorPort: (usedPorts: ReadonlySet<number>) => Promise<PortReservation>
+  /** Settles once a just-spawned emulator has started up (or will not). */
+  waitForEmulatorStartup: (emu: LaunchedEmulator) => Promise<void>
+  /** How many emulators boot at once. */
+  launchConcurrency: number
 }
+
+/**
+ * How many emulators to boot at once: one per two cores. An emulator boot
+ * keeps several cores busy, so more at once only slows every boot down.
+ */
+function defaultLaunchConcurrency(): number {
+  return Math.max(1, Math.floor(os.availableParallelism() / 2));
+}
+
+/**
+ * The extra time a boot (and its stability checks) gets for each other boot
+ * running beside it: about how long one boot's synchronous post-boot checks
+ * hold the event loop on a busy host.
+ */
+const CONCURRENT_BOOT_ALLOWANCE_MS = 30_000;
 
 /** How long a launch that exited 0 gets to show a backgrounded emulator on its console port. */
 const CLEAN_EXIT_GRACE_MS = 5_000;
@@ -1717,6 +1918,9 @@ export async function provisionEmulators(opts: {
     waitForDeviceStability: deps.waitForDeviceStability ?? waitForDeviceStability,
     killEmulator: deps.killEmulator ?? killEmulator,
     findEmulatorPid: deps.findEmulatorPid ?? findEmulatorPid,
+    reserveEmulatorPort: deps.reserveEmulatorPort ?? reserveEmulatorPort,
+    waitForEmulatorStartup: deps.waitForEmulatorStartup ?? waitForEmulatorStartup,
+    launchConcurrency: deps.launchConcurrency ?? defaultLaunchConcurrency(),
   };
   const needed = workers - existingSerials.length;
 
@@ -1767,7 +1971,6 @@ export async function provisionEmulators(opts: {
   }
 
   // Launch emulators
-  const launched: LaunchedEmulator[] = [];
   const badAvds = new Set<string>();
   const existingCount = existingSerials.length;
   const existingNote = existingCount > 0
@@ -1785,53 +1988,89 @@ export async function provisionEmulators(opts: {
     logProgress(`Launching ${needed} emulator(s) from available AVDs (${launchCandidates.join(', ')})${existingNote}...`);
   }
 
-  for (let i = 0; i < needed; i++) {
-    let launchedEmulator: LaunchedEmulator | undefined;
+  // Boots side by side share the host's event loop, which one boot's
+  // synchronous post-boot checks hold for tens of seconds while the others'
+  // polls wait. So each boot, and the stability checks after it, gets an
+  // allowance for every other boot running beside it — not a multiple of the
+  // whole budget, which would leave a wedged boot holding the batch for many
+  // minutes on a host that boots many at once.
+  const laneCount = Math.min(Math.max(1, resolvedDeps.launchConcurrency), needed);
+  const sideBySideAllowanceMs = (laneCount - 1) * CONCURRENT_BOOT_ALLOWANCE_MS;
+  const bootTimeoutMs = EMULATOR_BOOT_TIMEOUT_MS + sideBySideAllowanceMs;
+  const stabilityTimeoutMs = DEFAULT_DEVICE_STABILITY_TIMEOUT_MS + sideBySideAllowanceMs;
 
+  /**
+   * Launch and boot one emulator, trying each candidate AVD that has not
+   * already failed. Its failures are its own: they never stop the others.
+   */
+  const launchOne = async (index: number): Promise<LaunchedEmulator | undefined> => {
     for (const candidateAvd of launchCandidates) {
       if (badAvds.has(candidateAvd)) continue;
 
-      const port = findAvailablePort(usedPorts);
+      let reservation: PortReservation;
+      try {
+        reservation = await resolvedDeps.reserveEmulatorPort(usedPorts);
+      } catch (err) {
+        logProgress(err instanceof Error ? err.message : String(err), 'warning');
+        return undefined;
+      }
+      const { port } = reservation;
+      // Never again in this call, even once the reservation is released.
       usedPorts.add(port);
-      const emu = resolvedDeps.launchEmulator(candidateAvd, port, settings, emulator.command);
-      logProgress(`Starting ${emu.serial} (port ${port}, AVD ${candidateAvd}, ${settings.headless ? `headless${settings.windowUnavailable ? `: ${settings.windowUnavailable}` : ''}` : 'with a window'})`);
 
-      // Race the boot against the process ending: an emulator that fails to
-      // spawn or exits during boot is reported with its own reason at once,
-      // not after the full boot timeout (PILOT-417).
+      // Spawn only once the launch before this one has started up.
+      const previousStarted = startupGate;
+      let markStarted!: () => void;
+      startupGate = new Promise<void>((resolve) => { markStarted = resolve; });
+
+      let emu: LaunchedEmulator | undefined;
       const stopWaiting = new AbortController();
       let booting = true;
-      const exitedDuringBoot = new Promise<never>((_resolve, reject) => {
-        void emu.exited.then((exit) => {
-          if (!booting) return;
-          const fail = () => {
-            // Abort first, so the boot branch cannot start another probe.
-            stopWaiting.abort();
-            reject(new EmulatorExitedError(describeEmulatorExit(exit, emu, emulator)));
-          };
-          if (exit.kind !== 'exited' || exit.code !== 0) {
-            fail();
-            return;
-          }
-          // A clean exit is either the emulator quitting (its window closed
-          // mid-boot) or a launcher that backgrounds it (a PATH wrapper).
-          // The backgrounded emulator holds its console port within seconds.
-          setTimeout(() => {
-            if (booting && resolvedDeps.findEmulatorPid(emu.serial) === undefined) fail();
-          }, CLEAN_EXIT_GRACE_MS);
-        });
-      });
-      exitedDuringBoot.catch(() => { /* surfaced through the race below */ });
-
+      let booted = false;
       try {
+        await previousStarted;
+        emu = resolvedDeps.launchEmulator(candidateAvd, port, settings, emulator.command);
+        const launchedEmu = emu;
+        void resolvedDeps.waitForEmulatorStartup(launchedEmu).catch(() => undefined).finally(markStarted);
+        // Recorded at once, not when every boot is done: an interrupted run
+        // leaves it recorded, so the next run reuses or stops it (PILOT-441).
+        recordLaunchedEmulators([launchedEmu], { booting: true });
+        bootingThisProcess.set(launchedEmu.serial, launchedEmu);
+        logProgress(`Starting ${launchedEmu.serial} (port ${port}, AVD ${candidateAvd}, ${settings.headless ? `headless${settings.windowUnavailable ? `: ${settings.windowUnavailable}` : ''}` : 'with a window'})`);
+
+        // Race the boot against the process ending: an emulator that fails to
+        // spawn or exits during boot is reported with its own reason at once,
+        // not after the full boot timeout (PILOT-417).
+        const exitedDuringBoot = new Promise<never>((_resolve, reject) => {
+          void launchedEmu.exited.then((exit) => {
+            if (!booting) return;
+            const fail = () => {
+              // Abort first, so the boot branch cannot start another probe.
+              stopWaiting.abort();
+              reject(new EmulatorExitedError(describeEmulatorExit(exit, launchedEmu, emulator)));
+            };
+            if (exit.kind !== 'exited' || exit.code !== 0) {
+              fail();
+              return;
+            }
+            // A clean exit is either the emulator quitting (its window closed
+            // mid-boot) or a launcher that backgrounds it (a PATH wrapper).
+            // The backgrounded emulator holds its console port within seconds.
+            setTimeout(() => {
+              if (booting && resolvedDeps.findEmulatorPid(launchedEmu.serial) === undefined) fail();
+            }, CLEAN_EXIT_GRACE_MS);
+          });
+        });
+        exitedDuringBoot.catch(() => { /* surfaced through the race below */ });
+
         await Promise.race([
           (async () => {
-            await resolvedDeps.waitForBoot(emu.serial, undefined, stopWaiting.signal);
+            await resolvedDeps.waitForBoot(launchedEmu.serial, bootTimeoutMs, stopWaiting.signal);
             // The race may already have been lost to an exit: probe no further.
             if (stopWaiting.signal.aborted) return;
             const health = await resolvedDeps.waitForDeviceStability(
-              emu.serial,
-              DEFAULT_DEVICE_STABILITY_TIMEOUT_MS,
+              launchedEmu.serial,
+              stabilityTimeoutMs,
               resolvedDeps.probeDeviceHealth,
               stopWaiting.signal,
             );
@@ -1841,10 +2080,11 @@ export async function provisionEmulators(opts: {
           })(),
           exitedDuringBoot,
         ]);
-        launchedEmulator = emu;
-        launched.push(emu);
-        break;
+        markLaunchedEmulatorsReady([launchedEmu]);
+        booted = true;
+        return launchedEmu;
       } catch (err) {
+        if (emu === undefined) throw err;
         badAvds.add(candidateAvd);
         const message = err instanceof Error ? err.message : String(err);
         logProgress(
@@ -1861,23 +2101,50 @@ export async function provisionEmulators(opts: {
             // Already dead
           }
         }
+        unrecordLaunchedEmulators([emu]);
       } finally {
         booting = false;
         stopWaiting.abort();
+        // Booted ones stay registered until provisionEmulators hands them
+        // back, so an interrupt in the meantime stops them too.
+        if (emu !== undefined && !booted) bootingThisProcess.delete(emu.serial);
+        // Never spawned: let the next launch go ahead.
+        if (emu === undefined) markStarted();
+        await reservation.release();
       }
     }
 
-    if (!launchedEmulator) {
-      logProgress(
-        `Unable to provision additional emulator ${i + 1}/${needed}; ${avd ? `AVD ${avd}` : 'all candidate AVDs'} did not start healthy (see above).`,
-        'warning',
-      );
-      break;
+    logProgress(
+      `Unable to provision additional emulator ${index + 1}/${needed}; ${avd ? `AVD ${avd}` : 'all candidate AVDs'} did not start healthy (see above).`,
+      'warning',
+    );
+    return undefined;
+  };
+
+  // Boot them side by side rather than one after another (PILOT-495), as many
+  // at a time as the host has cores for: each boot is CPU-heavy, and too many
+  // at once on a small host would push every one past its boot timeout.
+  const results: Array<LaunchedEmulator | undefined> = new Array(needed).fill(undefined);
+  let nextIndex = 0;
+  const lanes = Array.from({ length: laneCount }, async () => {
+    while (nextIndex < needed) {
+      const index = nextIndex++;
+      results[index] = await launchOne(index);
     }
+  });
+  // Every launch finishes (booted, or failed and stopped) before any error
+  // escapes, so nothing is left booting unawaited.
+  const settled = await Promise.allSettled(lanes);
+  const failure = settled.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+  const launched = results.filter((emu): emu is LaunchedEmulator => emu !== undefined);
+  // Handed back now: the caller owns them from here.
+  for (const emu of launched) bootingThisProcess.delete(emu.serial);
+  if (failure) {
+    for (const emu of launched) launchedThisProcess.set(emu.serial, emu);
+    throw failure.reason;
   }
 
   if (launched.length > 0) {
-    recordLaunchedEmulators(launched);
     for (const emu of launched) launchedThisProcess.set(emu.serial, emu);
     logProgress(`Provisioned ${launched.length} healthy emulator(s).`);
     // Said now as well as at the end: a run that is interrupted (Ctrl+C)
@@ -1957,6 +2224,21 @@ const launchedThisProcess = new Map<string, LaunchedEmulator>();
 
 export function emulatorsLaunchedThisProcess(): LaunchedEmulator[] {
   return [...launchedThisProcess.values()];
+}
+
+/**
+ * Emulators this process has spawned that `provisionEmulators` has not yet
+ * handed back: still booting, or booted while others in its batch boot.
+ */
+const bootingThisProcess = new Map<string, LaunchedEmulator>();
+
+/**
+ * Emulators a provisioning in progress has launched and not yet handed back
+ * — for an interrupted run to stop: the caller does not know about them yet,
+ * so nothing else will (PILOT-441).
+ */
+export function emulatorsBootingThisProcess(): LaunchedEmulator[] {
+  return [...bootingThisProcess.values()];
 }
 
 
