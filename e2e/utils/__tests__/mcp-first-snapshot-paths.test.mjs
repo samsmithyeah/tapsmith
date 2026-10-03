@@ -94,11 +94,11 @@ function scratchRepo() {
 
 const SCRIPT = fileURLToPath(new URL("../mcp-first-snapshot-paths.mjs", import.meta.url))
 
-function runCli(repo, baseSha) {
+function runCli(repo, baseSha, eventName = "pull_request") {
   const out = join(repo, `out-${Math.random()}`)
   execFileSync(process.execPath, [SCRIPT], {
     cwd: repo,
-    env: cleanEnv({ EVENT_NAME: "pull_request", BASE_SHA: baseSha, GITHUB_OUTPUT: out }),
+    env: cleanEnv({ EVENT_NAME: eventName, BASE_SHA: baseSha, GITHUB_OUTPUT: out }),
   })
   return readFileSync(out, "utf8").trim()
 }
@@ -147,6 +147,40 @@ test("a base commit that cannot be fetched runs the check", () => {
     commitFile(repo, git, "docs/a.md")
     git("remote", "add", "origin", repo)
     assert.equal(runCli(repo, "0123456789abcdef0123456789abcdef01234567"), "run=true")
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test("the CLI always runs outside a pull request, and on a PR with no base sha", () => {
+  const { repo, git } = scratchRepo()
+  try {
+    commitFile(repo, git, "docs/a.md")
+    assert.equal(runCli(repo, "", "push"), "run=true")
+    assert.equal(runCli(repo, "", "workflow_dispatch"), "run=true")
+    // A plain (non-merge) HEAD with no base sha: nothing to diff against.
+    assert.equal(runCli(repo, ""), "run=true")
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test("a PR merge commit is diffed against its first parent, not a stale base sha", () => {
+  // GitHub checks out refs/pull/N/merge: main's tip merged with the PR. The
+  // event's base.sha can predate commits main gained since; those are not
+  // the PR's changes.
+  const { repo, git } = scratchRepo()
+  try {
+    git("checkout", "-q", "-b", "main")
+    commitFile(repo, git, "README.md")
+    const staleBase = git("rev-parse", "HEAD")
+    git("remote", "add", "origin", repo)
+    git("checkout", "-q", "-b", "pr")
+    commitFile(repo, git, "docs/a.md")
+    git("checkout", "-q", "main")
+    commitFile(repo, git, "ios-agent/Later.swift") // landed on main after the PR's base
+    git("merge", "-q", "--no-ff", "-m", "merge pr", "pr")
+    assert.equal(runCli(repo, staleBase), "run=false")
   } finally {
     rmSync(repo, { recursive: true, force: true })
   }

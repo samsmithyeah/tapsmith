@@ -70,21 +70,45 @@ export function decide({ eventName, changedFiles }) {
   }
 }
 
-/** Files changed between the PR's base commit and the checked-out merge commit. */
-function changedFilesSince(baseSha) {
-  if (!baseSha) return null
+/** Run git; on failure, throw with its stderr so the log says why. */
+function git(args) {
   try {
+    return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+  } catch (err) {
+    const stderr = err && typeof err === "object" && "stderr" in err ? String(err.stderr).trim() : ""
+    throw new Error(`git ${args.join(" ")} failed${stderr ? `: ${stderr}` : ""}`)
+  }
+}
+
+/**
+ * The commit the PR is compared against: the checked-out merge commit's first
+ * parent (the base branch tip GitHub merged into), else `baseSha`.
+ * `pull_request.base.sha` can lag the base branch, and diffing against it
+ * would count commits main gained since as the PR's own.
+ */
+function comparisonBase(baseSha) {
+  // `cat-file -p` reads the parents from the commit object itself, which a
+  // depth-1 checkout has even though it lacks the parent commits.
+  const parents = git(["cat-file", "-p", "HEAD"])
+    .split("\n")
+    .filter((l) => l.startsWith("parent "))
+    .map((l) => l.slice("parent ".length).trim())
+  return parents.length >= 2 ? parents[0] : baseSha
+}
+
+/** Files the PR changes: the merge commit against the base it was merged into. */
+function changedFilesSince(baseSha) {
+  try {
+    const base = comparisonBase(baseSha)
+    if (!base) return null
     // The shard job's checkout is shallow; fetch just the base commit. A diff
     // of two trees needs no shared history.
-    execFileSync("git", ["fetch", "--no-tags", "--depth=1", "origin", baseSha], { stdio: "ignore" })
+    git(["fetch", "--no-tags", "--depth=1", "origin", base])
     // --no-renames: a rename lists both the old and the new path, so moving a
     // file out of a guarded directory still counts. -z: paths come unquoted.
-    const out = execFileSync("git", ["diff", "--name-only", "--no-renames", "-z", baseSha, "HEAD"], {
-      encoding: "utf8",
-    })
-    return out.split("\0").filter(Boolean)
+    return git(["diff", "--name-only", "--no-renames", "-z", base, "HEAD"]).split("\0").filter(Boolean)
   } catch (err) {
-    console.log(`could not diff against ${baseSha}: ${err instanceof Error ? err.message : err}`)
+    console.log(`could not list the PR's changed files: ${err instanceof Error ? err.message : err}`)
     return null
   }
 }
