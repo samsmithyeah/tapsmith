@@ -382,17 +382,15 @@ export function provisionSimulator(
     );
   }
 
-  if (sim.state !== 'Booted') {
-    bootSimulator(sim.udid);
-    // As provisionSimulators does: what follows (the daemon's device
-    // selection, the install, the agent start) would otherwise race a
-    // simulator that is `Booted` but not up. A timeout is not fatal — they
-    // retry on their own — but it is reported: a simulator still booting
-    // cannot be trusted to say which apps it holds.
-    return { udid: sim.udid, bootComplete: waitForSimulatorBootComplete(sim.udid) };
-  }
-
-  return { udid: sim.udid, bootComplete: true };
+  if (sim.state !== 'Booted') bootSimulator(sim.udid);
+  // As provisionSimulators does: what follows (the daemon's device
+  // selection, the install, the agent start) would otherwise race a
+  // simulator that is `Booted` but not up. Also when it was found `Booted`:
+  // another process may have just booted it. A timeout is not fatal — they
+  // retry on their own — but it is reported: a simulator still booting
+  // cannot be trusted to say which apps it holds. On a settled simulator the
+  // wait returns at once.
+  return { udid: sim.udid, bootComplete: waitForSimulatorBootComplete(sim.udid) };
 }
 
 /**

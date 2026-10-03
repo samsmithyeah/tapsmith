@@ -311,7 +311,9 @@ describe('provisionSimulator', () => {
     expect(provisionSimulator('iPhone 16')).toEqual({ udid: 'A', bootComplete: false });
   });
 
-  it('neither boots nor waits for a simulator that is already booted', () => {
+  it('does not boot a simulator found booted, but still waits for its boot to finish', () => {
+    // Another process may have just booted it; a simulator still settling
+    // can report an installed app as absent.
     const simctl: string[] = [];
     mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === 'xcrun' && args?.[0] === 'simctl') simctl.push(args[1]);
@@ -322,7 +324,7 @@ describe('provisionSimulator', () => {
     });
 
     expect(provisionSimulator('iPhone 16')).toEqual({ udid: 'B', bootComplete: true });
-    expect(simctl).toEqual(['list']);
+    expect(simctl).toEqual(['list', 'bootstatus']);
   });
 
   it('throws when no simulator matches after exhausting lookup retries', () => {
