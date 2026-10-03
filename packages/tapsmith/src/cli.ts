@@ -1039,6 +1039,7 @@ async function ensureSequentialTargetDevice(
 
     // Boot the simulator
     try {
+      progress?.update('primary-device', { state: 'running', detail: `booting ${simulatorName}` });
       const { udid, bootComplete } = provisionSimulator(simulatorName);
       // Installed now, while the simulator is still settling, rather than
       // right before the agent starts: on a hosted runner the first launch
@@ -1046,8 +1047,18 @@ async function ensureSequentialTargetDevice(
       // Reported as fresh so the session neither re-checks it nor clears it.
       // Not on a simulator whose boot wait timed out: one still booting can
       // report an installed app as absent.
-      const appInstalledFresh = bootComplete && !!config.app && !!config.package
-        && installAppIfAbsent(udid, path.resolve(config.rootDir, config.app), config.package);
+      let appInstalledFresh = false;
+      if (config.app && config.package) {
+        const app = path.resolve(config.rootDir, config.app);
+        if (!bootComplete) {
+          progress?.update('primary-device', { state: 'running', detail: `${simulatorName} is still booting; the app is installed after selection` });
+        } else {
+          progress?.update('primary-device', { state: 'running', detail: `installing ${path.basename(app)} on the booted ${simulatorName}` });
+          const early = installAppIfAbsent(udid, app, config.package);
+          appInstalledFresh = early.installed;
+          progress?.update('primary-device', { state: 'running', detail: `${path.basename(app)}: ${early.outcome}` });
+        }
+      }
       return { selectedSerial: udid, launched: [], appInstalledFresh };
     } catch (e) {
       throw new Error(`Failed to provision iOS simulator: ${(e as Error).message}`);

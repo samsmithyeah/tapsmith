@@ -375,7 +375,7 @@ describe('installAppIfAbsent (PILOT-496)', () => {
       if (args?.[1] === 'get_app_container') throw exited(2);
       return '' as unknown as Buffer;
     });
-    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toBe(true);
+    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toEqual({ installed: true, outcome: 'installed' });
     expect(simctl).toEqual(['get_app_container', 'install']);
   });
 
@@ -385,7 +385,7 @@ describe('installAppIfAbsent (PILOT-496)', () => {
       if (cmd === 'xcrun' && args?.[0] === 'simctl') simctl.push(args[1]);
       return '' as unknown as Buffer;
     });
-    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toBe(false);
+    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toEqual({ installed: false, outcome: 'already installed' });
     expect(simctl).toEqual(['get_app_container']);
   });
 
@@ -398,7 +398,9 @@ describe('installAppIfAbsent (PILOT-496)', () => {
       if (args?.[1] === 'get_app_container') throw timedOut();
       return '' as unknown as Buffer;
     });
-    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toBe(false);
+    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toEqual({
+      installed: false, outcome: 'could not tell whether it is installed (lookup timed out)',
+    });
     expect(simctl).toEqual(['get_app_container']);
   });
 
@@ -409,7 +411,9 @@ describe('installAppIfAbsent (PILOT-496)', () => {
       if (args?.[1] === 'get_app_container') throw exited(149);
       return '' as unknown as Buffer;
     });
-    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toBe(false);
+    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toEqual({
+      installed: false, outcome: 'could not tell whether it is installed (simctl exit 149)',
+    });
     expect(simctl).toEqual(['get_app_container']);
   });
 
@@ -419,7 +423,9 @@ describe('installAppIfAbsent (PILOT-496)', () => {
       if (args?.[1] === 'install') throw new Error('installd not ready');
       return '' as unknown as Buffer;
     });
-    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toBe(false);
+    expect(installAppIfAbsent('A', '/app.app', 'com.example.app')).toEqual({
+      installed: false, outcome: 'install failed (installd not ready)',
+    });
   }, 15_000);
 });
 
