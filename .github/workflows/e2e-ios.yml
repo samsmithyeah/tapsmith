@@ -494,8 +494,22 @@ jobs:
       # snapshot. One shard is enough. It runs after the tests (its reboots
       # must not land mid-shard) and even when they failed, so a failure in
       # either one never hides the other.
-      - name: Verify first MCP snapshot after clearData and reboots
+      #
+      # It costs ~9 min on these runners, so a pull request runs it only when
+      # it touches the code it guards (the list and the decision are in
+      # e2e/utils/mcp-first-snapshot-paths.mjs, unit-tested). Push to main and
+      # manual runs always run it, as does a PR whose diff can't be listed.
+      - name: Decide whether to verify the first MCP snapshot
+        id: mcp-snapshot-gate
         if: ${{ !cancelled() && matrix.shard == 2 }}
+        working-directory: e2e
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node utils/mcp-first-snapshot-paths.mjs
+
+      - name: Verify first MCP snapshot after clearData and reboots
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.mcp-snapshot-gate.outputs.run == 'true' }}
         working-directory: e2e
         timeout-minutes: 15
         env:
