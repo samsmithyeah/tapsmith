@@ -15,11 +15,12 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }));
 
 let waitForReady: () => Promise<boolean>;
-let ping: () => Promise<{ version: string; agentConnected?: boolean }>;
+let ping: (address: string) => Promise<{ version: string; agentConnected?: boolean }>;
 vi.mock('../grpc-client.js', () => ({
   TapsmithGrpcClient: class {
+    constructor(readonly address: string) {}
     waitForReady(): Promise<boolean> { return waitForReady(); }
-    ping(): Promise<{ version: string; agentConnected?: boolean }> { return ping(); }
+    ping(): Promise<{ version: string; agentConnected?: boolean }> { return ping(this.address); }
     close(): void {}
   },
 }));
@@ -33,7 +34,7 @@ vi.mock('../port-utils.js', async (importOriginal) => ({
   pickFreePort: () => pickPort(),
 }));
 
-const { startDaemon, closeAllClients, ensureConnected } = await import('../mcp/connection.js');
+const { startDaemon, closeAllClients, ensureConnected, getAllDaemonAddresses } = await import('../mcp/connection.js');
 const { mcpDaemonLogPath } = await import('../mcp/port-file.js');
 
 class FakeDaemon extends EventEmitter {
@@ -103,14 +104,69 @@ describe('ensureConnected', () => {
     expect(message).not.toContain('Is tapsmith-core installed?');
   });
 
-  it('says why a daemon it found could not be used', async () => {
-    // A daemon answers on the default port, but its ping fails.
+  // A daemon that answers the readiness probe but not a ping — stale, wedged,
+  // or not a Tapsmith daemon at all — is no more use than none (PILOT-489).
+  const unconnectableAtDefault = (address: string): Promise<{ version: string; agentConnected?: boolean }> =>
+    address === 'localhost:50051'
+      ? Promise.reject(new Error('14 UNAVAILABLE: Connection dropped'))
+      : Promise.resolve({ version: 'test', agentConnected: true });
+
+  it('starts its own daemon when the only daemon it found cannot be connected to', async () => {
     waitForReady = () => Promise.resolve(true);
-    ping = () => Promise.reject(new Error('14 UNAVAILABLE: Connection dropped'));
+    ping = unconnectableAtDefault;
+    spawnMock.mockImplementation(() => new FakeDaemon());
+
+    await ensureConnected();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    // The new daemon, on a free port — not the one that failed.
+    expect(getAllDaemonAddresses()).toMatch(/^127\.0\.0\.1:\d+$/);
+  });
+
+  it('says why a daemon it found could not be used when its own daemon fails to start too', async () => {
+    // The found daemon answers but fails its ping; the started one exits.
+    ping = unconnectableAtDefault;
+    spawnMock.mockImplementation((_bin: string, _args: string[], opts: { stdio: [string, number, number] }) => {
+      const daemon = new FakeDaemon();
+      fs.writeSync(opts.stdio[2], 'Error: tapsmith-core refused to start: mitmproxy not found\n');
+      daemon.exitWith(1);
+      return daemon;
+    });
+    // Exits before it answers, so only the found daemon is ever ready.
+    waitForReady = () => Promise.resolve(spawnMock.mock.calls.length === 0);
 
     const err = await ensureConnected().then(() => undefined, (e: unknown) => e);
-    expect((err as Error).message).toContain('Could not connect to the daemon at localhost:50051: 14 UNAVAILABLE: Connection dropped');
-    expect((err as Error).message).not.toContain('installed');
+    const message = (err as Error).message;
+    expect(message).toContain('Could not connect to the daemon at localhost:50051: 14 UNAVAILABLE: Connection dropped');
+    expect(message).toContain('Failed to start a Tapsmith daemon: tapsmith-core exited with code 1 before it answered');
+    expect(message).toContain('Error: tapsmith-core refused to start: mitmproxy not found');
+    expect(message).toContain(`Daemon log: ${mcpDaemonLogPath()}`);
+    expect(message).not.toContain('installed');
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts no daemon of its own when one of the daemons it found connects', async () => {
+    const saved = process.env.TAPSMITH_DAEMON_ADDRESS;
+    process.env.TAPSMITH_DAEMON_ADDRESS = 'localhost:50051,localhost:50052';
+    try {
+      waitForReady = () => Promise.resolve(true);
+      ping = unconnectableAtDefault;
+
+      await ensureConnected();
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(getAllDaemonAddresses()).toBe('localhost:50052');
+    } finally {
+      if (saved === undefined) delete process.env.TAPSMITH_DAEMON_ADDRESS; else process.env.TAPSMITH_DAEMON_ADDRESS = saved;
+    }
+  });
+
+  it('starts no daemon for a session that closed while it was connecting', async () => {
+    waitForReady = () => Promise.resolve(true);
+    ping = (address) => {
+      closeAllClients();
+      return unconnectableAtDefault(address);
+    };
+
+    await ensureConnected().then(() => undefined, (e: unknown) => e);
     expect(spawnMock).not.toHaveBeenCalled();
   });
 });
