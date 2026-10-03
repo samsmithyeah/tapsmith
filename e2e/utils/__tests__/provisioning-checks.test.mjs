@@ -195,6 +195,13 @@ test("android after: a recorded pid that is not Tapsmith's launch (no -read-only
   }
 })
 
+test("android after: an emulator the manifest still marks as booting fails (the run never finished its launch)", () => {
+  const state = launchedTwo()
+  state.manifest.entries[1] = { ...state.manifest.entries[1], booting: true }
+  const failures = checkAndroidAfter(state)
+  assert.ok(failures.some((f) => /emulator-5556/.test(f) && /booting/.test(f)), failures.join("\n"))
+})
+
 test("android after: a launched emulator that is not online in adb fails", () => {
   const state = launchedTwo()
   state.adbDevices = parseAdbDevices(adb(["emulator-5554"], ["emulator-5556", "offline"]))
