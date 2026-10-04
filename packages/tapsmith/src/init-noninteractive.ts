@@ -203,7 +203,16 @@ export function resolveInitPlan(
       apkPath = candidates[0];
     }
 
-    const packageName = args.packageName ?? detect.detectAndroidPackage(path.resolve(cwd, apkPath)) ?? expo()?.androidPackage;
+    const apkAbs = path.resolve(cwd, apkPath);
+    let packageName = args.packageName ?? detect.detectAndroidPackage(apkAbs);
+    // The app config's id stands in only for a build that exists: a missing
+    // APK still fails here, and a stand-in is said, since a build variant
+    // (applicationIdSuffix) can carry another id (PILOT-557).
+    const configPackage = !packageName && fs.existsSync(apkAbs) ? expo()?.androidPackage : undefined;
+    if (configPackage) {
+      packageName = configPackage;
+      warnings.push(`Could not read the package name from ${apkPath} (needs aapt2 from the Android SDK build-tools), so used ${configPackage} from the Expo app config — check it matches this build, or pass --package <id>`);
+    }
     if (!packageName) {
       throw new InitError('NO_PACKAGE', `Could not detect package name from ${apkPath} (aapt2 unavailable or APK missing)`, {
         fix: 'Pass --package <id>',
@@ -269,7 +278,13 @@ export function resolveInitPlan(
       appPath = candidates[0];
     }
 
-    const bundleId = args.bundleId ?? detect.detectIosBundleId(path.resolve(cwd, appPath)) ?? expo()?.iosBundleId;
+    const appAbs = path.resolve(cwd, appPath);
+    let bundleId = args.bundleId ?? detect.detectIosBundleId(appAbs);
+    const configBundleId = !bundleId && fs.existsSync(appAbs) ? expo()?.iosBundleId : undefined;
+    if (configBundleId) {
+      bundleId = configBundleId;
+      warnings.push(`Could not read the bundle identifier from ${appPath}, so used ${configBundleId} from the Expo app config — check it matches this build, or pass --bundle-id <id>`);
+    }
     if (!bundleId) {
       throw new InitError('NO_BUNDLE_ID', `Could not detect bundle identifier from ${appPath}`, {
         fix: 'Pass --bundle-id <id>',

@@ -248,7 +248,7 @@ describe('configureAndroid() on an Expo project (PILOT-557)', () => {
     vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logged.push(stripAnsi(args.join(' '))); });
   });
 
-  it('with no APK found, gives the Expo build (with the hooks flag), not gradlew in an android/ that does not exist', async () => {
+  it('with no APK found, gives the Expo build (prebuild first, with the hooks flag), not a gradlew in an android/ that does not exist', async () => {
     script([
       [/Where is your Android APK/, './built/app.apk'],
       [/package name/, 'com.acme.expo'],
@@ -257,9 +257,8 @@ describe('configureAndroid() on an Expo project (PILOT-557)', () => {
     await configureAndroid(env, expo);
 
     const out = logged.join('\n');
-    expect(out).toContain('EXPO_PUBLIC_TAPSMITH_HOOKS=1 npx expo run:android --variant release');
-    expect(out).toContain('does not have yet');
-    expect(out).not.toContain('gradlew');
+    expect(out).toContain('`npx expo prebuild --platform android` (this Expo project has no android/ yet), then `cd android && EXPO_PUBLIC_TAPSMITH_HOOKS=1 ./gradlew assembleRelease`');
+    expect(out).not.toContain('assembleDebug');
   });
 
   it('prefills the package prompt from the app config when the APK cannot be read', async () => {

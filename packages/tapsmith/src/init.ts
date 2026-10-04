@@ -453,7 +453,9 @@ export async function configureIos(env: EnvScan, expo?: ExpoProject): Promise<Io
       kind: 'device-app',
       message: 'Where is your device build .app? (must be an iphoneos build, not simulator)',
       candidates: findIosDeviceAppCandidates(process.cwd()),
-      noneFound: 'No device build (.app) found under ios/ — build one for iphoneos first (see https://tapsmith.dev/platform/ios-physical-devices/), or enter its path.',
+      noneFound: expo && !expo.hasIosDir
+        ? 'No device build (.app) found: this Expo project has no ios/ yet. Generate it with `npx expo prebuild --platform ios`, then build it for iphoneos (see https://tapsmith.dev/platform/ios-physical-devices/), or enter its path.'
+        : 'No device build (.app) found under ios/ — build one for iphoneos first (see https://tapsmith.dev/platform/ios-physical-devices/), or enter its path.',
       typeMessage: 'Path to your device build (iphoneos .app):',
     });
     deviceBundleIdRead = detectBundleId(deviceAppPath);

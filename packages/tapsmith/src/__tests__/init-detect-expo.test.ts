@@ -134,17 +134,18 @@ describe('readExpoAppConfig() (PILOT-557)', () => {
 // ─── expoBuildHint ───
 
 describe('expoBuildHint() (PILOT-557)', () => {
-  it('Android, managed: expo run:android generates android/ and says where the APK lands', () => {
+  it('Android, managed: prebuild, then a release gradle build (no device needed), and says where the APK lands', () => {
     const hint = expoBuildHint(['android'], managed);
-    expect(hint).toContain('`npx expo run:android --variant release`');
-    expect(hint).toContain('does not have yet');
+    expect(hint).toContain('`npx expo prebuild --platform android` (this Expo project has no android/ yet), then `cd android && ./gradlew assembleRelease`');
     expect(hint).toContain('android/app/build/outputs/apk/release/app-release.apk');
-    expect(hint).not.toContain('gradlew');
+    // run:android resolves a device before building, so it is only the alternative.
+    expect(hint).toContain('`npx expo run:android --variant release` does both in one step, but needs a running emulator or device');
+    expect(hint).not.toContain('assembleDebug');
     expect(hint).toContain('https://tapsmith.dev/getting-started/#react-native-and-expo');
   });
 
-  it('Android, prebuilt: no "does not have android/ yet"', () => {
-    expect(expoBuildHint(['android'], { ...managed, hasAndroidDir: true })).not.toContain('does not have yet');
+  it('Android, prebuilt: no prebuild step', () => {
+    expect(expoBuildHint(['android'], { ...managed, hasAndroidDir: true })).not.toContain('prebuild');
   });
 
   it('iOS, managed: prebuild, then an xcodebuild into ios/build where init looks', () => {
@@ -161,7 +162,7 @@ describe('expoBuildHint() (PILOT-557)', () => {
 
   it('with the hooks dependency, sets EXPO_PUBLIC_TAPSMITH_HOOKS=1 on the build and warns never to ship it', () => {
     const hooks = { ...managed, usesTapsmithHooks: true };
-    expect(expoBuildHint(['android'], hooks)).toContain('`EXPO_PUBLIC_TAPSMITH_HOOKS=1 npx expo run:android --variant release`');
+    expect(expoBuildHint(['android'], hooks)).toContain('`cd android && EXPO_PUBLIC_TAPSMITH_HOOKS=1 ./gradlew assembleRelease`');
     expect(expoBuildHint(['ios'], hooks)).toContain('cd ios && EXPO_PUBLIC_TAPSMITH_HOOKS=1 xcodebuild');
     expect(expoBuildHint(['android'], hooks)).toMatch(/test builds only, never for store builds/);
   });
@@ -178,7 +179,7 @@ describe('expoBuildHint() (PILOT-557)', () => {
 
   it('without the hooks dependency, mentions the flag as the way to warm resets, not in the command', () => {
     const hint = expoBuildHint(['android'], managed);
-    expect(hint).not.toContain('`EXPO_PUBLIC_TAPSMITH_HOOKS=1 npx');
+    expect(hint).not.toContain('EXPO_PUBLIC_TAPSMITH_HOOKS=1 ./gradlew');
     expect(hint).toContain('@tapsmith/react-native');
     expect(hint).toContain('EXPO_PUBLIC_TAPSMITH_HOOKS=1');
     expect(hint).toContain('https://tapsmith.dev/guides/warm-reset/');

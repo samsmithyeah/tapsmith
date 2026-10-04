@@ -200,9 +200,12 @@ function expoHooksNote(expo: ExpoProject): string {
 function expoBuildStep(platform: 'android' | 'ios', expo: ExpoProject): string {
   const env = expo.usesTapsmithHooks ? `${HOOKS_FLAG} ` : '';
   if (platform === 'android') {
-    const generate = expo.hasAndroidDir ? '' : ' (it generates android/, which this Expo project does not have yet)';
-    return `Build a release APK with \`${env}npx expo run:android --variant release\`${generate}; `
-      + 'it writes android/app/build/outputs/apk/release/app-release.apk.';
+    // `expo run:android` resolves a device before it builds, so it fails with
+    // no emulator or device; prebuild + gradle builds headless (as CI does).
+    const generate = expo.hasAndroidDir ? '' : '`npx expo prebuild --platform android` (this Expo project has no android/ yet), then ';
+    return `Build a release APK with ${generate}\`cd android && ${env}./gradlew assembleRelease\`, `
+      + 'which writes android/app/build/outputs/apk/release/app-release.apk '
+      + '(`npx expo run:android --variant release` does both in one step, but needs a running emulator or device to install on).';
   }
   const generate = expo.hasIosDir ? '' : '`npx expo prebuild --platform ios` (this Expo project has no ios/ yet), then ';
   return `Build a simulator app with ${generate}\`cd ios && ${env}xcodebuild -workspace <App>.xcworkspace -scheme <App> `

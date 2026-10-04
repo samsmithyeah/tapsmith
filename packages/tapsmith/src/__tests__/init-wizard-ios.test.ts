@@ -337,6 +337,14 @@ describe('configureIos() on an Expo project (PILOT-557)', () => {
     expect(out).toContain('EXPO_PUBLIC_TAPSMITH_HOOKS=1');
   });
 
+  it('physical devices on a managed project: says to generate ios/ before the iphoneos build', async () => {
+    script('physical', [[/bundle identifier/, 'com.acme.expo']]);
+
+    await configureIos(env, expo);
+
+    expect(logged.join('\n')).toContain('this Expo project has no ios/ yet. Generate it with `npx expo prebuild --platform ios`');
+  });
+
   it('prefills the bundle id prompt from the app config when the build cannot be read', async () => {
     script('simulators', [[/bundle identifier/, (q: { initial?: unknown }) => q.initial]]);
 
