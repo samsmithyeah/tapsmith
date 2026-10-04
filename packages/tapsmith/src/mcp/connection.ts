@@ -805,6 +805,8 @@ async function discover(): Promise<void> {
         log(`Failed to connect to daemon at ${address}: ${msg}`);
         _discoveryFailures.push(`Could not connect to the daemon at ${address}: ${msg}`);
         client.close();
+        // Not adopted after all: give back the device discovery claimed for it.
+        if (claimedDevice) releaseDeviceClaim(claimedDevice, currentSession());
         return null;
       }
     }));
@@ -1592,8 +1594,13 @@ async function prepareTarget(
   claimDeviceOrThrow(serial, currentSession(), { daemonAddress: conn.address });
   // A target that does not come up gives its device back: an MCP server
   // lives for hours, and other sessions would otherwise be refused a device
-  // it is not driving.
-  const releaseOnFailure = (): void => releaseDeviceClaim(serial, currentSession());
+  // it is not driving. Not when this daemon already served the device before
+  // this call (an agent restart that failed): the session still routes tools
+  // to it and will prepare it again, so it stays the session's.
+  const alreadyServed = conn.preparedDevice === serial || conn.claimedDevice === serial;
+  const releaseOnFailure = (): void => {
+    if (!alreadyServed) releaseDeviceClaim(serial, currentSession());
+  };
   try {
     await setDeviceExplained(conn.client, serial);
   } catch (err) {

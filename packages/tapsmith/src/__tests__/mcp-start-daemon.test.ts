@@ -420,4 +420,20 @@ describe('daemons another session owns', () => {
     // Given back with the connection.
     closeAllClients();
   });
+
+  it('gives back the device it claimed for a found daemon that then cannot be connected to', async () => {
+    const { listDeviceClaims } = await import('../device-claims.js');
+    waitForReady = () => Promise.resolve(true);
+    listDevices = (address) => Promise.resolve({
+      devices: address === 'localhost:50051' ? [{ serial: 'emulator-5580', state: 'Active' }] : [],
+    });
+    ping = (address) => (address === 'localhost:50051'
+      ? Promise.reject(new Error('14 UNAVAILABLE: Connection dropped'))
+      : Promise.resolve({ version: 'test', agentConnected: true }));
+    spawnMock.mockImplementation(() => new FakeDaemon());
+
+    await ensureConnected();
+    expect(getAllDaemonAddresses()).not.toContain('50051');
+    expect(listDeviceClaims().map((c) => c.device)).not.toContain('emulator-5580');
+  });
 });

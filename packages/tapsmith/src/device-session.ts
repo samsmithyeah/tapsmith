@@ -594,9 +594,11 @@ export async function openDeviceSession(
   };
 
   // Whether this open holds the session's claim on the device. A failed open
-  // gives it back, so a long-lived session (UI, watch, an MCP server) does not
-  // go on holding a device it never got to drive — whoever claimed it first
-  // (the CLI's pick, a group's pre-claim). Not an adopting open: the device
+  // gives back this process's hold, so a long-lived session (UI, watch, an MCP
+  // server) does not go on holding a device it never got to drive. The claim
+  // itself ends only if no other process of the session holds it: a device
+  // the session's root provisioned for a worker stays the session's while it
+  // lives, since that worker may be respawned onto it. Not an adopting open: the device
   // is one the session set up and goes on driving elsewhere (a watch re-run
   // child, a UI worker adopting the primary), and its failure here says
   // nothing about that.
