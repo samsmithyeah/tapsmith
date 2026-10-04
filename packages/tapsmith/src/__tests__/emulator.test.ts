@@ -1434,9 +1434,10 @@ describe('resolveEmulatorLaunchSettings', () => {
 });
 
 describe('emulatorLaunchArgs profiles', () => {
-  it('keeps the headless profile exactly as CI has always run it', () => {
+  it('runs headless with no window, a software GPU and a cold boot', () => {
     expect(emulatorLaunchArgs('Pixel', 5554, { headless: true, args: [] })).toEqual([
       '-avd', 'Pixel', '-port', '5554', '-read-only',
+      '-crash-report-mode', 'never', '-no-metrics',
       '-no-snapshot-load', '-no-snapshot-save', '-no-boot-anim', '-no-audio',
       '-gpu', 'swiftshader_indirect', '-no-window',
     ]);
@@ -1446,11 +1447,22 @@ describe('emulatorLaunchArgs profiles', () => {
     const args = emulatorLaunchArgs('Pixel', 5554, { headless: false, args: [] });
     expect(args).toEqual([
       '-avd', 'Pixel', '-port', '5554', '-read-only',
+      '-crash-report-mode', 'never', '-no-metrics',
       '-no-snapshot-save', '-no-boot-anim', '-no-audio',
     ]);
     expect(args).not.toContain('-gpu');
     expect(args).not.toContain('-no-window');
     expect(args).not.toContain('-no-snapshot-load');
+  });
+
+  it('never stops at a crash-report consent dialog or a metrics prompt, in either profile (PILOT-512)', () => {
+    // An earlier emulator crash anywhere on the machine otherwise opens a modal
+    // consent dialog at the next launch, which then never boots.
+    for (const headless of [true, false]) {
+      const args = emulatorLaunchArgs('Pixel', 5554, { headless, args: [] });
+      expect(args[args.indexOf('-crash-report-mode') + 1]).toBe('never');
+      expect(args).toContain('-no-metrics');
+    }
   });
 
   it('appends the user args after Tapsmith’s own', () => {

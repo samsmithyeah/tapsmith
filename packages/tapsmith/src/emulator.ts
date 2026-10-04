@@ -1258,6 +1258,15 @@ export function resolveEmulatorLaunchSettings(
 }
 
 /**
+ * Flags that keep the emulator from stopping at a prompt nobody will answer
+ * (PILOT-512). After any earlier emulator crash on the machine (its crash
+ * database is shared by every project), the next launch otherwise opens a modal
+ * crash-report consent dialog and never boots; and the emulator warns that its
+ * metrics notice will become a one-time blocking prompt.
+ */
+const NO_BLOCKING_PROMPT_FLAGS = ['-crash-report-mode', 'never', '-no-metrics'] as const;
+
+/**
  * The exact argv `launchEmulator` passes to the `emulator` binary.
  *
  * - **Headless** (`headless: true`, and always in CI): no window, SwiftShader,
@@ -1268,6 +1277,9 @@ export function resolveEmulatorLaunchSettings(
  *   it matches the renderer its snapshot was saved with — normally the host
  *   GPU) and a quick-boot from the AVD's default snapshot. `-read-only` means nothing
  *   is saved back to the AVD (`-no-snapshot-save` says so explicitly).
+ *
+ * Both profiles answer no crash-report or metrics prompt
+ * (`NO_BLOCKING_PROMPT_FLAGS`), and user args come last.
  */
 export function emulatorLaunchArgs(
   avd: string,
@@ -1281,6 +1293,7 @@ export function emulatorLaunchArgs(
     '-avd', avd,
     '-port', String(port),
     ...TAPSMITH_EMULATOR_IDENTITY_FLAGS,
+    ...NO_BLOCKING_PROMPT_FLAGS,
     ...profile,
     ...settings.args,
   ];
