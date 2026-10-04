@@ -28,7 +28,7 @@ const mockedExistsSync = vi.mocked(fs.existsSync);
 import {
   listSimulators,
   listBootedSimulators,
-  listCompatibleBootedSimulators,
+  listAdoptableBootedSimulators,
   bootSimulator,
   waitForSimulatorBootComplete,
   installApp,
@@ -140,27 +140,90 @@ describe('listBootedSimulators', () => {
   });
 });
 
-// ─── listCompatibleBootedSimulators ───
+// ─── listAdoptableBootedSimulators ───
 
-describe('listCompatibleBootedSimulators', () => {
-  it('filters by runtime of the primary simulator', () => {
+describe('listAdoptableBootedSimulators (PILOT-511)', () => {
+  it('leaves a booted simulator of another name alone', () => {
     mockListSimulators([
-      { udid: 'A', state: 'Booted', runtime: 'iOS-26-4' },
-      { udid: 'B', state: 'Booted', runtime: 'iOS-26-1' },
-      { udid: 'C', state: 'Booted', runtime: 'iOS-26-4' },
+      { udid: 'OTHER', name: 'iPhone 17', state: 'Booted' },
+      { udid: 'WANTED', name: 'iPhone 17 Pro', state: 'Shutdown' },
     ]);
 
-    const result = listCompatibleBootedSimulators('A');
-    expect(result).toHaveLength(2);
-    expect(result.map((s) => s.udid)).toEqual(['A', 'C']);
+    expect(listAdoptableBootedSimulators('iPhone 17 Pro')).toEqual([]);
   });
 
-  it('returns empty when primary not found', () => {
+  it('adopts only the booted simulators named in config, and Tapsmith\'s clones of them', () => {
     mockListSimulators([
-      { udid: 'A', state: 'Booted' },
+      { udid: 'OTHER', name: 'iPhone 17', state: 'Booted' },
+      { udid: 'OTHER_CLONE', name: 'iPhone 17 (Tapsmith Worker 1)', state: 'Booted' },
+      { udid: 'MAX_CLONE', name: 'iPhone 17 Pro Max (Tapsmith Worker 1)', state: 'Booted' },
+      { udid: 'LOOKALIKE', name: 'iPhone 17 Pro (Tapsmith Worker 1) copy', state: 'Booted' },
+      { udid: 'WANTED', name: 'iPhone 17 Pro', state: 'Booted' },
+      { udid: 'CLONE', name: 'iPhone 17 Pro (Tapsmith Worker 12)', state: 'Booted' },
     ]);
 
-    expect(listCompatibleBootedSimulators('MISSING')).toEqual([]);
+    expect(listAdoptableBootedSimulators('iPhone 17 Pro').map((s) => s.udid)).toEqual(['WANTED', 'CLONE']);
+  });
+
+  it('adopts booted clones while the configured simulator is shut down, keeping their runtime', () => {
+    // The clones anchor the runtime: provisioning then boots or clones only
+    // on that one, rather than any runtime with a same-named device.
+    mockListSimulators([
+      { udid: 'SOURCE', name: 'iPhone 17 Pro', state: 'Shutdown', runtime: 'iOS-26-1' },
+      { udid: 'CLONE', name: 'iPhone 17 Pro (Tapsmith Worker 1)', state: 'Booted', runtime: 'iOS-26-4' },
+    ]);
+
+    expect(listAdoptableBootedSimulators('iPhone 17 Pro').map((s) => s.udid)).toEqual(['CLONE']);
+  });
+
+  it('matches a configured UDID', () => {
+    mockListSimulators([
+      { udid: 'OTHER', name: 'iPhone 17', state: 'Booted' },
+      { udid: 'WANTED', name: 'iPhone 17 Pro', state: 'Booted' },
+    ]);
+
+    expect(listAdoptableBootedSimulators('WANTED').map((s) => s.udid)).toEqual(['WANTED']);
+  });
+
+  it('keeps to the runtime of the first match', () => {
+    mockListSimulators([
+      { udid: 'A', name: 'iPhone 17 Pro', state: 'Booted', runtime: 'iOS-26-4' },
+      { udid: 'B', name: 'iPhone 17 Pro', state: 'Booted', runtime: 'iOS-26-1' },
+      { udid: 'C', name: 'iPhone 17 Pro', state: 'Booted', runtime: 'iOS-26-4' },
+    ]);
+
+    expect(listAdoptableBootedSimulators('iPhone 17 Pro').map((s) => s.udid)).toEqual(['A', 'C']);
+  });
+
+  it('restricts to `among`, in its order, and anchors the runtime there', () => {
+    mockListSimulators([
+      { udid: 'A', name: 'iPhone 17 Pro', state: 'Booted', runtime: 'iOS-26-4' },
+      { udid: 'B', name: 'iPhone 17 Pro', state: 'Booted', runtime: 'iOS-26-1' },
+      { udid: 'C', name: 'iPhone 17 Pro', state: 'Booted', runtime: 'iOS-26-1' },
+      { udid: 'X', name: 'iPhone 17', state: 'Booted', runtime: 'iOS-26-1' },
+    ]);
+
+    const result = listAdoptableBootedSimulators('iPhone 17 Pro', { among: ['X', 'C', 'B'] });
+    expect(result.map((s) => s.udid)).toEqual(['C', 'B']);
+  });
+
+  it('anchors the runtime on `compatibleWith`, even when that one is not a match', () => {
+    mockListSimulators([
+      { udid: 'PRIMARY', name: 'My Pinned Sim', state: 'Booted', runtime: 'iOS-26-1' },
+      { udid: 'A', name: 'iPhone 17 Pro', state: 'Booted', runtime: 'iOS-26-4' },
+      { udid: 'B', name: 'iPhone 17 Pro', state: 'Booted', runtime: 'iOS-26-1' },
+    ]);
+
+    const result = listAdoptableBootedSimulators('iPhone 17 Pro', { compatibleWith: 'PRIMARY' });
+    expect(result.map((s) => s.udid)).toEqual(['B']);
+  });
+
+  it('adopts nothing when `compatibleWith` is not booted', () => {
+    mockListSimulators([
+      { udid: 'A', name: 'iPhone 17 Pro', state: 'Booted' },
+    ]);
+
+    expect(listAdoptableBootedSimulators('iPhone 17 Pro', { compatibleWith: 'MISSING' })).toEqual([]);
   });
 });
 
@@ -751,6 +814,31 @@ describe('provisionSimulators', () => {
     expect(result.allUdids).toContain('REUSE');
     expect(result.reusedUdids).toEqual(['REUSE']);
     expect(progress).toEqual(['Reusing simulator REUSE (iPhone 16 (Tapsmith Worker 1)) from previous run.']);
+  });
+
+  it('does not call a booted same-name simulator a previous run\'s (PILOT-511)', () => {
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      const a = args as string[];
+      if (cmd === 'xcrun' && a?.[0] === 'simctl' && a?.[1] === 'list') {
+        return makeSimctlOutput([
+          { udid: 'PRIMARY', name: 'iPhone 16', state: 'Booted' },
+          { udid: 'B', name: 'iPhone 16', state: 'Booted' },
+        ]) as unknown as Buffer;
+      }
+      return '' as unknown as Buffer;
+    });
+    mockedReadFileSync.mockReturnValue('[]');
+    const progress: string[] = [];
+
+    const result = provisionSimulators({
+      simulatorName: 'iPhone 16',
+      workers: 2,
+      existingUdids: ['PRIMARY'],
+      onProgress: (message) => progress.push(message),
+    });
+
+    expect(result.allUdids).toEqual(['PRIMARY', 'B']);
+    expect(progress).toEqual(['Reusing already-booted simulator B (iPhone 16).']);
   });
 
   it('boots shutdown simulators when not enough booted', () => {

@@ -88,18 +88,45 @@ export function listBootedSimulators(): SimulatorInfo[] {
   return listSimulators().filter((s) => s.state === 'Booted');
 }
 
+/** Whether `name` is one Tapsmith gives its clones of `source` (`<source> (Tapsmith Worker N)`). */
+function isTapsmithCloneOf(name: string, source: string): boolean {
+  const suffix = name.startsWith(`${source} (Tapsmith Worker `) ? name.slice(source.length) : '';
+  return /^ \(Tapsmith Worker \d+\)$/.test(suffix);
+}
+
 /**
- * List booted simulators compatible with a primary device for multi-worker use.
+ * The booted simulators a run may adopt for `simulator: <configured>`: those
+ * whose name or UDID is the configured value, and Tapsmith's own clones of it
+ * (`<configured> (Tapsmith Worker N)`, the names `provisionSimulators` gives
+ * them) (PILOT-511). Any other booted simulator is left alone — it may be one
+ * the developer is using.
  *
- * Only returns simulators that share the same iOS runtime as the primary device.
- * This prevents xcodebuild test-without-building failures from runtime mismatches
- * (e.g. an xctestrun built for iOS 26.4 won't work on a simulator running 26.1).
+ * Only simulators on one iOS runtime are returned, because the agent's
+ * xctestrun is OS-version-specific (one built for iOS 26.4 fails on 26.1):
+ * the runtime of `compatibleWith` when given (the session's primary), else of
+ * the first match. `among` restricts the result to those UDIDs, in that order
+ * (e.g. the simulators the daemon reports).
  */
-export function listCompatibleBootedSimulators(primaryUdid: string): SimulatorInfo[] {
+export function listAdoptableBootedSimulators(
+  configured: string,
+  opts: { among?: readonly string[]; compatibleWith?: string } = {},
+): SimulatorInfo[] {
   const booted = listBootedSimulators();
-  const primary = booted.find((s) => s.udid === primaryUdid);
-  if (!primary) return [];
-  return booted.filter((s) => s.runtime === primary.runtime);
+  let matching = booted.filter((s) =>
+    s.name === configured || s.udid === configured || isTapsmithCloneOf(s.name, configured),
+  );
+  if (opts.among) {
+    const byUdid = new Map(matching.map((s) => [s.udid, s]));
+    matching = opts.among.flatMap((udid) => {
+      const sim = byUdid.get(udid);
+      return sim ? [sim] : [];
+    });
+  }
+  const anchor = opts.compatibleWith !== undefined
+    ? booted.find((s) => s.udid === opts.compatibleWith)
+    : matching[0];
+  if (!anchor) return [];
+  return matching.filter((s) => s.runtime === anchor.runtime);
 }
 
 /**
@@ -995,7 +1022,8 @@ export function provisionSimulators(opts: {
   const alreadyBooted = matching.filter((s) => s.state === 'Booted');
   for (const sim of alreadyBooted) {
     if (allUdids.length >= workers) break;
-    logProgress(`Reusing simulator ${sim.udid} (${sim.name}) from previous run.`);
+    // Booted by anyone — this run did not record it, so not "from previous run".
+    logProgress(`Reusing already-booted simulator ${sim.udid} (${sim.name}).`);
     reusedUdids.push(sim.udid);
     allUdids.push(sim.udid);
   }
