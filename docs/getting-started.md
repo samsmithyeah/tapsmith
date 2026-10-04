@@ -29,7 +29,10 @@ when configured with `launchEmulators` and `avd`.
 | iOS Simulator | iOS 17+ | `xcrun simctl list devices` |
 
 Tapsmith manages iOS simulators automatically. Set the `simulator` config option to
-choose which simulator to boot (defaults to `iPhone 17`).
+the simulator to boot (for example `simulator: "iPhone 17"`; `xcrun simctl list devices`
+lists the names). There is no default: without `simulator` (or `device`), Tapsmith
+looks for a single paired physical iPhone instead, and stops with "No simulator
+specified" when there isn't one.
 
 For **physical iOS devices**, additional prerequisites apply (libimobiledevice,
 Apple Developer account, device pairing). See [iOS physical devices](./ios-physical-devices.md) for the full walkthrough.
@@ -48,6 +51,56 @@ On npm 11.17 and later, the install may end with an `npm warn allow-scripts` (np
 "allowScripts": { "protobufjs": false, "esbuild": false, "fsevents": false }
 ```
 
+## Build the app under test
+
+Tapsmith installs and launches a build of your app; it does not build it for you. You need:
+
+- **Android**: an `.apk`. Any variant your emulator or device can install works.
+- **iOS Simulator**: a `.app` built for the simulator (`-sdk iphonesimulator`, under a `…-iphonesimulator/` products folder).
+- **iOS physical device**: a `.app` built for `iphoneos` and code-signed for the device. Simulator and device builds are not interchangeable; see [iOS physical devices](./ios-physical-devices.md).
+
+`tapsmith init` offers the builds it finds under `android/**/build/outputs/apk/` and `ios/**/*-iphonesimulator/` (or `*-iphoneos/`). A build anywhere else, such as Xcode's default DerivedData folder, can still be used: enter its path.
+
+### Native projects
+
+```bash
+# Android: writes android/app/build/outputs/apk/debug/app-debug.apk
+cd android && ./gradlew assembleDebug
+
+# iOS Simulator: writes ios/build/Build/Products/Debug-iphonesimulator/MyApp.app
+cd ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp \
+  -configuration Debug -sdk iphonesimulator -derivedDataPath build build
+```
+
+Without `-derivedDataPath`, Xcode (and a build from the Xcode UI) writes to
+`~/Library/Developer/Xcode/DerivedData/<MyApp>-<hash>/Build/Products/Debug-iphonesimulator/MyApp.app`.
+Passing `-derivedDataPath build` keeps the build at a stable path you can put in `app`.
+
+### React Native and Expo
+
+A React Native **Debug** build does not contain your JavaScript: it loads it from the
+Metro dev server at launch. Tests against a Debug build need Metro running in another
+terminal (`npx expo start` or `npx react-native start`), or the app opens on a red
+"unable to load script" screen. A **Release** build bundles the JavaScript into the app
+and runs on its own, which also makes it the right choice for CI:
+
+```bash
+# Android (the React Native template signs release builds with the debug keystore)
+cd android && ./gradlew assembleRelease   # android/app/build/outputs/apk/release/app-release.apk
+
+# iOS Simulator
+cd ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp \
+  -configuration Release -sdk iphonesimulator -derivedDataPath build build
+```
+
+**Expo** projects have no `android/` or `ios/` folder until you generate them:
+
+- `npx expo prebuild` generates the native projects; then build them with the commands above.
+- `npx expo run:android --variant release` and `npx expo run:ios --configuration Release` generate, build and install in one step, leaving the build in the same `android/…/outputs/apk/` and `ios/build/…` locations.
+- With EAS, use a build profile that produces simulator and installable builds, for example `"e2e": { "ios": { "simulator": true }, "android": { "buildType": "apk" } }` in `eas.json`, then `eas build --profile e2e --platform ios --local` (or download the build). An iOS simulator build arrives as a `.tar.gz`; extract it and point `app` at the `.app` inside.
+
+If the app mounts [`@tapsmith/react-native`](warm-reset.md), a Release build made for tests needs `EXPO_PUBLIC_TAPSMITH_HOOKS=1` set at build time to include the reset hooks.
+
 ## Quick Setup (Recommended)
 
 The interactive setup wizard detects your environment, walks you through platform configuration, and generates your config file:
@@ -60,13 +113,17 @@ The wizard walks through these steps:
 
 1. **Environment detection** — checks for ADB, Xcode, simulators, emulators, and reports what's available
 2. **Platform selection** — choose Android, iOS, or both
-3. **App configuration** — pick your APK/`.app` from the builds the wizard finds in `android/` and `ios/` (the same ones `init --yes` looks for), or enter a path, which must exist; the wizard reads the package name or bundle ID from the build, and asks for it only when it can't
-4. **Device setup** — choose between connected devices, emulators/simulators, or auto-launch. For iOS physical devices the wizard asks for your device-signed (`iphoneos`) `.app` and points the config at it; choosing both simulators and physical devices writes two projects, `ios` (simulator) and `ios-device` (physical device), so `npx tapsmith test --project ios-device` runs on the device alone (the layout of [Running simulator and device together](./ios-physical-devices.md#running-simulator-and-device-together), with these project names)
-5. **Parallel execution** — optionally configure multiple workers with `launchEmulators` and `avd`
-6. **Network capture** — optionally enable HTTPS traffic capture in traces
-7. **File generation** — creates `tapsmith.config.ts` and an example test file
+3. **Android** — pick your APK from the builds the wizard finds under `android/` (the same ones `init --yes` looks for) or enter a path, which must exist; the wizard reads the package name from the APK and asks only when it can't. Then choose emulators, physical devices or both, and, for emulators, the AVD Tapsmith should launch
+4. **iOS** — choose simulators, physical devices or both. For simulators, pick your simulator `.app` the same way and the simulator to boot. For physical devices, the wizard runs a code-signing preflight, offers to build the device agent, and asks for your device-signed (`iphoneos`) `.app`. It reads each build's bundle ID and asks only when it can't. Choosing both writes two projects, `ios` (simulator) and `ios-device` (physical device), so `npx tapsmith test --project ios-device` runs on the device alone (the layout of [Running simulator and device together](./ios-physical-devices.md#running-simulator-and-device-together), with these project names)
+5. **Network capture** — optionally record HTTP/HTTPS traffic; saying yes writes `trace: { mode: 'retain-on-failure' }`, which [`device.route()`](network.md#prerequisites) needs, and lists the per-platform setup still to do
+6. **iOS simulator agent** — if no simulator agent build is found, offers to build it now (~30 s)
+7. **Config** — writes `tapsmith.config.ts`, always with `platform` and `package` set for each platform
+8. **Example test** — optionally creates `tests/example.test.ts`
+9. **AGENTS.md** — optionally adds a Tapsmith section to `AGENTS.md` for AI coding agents
 
-After setup, verify everything is working:
+The wizard does not ask about workers; see [Parallel runs](#parallel-runs) to add them.
+
+After setup, check the environment:
 
 ```bash
 npx tapsmith doctor
@@ -106,6 +163,14 @@ Tapsmith Doctor
 
 A warning (`⚠`) or error (`✗`) that Tapsmith knows how to fix is followed by a `↳` line saying how, often the exact command to run. `tapsmith doctor --json` prints the same checks for scripts and AI agents, with a `fix` field wherever there is one. The command exits 1 if any check is an error. Run it whenever tests fail in unexpected ways to rule out setup issues.
 
+Then prove the whole loop works before writing tests:
+
+```bash
+npx tapsmith verify
+```
+
+`tapsmith verify` runs one real test through `tapsmith test` (starting the daemon, launching the emulator or simulator, installing the app) and reports whether it passed. It runs `tests/example.test.ts` if the wizard created it, or your first test file; with no test files yet it runs a throwaway smoke test and removes it afterwards.
+
 ## Make runs faster (optional, one line)
 
 Tapsmith resets your app between test files by wiping its data and cold-launching — several seconds per file. React Native / Expo apps can do far better: mount `@tapsmith/react-native` once at the root and Tapsmith resets the app **in-process, in well under a second** — no config changes. Files that need a fresh app before every test opt in with one more line: `test.use({ appResetScope: "test" })` — still warm, still sub-second.
@@ -129,12 +194,13 @@ import { defineConfig } from "tapsmith";
 
 export default defineConfig({
   apk: "./app/build/outputs/apk/debug/app-debug.apk",
+  package: "com.example.myapp",
   timeout: 30_000,
   screenshot: "only-on-failure",
 });
 ```
 
-The only required option is `apk` -- the path to the Android APK you want to test. If you want Tapsmith to auto-launch the app before tests, also set `package`. `activity` is optional and usually not needed.
+`apk` is the path to the Android APK you want to test; Tapsmith installs it. `package` is its package name, and you need it too: without `package`, Tapsmith never launches the app and never resets it between test files, so tests start on whatever happens to be on screen. `activity` is optional and usually not needed.
 
 ### iOS
 
@@ -142,14 +208,16 @@ The only required option is `apk` -- the path to the Android APK you want to tes
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
-  app: "./build/MyApp.app",
+  platform: "ios",
+  app: "./ios/build/Build/Products/Debug-iphonesimulator/MyApp.app",
   package: "com.example.myapp",
+  simulator: "iPhone 17",
   timeout: 30_000,
   screenshot: "only-on-failure",
 });
 ```
 
-For iOS, set `app` to the path to the `.app` bundle built for the iOS Simulator. The `package` option is the bundle identifier. Tapsmith auto-detects the platform from `app` (iOS) vs `apk` (Android), or you can set `platform: "ios"` explicitly.
+For iOS, `platform: "ios"` is required: Tapsmith does not infer the platform from `app`, and a config that sets `app` or `simulator` without it is refused (`tapsmith doctor` reports it as `config-platform`). Set `app` to the `.app` bundle built for the iOS Simulator, `package` to its bundle identifier (needed to launch and reset the app, as on Android), and `simulator` to the simulator to boot.
 
 See the [Configuration](configuration.md) guide for all available options.
 
@@ -187,7 +255,8 @@ For parallel iOS simulator runs:
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
-  app: "./build/MyApp.app",
+  platform: "ios",
+  app: "./ios/build/Build/Products/Debug-iphonesimulator/MyApp.app",
   package: "com.example.myapp",
   workers: 4,
   simulator: "iPhone 17",

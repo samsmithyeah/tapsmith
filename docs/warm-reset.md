@@ -1,6 +1,6 @@
 # Warm App Reset
 
-Tapsmith resets your app to a known state before tests (see [Test isolation](writing-tests.md#test-isolation)). By default that means wiping app data and cold-launching — fully hermetic, but 7–13 seconds per file on an iOS simulator and a couple of seconds on Android. A **warm reset** asks the running app to reset *itself*, in-process, and acknowledges completion — well under a second. It also lets Tapsmith isolate **every test** instead of every file, because it can finally afford to.
+Tapsmith resets your app to a known state before tests (see [Test isolation](writing-tests.md#test-isolation)). By default that means wiping app data and cold-launching — fully hermetic, but 7–13 seconds per file on an iOS simulator and a couple of seconds on Android. A **warm reset** asks the running app to reset *itself*, in-process, and acknowledges completion — well under a second. It also makes isolating **every test** instead of every file affordable: the default is still one reset per file, and a scope opts in with `appResetScope: "test"`.
 
 ## Add the in-app hooks
 
