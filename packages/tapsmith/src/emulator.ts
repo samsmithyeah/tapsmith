@@ -1827,6 +1827,76 @@ export function killEmulator(serial: string): void {
   }
 }
 
+/** How long each signal gets to stop a failed launch before the next. */
+const STOP_GRACE_MS = 5_000;
+
+interface StopLaunchedEmulatorDeps {
+  /** `process.kill`: throws ESRCH once nothing has that PID (or, negative, that process group). */
+  signal: (pid: number, sig: NodeJS.Signals | 0) => void
+  sleep: (ms: number) => Promise<void>
+  /** How long SIGTERM, then SIGKILL, gets to take effect. */
+  graceMs: number
+}
+
+/**
+ * Stop an emulator process this process launched, whose launch failed
+ * (PILOT-512): SIGTERM, then SIGKILL if it is still running after a grace
+ * period. An emulator showing a modal dialog ignores SIGTERM.
+ *
+ * Signals go to the process group as well as the PID: the launch was spawned
+ * detached, so it leads a group of its own, and that group holds anything the
+ * `emulator` launcher started besides itself.
+ *
+ * Resolves `true` once nothing is left running, `false` if something survived
+ * SIGKILL — the caller must then keep it recorded, not forget it.
+ */
+export async function stopLaunchedEmulator(
+  emu: Pick<LaunchedEmulator, 'process'>,
+  deps: Partial<StopLaunchedEmulatorDeps> = {},
+): Promise<boolean> {
+  const signal = deps.signal ?? ((pid: number, sig: NodeJS.Signals | 0) => { process.kill(pid, sig); });
+  const wait = deps.sleep ?? sleep;
+  const graceMs = deps.graceMs ?? STOP_GRACE_MS;
+  const pid = emu.process.pid;
+  // Never spawned: nothing to stop.
+  if (pid === undefined) return true;
+
+  const exists = (target: number): boolean => {
+    try {
+      signal(target, 0);
+      return true;
+    } catch (err) {
+      // EPERM: it exists, it just is not ours to signal.
+      return (err as NodeJS.ErrnoException).code === 'EPERM';
+    }
+  };
+  const running = () => exists(-pid) || exists(pid);
+  const send = (sig: NodeJS.Signals) => {
+    for (const target of [-pid, pid]) {
+      try {
+        signal(target, sig);
+      } catch {
+        // Gone already, or no such group (on Windows, for one).
+      }
+    }
+  };
+  const stoppedWithin = async (ms: number): Promise<boolean> => {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      if (!running()) return true;
+      if (Date.now() >= deadline) return false;
+      await wait(STOP_POLL_MS);
+    }
+  };
+
+  send('SIGTERM');
+  if (await stoppedWithin(graceMs)) return true;
+  send('SIGKILL');
+  return stoppedWithin(graceMs);
+}
+
+const STOP_POLL_MS = 100;
+
 /**
  * Wait for killed emulator serials to disappear from `adb devices`.
  *
@@ -1880,6 +1950,8 @@ interface ProvisionDeps {
     signal?: AbortSignal,
   ) => Promise<DeviceHealthResult>
   killEmulator: (serial: string) => void
+  /** Stops a failed launch's process; `false` when it survived (`stopLaunchedEmulator`). */
+  stopLaunchedEmulator: (emu: LaunchedEmulator) => Promise<boolean>
   findEmulatorPid: (serial: string) => number | undefined
   reserveEmulatorPort: (usedPorts: ReadonlySet<number>) => Promise<PortReservation>
   /** Settles once a just-spawned emulator has started up (or will not). */
@@ -1945,6 +2017,7 @@ export async function provisionEmulators(opts: {
     probeDeviceHealth: deps.probeDeviceHealth ?? probeDeviceHealth,
     waitForDeviceStability: deps.waitForDeviceStability ?? waitForDeviceStability,
     killEmulator: deps.killEmulator ?? killEmulator,
+    stopLaunchedEmulator: deps.stopLaunchedEmulator ?? ((emu) => stopLaunchedEmulator(emu)),
     findEmulatorPid: deps.findEmulatorPid ?? findEmulatorPid,
     reserveEmulatorPort: deps.reserveEmulatorPort ?? reserveEmulatorPort,
     waitForEmulatorStartup: deps.waitForEmulatorStartup ?? waitForEmulatorStartup,
@@ -2121,15 +2194,23 @@ export async function provisionEmulators(opts: {
         );
         // A process that already ended holds nothing to stop — and its port
         // may be someone else's by now, so never kill by serial then.
+        let stopped = true;
         if (!(err instanceof EmulatorExitedError)) {
           resolvedDeps.killEmulator(emu.serial);
-          try {
-            emu.process.kill();
-          } catch {
-            // Already dead
-          }
+          stopped = await resolvedDeps.stopLaunchedEmulator(emu);
         }
-        unrecordLaunchedEmulators([emu]);
+        if (stopped) {
+          unrecordLaunchedEmulators([emu]);
+        } else {
+          // Never left running untracked (PILOT-512): its record stays, and
+          // once this process has gone the next run stops it.
+          const pid = emu.process.pid;
+          logProgress(
+            `Could not stop emulator ${emu.serial} (PID ${pid}) after its failed launch. `
+            + `It stays recorded, so the next run tries again. To stop it now: kill -9 ${pid}`,
+            'warning',
+          );
+        }
       } finally {
         booting = false;
         stopWaiting.abort();
