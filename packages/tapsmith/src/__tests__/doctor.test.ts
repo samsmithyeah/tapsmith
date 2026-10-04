@@ -19,6 +19,7 @@ import {
   type ServiceProxySetting,
 } from '../doctor.js';
 import { stripAnsi } from '../cli-json.js';
+import { TapsmithNotInstalledError } from '../config.js';
 import type { AvdImageInfo } from '../avd-images.js';
 
 describe('buildDoctorJson()', () => {
@@ -432,6 +433,19 @@ describe('configLoadFailure', () => {
     const failure = configLoadFailure('config: telemetry must be a boolean (got "no")');
     expect(failure.message).toContain('telemetry must be a boolean');
     expect(failure.hint).not.toMatch(/named above/);
+  });
+
+  // A config written by `npx tapsmith init` in a project without tapsmith
+  // (PILOT-551): the fix is the install, not the config.
+  it('gives the install command when tapsmith is not installed', () => {
+    const err = new TapsmithNotInstalledError(
+      '/p/tapsmith.config.ts',
+      { command: 'pnpm', args: ['add', '-D', 'tapsmith'], display: 'pnpm add -D tapsmith' },
+      new Error("Cannot find module 'tapsmith'"),
+    );
+    const failure = configLoadFailure(err);
+    expect(failure.message).toBe("Tapsmith isn't installed in this project (/p/tapsmith.config.ts imports it)");
+    expect(failure.hint).toBe('Run: pnpm add -D tapsmith');
   });
 
   it('points a missing --config file at the flag', () => {

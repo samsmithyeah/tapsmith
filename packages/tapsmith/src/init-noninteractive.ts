@@ -13,6 +13,7 @@ import { writeAgentsMd } from './agents-md.js';
 import { avdCaptureSupport, avdCaptureWarning, noAvdsListedMessage } from './avd-images.js';
 import * as detectDefaults from './init-detect.js';
 import type { InitCommandOptions } from './cli-program.js';
+import type { InstallCommand } from './config.js';
 
 // ─── Types ───
 
@@ -280,7 +281,18 @@ export function assertConfigWritable(force: boolean, cwd: string = process.cwd()
   }
 }
 
-export function executeInitPlan(plan: InitPlan, args: InitArgs, cwd: string = process.cwd()): InitResult {
+/**
+ * Writes the files. `missingTapsmith` is the install command when the project
+ * cannot resolve `tapsmith`, which the files written here import (PILOT-551):
+ * `--yes` never runs it — a scripted setup should not change package.json and
+ * the lockfile unasked — so it becomes the first next step.
+ */
+export function executeInitPlan(
+  plan: InitPlan,
+  args: InitArgs,
+  cwd: string = process.cwd(),
+  missingTapsmith?: InstallCommand,
+): InitResult {
   const filesCreated: string[] = [];
   const warnings = [...plan.warnings];
 
@@ -306,7 +318,12 @@ export function executeInitPlan(plan: InitPlan, args: InitArgs, cwd: string = pr
     filesCreated.push('AGENTS.md');
   }
 
+  if (missingTapsmith) {
+    warnings.push(`Tapsmith isn't installed in this project, and the files init wrote import it: run ${missingTapsmith.display} before anything else`);
+  }
+
   const nextSteps = [
+    ...(missingTapsmith ? [`Install Tapsmith in this project: ${missingTapsmith.display}`] : []),
     'Verify the setup end-to-end: npx tapsmith verify --json',
     'Run tests: npx tapsmith test',
     'Register the MCP server for richer agent tooling: claude mcp add tapsmith -- npx tapsmith mcp-server',

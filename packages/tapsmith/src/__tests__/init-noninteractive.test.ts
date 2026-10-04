@@ -378,6 +378,38 @@ describe('executeInitPlan()', () => {
     }
   });
 
+  // `init --yes` in a project without tapsmith (PILOT-551): never installs
+  // (that changes package.json and the lockfile unasked), but the install
+  // comes first in Next steps and a warning says why.
+  it('puts the tapsmith install first in Next steps when the project lacks it', () => {
+    const tmp = makeTmp();
+    try {
+      const args = initArgs({ yes: true, platform: 'android' });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const install = { command: 'pnpm', args: ['add', '-D', 'tapsmith'], display: 'pnpm add -D tapsmith' };
+      const result = executeInitPlan(plan, args, tmp, install);
+      expect(result.nextSteps[0]).toBe('Install Tapsmith in this project: pnpm add -D tapsmith');
+      expect(result.nextSteps[1]).toContain('tapsmith verify');
+      expect(result.warnings).toContain("Tapsmith isn't installed in this project, and the files init wrote import it: run pnpm add -D tapsmith before anything else");
+      expect(Object.keys(result)).toEqual(['configPath', 'filesCreated', 'warnings', 'nextSteps']);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('adds no install step when the project has tapsmith', () => {
+    const tmp = makeTmp();
+    try {
+      const args = initArgs({ yes: true, platform: 'android' });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const result = executeInitPlan(plan, args, tmp, undefined);
+      expect(result.nextSteps[0]).toContain('tapsmith verify');
+      expect(result.warnings.join('\n')).not.toContain('install');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('respects --no-example-test and --no-agents-md', () => {
     const tmp = makeTmp();
     try {
