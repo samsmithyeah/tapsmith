@@ -797,6 +797,21 @@ describe('device claims (PILOT-381)', () => {
     expect(listDeviceClaims()).toEqual([]);
   });
 
+  it('keeps a claim another process of the session still holds when this open fails (an MCP server\'s run_tests child)', async () => {
+    fs.writeFileSync(path.join(claimsDir, 'emulator-5554.json'), JSON.stringify({
+      device: 'emulator-5554', session: SESSION, claimantPid: process.ppid, holders: [{ pid: process.ppid }],
+      claimedAt: new Date().toISOString(),
+    }));
+    mocks.failAgentFor.add('emulator-5554');
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Device' },
+    )).rejects.toThrow();
+    const { listDeviceClaims } = await import('../device-claims.js');
+    expect(listDeviceClaims().map((c) => [c.device, c.holders?.map((h) => h.pid)])).toEqual([['emulator-5554', [process.ppid]]]);
+  });
+
   it('keeps the claim when an adopting open fails (a watch re-run of a device the session goes on driving)', async () => {
     claimDevice('emulator-5554', SESSION, { daemonAddress: 'localhost:50052' });
     mocks.preflight.ensureSessionReady.mockRejectedValueOnce(new Error('agent gone'));

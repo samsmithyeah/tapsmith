@@ -13,6 +13,7 @@ import {
   currentSession,
   daemonDriverElsewhere,
   describeHolder,
+  devicesHeldByThisProcess,
   devicesHeldElsewhere,
   ensureClaimSession,
   listDeviceClaims,
@@ -52,6 +53,15 @@ describe('device claims', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  // Another process of the same session: the test runner's parent stands in
+  // for an MCP server whose run_tests child this process is.
+  function writeHeldBy(device: string, owner: SessionIdentity, holders: Array<{ pid: number; startToken?: string }>): void {
+    fs.writeFileSync(path.join(dir, `${device}.json`), JSON.stringify({
+      device, session: owner, claimantPid: holders[0].pid, holders, claimedAt: new Date().toISOString(),
+    }));
+  }
+
+
   it('lets a session claim a free device and records who holds it', () => {
     const me = session({ command: 'tapsmith test --ui' });
     expect(claimDevice('emulator-5554', me, { daemonAddress: 'localhost:50051', env })).toEqual({ ok: true, fresh: true });
@@ -71,6 +81,37 @@ describe('device claims', () => {
     expect(claimDevice('emulator-5554', me, { env })).toEqual({ ok: true, fresh: true });
     expect(claimDevice('emulator-5554', me, { env })).toEqual({ ok: true, fresh: false });
     expect(listDeviceClaims({ env })).toHaveLength(1);
+  });
+
+  it('keeps a claim another live process of the session holds when this process gives it back', () => {
+    const me = session();
+    writeHeldBy('emulator-5554', me, [{ pid: process.ppid }]);
+    expect(claimDevice('emulator-5554', me, { env }).ok).toBe(true);
+    releaseDeviceClaim('emulator-5554', me, { env });
+    const [claim] = listDeviceClaims({ env });
+    expect(claim.holders?.map((h) => h.pid)).toEqual([process.ppid]);
+    expect(claimDevice('emulator-5554', session(), { env }).ok).toBe(false);
+  });
+
+  it('ends the claim when the last holder gives it back, even if a dead holder is still listed', () => {
+    const me = session();
+    writeHeldBy('emulator-5554', me, [{ pid: deadPid() }]);
+    claimDevice('emulator-5554', me, { env });
+    releaseDeviceClaim('emulator-5554', me, { env });
+    expect(listDeviceClaims({ env })).toEqual([]);
+  });
+
+  it('stays live while a holder runs though the root is gone (the CLI wrapper killed, its tsx child still driving)', () => {
+    writeHeldBy('emulator-5554', session({ pid: deadPid() }), [{ pid: process.pid }]);
+    expect(claimDevice('emulator-5554', session(), { env }).ok).toBe(false);
+    expect(listDeviceClaims({ env })[0].live).toBe(true);
+  });
+
+  it('lists the devices this process holds, not every device of its session', () => {
+    const me = session();
+    claimDevice('mine', me, { env });
+    writeHeldBy('siblings', me, [{ pid: process.ppid }]);
+    expect([...devicesHeldByThisProcess(me, { env })]).toEqual(['mine']);
   });
 
   it('releases one device of a session, and never another session\'s claim', () => {
@@ -94,8 +135,9 @@ describe('device claims', () => {
       .toThrow(/emulator-5554 is in use by another Tapsmith session: `tapsmith mcp-server` \(pid \d+\) in \/work\/other/);
   });
 
-  it('takes over a claim whose session process is gone (crash, kill -9)', () => {
-    claimDevice('emulator-5554', session({ pid: deadPid() }), { env });
+  it('takes over a claim whose session processes are all gone (crash, kill -9)', () => {
+    const gone = deadPid();
+    writeHeldBy('emulator-5554', session({ pid: gone }), [{ pid: gone }]);
     const me = session();
     expect(claimDevice('emulator-5554', me, { env })).toEqual({ ok: true, fresh: true });
     expect(listDeviceClaims({ env })[0].session.id).toBe(me.id);
@@ -104,7 +146,8 @@ describe('device claims', () => {
   it('takes over a claim whose pid was reused by an unrelated process', () => {
     // Same live pid, but a start token that no longer matches the process
     // now running under it.
-    claimDevice('emulator-5554', session({ startToken: 'Thu Jan  1 00:00:00 1970' }), { env });
+    const stale = 'Thu Jan  1 00:00:00 1970';
+    writeHeldBy('emulator-5554', session({ startToken: stale }), [{ pid: process.pid, startToken: stale }]);
     expect(claimDevice('emulator-5554', session(), { env }).ok).toBe(true);
   });
 
@@ -128,7 +171,8 @@ describe('device claims', () => {
   });
 
   it('reports stale claims as not live', () => {
-    claimDevice('emulator-5554', session({ pid: deadPid() }), { env });
+    const gone = deadPid();
+    writeHeldBy('emulator-5554', session({ pid: gone }), [{ pid: gone }]);
     expect(listDeviceClaims({ env })[0].live).toBe(false);
     expect(devicesHeldElsewhere(session(), { env }).size).toBe(0);
   });

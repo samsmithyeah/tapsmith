@@ -16,6 +16,7 @@ import { withDetail } from '../error-detail.js';
 import {
   DaemonClaimedError,
   DeviceClaimedError,
+  claimDevice,
   claimDeviceOrThrow,
   currentSession,
   daemonDriverElsewhere,
@@ -71,6 +72,11 @@ interface DaemonConnection {
   preparedDevice?: string
   /** The device this daemon reports as Active, refreshed with the device index. */
   activeDevice?: string
+  /**
+   * The device discovery claimed for this session because the adopted daemon
+   * was already pointed at it (PILOT-381) — given back with the connection.
+   */
+  claimedDevice?: string
   /**
    * Set when this daemon was pointed at `preparedDevice` but its agent would
    * not start. Both facts are true and both matter: the daemon really did move,
@@ -591,23 +597,46 @@ let _discoveryFailures: string[] = [];
  * Drop the daemons another live Tapsmith session is driving a device through
  * (PILOT-381). Adopting one — the default `localhost:50051` fallback found
  * another worktree's daemon this way — let this session restart that session's
- * agent and repoint its device. Judged by the daemon's *active* device, not its
- * address alone: a port a dead daemon left can be reused by an unrelated one.
+ * agent and repoint its device. A daemon counts as that session's when the
+ * device it is pointed at now is one the other session claimed through it
+ * (not by address alone: a port a dead daemon left can be reused by an
+ * unrelated one), or — whichever daemon it came through — when another
+ * session holds that device at all: starting our agent on it would restart
+ * theirs.
+ *
+ * A daemon this session may drive (`isOurs`: a configured or orphaned one)
+ * and keeps is pointed at a device the session now drives, so that device is
+ * claimed here; if another session claims it first, the daemon is dropped.
  */
-async function withoutOtherSessionsDaemons<T extends { client: TapsmithGrpcClient; address: string }>(
+async function withoutOtherSessionsDaemons<T extends { client: TapsmithGrpcClient; address: string; source: DaemonSource; claimedDevice?: string }>(
   live: T[],
 ): Promise<T[]> {
   const session = currentSession();
   const kept = await Promise.all(live.map(async (daemon) => {
-    const holder = await daemonDriverElsewhere(
-      daemon.address,
-      () => daemon.client.listDevices().then(({ devices }) => activeDeviceOf(devices)),
-      session,
-    );
-    if (!holder) return daemon;
-    log(`Ignoring ${daemon.address} — another Tapsmith session is driving ${holder.device} through it`);
-    daemon.client.close();
-    return null;
+    let active: string | undefined;
+    let asked = false;
+    const activeDevice = async (): Promise<string | undefined> => {
+      if (!asked) {
+        asked = true;
+        active = await daemon.client.listDevices().then(({ devices }) => activeDeviceOf(devices)).catch(() => undefined);
+      }
+      return active;
+    };
+    const drop = (why: string): null => {
+      log(`Ignoring ${daemon.address} — ${why}`);
+      daemon.client.close();
+      return null;
+    };
+    const holder = await daemonDriverElsewhere(daemon.address, activeDevice, session);
+    if (holder) return drop(`another Tapsmith session is driving ${holder.device} through it`);
+    // UI workers' and peers' devices are their owners' to claim.
+    if (!isOurs(daemon.source)) return daemon;
+    const device = await activeDevice();
+    if (!device) return daemon;
+    const claim = claimDevice(device, session, { daemonAddress: daemon.address });
+    if (!claim.ok) return drop(`it is pointed at ${device}, which another Tapsmith session is driving`);
+    daemon.claimedDevice = device;
+    return daemon;
   }));
   return kept.filter((d): d is Awaited<T> => d !== null);
 }
@@ -697,7 +726,7 @@ async function discover(): Promise<void> {
   }
 
   // Probe candidates in parallel
-  type LiveDaemon = { client: TapsmithGrpcClient; address: string; source: DaemonSource };
+  type LiveDaemon = { client: TapsmithGrpcClient; address: string; source: DaemonSource; claimedDevice?: string };
   const probeAll = async (entries: Array<[string, DaemonSource]>): Promise<LiveDaemon[]> => {
     const results = await Promise.all(entries.map(async ([address, source]) => {
       let client: TapsmithGrpcClient | undefined;
@@ -738,7 +767,7 @@ async function discover(): Promise<void> {
 
   if (live.length > 0) {
     // Connect to all live daemons in parallel, then batch-update shared state
-    const newConns = await Promise.all(live.map(async ({ client, address, source }) => {
+    const newConns = await Promise.all(live.map(async ({ client, address, source, claimedDevice }) => {
       if (_connections.some(c => c.address === address)) {
         client.close();
         return null;
@@ -769,6 +798,7 @@ async function discover(): Promise<void> {
           source,
           platform: ui?.platform,
           preparedDevice: ui?.deviceSerial,
+          claimedDevice,
         } as DaemonConnection;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1571,6 +1601,14 @@ async function prepareTarget(
     throw err;
   }
   const repointed = isRepointing(wasPointedAt, serial);
+  // Moved off a device this session had pointed it at: give that one back,
+  // unless another of its daemons still serves it (PILOT-381).
+  const previous = conn.preparedDevice ?? conn.claimedDevice;
+  if (repointed && previous && previous !== serial) {
+    conn.claimedDevice = undefined;
+    const stillServed = _connections.some((c) => c !== conn && (c.preparedDevice === previous || c.claimedDevice === previous));
+    if (!stillServed) releaseDeviceClaim(previous, currentSession());
+  }
   // Record the move before starting the agent: `setDevice` has already
   // happened, so if the agent start throws, the next claim must still see this
   // daemon as pointed here rather than assume it never moved.
@@ -2084,9 +2122,12 @@ function removeConnection(conn: DaemonConnection): void {
   // (PILOT-381): give the claim back unless another of its daemons serves it.
   // Never a UI worker's: that device is the UI session's, driven by its
   // workers whatever happens to this connection.
-  const device = conn.preparedDevice;
-  if (device && conn.source !== 'ui' && !_connections.some((c) => c.preparedDevice === device)) {
-    releaseDeviceClaim(device, currentSession());
+  if (conn.source !== 'ui') {
+    for (const device of new Set([conn.preparedDevice, conn.claimedDevice])) {
+      if (device && !_connections.some((c) => c.preparedDevice === device || c.claimedDevice === device)) {
+        releaseDeviceClaim(device, currentSession());
+      }
+    }
   }
 }
 

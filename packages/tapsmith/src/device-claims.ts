@@ -62,8 +62,17 @@ export interface DeviceClaim {
   /** The device's serial (Android) or UDID (iOS). */
   device: string
   session: SessionIdentity
-  /** The process that made the claim (a worker, a watch child, the root). */
+  /** The process that made the claim first (a worker, a watch child, the root). */
   claimantPid: number
+  /**
+   * The session's processes that hold the claim now: each process that claims
+   * the device joins, and each that gives it back ({@link releaseDeviceClaim})
+   * leaves; the claim ends when none is left. So one process of a session
+   * failing on a device never takes it from another still driving it (an MCP
+   * server and its `run_tests` child, the CLI and a worker). Absent on a claim
+   * the root alone made.
+   */
+  holders?: ProcessRef[]
   /** The daemon the session drives this device through most recently, when known. */
   daemonAddress?: string
   /**
@@ -74,6 +83,13 @@ export interface DeviceClaim {
   daemonAddresses?: string[]
   /** ISO time the claim was made. */
   claimedAt: string
+}
+
+/** A process, with its start time so a recycled pid is not taken for it. */
+export interface ProcessRef {
+  pid: number
+  /** {@link SessionIdentity.startToken} for this process. */
+  startToken?: string
 }
 
 /** A claim as listed, with whether its session is still running. */
@@ -242,13 +258,33 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** Whether `session`'s root process is still the one that made its claims. */
-function sessionIsLive(session: SessionIdentity): boolean {
-  if (!pidAlive(session.pid)) return false;
-  if (session.startToken === undefined) return true;
-  const now = processStartToken(session.pid);
+/** Whether `ref` is still the process it was when recorded. */
+function processIsLive(ref: ProcessRef): boolean {
+  if (!pidAlive(ref.pid)) return false;
+  if (ref.startToken === undefined) return true;
+  const now = processStartToken(ref.pid);
   // Unreadable now (ps failed): trust the live pid rather than steal a device.
-  return now === undefined || now === session.startToken;
+  return now === undefined || now === ref.startToken;
+}
+
+/**
+ * Whether a claim still stands: its session's root runs, or a process of the
+ * session still holds it. The second keeps a run's claims standing when only
+ * its root went — the CLI's outer process killed while the tsx child it
+ * re-executed still drives the device.
+ */
+function claimIsLive(claim: DeviceClaim): boolean {
+  return processIsLive(claim.session) || (claim.holders ?? []).some(processIsLive);
+}
+
+let ownRef: ProcessRef | undefined;
+/** This process, as a claim holder. Its start token never changes, so it is read once. */
+function thisProcess(): ProcessRef {
+  if (!ownRef) {
+    const token = processStartToken(process.pid);
+    ownRef = token ? { pid: process.pid, startToken: token } : { pid: process.pid };
+  }
+  return ownRef;
 }
 
 // ─── Registry ───
@@ -262,7 +298,15 @@ function isDeviceClaim(value: unknown): value is DeviceClaim {
     && typeof v.claimedAt === 'string'
     && (v.daemonAddress === undefined || typeof v.daemonAddress === 'string')
     && (v.daemonAddresses === undefined
-      || (Array.isArray(v.daemonAddresses) && v.daemonAddresses.every((a) => typeof a === 'string')));
+      || (Array.isArray(v.daemonAddresses) && v.daemonAddresses.every((a) => typeof a === 'string')))
+    && (v.holders === undefined || (Array.isArray(v.holders) && v.holders.every(isProcessRef)));
+}
+
+function isProcessRef(value: unknown): value is ProcessRef {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.pid === 'number' && Number.isInteger(v.pid) && v.pid > 0
+    && (v.startToken === undefined || typeof v.startToken === 'string');
 }
 
 function readClaim(file: string): DeviceClaim | undefined {
@@ -323,14 +367,17 @@ export function claimDevice(
   return withRegistryLock(dir, (): ClaimResult => {
     const file = claimFile(dir, device);
     const existing = readClaim(file);
-    if (existing && existing.session.id !== session.id && sessionIsLive(existing.session)) {
+    if (existing && existing.session.id !== session.id && claimIsLive(existing)) {
       return { ok: false, holder: existing };
     }
     const sameSession = existing?.session.id === session.id;
+    const me = thisProcess();
+    const others = sameSession ? (existing?.holders ?? []).filter((h) => h.pid !== me.pid && processIsLive(h)) : [];
     writeClaim(file, {
       device,
       session,
-      claimantPid: process.pid,
+      claimantPid: sameSession && existing ? existing.claimantPid : process.pid,
+      holders: [...others, me],
       daemonAddress: opts.daemonAddress ?? (sameSession ? existing?.daemonAddress : undefined),
       daemonAddresses: [...new Set([
         ...(sameSession ? addressesOf(existing) : []),
@@ -365,18 +412,32 @@ export function claimDeviceOrThrow(
 }
 
 /**
- * Give back `session`'s claim on `device` — for a caller whose setup on a
- * device it just claimed failed, so a session that lives on (UI, watch, an MCP
- * server) does not hold a device it is not driving. A claim of another
- * session is never touched.
+ * This process gives back its hold on `session`'s claim of `device` — for a
+ * caller whose setup on the device failed, or that stopped driving it, so a
+ * session that lives on (UI, watch, an MCP server) does not hold a device it
+ * is not driving. The claim ends only when no live process of the session
+ * holds it any more; a claim of another session is never touched.
  */
 export function releaseDeviceClaim(device: string, session: SessionIdentity, opts: ClaimOptions = {}): void {
   const dir = claimsDir(opts.env ?? process.env);
   withRegistryLock(dir, () => {
     const file = claimFile(dir, device);
-    if (readClaim(file)?.session.id !== session.id) return;
+    const claim = readClaim(file);
+    if (claim?.session.id !== session.id) return;
+    const remaining = (claim.holders ?? []).filter((h) => h.pid !== process.pid && processIsLive(h));
+    if (remaining.length > 0) {
+      writeClaim(file, { ...claim, holders: remaining });
+      return;
+    }
     try { fs.rmSync(file, { force: true }); } catch { /* already gone */ }
   });
+}
+
+/** The devices this process holds a claim of `session` on. */
+export function devicesHeldByThisProcess(session: SessionIdentity = currentSession(), opts: ClaimOptions = {}): Set<string> {
+  return new Set(listDeviceClaims(opts)
+    .filter((c) => c.session.id === session.id && (c.holders ?? []).some((h) => h.pid === process.pid))
+    .map((c) => c.device));
 }
 
 /** Drop every claim `sessionId` holds. */
@@ -404,17 +465,18 @@ export function listDeviceClaims(opts: ClaimOptions = {}): ListedDeviceClaim[] {
   } catch {
     return [];
   }
-  const liveBySession = new Map<string, boolean>();
+  // Roots are shared by every claim of a session: judge each once.
+  const rootLive = new Map<string, boolean>();
   const claims: ListedDeviceClaim[] = [];
   for (const f of files) {
     const claim = readClaim(path.join(dir, f));
     if (!claim) continue;
-    let live = liveBySession.get(claim.session.id);
-    if (live === undefined) {
-      live = sessionIsLive(claim.session);
-      liveBySession.set(claim.session.id, live);
+    let root = rootLive.get(claim.session.id);
+    if (root === undefined) {
+      root = processIsLive(claim.session);
+      rootLive.set(claim.session.id, root);
     }
-    claims.push({ ...claim, live });
+    claims.push({ ...claim, live: root || (claim.holders ?? []).some(processIsLive) });
   }
   return claims.sort((a, b) => a.device.localeCompare(b.device));
 }
@@ -581,7 +643,3 @@ export function claimUpTo(
   return { claimed, held };
 }
 
-/** The devices `session` holds now. */
-export function sessionDevices(session: SessionIdentity = currentSession(), opts: ClaimOptions = {}): Set<string> {
-  return new Set(listDeviceClaims(opts).filter((c) => c.session.id === session.id).map((c) => c.device));
-}

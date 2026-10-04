@@ -29,7 +29,7 @@ import {
   type DeviceSession,
 } from './device-session.js';
 import type { PreparedState, ResetCapabilities } from './app-reset.js';
-import { claimDeviceOrThrow, claimFirstFree, claimUpTo, currentSession, ensureClaimSession, releaseDeviceClaim, sessionDevices, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
+import { claimDeviceOrThrow, claimFirstFree, claimUpTo, currentSession, ensureClaimSession, devicesHeldByThisProcess, heldDevicesNote, releaseDeviceClaim, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { discoverTestFiles } from './test-file-discovery.js';
 import { resolveTsxBin } from './child-scripts.js';
@@ -559,11 +559,13 @@ async function setupSequentialDevice(
   ...args: Parameters<typeof setupSequentialDeviceClaimed>
 ): Promise<SequentialDeviceState> {
   const session = currentSession();
-  const heldBefore = sessionDevices(session);
+  // This process's holds, not the session's: another process of the session
+  // (an MCP server whose run_tests child this is) may claim meanwhile.
+  const heldBefore = devicesHeldByThisProcess(session);
   try {
     return await setupSequentialDeviceClaimed(...args);
   } catch (err) {
-    for (const device of sessionDevices(session)) {
+    for (const device of devicesHeldByThisProcess(session)) {
       if (!heldBefore.has(device)) releaseDeviceClaim(device, session);
     }
     throw err;
@@ -584,7 +586,9 @@ async function setupSequentialDeviceClaimed(
 
   if (!target.selectedSerial) {
     progress?.fail('primary-device', 'no online device found');
-    throw new Error(noOnlineDeviceMessage(cfg, listAdbDevices()));
+    // Devices that are there but held by other sessions are named: the user
+    // stops one, rather than looking for a device problem they do not have.
+    throw new Error(noOnlineDeviceMessage(cfg, listAdbDevices()) + heldDevicesNote(withoutHeldDevices(listConnectedDeviceSerials()).held));
   }
 
   cfg.device = target.selectedSerial;
@@ -982,6 +986,10 @@ async function provisionGroupMemberDevices(
  */
 function teardownSequentialDevice(state: SequentialDeviceState): void {
   for (const member of state.sessions.slice(1)) closeDeviceSession(member);
+  // The run moves to another target: give its devices back (PILOT-381).
+  for (const serial of new Set([state.deviceSerial, ...state.sessions.map((s) => s.serial)])) {
+    releaseDeviceClaim(serial, currentSession());
+  }
   try { state.device.close(); } catch { /* already closed */ }
   try { state.client.close(); } catch { /* already closed */ }
   if (spawnedDaemonProcess) {
@@ -1446,6 +1454,11 @@ async function provisionDevicesForBucketUnclaimed(
   if (desiredWorkers <= 0) return { serials: [], launched: [], reusedSimulatorCount: 0 };
   const pinnedMembers = (pinnedGroup ?? []).flatMap((e) => (e.device ? [e.device] : []));
   if (pinnedGroup && pinnedMembers.length > 0) {
+    // A pinned member another session drives is refused by name, not left to
+    // surface as a device shortfall (PILOT-381).
+    for (const serial of [pinnedGroup[0].device, ...pinnedMembers]) {
+      if (serial) claimDeviceOrThrow(serial, currentSession());
+    }
     // A pinned group is exactly one worker: the primary (pinned or the first
     // device found), then the members in order — each keeping its pin, the
     // unpinned ones taking the next free device provisioned here. Nothing to

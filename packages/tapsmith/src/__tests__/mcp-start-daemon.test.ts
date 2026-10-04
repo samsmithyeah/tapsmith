@@ -393,4 +393,31 @@ describe('daemons another session owns', () => {
     await expect(ensurePlatformTarget(config)).rejects.toThrow();
     expect(listDeviceClaims().map((c) => c.device)).not.toContain('emulator-5560');
   });
+
+  it('is not adopted when it is pointed at a device another session drives through a different daemon', async () => {
+    claimDevice('emulator-5554', other, { daemonAddress: 'localhost:50999' });
+    waitForReady = () => Promise.resolve(true);
+    listDevices = (address) => Promise.resolve({
+      devices: address === 'localhost:50051' ? [{ serial: 'emulator-5554', state: 'Active' }] : [],
+    });
+    spawnMock.mockImplementation(() => new FakeDaemon());
+
+    await ensureConnected();
+    expect(getAllDaemonAddresses()).not.toContain('50051');
+    expect(stderr).toContain('emulator-5554, which another Tapsmith session is driving');
+  });
+
+  it('claims the device an adopted daemon of its own is already pointed at', async () => {
+    const { listDeviceClaims, currentSession } = await import('../device-claims.js');
+    waitForReady = () => Promise.resolve(true);
+    listDevices = () => Promise.resolve({ devices: [{ serial: 'emulator-5570', state: 'Active' }] });
+    spawnMock.mockImplementation(() => new FakeDaemon());
+
+    await ensureConnected();
+    expect(getAllDaemonAddresses()).toContain('localhost:50051');
+    const claim = listDeviceClaims().find((c) => c.device === 'emulator-5570');
+    expect(claim?.session.id).toBe(currentSession().id);
+    // Given back with the connection.
+    closeAllClients();
+  });
 });

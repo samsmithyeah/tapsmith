@@ -17,7 +17,7 @@ import { sharedDeviceGroup } from './project.js';
 import { findDaemonBin } from './daemon-bin.js';
 import { assignGroupMemberDevices, deviceGroupSize, resolveDeviceGroup, type DeviceGroupEntry } from './config.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
-import { claimDeviceOrThrow, claimUpTo, currentSession, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
+import { claimDeviceOrThrow, claimUpTo, currentSession, heldDevicesNote, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { labelledMessage, withDetail } from './error-detail.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary, type DaemonOutputCapture, type DaemonStartFailed } from './daemon-start.js';
 import type { TestResult, SuiteResult } from './runner.js';
@@ -1528,11 +1528,17 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         isIos
           ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
           // adb's state now, not at discovery: provisioning may have changed it.
-          : noOnlineDeviceMessage(config, listAdbDevices()),
+          : noOnlineDeviceMessage(config, listAdbDevices())
+            + heldDevicesNote(withoutHeldDevices(listAdbDevices().filter((d) => d.state === 'device').map((d) => d.serial)).held),
       );
     }
 
     if (pinnedGroup) {
+      // A pinned member another session drives is refused by name, not left
+      // to surface as a device shortfall (PILOT-381).
+      for (const serial of [deviceGroup[0].device, ...pinnedMemberSerials]) {
+        if (serial) claimDeviceOrThrow(serial, currentSession());
+      }
       // A pinned group: its one worker holds the primary (from `config.device`
       // or the first unpinned device found), then the members in order — each
       // keeping its pin, the unpinned ones taking the next free device.
