@@ -70,6 +70,7 @@ For iOS, Tapsmith clones simulators automatically when multiple workers are requ
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
+  platform: "ios",
   app: "./build/MyApp.app",
   package: "com.example.myapp",
   workers: 4,

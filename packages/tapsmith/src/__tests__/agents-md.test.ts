@@ -24,6 +24,20 @@ describe('renderAgentsSection()', () => {
     expect(section).toContain('waitForTimeout');
     expect(section).toContain('tapsmith doctor --json');
   });
+
+  it('gives commands and defaults that match the product (PILOT-517)', () => {
+    const section = renderAgentsSection();
+    // Codex registers a Streamable HTTP server with --url; a bare URL is
+    // taken as a command to launch.
+    expect(section).toContain('codex mcp add tapsmith-ui --url http://localhost:<port>/mcp');
+    expect(section).not.toMatch(/codex mcp add tapsmith-ui http/);
+    // trace defaults to 'off': traces exist only when the config or flag asks.
+    expect(section).not.toContain('Failed runs record traces');
+    expect(section).toContain('--trace retain-on-failure');
+    // The default reset scope is per file, hooks or not.
+    expect(section).not.toMatch(/before every test, automatically/);
+    expect(section).toContain("appResetScope: 'test'");
+  });
 });
 
 describe('mergeAgentsMd()', () => {

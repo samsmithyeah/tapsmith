@@ -625,6 +625,38 @@ describe('Device.route()', () => {
     expect(stream.writes).toHaveLength(1);
   });
 
+  it('counts successful registrations for the runner and resets when taken (PILOT-517)', async () => {
+    const stream = new FakeRouteStream();
+    const client = makeMockClient({
+      networkRouteStream: vi.fn(
+        () => stream as unknown as ReturnType<TapsmithGrpcClient['networkRouteStream']>,
+      ),
+    });
+    const device = new Device(client);
+
+    await device.route('**/a', async () => undefined);
+    await device.route('**/b', async () => undefined);
+
+    expect(device._takeRouteRegistrations()).toBe(2);
+    expect(device._takeRouteRegistrations()).toBe(0);
+  });
+
+  it('does not count a registration that failed', async () => {
+    const client = makeMockClient({
+      startNetworkCapture: vi.fn(async () => ({
+        requestId: '1',
+        success: false,
+        proxyPort: 0,
+        errorMessage: 'proxy unavailable',
+      })),
+    });
+    const device = new Device(client);
+    await device._startNetworkCapture();
+
+    await expect(device.route('**/posts*', async () => undefined)).rejects.toThrow();
+    expect(device._takeRouteRegistrations()).toBe(0);
+  });
+
   it('passes keepRunning through when stopping network capture', async () => {
     const stopNetworkCapture = vi.fn(async () => ({
       requestId: '1',

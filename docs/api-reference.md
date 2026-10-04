@@ -633,7 +633,7 @@ Tapsmith supports Playwright-style network interception. Route handlers let you 
 
 #### `device.route(url, handler, options?): Promise<void>`
 
-Intercept network requests matching a URL pattern. Requires network tracing to be enabled (set `trace` to any mode other than `'off'` with `network: true`, which is the default). Without it, the MITM proxy that intercepts traffic is not active and route handlers will never fire. Route handlers only see traffic Tapsmith can decrypt; hosts that are configured for passthrough, or dynamically tunneled because an HTTP/2-capable client rejects the generated MITM certificate, cannot be matched.
+Intercept network requests matching a URL pattern. Requires network tracing to be recording the test (a `trace` mode that records the attempt — `'on'` or a `'retain-on-…'` mode for every attempt; `'on-first-retry'` / `'on-all-retries'` start it only on retries — with `network: true`, which is the default). `trace` defaults to `'off'`, and without a running proxy route handlers never fire; Tapsmith then prints a warning at the end of the test that registered them (or, for a hook, the first test after it), naming it (see [Network prerequisites](network.md#prerequisites)). If capture was attempted and failed to start, `route()` throws `Network capture disabled: …` instead. Route handlers only see traffic Tapsmith can decrypt; hosts that are configured for passthrough, or dynamically tunneled because an HTTP/2-capable client rejects the generated MITM certificate, cannot be matched.
 
 See also: [`device.unroute()`](#deviceunrouteurl-handler-promisevoid), [`device.unrouteAll()`](#deviceunrouteall-promisevoid).
 

@@ -266,7 +266,7 @@ export async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
     kind: 'apk',
     message: 'Where is your Android APK?',
     candidates: orderApkCandidates(findApkCandidates(process.cwd())),
-    noneFound: 'No APK found under android/**/build/outputs/apk/ — build one first (e.g. cd android && ./gradlew assembleDebug), or enter its path.',
+    noneFound: 'No APK found under android/**/build/outputs/apk/ — build one first (e.g. cd android && ./gradlew assembleDebug; a React Native Debug build also needs Metro running, see https://tapsmith.dev/getting-started/#build-the-app-under-test), or enter its path.',
     typeMessage: 'Path to your Android APK:',
   });
 
@@ -341,7 +341,7 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
       kind: 'simulator-app',
       message: 'Where is your iOS .app bundle? (simulator build)',
       candidates: findIosAppCandidates(process.cwd()),
-      noneFound: 'No simulator build (.app) found under ios/ — build one first (in ios/: xcodebuild -workspace <App>.xcworkspace -scheme <App> -sdk iphonesimulator -derivedDataPath build), or enter its path.',
+      noneFound: 'No simulator build (.app) found under ios/ — build one first (in ios/: xcodebuild -workspace <App>.xcworkspace -scheme <App> -sdk iphonesimulator -derivedDataPath build; see https://tapsmith.dev/getting-started/#build-the-app-under-test), or enter its path.',
       typeMessage: 'Path to your simulator build (.app):',
     });
     simBundleId = detectBundleId(appPath);
