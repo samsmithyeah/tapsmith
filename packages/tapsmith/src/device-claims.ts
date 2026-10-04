@@ -175,7 +175,24 @@ function readSessionEnv(env: NodeJS.ProcessEnv): SessionIdentity | undefined {
  * same start time in another language or time zone than the shell that
  * recorded it — and take a live session's device as stale.
  */
+const START_TOKEN_TTL_MS = 5_000;
+const startTokenCache = new Map<number, { token: string | undefined; at: number }>();
+
+/**
+ * {@link readProcessStartToken}, remembered for a few seconds: a registry query
+ * judges every holder, and on macOS each judgement spawns `ps` synchronously,
+ * which on a loaded host blocks the event loop for long enough to stall MCP
+ * tool calls. A pid recycled within the window is the only thing it can miss.
+ */
 function processStartToken(pid: number): string | undefined {
+  const cached = startTokenCache.get(pid);
+  if (cached && Date.now() - cached.at < START_TOKEN_TTL_MS) return cached.token;
+  const token = readProcessStartToken(pid);
+  startTokenCache.set(pid, { token, at: Date.now() });
+  return token;
+}
+
+function readProcessStartToken(pid: number): string | undefined {
   // Linux: the start time in clock ticks since boot, straight from the
   // kernel. `ps lstart` there is derived from a boot time that procps
   // recomputes on every read, and can come out a second off — a live
@@ -453,11 +470,15 @@ export function releaseSessionClaims(sessionId: string, opts: ClaimOptions = {})
   } catch {
     return;
   }
-  for (const f of files) {
-    const file = path.join(dir, f);
-    if (readClaim(file)?.session.id !== sessionId) continue;
-    try { fs.rmSync(file, { force: true }); } catch { /* already gone */ }
-  }
+  // Under the lock, re-reading each file: a claim another session took over
+  // between a read and the removal must survive.
+  withRegistryLock(dir, () => {
+    for (const f of files) {
+      const file = path.join(dir, f);
+      if (readClaim(file)?.session.id !== sessionId) continue;
+      try { fs.rmSync(file, { force: true }); } catch { /* already gone */ }
+    }
+  });
 }
 
 /** Every recorded claim, live or stale, sorted by device. */

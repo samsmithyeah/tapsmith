@@ -20,7 +20,7 @@ vi.mock('proper-lockfile', () => ({
 
 // Simulators other live Tapsmith sessions hold (PILOT-381), by UDID. Plain
 // functions, not vi.fn: `resetAllMocks` below would wipe their behaviour.
-const claims = vi.hoisted(() => ({ held: new Set<string>() }));
+const claims = vi.hoisted(() => ({ held: new Set<string>(), claimedMeanwhile: new Set<string>() }));
 vi.mock('../device-claims.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../device-claims.js')>();
   const holder = (device: string) => ({
@@ -32,6 +32,10 @@ vi.mock('../device-claims.js', async (importOriginal) => {
   return {
     ...actual,
     devicesHeldElsewhere: () => new Set(claims.held),
+    // `claimedMeanwhile`: claimed by another session after the snapshot above.
+    claimDevice: (device: string) => (claims.held.has(device) || claims.claimedMeanwhile.has(device)
+      ? { ok: false, holder: holder(device) }
+      : { ok: true, fresh: true }),
     withoutHeldDevices: (candidates: readonly string[]) => ({
       free: candidates.filter((d) => !claims.held.has(d)),
       held: candidates.filter((d) => claims.held.has(d)).map(holder),
@@ -101,6 +105,7 @@ function mockListSimulators(sims: Array<Partial<SimulatorInfo>>): void {
 beforeEach(() => {
   vi.resetAllMocks();
   claims.held.clear();
+  claims.claimedMeanwhile.clear();
   // Default: manifest doesn't exist (readFileSync throws), but pretend the
   // file exists on disk so ensureManifestFile() skips its initialization
   // write — keeping the first writeFileSync call as the actual data write
@@ -1080,5 +1085,19 @@ describe('simulators another live Tapsmith session holds', () => {
       if (c[2] === 'delete' || c[2] === 'shutdown') expect(c).not.toContain('HELD');
       if (c[2] === 'delete') expect(c).not.toContain('HELD_REUSE');
     }
+  });
+
+  it('are claimed as they are taken, passing over one another session claimed meanwhile', () => {
+    const calls: string[][] = [];
+    simctl([
+      { udid: 'PRIMARY', name: 'iPhone 16', state: 'Booted' },
+      { udid: 'RACED', name: 'iPhone 16', state: 'Booted' },
+      { udid: 'FREE', name: 'iPhone 16', state: 'Shutdown' },
+    ], calls);
+    mockedReadFileSync.mockReturnValue('[]');
+    claims.claimedMeanwhile = new Set(['RACED']);
+
+    const result = provisionSimulators({ simulatorName: 'iPhone 16', workers: 2, existingUdids: ['PRIMARY'], onProgress: () => {} });
+    expect(result.allUdids).toEqual(['PRIMARY', 'FREE']);
   });
 });

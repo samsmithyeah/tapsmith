@@ -600,6 +600,8 @@ let _discoveryFailures: string[] = [];
  */
 function giveBack(device: string): void {
   if (_uiMode) return;
+  // Another pooled daemon of this session still serves it: keep it.
+  if (_connections.some((c) => c.preparedDevice === device || c.claimedDevice === device)) return;
   releaseDeviceClaim(device, currentSession());
 }
 
@@ -779,6 +781,7 @@ async function discover(): Promise<void> {
 
   if (live.length > 0) {
     // Connect to all live daemons in parallel, then batch-update shared state
+    const notAdopted: string[] = [];
     const newConns = await Promise.all(live.map(async ({ client, address, source, claimedDevice }) => {
       if (_connections.some(c => c.address === address)) {
         client.close();
@@ -817,12 +820,15 @@ async function discover(): Promise<void> {
         log(`Failed to connect to daemon at ${address}: ${msg}`);
         _discoveryFailures.push(`Could not connect to the daemon at ${address}: ${msg}`);
         client.close();
-        // Not adopted after all: give back the device discovery claimed for it.
-        if (claimedDevice) giveBack(claimedDevice);
+        // Not adopted after all: give back the device discovery claimed for
+        // it — once the daemons that were adopted are pooled, since one of
+        // them may be pointed at the same device.
+        if (claimedDevice) notAdopted.push(claimedDevice);
         return null;
       }
     }));
     _connections.push(...newConns.filter((c): c is DaemonConnection => c !== null));
+    for (const device of notAdopted) giveBack(device);
     if (_connections.length > 0) {
       await refreshDeviceIndex();
       return;

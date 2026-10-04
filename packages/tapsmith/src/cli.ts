@@ -1687,7 +1687,9 @@ async function provisionPerProjectDevices(
     if (provisioned.serials.length === 0) {
       throw new Error(
         `Failed to provision any devices for bucket "${signature.split('|').slice(0, 2).join(' ')}".`
-        + (bucketEffective.platform === 'ios' ? '' : ` ${attachedDeviceAdvice(bucketEffective, listAdbDevices())}`),
+        + (bucketEffective.platform === 'ios' ? '' : ` ${attachedDeviceAdvice(bucketEffective, listAdbDevices())}`)
+        // Devices other sessions hold are named, not left to read as missing.
+        + (bucketEffective.platform === 'ios' ? '' : heldDevicesNote(withoutHeldDevices(listConnectedDeviceSerials()).held)),
       );
     }
     if (provisioned.serials.length < groupSize) {

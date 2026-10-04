@@ -16,7 +16,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { withFileLockSync } from './file-lock.js';
-import { DeviceClaimedError, devicesHeldElsewhere, withoutHeldDevices } from './device-claims.js';
+import { DeviceClaimedError, claimDevice, currentSession, devicesHeldElsewhere, withoutHeldDevices } from './device-claims.js';
 
 export interface SimulatorInfo {
   udid: string
@@ -436,6 +436,10 @@ export function provisionSimulator(
     );
   }
 
+  // Claimed before it is booted, so a session starting alongside takes
+  // another one (PILOT-381).
+  const claim = claimDevice(sim.udid, currentSession());
+  if (!claim.ok) throw new DeviceClaimedError(sim.udid, claim.holder);
   if (sim.state !== 'Booted') bootSimulator(sim.udid);
   // As provisionSimulators does: what follows (the daemon's device
   // selection, the install, the agent start) would otherwise race a
@@ -999,6 +1003,11 @@ export function provisionSimulators(opts: {
   // Simulators another live Tapsmith session holds: never adopted, reused,
   // pruned or shut down as a clone source here (PILOT-381).
   const heldElsewhere = devicesHeldElsewhere();
+  // Each simulator is claimed as it is taken — before it is booted or has
+  // the app installed — so a session provisioning at the same time cannot
+  // adopt it in the tens of seconds that takes (PILOT-381). One another
+  // session claimed since the snapshot above is passed over.
+  const claimNow = (udid: string): boolean => claimDevice(udid, currentSession()).ok;
   const primarySim = existingUdids.length > 0
     ? allSims.find((s) => s.udid === existingUdids[0])
     : undefined;
@@ -1014,6 +1023,7 @@ export function provisionSimulators(opts: {
       deleteSimulator(udid);
       continue;
     }
+    if (!claimNow(udid)) continue;
     logProgress(`Reusing simulator ${udid} (${sim?.name ?? 'unknown'}) from previous run.`);
     reusedUdids.push(udid);
     allUdids.push(udid);
@@ -1048,6 +1058,7 @@ export function provisionSimulators(opts: {
   const alreadyBooted = matching.filter((s) => s.state === 'Booted');
   for (const sim of alreadyBooted) {
     if (allUdids.length >= workers) break;
+    if (!claimNow(sim.udid)) continue;
     // Booted by anyone — this run did not record it, so not "from previous run".
     logProgress(`Reusing already-booted simulator ${sim.udid} (${sim.name}).`);
     reusedUdids.push(sim.udid);
@@ -1062,6 +1073,7 @@ export function provisionSimulators(opts: {
   const shutdown = matching.filter((s) => s.state === 'Shutdown');
   for (const sim of shutdown) {
     if (allUdids.length >= workers) break;
+    if (!claimNow(sim.udid)) continue;
     bootSimulator(sim.udid);
     if (opts.appPath) {
       try { installApp(sim.udid, opts.appPath); } catch { /* may already be installed */ }
@@ -1113,6 +1125,7 @@ export function provisionSimulators(opts: {
           // the end left each one exposed for the boot and app install of every
           // simulator after it.
           recordClonedSimulators([{ udid: newUdid, name: createName, cloned: true }], simulatorName);
+          claimNow(newUdid);
           bootSimulator(newUdid);
           if (!waitForSimulatorBootComplete(newUdid)) {
             logProgress(`Simulator ${createName} is still booting after ${SIMULATOR_BOOT_TIMEOUT_MS / 1000}s; continuing`, 'warning');
@@ -1138,6 +1151,7 @@ export function provisionSimulators(opts: {
           const newUdid = cloneSimulator(source.udid, cloneName);
           // Recorded immediately — see the create path above for why.
           recordClonedSimulators([{ udid: newUdid, name: cloneName, cloned: true }], simulatorName);
+          claimNow(newUdid);
           bootSimulator(newUdid);
           if (!waitForSimulatorBootComplete(newUdid)) {
             logProgress(`Simulator ${cloneName} is still booting after ${SIMULATOR_BOOT_TIMEOUT_MS / 1000}s; continuing`, 'warning');
