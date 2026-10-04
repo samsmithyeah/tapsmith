@@ -83,11 +83,6 @@ enum TextMatch {
         return needle.isEmpty || normalize(text).lowercased().contains(needle)
     }
 
-    /// ICU full-match pattern accepting the labels `nameMatches` accepts.
-    static func nameQueryPattern(_ query: String, exact: Bool) -> String {
-        exact ? concatenatedLabelPattern(query) : "(?si).*\(words(query)).*"
-    }
-
     /// ICU full-match pattern: the label equals `query` after normalizing both.
     static func exactPattern(_ query: String) -> String {
         "\(wsClass)*\(words(query))\(wsClass)*"

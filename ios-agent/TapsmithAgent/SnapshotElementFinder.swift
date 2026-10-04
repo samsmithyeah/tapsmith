@@ -1349,7 +1349,7 @@ class SnapshotElementFinder {
             element = resolve(labelQuery(predicate))
         } else if let contentDesc = selector.contentDesc {
             element = resolve(labelQuery(concatenatedLabelPredicate(contentDesc)))
-        } else if selector.role != nil, let name = selector.name {
+        } else if selector.role != nil, selector.name != nil {
             // Role + name: e.g. role("button", "Sign in")
             // The name is a case-insensitive substring by default (PILOT-549),
             // so a name query would also match unrelated earlier labels that
@@ -1366,9 +1366,11 @@ class SnapshotElementFinder {
                 element = labelQuery(NSCompoundPredicate(andPredicateWithSubpredicates: predicates))
                     .element(boundBy: labelIndex)
             } else {
-                element = resolve(labelQuery(
-                    NSPredicate(format: "label MATCHES %@", TextMatch.nameQueryPattern(name, exact: selector.nameExact))
-                ))
+                // Matched through its title with an empty label: no label
+                // query can find this node, and a name query would bind some
+                // other control whose label contains the name. Cache nothing,
+                // so live-element actions fail loudly instead.
+                element = nil
             }
         } else if let role = selector.role {
             // Role-only: match by type.

@@ -87,16 +87,6 @@ expect("name exact: still a child of a concatenated label",
 expect("name exact: child label is case-sensitive",
        !TextMatch.nameMatches("Intro, SIGN IN, More", "Sign In", exact: true))
 
-// The XCUIElement-query pattern accepts the same labels as nameMatches.
-let ci = TextMatch.nameQueryPattern("Sign In", exact: false)
-expect("name pattern: case-insensitive", matches(ci, "SIGN IN"))
-expect("name pattern: substring", matches(ci, "Please sign\u{00A0}in now"))
-expect("name pattern: multi-line label", matches(ci, "Intro\nsign in"))
-expect("name pattern: not a substring", !matches(ci, "Sign out"))
-let ex = TextMatch.nameQueryPattern("Sign In", exact: true)
-expect("name exact pattern: child label", matches(ex, "Intro, Sign In"))
-expect("name exact pattern: case-sensitive", !matches(ex, "SIGN IN"))
-expect("name exact pattern: not a partial", !matches(ex, "Sign In now"))
 
 // Live re-resolution index for role+name matches (PILOT-549): the position
 // within what `label == L [AND identifier == I]` on the scoped type returns.
