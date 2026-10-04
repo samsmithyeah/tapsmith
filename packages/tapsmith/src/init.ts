@@ -3,7 +3,15 @@ import * as path from 'node:path';
 import Enquirer from 'enquirer';
 import figlet from 'figlet';
 import { tryExec, scanEnvironment, type EnvScan, type SimulatorInfo } from './env-scan.js';
-import { detectAndroidPackage, detectIosBundleId } from './init-detect.js';
+import {
+  detectAndroidPackage,
+  detectIosBundleId,
+  findApkCandidates,
+  findIosAppCandidates,
+  findIosDeviceAppCandidates,
+  preferDebugApk,
+} from './init-detect.js';
+import { ADB_FIX } from './adb-devices.js';
 import type { InitCommandOptions } from './cli-program.js';
 import { formatJson, jsonError } from './cli-json.js';
 import { avdCaptureSupport, avdCaptureWarning, noAvdsListedMessage, type AvdImageInfo } from './avd-images.js';
@@ -71,6 +79,72 @@ async function ask<T>(question: Record<string, unknown>): Promise<T> {
   return result['_'];
 }
 
+// ─── Build paths (PILOT-513) ───
+
+/** Which build a path prompt asks for. */
+export type BuildKind = 'apk' | 'simulator-app' | 'device-app';
+
+/**
+ * Validate a typed build path at the prompt: it must exist, an APK as a
+ * file and an `.app` bundle as a directory, relative paths resolved against
+ * the project. A device build must not be a simulator build.
+ */
+export function validateBuildPath(val: string, kind: BuildKind, cwd: string = process.cwd()): true | string {
+  const p = val.trim();
+  if (p.length === 0) {
+    return kind === 'apk' ? 'APK path is required' : kind === 'simulator-app' ? '.app path is required' : 'Device app path is required';
+  }
+  if (kind === 'device-app' && p.includes('iphonesimulator')) {
+    return 'This looks like a simulator build — physical devices need an iphoneos build';
+  }
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(path.resolve(cwd, p));
+  } catch {
+    return `${p} does not exist — check the path, or build your app first`;
+  }
+  if (kind === 'apk' && stat.isDirectory()) return `${p} is a directory, not an APK file`;
+  if (kind !== 'apk' && !stat.isDirectory()) return `${p} is not an .app bundle (a directory)`;
+  return true;
+}
+
+const OTHER_PATH = '\0other-path';
+
+/**
+ * Ask for a build: the builds detection found, as a select (with a way out to
+ * type another path), or a validated path prompt with no placeholder default
+ * when it found none, after a hint on how to build one.
+ */
+async function askBuildPath(opts: {
+  kind: BuildKind;
+  message: string;
+  candidates: string[];
+  noneFound: string;
+  typeMessage: string;
+}): Promise<string> {
+  const validate = (val: string): true | string => validateBuildPath(val, opts.kind);
+  if (opts.candidates.length === 0) {
+    console.log(dim(`  ${opts.noneFound}`));
+    return (await ask<string>({ type: 'input', message: opts.message, validate })).trim();
+  }
+  const picked = await ask<string>({
+    type: 'select',
+    message: opts.message,
+    choices: [
+      ...opts.candidates.map((c) => ({ name: c, message: c })),
+      { name: OTHER_PATH, message: 'Enter another path…' },
+    ],
+  });
+  if (picked !== OTHER_PATH) return picked;
+  return (await ask<string>({ type: 'input', message: opts.typeMessage, validate })).trim();
+}
+
+/** Debug APKs first (the build `init --yes` prefers), then the rest. */
+function orderApkCandidates(candidates: string[]): string[] {
+  const debug = preferDebugApk(candidates);
+  return debug.length === candidates.length ? candidates : [...debug, ...candidates.filter((c) => !debug.includes(c))];
+}
+
 // ─── Platform-specific questions ───
 
 export type Platform = 'android' | 'ios';
@@ -116,7 +190,9 @@ export function avdPickerChoices(
 }
 
 /** The wizard's network-capture summary line for the Android emulator. */
-export function androidEmulatorCaptureLine(avd: string | undefined, avdImages: AvdImageInfo[]): string {
+export function androidEmulatorCaptureLine(avd: string | undefined, avdImages: AvdImageInfo[], adbFound: boolean): string {
+  // configureAndroid has already printed the fix.
+  if (!adbFound) return `  ${YELLOW}⚠${RESET} Android emulator — ADB not found, so Tapsmith cannot reach it yet (see the ADB warning above)`;
   // The picker always returns an AVD, so no AVD means `emulator -list-avds`
   // listed none — configureAndroid has already printed why.
   if (!avd) return `  ${YELLOW}⚠${RESET} Android emulator — no AVD selected (see the AVD warning above)`;
@@ -126,14 +202,30 @@ export function androidEmulatorCaptureLine(avd: string | undefined, avdImages: A
     : `  ${green('✓')} Android emulator (${avd}) — works automatically`;
 }
 
-async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
-  console.log(`  ${bold('Android')}`);
+/** The fix for a missing adb, concrete when the SDK's platform-tools are installed but not on PATH. */
+function adbMissingFix(androidHome: string | undefined): string {
+  if (androidHome) {
+    const platformTools = path.join(androidHome, 'platform-tools');
+    if (fs.existsSync(path.join(platformTools, process.platform === 'win32' ? 'adb.exe' : 'adb'))) {
+      return `adb is in ${platformTools} but not on PATH — add that directory to PATH (e.g. export PATH="${platformTools}:$PATH" in your shell profile)`;
+    }
+  }
+  return ADB_FIX;
+}
 
-  const apkPath = await ask<string>({
-    type: 'input',
+export async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
+  console.log(`  ${bold('Android')}`);
+  if (!env.adbVersion) {
+    console.log(`  ${YELLOW}⚠${RESET} ADB not found — Tapsmith cannot reach Android devices or emulators until it is on PATH`);
+    console.log(dim(`    ${adbMissingFix(env.androidHome)}`));
+  }
+
+  const apkPath = await askBuildPath({
+    kind: 'apk',
     message: 'Where is your Android APK?',
-    initial: './android/app/build/outputs/apk/debug/app-debug.apk',
-    validate: (val: string) => val.trim().length > 0 || 'APK path is required',
+    candidates: orderApkCandidates(findApkCandidates(process.cwd())),
+    noneFound: 'No APK found under android/**/build/outputs/apk/ — build one first (e.g. cd android && ./gradlew assembleDebug), or enter its path.',
+    typeMessage: 'Path to your Android APK:',
   });
 
   let packageName: string | undefined;
@@ -143,12 +235,12 @@ async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
     console.log(dim(`  Detected package: ${detected}`));
   }
   if (!packageName) {
-    packageName = await ask<string>({
+    console.log(dim(`  Could not read the package name from ${apkPath} (needs aapt2 from the Android SDK build-tools).`));
+    packageName = (await ask<string>({
       type: 'input',
       message: 'What is your app\'s package name?',
-      initial: 'com.example.myapp',
       validate: (val: string) => val.trim().length > 0 || 'Package name is required',
-    });
+    })).trim();
   }
 
   const deviceType = await ask<string>({
@@ -203,11 +295,12 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
   let appPath: string | undefined;
   let simBundleId: string | undefined;
   if (useSimulators) {
-    appPath = await ask<string>({
-      type: 'input',
+    appPath = await askBuildPath({
+      kind: 'simulator-app',
       message: 'Where is your iOS .app bundle? (simulator build)',
-      initial: './ios/build/Build/Products/Debug-iphonesimulator/MyApp.app',
-      validate: (val: string) => val.trim().length > 0 || '.app path is required',
+      candidates: findIosAppCandidates(process.cwd()),
+      noneFound: 'No simulator build (.app) found under ios/ — build one first (xcodebuild -sdk iphonesimulator), or enter its path.',
+      typeMessage: 'Path to your simulator build (.app):',
     });
     simBundleId = detectBundleId(appPath);
   }
@@ -292,15 +385,12 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
       }
     }
 
-    deviceAppPath = await ask<string>({
-      type: 'input',
+    deviceAppPath = await askBuildPath({
+      kind: 'device-app',
       message: 'Where is your device build .app? (must be an iphoneos build, not simulator)',
-      initial: './ios/build/Build/Products/Release-iphoneos/MyApp.app',
-      validate: (val: string) => {
-        if (val.trim().length === 0) return 'Device app path is required';
-        if (val.includes('iphonesimulator')) return 'This looks like a simulator build — physical devices need an iphoneos build';
-        return true;
-      },
+      candidates: findIosDeviceAppCandidates(process.cwd()),
+      noneFound: 'No device build (.app) found under ios/ — build one for iphoneos first (see docs/ios-physical-devices.md), or enter its path.',
+      typeMessage: 'Path to your device build (iphoneos .app):',
     });
     deviceBundleIdRead = detectBundleId(deviceAppPath);
   }
@@ -313,7 +403,7 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
   const askBundleId = async (message: string, initial: string | undefined): Promise<string> => (await ask<string>({
     type: 'input',
     message,
-    initial: initial ?? 'com.example.myapp',
+    ...(initial ? { initial } : {}),
     validate: (val: string) => val.trim().length > 0 || 'Bundle ID is required',
   })).trim();
   if (useSimulators && !simBundleId) {
@@ -360,7 +450,7 @@ async function setupNetworkCapture(
 
   if (platforms.includes('android') && androidConfig) {
     if (androidConfig.useEmulators) {
-      lines.push(androidEmulatorCaptureLine(androidConfig.avd, env.avdImages));
+      lines.push(androidEmulatorCaptureLine(androidConfig.avd, env.avdImages, !!env.adbVersion));
     }
     if (androidConfig.usePhysicalDevices) {
       lines.push(`  ${YELLOW}⚠${RESET} Android physical — add the Tapsmith CA to your app's res/xml/network_security_config.xml:`);

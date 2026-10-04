@@ -5,14 +5,25 @@ import type { EnvScan } from '../env-scan.js';
 
 // The wizard's prompts, answered by message so the test reads as a script and
 // records which questions were asked.
+interface Question {
+  type: string;
+  message: string;
+  initial?: unknown;
+  choices?: Array<{ name: string; message: string }>;
+  validate?: (val: string) => true | string;
+}
 const answers = new Map<RegExp, unknown>();
 const asked: string[] = [];
+const questions: Question[] = [];
 vi.mock('enquirer', () => ({
   default: class {
-    prompt(question: { message: string }): Promise<Record<string, unknown>> {
+    prompt(question: Question): Promise<Record<string, unknown>> {
       asked.push(question.message);
+      questions.push(question);
       for (const [pattern, answer] of answers) {
-        if (pattern.test(question.message)) return Promise.resolve({ _: answer });
+        if (pattern.test(question.message)) {
+          return Promise.resolve({ _: typeof answer === 'function' ? (answer as (q: Question) => unknown)(question) : answer });
+        }
       }
       return Promise.reject(new Error(`unexpected prompt: ${question.message}`));
     }
@@ -20,8 +31,13 @@ vi.mock('enquirer', () => ({
 }));
 
 const bundleIds = new Map<string, string>();
-vi.mock('../init-detect.js', () => ({
+let simCandidates: string[] = [];
+let deviceCandidates: string[] = [];
+vi.mock('../init-detect.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../init-detect.js')>(),
   detectAndroidPackage: () => undefined,
+  findIosAppCandidates: () => simCandidates,
+  findIosDeviceAppCandidates: () => deviceCandidates,
   detectIosBundleId: (appPath: string) => bundleIds.get(appPath),
 }));
 
@@ -71,7 +87,10 @@ describe('configureIos() (PILOT-251)', () => {
   beforeEach(() => {
     answers.clear();
     asked.length = 0;
+    questions.length = 0;
     bundleIds.clear();
+    simCandidates = [];
+    deviceCandidates = [];
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
   });
 
@@ -207,5 +226,84 @@ describe('configureIos() (PILOT-251)', () => {
       usePhysicalDevice: false,
       deviceAppPath: undefined,
     });
+  });
+});
+
+describe('configureIos() build detection (PILOT-513)', () => {
+  const question = (pattern: RegExp): Question | undefined => questions.find((q) => pattern.test(q.message));
+  const DETECTED_SIM = 'ios/build/Build/Products/Release-iphonesimulator/myapp.app';
+  const DETECTED_DEVICE = 'ios/build/Build/Products/Release-iphoneos/myapp.app';
+
+  beforeEach(() => {
+    answers.clear();
+    asked.length = 0;
+    questions.length = 0;
+    bundleIds.clear();
+    simCandidates = [];
+    deviceCandidates = [];
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  it('offers the simulator and device builds it found, and reads their bundle id', async () => {
+    simCandidates = [DETECTED_SIM];
+    deviceCandidates = [DETECTED_DEVICE];
+    bundleIds.set(DETECTED_SIM, 'com.acme.myapp');
+    bundleIds.set(DETECTED_DEVICE, 'com.acme.myapp');
+    script('both', [
+      [/simulator build\)/, DETECTED_SIM],
+      [/device build \.app/, DETECTED_DEVICE],
+    ]);
+
+    const ios = await configureIos(env);
+
+    const sim = question(/simulator build\)/);
+    expect(sim?.type).toBe('select');
+    expect(sim?.choices?.[0].name).toBe(DETECTED_SIM);
+    const device = question(/device build \.app/);
+    expect(device?.type).toBe('select');
+    expect(device?.choices?.[0].name).toBe(DETECTED_DEVICE);
+    expect(ios.appPath).toBe(DETECTED_SIM);
+    expect(ios.deviceAppPath).toBe(DETECTED_DEVICE);
+    expect(ios.bundleId).toBe('com.acme.myapp');
+    expect(asked.some((m) => /bundle identifier/.test(m))).toBe(false);
+  });
+
+  it('lists several simulator builds, and takes a typed path from "another path"', async () => {
+    simCandidates = ['ios/a/Debug-iphonesimulator/A.app', 'ios/b/Debug-iphonesimulator/B.app'];
+    script('simulators', [
+      [/simulator build\)/, (q: Question) => q.choices?.at(-1)?.name],
+      [/Path to your simulator build/, ' ./custom/My.app '],
+      [/bundle identifier/, 'com.acme.typed'],
+    ]);
+
+    const ios = await configureIos(env);
+
+    expect(question(/simulator build\)/)?.choices?.map((c) => c.name).slice(0, 2)).toEqual(simCandidates);
+    expect(question(/Path to your simulator build/)?.validate).toBeTypeOf('function');
+    expect(ios.appPath).toBe('./custom/My.app');
+  });
+
+  it('with no builds found, asks for paths with no placeholder default and validates them', async () => {
+    script('both', [[/bundle identifier/, 'com.acme.typed']]);
+
+    await configureIos(env);
+
+    for (const pattern of [/simulator build\)/, /device build \.app/]) {
+      const q = question(pattern);
+      expect(q?.type).toBe('input');
+      expect(q?.initial).toBeUndefined();
+      expect(q?.validate?.('./does/not/exist.app')).toMatch(/does not exist/);
+    }
+  });
+
+  it('never defaults a bundle id to a placeholder when no build has one to read', async () => {
+    script('both', [[/bundle identifier/, 'com.acme.typed']]);
+
+    await configureIos(env);
+
+    const ids = questions.filter((q) => /bundle identifier/.test(q.message));
+    expect(ids.length).toBeGreaterThan(0);
+    expect(ids[0].initial).toBeUndefined();
+    expect(JSON.stringify(questions)).not.toContain('com.example');
   });
 });

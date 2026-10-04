@@ -60,7 +60,7 @@ The wizard walks through these steps:
 
 1. **Environment detection** — checks for ADB, Xcode, simulators, emulators, and reports what's available
 2. **Platform selection** — choose Android, iOS, or both
-3. **App configuration** — specify your APK/`.app` path; the wizard detects the package name automatically
+3. **App configuration** — pick your APK/`.app` from the builds the wizard finds in `android/` and `ios/` (the same ones `init --yes` looks for), or enter a path, which must exist; the wizard reads the package name or bundle ID from the build, and asks for it only when it can't
 4. **Device setup** — choose between connected devices, emulators/simulators, or auto-launch. For iOS physical devices the wizard asks for your device-signed (`iphoneos`) `.app` and points the config at it; choosing both simulators and physical devices writes two projects, `ios` (simulator) and `ios-device` (physical device), so `npx tapsmith test --project ios-device` runs on the device alone (the layout of [Running simulator and device together](./ios-physical-devices.md#running-simulator-and-device-together), with these project names)
 5. **Parallel execution** — optionally configure multiple workers with `launchEmulators` and `avd`
 6. **Network capture** — optionally enable HTTPS traffic capture in traces
