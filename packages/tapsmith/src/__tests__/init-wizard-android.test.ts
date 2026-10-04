@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { EnvScan } from '../env-scan.js';
+import type { ExpoProject } from '../init-detect.js';
 import { stripAnsi } from '../cli-json.js';
 
 // ─── Mocks ───
@@ -232,5 +233,56 @@ describe('configureAndroid() build detection (PILOT-513)', () => {
     await configureAndroid(env);
 
     expect(logged.join('\n')).not.toMatch(/ADB/);
+  });
+});
+
+describe('configureAndroid() on an Expo project (PILOT-557)', () => {
+  const expo: ExpoProject = { androidPackage: 'com.acme.expo', hasAndroidDir: false, hasIosDir: false, usesTapsmithHooks: true };
+
+  beforeEach(() => {
+    answers.clear();
+    questions.length = 0;
+    packages.clear();
+    apkCandidates = [];
+    logged = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logged.push(stripAnsi(args.join(' '))); });
+  });
+
+  it('with no APK found, gives the Expo build (with the hooks flag), not gradlew in an android/ that does not exist', async () => {
+    script([
+      [/Where is your Android APK/, './built/app.apk'],
+      [/package name/, 'com.acme.expo'],
+    ]);
+
+    await configureAndroid(env, expo);
+
+    const out = logged.join('\n');
+    expect(out).toContain('EXPO_PUBLIC_TAPSMITH_HOOKS=1 npx expo run:android --variant release');
+    expect(out).toContain('does not have yet');
+    expect(out).not.toContain('gradlew');
+  });
+
+  it('prefills the package prompt from the app config when the APK cannot be read', async () => {
+    apkCandidates = [RELEASE_APK];
+    script([
+      [/Where is your Android APK/, RELEASE_APK],
+      [/package name/, (q: Question) => q.initial],
+    ]);
+
+    const android = await configureAndroid(env, expo);
+
+    expect(question(/package name/)?.initial).toBe('com.acme.expo');
+    expect(android.packageName).toBe('com.acme.expo');
+  });
+
+  it('the package read from the APK wins over the app config', async () => {
+    apkCandidates = [RELEASE_APK];
+    packages.set(RELEASE_APK, 'com.acme.built');
+    script([[/Where is your Android APK/, RELEASE_APK]]);
+
+    const android = await configureAndroid(env, expo);
+
+    expect(android.packageName).toBe('com.acme.built');
+    expect(question(/package name/)).toBeUndefined();
   });
 });

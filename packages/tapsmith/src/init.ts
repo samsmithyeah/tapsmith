@@ -7,11 +7,14 @@ import figlet from 'figlet';
 import { tryExec, scanEnvironment, type EnvScan, type SimulatorInfo } from './env-scan.js';
 import {
   detectAndroidPackage,
+  detectExpoProject,
   detectIosBundleId,
+  expoBuildHint,
   findApkCandidates,
   findIosAppCandidates,
   findIosDeviceAppCandidates,
   preferDebugApk,
+  type ExpoProject,
 } from './init-detect.js';
 import { ADB_FIX } from './adb-devices.js';
 import { androidSdkRoots } from './emulator.js';
@@ -46,7 +49,7 @@ function getVersion(): string {
   }
 }
 
-function displayEnvironment(env: EnvScan): void {
+function displayEnvironment(env: EnvScan, expo: ExpoProject | undefined): void {
   const ok = (msg: string): string => `  ${green('✓')} ${msg}`;
   const warn = (msg: string): string => `  ${YELLOW}⚠${RESET} ${msg}`;
   const fail = (msg: string): string => `  ${RED}✗${RESET} ${msg}`;
@@ -68,6 +71,10 @@ function displayEnvironment(env: EnvScan): void {
   }
 
   if (env.avds.length > 0) lines.push(ok(`${env.avds.length} Android AVDs available`));
+  if (expo) {
+    const native = expo.hasAndroidDir || expo.hasIosDir ? '' : ' (no android/ or ios/ yet)';
+    lines.push(ok(`Expo project${native}`));
+  }
 
   console.log();
   console.log(`  ${bold('Environment')}`);
@@ -257,7 +264,11 @@ function adbMissingFix(): string {
   return ADB_FIX;
 }
 
-export async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
+/**
+ * The Android questions. `expo` (PILOT-557) swaps the build hint for the Expo
+ * one and prefills the package prompt from the app config.
+ */
+export async function configureAndroid(env: EnvScan, expo?: ExpoProject): Promise<AndroidConfig> {
   console.log(`  ${bold('Android')}`);
   if (!env.adbVersion) {
     console.log(`  ${YELLOW}⚠${RESET} ADB not found — Tapsmith cannot reach Android devices or emulators until it is on PATH`);
@@ -268,7 +279,9 @@ export async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
     kind: 'apk',
     message: 'Where is your Android APK?',
     candidates: orderApkCandidates(findApkCandidates(process.cwd())),
-    noneFound: 'No APK found under android/**/build/outputs/apk/ — build one first (e.g. cd android && ./gradlew assembleDebug; a React Native Debug build also needs Metro running, see https://tapsmith.dev/getting-started/#build-the-app-under-test), or enter its path.',
+    noneFound: expo
+      ? `No APK found under android/**/build/outputs/apk/. ${expoBuildHint('android', expo)} Or enter its path.`
+      : 'No APK found under android/**/build/outputs/apk/ — build one first (e.g. cd android && ./gradlew assembleDebug; a React Native Debug build also needs Metro running, see https://tapsmith.dev/getting-started/#build-the-app-under-test), or enter its path.',
     typeMessage: 'Path to your Android APK:',
   });
 
@@ -283,6 +296,7 @@ export async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
     packageName = (await ask<string>({
       type: 'input',
       message: 'What is your app\'s package name?',
+      ...(expo?.androidPackage ? { initial: expo.androidPackage } : {}),
       validate: (val: string) => val.trim().length > 0 || 'Package name is required',
     })).trim();
   }
@@ -320,7 +334,11 @@ export async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
   return { apkPath, packageName, useEmulators, usePhysicalDevices, avd };
 }
 
-export async function configureIos(env: EnvScan): Promise<IosConfig> {
+/**
+ * The iOS questions. `expo` (PILOT-557) swaps the simulator build hint for
+ * the Expo one and is the last fallback for the bundle id prompt's prefill.
+ */
+export async function configureIos(env: EnvScan, expo?: ExpoProject): Promise<IosConfig> {
   console.log(`  ${bold('iOS')}`);
 
   // Device type first: a physical-only user has no use for a simulator
@@ -343,7 +361,9 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
       kind: 'simulator-app',
       message: 'Where is your iOS .app bundle? (simulator build)',
       candidates: findIosAppCandidates(process.cwd()),
-      noneFound: 'No simulator build (.app) found under ios/ — build one first (in ios/: xcodebuild -workspace <App>.xcworkspace -scheme <App> -sdk iphonesimulator -derivedDataPath build; see https://tapsmith.dev/getting-started/#build-the-app-under-test), or enter its path.',
+      noneFound: expo
+        ? `No simulator build (.app) found under ios/. ${expoBuildHint('ios', expo)} Or enter its path.`
+        : 'No simulator build (.app) found under ios/ — build one first (in ios/: xcodebuild -workspace <App>.xcworkspace -scheme <App> -sdk iphonesimulator -derivedDataPath build; see https://tapsmith.dev/getting-started/#build-the-app-under-test), or enter its path.',
       typeMessage: 'Path to your simulator build (.app):',
     });
     simBundleId = detectBundleId(appPath);
@@ -453,13 +473,13 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
   if (useSimulators && !simBundleId) {
     simBundleId = await askBundleId(
       both ? 'What is your simulator build\'s bundle identifier?' : 'What is your app\'s bundle identifier?',
-      deviceBundleIdRead,
+      deviceBundleIdRead ?? expo?.iosBundleId,
     );
   }
   if (usePhysicalDevice && !deviceBundleIdRead) {
     deviceBundleIdRead = await askBundleId(
       both ? 'What is your device build\'s bundle identifier?' : 'What is your app\'s bundle identifier?',
-      simBundleId,
+      simBundleId ?? expo?.iosBundleId,
     );
   }
   const bundleId = simBundleId ?? deviceBundleIdRead;
@@ -887,7 +907,8 @@ async function runInitInner(): Promise<void> {
 
   // Step 1: Environment scan
   const env = scanEnvironment();
-  displayEnvironment(env);
+  const expo = detectExpoProject(process.cwd());
+  displayEnvironment(env, expo);
 
   // Step 2: Platform selection
   const platformChoices: Array<{ name: string; message: string; hint?: string }> = [
@@ -913,10 +934,10 @@ async function runInitInner(): Promise<void> {
   let iosConfig: IosConfig | undefined;
 
   if (selectedPlatforms.includes('android')) {
-    androidConfig = await configureAndroid(env);
+    androidConfig = await configureAndroid(env, expo);
   }
   if (selectedPlatforms.includes('ios')) {
-    iosConfig = await configureIos(env);
+    iosConfig = await configureIos(env, expo);
   }
 
   // Step 5: Network capture

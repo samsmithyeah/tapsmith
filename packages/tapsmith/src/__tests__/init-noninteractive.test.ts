@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { initArgsFromOptions, resolveInitPlan, executeInitPlan, assertConfigWritable, InitError } from '../init-noninteractive.js';
+import { initArgsFromOptions, resolveInitPlan, executeInitPlan, assertConfigWritable, InitError, type DetectFns } from '../init-noninteractive.js';
+import type { ExpoProject } from '../init-detect.js';
 import { needsSimulatorAgent } from '../init.js';
 import type { EnvScan } from '../env-scan.js';
 import type { InitCommandOptions } from '../cli-program.js';
@@ -251,6 +252,112 @@ describe('resolveInitPlan()', () => {
     expect(plan.android?.avd).toBeUndefined();
     expect(plan.warnings).toHaveLength(1);
     expect(plan.warnings[0]).toContain('No Android AVDs found');
+  });
+});
+
+// ─── Expo projects (PILOT-557) ───
+
+describe('resolveInitPlan() on an Expo project (PILOT-557)', () => {
+  const managed: ExpoProject = {
+    androidPackage: 'com.example.expo',
+    iosBundleId: 'com.example.expo.ios',
+    hasAndroidDir: false,
+    hasIosDir: false,
+    usesTapsmithHooks: false,
+  };
+  const withExpo = (expo: ExpoProject | undefined, over: Partial<DetectFns> = {}): DetectFns => ({
+    ...detectStubs,
+    detectExpoProject: () => expo,
+    ...over,
+  });
+
+  it('NO_PLATFORM on a managed project says to build it first, with Expo commands, not gradlew', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-'));
+    try {
+      const err = expectInitError(() => resolveInitPlan(initArgs({ yes: true }), baseEnv, withExpo(managed), tmp), 'NO_PLATFORM');
+      expect(err.message).toContain('Expo project');
+      expect(err.fix).toContain('npx expo run:android --variant release');
+      expect(err.fix).toContain('npx expo prebuild --platform ios');
+      expect(err.fix).toContain('EXPO_PUBLIC_TAPSMITH_HOOKS=1');
+      expect(err.fix).toContain('--platform');
+      expect(err.fix).not.toContain('gradlew');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('NO_PLATFORM off macOS gives only the Android build', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-'));
+    try {
+      const err = expectInitError(
+        () => resolveInitPlan(initArgs({ yes: true }), { ...baseEnv, isMacOS: false }, withExpo(managed), tmp),
+        'NO_PLATFORM',
+      );
+      expect(err.fix).toContain('npx expo run:android');
+      expect(err.fix).not.toContain('xcodebuild');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('NO_APK on an Expo project gives the Expo build, and --apk', () => {
+    const err = expectInitError(
+      () => resolveInitPlan(initArgs({ yes: true, platform: 'android' }), baseEnv, withExpo(managed, { findApkCandidates: () => [] })),
+      'NO_APK',
+    );
+    expect(err.fix).toContain('npx expo run:android --variant release');
+    expect(err.fix).toContain('--apk');
+    expect(err.fix).not.toContain('gradlew');
+  });
+
+  it('NO_IOS_APP on an Expo project gives the Expo build, and --app', () => {
+    const err = expectInitError(
+      () => resolveInitPlan(initArgs({ yes: true, platform: 'ios' }), baseEnv, withExpo(managed, { findIosAppCandidates: () => [] })),
+      'NO_IOS_APP',
+    );
+    expect(err.fix).toContain('npx expo prebuild --platform ios');
+    expect(err.fix).toContain('--app');
+  });
+
+  it('keeps the native-project fixes when the project is not Expo', () => {
+    const err = expectInitError(
+      () => resolveInitPlan(initArgs({ yes: true, platform: 'android' }), baseEnv, withExpo(undefined, { findApkCandidates: () => [] })),
+      'NO_APK',
+    );
+    expect(err.fix).toContain('./gradlew assembleDebug');
+  });
+
+  it('falls back to the app config\'s ids when the builds cannot be read', () => {
+    const plan = resolveInitPlan(
+      initArgs({ yes: true, platform: 'android,ios' }),
+      baseEnv,
+      withExpo(managed, { detectAndroidPackage: () => undefined, detectIosBundleId: () => undefined }),
+    );
+    expect(plan.android?.packageName).toBe('com.example.expo');
+    expect(plan.ios?.bundleId).toBe('com.example.expo.ios');
+  });
+
+  it('prefers the id read from the build over the app config\'s', () => {
+    const plan = resolveInitPlan(initArgs({ yes: true, platform: 'android,ios' }), baseEnv, withExpo(managed));
+    expect(plan.android?.packageName).toBe('com.example.app');
+    expect(plan.ios?.bundleId).toBe('com.example.myapp');
+  });
+
+  it('does not detect Expo when the build already answers everything', () => {
+    let detected = 0;
+    resolveInitPlan(initArgs({ yes: true, platform: 'android,ios' }), baseEnv, {
+      ...detectStubs,
+      detectExpoProject: () => { detected++; return managed; },
+    });
+    expect(detected).toBe(0);
+  });
+
+  it('still errors NO_PACKAGE when neither the APK nor the app config has one', () => {
+    expectInitError(() => resolveInitPlan(
+      initArgs({ yes: true, platform: 'android' }),
+      baseEnv,
+      withExpo({ ...managed, androidPackage: undefined }, { detectAndroidPackage: () => undefined }),
+    ), 'NO_PACKAGE');
   });
 });
 

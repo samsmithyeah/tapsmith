@@ -4,7 +4,9 @@
  * Pure parsers are separated from exec wrappers for testability.
  */
 
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { globSync } from 'glob';
 import { tryExec } from './env-scan.js';
@@ -85,4 +87,130 @@ export function detectIosBundleId(appPath: string): string | undefined {
   const plistPath = path.join(appPath, 'Info.plist');
   if (!fs.existsSync(plistPath)) return undefined;
   return tryExec('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', plistPath]);
+}
+
+// ─── Expo (PILOT-557) ───
+
+/**
+ * An Expo project, as `tapsmith init` needs it: whether its native projects
+ * have been generated yet (a managed project has neither `android/` nor
+ * `ios/` until `expo prebuild` or `expo run:*`), the ids its app config
+ * declares, and whether it uses Tapsmith's warm-reset hooks.
+ */
+export interface ExpoProject {
+  /** `expo.android.package` from the app config. */
+  androidPackage?: string;
+  /** `expo.ios.bundleIdentifier` from the app config. */
+  iosBundleId?: string;
+  hasAndroidDir: boolean;
+  hasIosDir: boolean;
+  /** `@tapsmith/react-native` is a dependency, so test builds want `EXPO_PUBLIC_TAPSMITH_HOOKS=1`. */
+  usesTapsmithHooks: boolean;
+}
+
+const EXPO_CONFIG_FILES = ['app.json', 'app.config.ts', 'app.config.js', 'app.config.mjs', 'app.config.cjs', 'app.config.json'];
+
+/** The ids an Expo app config declares: `app.json` (wrapped in `expo` or not) or `expo config` output. */
+export function parseExpoAppConfig(config: unknown): { androidPackage?: string; iosBundleId?: string } {
+  if (!isRecord(config)) return {};
+  const exp = isRecord(config['expo']) ? config['expo'] : config;
+  const android = isRecord(exp['android']) ? exp['android'] : {};
+  const ios = isRecord(exp['ios']) ? exp['ios'] : {};
+  const nonEmpty = (v: unknown): string | undefined => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined);
+  return { androidPackage: nonEmpty(android['package']), iosBundleId: nonEmpty(ios['bundleIdentifier']) };
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function readJson(file: string): unknown {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The project's resolved public app config. The project's own Expo CLI
+ * (`expo config`) evaluates a dynamic `app.config.ts`/`.js` exactly as a
+ * build would; when it can't run (dependencies not installed, a config that
+ * throws), a static `app.json` is read instead.
+ */
+export function readExpoAppConfig(cwd: string): unknown {
+  let cli: string | undefined;
+  try {
+    const expoPkg = createRequire(path.join(cwd, 'noop.js')).resolve('expo/package.json');
+    cli = path.join(path.dirname(expoPkg), 'bin', 'cli');
+  } catch {
+    // Not installed: fall back to app.json.
+  }
+  if (cli && fs.existsSync(cli)) {
+    try {
+      const out = execFileSync(process.execPath, [cli, 'config', '--json', '--type', 'public'], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 15_000,
+        env: { ...process.env, EXPO_NO_TELEMETRY: '1' },
+      });
+      return JSON.parse(out);
+    } catch {
+      // Fall through to the static read.
+    }
+  }
+  return readJson(path.join(cwd, 'app.json'));
+}
+
+/**
+ * The Expo project at `cwd`, or undefined when it is not one: `expo` among
+ * its dependencies and an app config (`app.json` or `app.config.*`) beside
+ * its package.json. A bare React Native app has an `app.json` too, so the
+ * dependency is what tells them apart.
+ */
+export function detectExpoProject(
+  cwd: string,
+  readConfig: (cwd: string) => unknown = readExpoAppConfig,
+): ExpoProject | undefined {
+  const pkg = readJson(path.join(cwd, 'package.json'));
+  if (!isRecord(pkg)) return undefined;
+  const deps = { ...(isRecord(pkg['devDependencies']) ? pkg['devDependencies'] : {}), ...(isRecord(pkg['dependencies']) ? pkg['dependencies'] : {}) };
+  if (!('expo' in deps)) return undefined;
+  if (!EXPO_CONFIG_FILES.some((f) => fs.existsSync(path.join(cwd, f)))) return undefined;
+  return {
+    ...parseExpoAppConfig(readConfig(cwd)),
+    hasAndroidDir: fs.existsSync(path.join(cwd, 'android')),
+    hasIosDir: fs.existsSync(path.join(cwd, 'ios')),
+    usesTapsmithHooks: '@tapsmith/react-native' in deps,
+  };
+}
+
+const EXPO_BUILD_DOCS = 'https://tapsmith.dev/getting-started/#react-native-and-expo';
+const HOOKS_FLAG = 'EXPO_PUBLIC_TAPSMITH_HOOKS=1';
+
+/** What the hooks flag means for this project's test build, said beside the build command. */
+function expoHooksNote(expo: ExpoProject): string {
+  return expo.usesTapsmithHooks
+    ? `${HOOKS_FLAG} keeps @tapsmith/react-native's warm-reset hooks on in a release build: set it for test builds only, never for store builds.`
+    : `For sub-second resets between tests, mount @tapsmith/react-native and build test builds with ${HOOKS_FLAG} (https://tapsmith.dev/guides/warm-reset/).`;
+}
+
+/**
+ * How to build an Expo project's app for `platform` so `tapsmith init` finds
+ * it: the release build getting-started documents (a release build runs
+ * without Metro), with the hooks flag folded in when the app uses them.
+ */
+export function expoBuildHint(platform: 'android' | 'ios', expo: ExpoProject): string {
+  const env = expo.usesTapsmithHooks ? `${HOOKS_FLAG} ` : '';
+  if (platform === 'android') {
+    const generate = expo.hasAndroidDir ? '' : ' (it generates android/, which this Expo project does not have yet)';
+    return `Build a release APK with \`${env}npx expo run:android --variant release\`${generate}; `
+      + `it writes android/app/build/outputs/apk/release/app-release.apk. ${expoHooksNote(expo)} See ${EXPO_BUILD_DOCS}`;
+  }
+  const generate = expo.hasIosDir ? '' : '`npx expo prebuild --platform ios` (this Expo project has no ios/ yet), then ';
+  return `Build a simulator app with ${generate}\`cd ios && ${env}xcodebuild -workspace <App>.xcworkspace -scheme <App> `
+    + '-configuration Release -sdk iphonesimulator -derivedDataPath build build`; '
+    + '`npx expo run:ios --configuration Release` builds into Xcode\'s DerivedData instead, where init does not look. '
+    + `${expoHooksNote(expo)} See ${EXPO_BUILD_DOCS}`;
 }
