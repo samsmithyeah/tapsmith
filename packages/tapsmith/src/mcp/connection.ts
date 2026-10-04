@@ -598,10 +598,12 @@ let _discoveryFailures: string[] = [];
  * server, whose MCP endpoint runs in the very process that provisioned the UI
  * session's devices: its hold is the UI session's, and lasts as long as it.
  */
-function giveBack(device: string): void {
+function giveBack(device: string, failed?: DaemonConnection): void {
   if (_uiMode) return;
-  // Another pooled daemon of this session still serves it: keep it.
-  if (_connections.some((c) => c.preparedDevice === device || c.claimedDevice === device)) return;
+  // Another pooled daemon of this session still serves it: keep it. Not the
+  // one whose target just failed (`failed`): it is pointed there, but serves
+  // nothing.
+  if (_connections.some((c) => c !== failed && (c.preparedDevice === device || c.claimedDevice === device))) return;
   releaseDeviceClaim(device, currentSession());
 }
 
@@ -1617,7 +1619,7 @@ async function prepareTarget(
   // to it and will prepare it again, so it stays the session's.
   const alreadyServed = conn.preparedDevice === serial || conn.claimedDevice === serial;
   const releaseOnFailure = (): void => {
-    if (!alreadyServed) giveBack(serial);
+    if (!alreadyServed) giveBack(serial, conn);
   };
   try {
     await setDeviceExplained(conn.client, serial);

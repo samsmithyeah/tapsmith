@@ -17,12 +17,16 @@ vi.mock('node:child_process', async (importOriginal) => ({
 let waitForReady: () => Promise<boolean>;
 let ping: (address: string) => Promise<{ version: string; agentConnected?: boolean }>;
 let listDevices: (address: string) => Promise<{ devices: Array<{ serial: string; state: string }> }>;
+let startAgent: (address: string) => Promise<unknown>;
+let setDevice: (address: string) => Promise<{ success: boolean }>;
 vi.mock('../grpc-client.js', () => ({
   TapsmithGrpcClient: class {
     constructor(readonly address: string) {}
     waitForReady(): Promise<boolean> { return waitForReady(); }
     ping(): Promise<{ version: string; agentConnected?: boolean }> { return ping(this.address); }
     listDevices(): Promise<{ devices: Array<{ serial: string; state: string }> }> { return listDevices(this.address); }
+    setDevice(): Promise<{ success: boolean }> { return setDevice(this.address); }
+    startAgent(): Promise<unknown> { return startAgent(this.address); }
     close(): void {}
   },
 }));
@@ -72,6 +76,8 @@ beforeEach(() => {
   pickPort = () => Promise.resolve(nextPort++);
   ping = () => Promise.resolve({ version: 'test', agentConnected: true });
   listDevices = () => Promise.resolve({ devices: [] });
+  startAgent = () => Promise.resolve({});
+  setDevice = () => Promise.resolve({ success: true });
   stderr = '';
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
     stderr += String(chunk);
@@ -385,7 +391,7 @@ describe('daemons another session owns', () => {
     spawnMock.mockImplementation(() => new FakeDaemon());
     waitForReady = () => Promise.resolve(spawnMock.mock.calls.length > 0);
     listDevices = () => Promise.resolve({ devices: [{ serial: 'emulator-5560', state: 'Discovered', platform: 'android' } as never] });
-    // The fake client has no setDevice: selecting the device fails.
+    setDevice = () => Promise.reject(new Error('selecting the device failed'));
     const config = {
       platform: 'android', device: 'emulator-5560', package: 'com.x', timeout: 1000, retries: 0, screenshot: 'never',
       testMatch: [], daemonAddress: 'localhost:50051', rootDir: '/p', outputDir: 'out', workers: 1, launchEmulators: false,
@@ -435,5 +441,21 @@ describe('daemons another session owns', () => {
     await ensureConnected();
     expect(getAllDaemonAddresses()).not.toContain('50051');
     expect(listDeviceClaims().map((c) => c.device)).not.toContain('emulator-5580');
+  });
+
+  it('gives the device back when the agent fails to start on a daemon it already pools', async () => {
+    const { listDeviceClaims } = await import('../device-claims.js');
+    // A configured daemon on the default address, pointed at nothing yet.
+    waitForReady = () => Promise.resolve(true);
+    listDevices = () => Promise.resolve({ devices: [{ serial: 'emulator-5610', state: 'Discovered', platform: 'android' } as never] });
+    ping = () => Promise.resolve({ version: 'test', agentConnected: false });
+    startAgent = () => Promise.reject(new Error('agent never started'));
+    spawnMock.mockImplementation(() => new FakeDaemon());
+    const config = {
+      platform: 'android', device: 'emulator-5610', package: 'com.x', timeout: 1000, retries: 0, screenshot: 'never',
+      testMatch: [], daemonAddress: 'localhost:50051', rootDir: '/p', outputDir: 'out', workers: 1, launchEmulators: false,
+    } as unknown as Parameters<typeof ensurePlatformTarget>[0];
+    await expect(ensurePlatformTarget(config)).rejects.toThrow(/agent never started/);
+    expect(listDeviceClaims().map((c) => c.device)).not.toContain('emulator-5610');
   });
 });

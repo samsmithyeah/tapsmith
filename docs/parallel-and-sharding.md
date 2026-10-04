@@ -485,8 +485,9 @@ devices.
   the default `localhost:50051` that a headless MCP server or a `tapsmith test` would otherwise connect to.
 - **`tapsmith list-devices`** shows which session holds each device (`inUseBy` in `--json`).
 
-A session's claims end when it exits. A session that crashed or was killed holds nothing, and its devices are
-free for the next run at once, with nothing to clean up. The claims live in `~/.tapsmith/claims/`, one file per device.
+A session's claims end when it exits, and a claim stands only while a process of that session that claimed it
+still runs: a session that crashed or was killed holds nothing, and its devices are free for the next run at
+once, with nothing to clean up. If a process outlives its session (a worker left running), the refusal names it. The claims live in `~/.tapsmith/claims/`, one file per device.
 They coordinate Tapsmith sessions only: an emulator you are using by hand, or a device another tool drives, is
 not protected by them.
 

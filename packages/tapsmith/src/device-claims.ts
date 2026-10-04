@@ -15,13 +15,15 @@
  * parallel workers, watch re-run children, UI workers, an MCP server's
  * `run_tests` CLI — claims as the same session, and re-claiming a device the
  * session already holds always succeeds. Claims are made per device as it is
- * selected and released together when the session's root process exits.
+ * selected; each is held by the session's processes that claimed it, and all
+ * are released together when the session's root process exits.
  *
- * **Liveness.** A claim is live while its session's root process is: its pid
+ * **Liveness.** A claim is live while a process holding it runs: its pid
  * still runs and, where recorded, the process start time under that pid is
  * unchanged (a recycled pid is not the holder). A crashed or `kill -9`ed
  * session therefore leaves a claim the next session simply takes over — no
- * manual cleanup.
+ * manual cleanup — and so does a finished child (a `run_tests` CLI) once no
+ * other process of its session holds what it claimed.
  *
  * **Advisory and best-effort.** The registry is a coordination aid, not a
  * security boundary. A registry that cannot be read or written never fails a
@@ -612,7 +614,12 @@ export class DaemonClaimedError extends Error {
 export function describeHolder(claim: DeviceClaim): string {
   const since = new Date(claim.claimedAt);
   const when = Number.isNaN(since.getTime()) ? claim.claimedAt : since.toLocaleTimeString();
-  return `\`${claim.session.command}\` (pid ${claim.session.pid}) in ${claim.session.project}, since ${when}`;
+  const base = `\`${claim.session.command}\` (pid ${claim.session.pid}) in ${claim.session.project}, since ${when}`;
+  // The root gone but a process of the session still holding the device (a
+  // worker that outlived it): name that process, or the pid above reads dead.
+  if (processIsLive(claim.session)) return base;
+  const running = (claim.holders ?? []).find(processIsLive);
+  return running ? `${base}; that session's process ${running.pid} still holds it` : base;
 }
 
 /**

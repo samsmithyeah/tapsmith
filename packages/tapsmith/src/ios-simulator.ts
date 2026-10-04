@@ -1007,7 +1007,11 @@ export function provisionSimulators(opts: {
   // the app installed — so a session provisioning at the same time cannot
   // adopt it in the tens of seconds that takes (PILOT-381). One another
   // session claimed since the snapshot above is passed over.
-  const claimNow = (udid: string): boolean => claimDevice(udid, currentSession()).ok;
+  const claimNow = (udid: string): boolean => {
+    const ok = claimDevice(udid, currentSession()).ok;
+    if (!ok) heldElsewhere.add(udid);
+    return ok;
+  };
   const primarySim = existingUdids.length > 0
     ? allSims.find((s) => s.udid === existingUdids[0])
     : undefined;
@@ -1034,7 +1038,10 @@ export function provisionSimulators(opts: {
   }
 
   // Prune excess reusable clones beyond what we need
-  const unusedReusable = reusableUdids.filter((u) => !allUdids.includes(u) && !heldElsewhere.has(u));
+  // Re-read the claims right before deleting: a clone another session
+  // claimed since the snapshot above is that session's now.
+  const heldNow = devicesHeldElsewhere();
+  const unusedReusable = reusableUdids.filter((u) => !allUdids.includes(u) && !heldElsewhere.has(u) && !heldNow.has(u));
   if (unusedReusable.length > 0) {
     for (const udid of unusedReusable) {
       deleteSimulator(udid);
@@ -1098,7 +1105,9 @@ export function provisionSimulators(opts: {
     // All matching sims are booted — shut one down temporarily to use as clone source.
     // Never shut down sims in existingUdids — they may have an active agent session.
     const candidate = refreshed.find((s) => runtimeMatch(s) && !existingSet.has(s.udid) && !heldElsewhere.has(s.udid));
-    if (candidate && candidate.state === 'Booted') {
+    // Claimed before it is shut down: this run boots it again and uses it, and
+    // one another session claimed since the snapshot must not be touched.
+    if (candidate && candidate.state === 'Booted' && claimNow(candidate.udid)) {
       shutdownSimulator(candidate.udid);
       waitForSimulatorState(candidate.udid, 'Shutdown', 10_000);
       source = candidate;
