@@ -2224,12 +2224,12 @@ export async function provisionEmulators(opts: {
         if (stopped) {
           unrecordLaunchedEmulators([emu]);
         } else {
-          // Never left running untracked (PILOT-512): its record stays, and
-          // once this process has gone the next run stops it.
+          // Never left running untracked (PILOT-512): its record stays for a
+          // later run's reclaim to judge.
           const pid = emu.process.pid;
           logProgress(
-            `Could not stop emulator ${emu.serial} (PID ${pid}) after its failed launch. `
-            + `It stays recorded, so the next run tries again. To stop it now: kill -9 ${pid}`,
+            `Emulator ${emu.serial} (PID ${pid}) did not exit even after SIGKILL, following its failed launch. `
+            + 'It stays in Tapsmith\'s emulator record rather than running untracked.',
             'warning',
           );
         }

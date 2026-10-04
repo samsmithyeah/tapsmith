@@ -1736,8 +1736,8 @@ describe('provisionEmulators launch failures', () => {
     expect(result.launched).toEqual([]);
     // Recorded, so the next run stops it once this one has gone.
     expect(readManifestEntries().map((entry) => [entry.serial, entry.pid])).toEqual([['emulator-5554', 4242]]);
-    expect(warnings).toContain('Could not stop emulator emulator-5554 (PID 4242) after its failed launch. '
-      + 'It stays recorded, so the next run tries again. To stop it now: kill -9 4242');
+    expect(warnings).toContain('Emulator emulator-5554 (PID 4242) did not exit even after SIGKILL, following its failed launch. '
+      + 'It stays in Tapsmith\'s emulator record rather than running untracked.');
     try { fs.unlinkSync(manifestFile); } catch { /* ok */ }
   });
 
