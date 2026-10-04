@@ -17,7 +17,7 @@ device.getByText("Welcome")                          // substring
 device.getByText("Sign In", { exact: true })         // exact
 ```
 
-Whitespace is normalized on both sides before comparing, exact or not, as in Playwright: runs of whitespace — including non-breaking spaces (`&nbsp;`, U+00A0), other Unicode spaces and line breaks — collapse to one space, and leading and trailing whitespace is ignored. So `getByText("Welcome to Expo", { exact: true })` matches text rendered as `Welcome to&nbsp;Expo` or split over two lines. The same applies to `getByRole`'s `name` and to `getByLabel`. Matching is case-sensitive, and `text` must be a string: a regular expression throws a `TypeError`.
+Whitespace is normalized on both sides before comparing, exact or not, as in Playwright: runs of whitespace — including non-breaking spaces (`&nbsp;`, U+00A0), other Unicode spaces and line breaks — collapse to one space, and leading and trailing whitespace is ignored. So `getByText("Welcome to Expo", { exact: true })` matches text rendered as `Welcome to&nbsp;Expo` or split over two lines. The same applies to `getByRole`'s `name` and to `getByLabel`. `getByText` matching is case-sensitive, and `text` must be a string: a regular expression throws a `TypeError`.
 
 > Because the default is a substring match, `getByText("Sign in")` also matches longer text like `"Sign in to continue"`. When that happens, acting on the locator throws a [strict mode](#strict-mode) violation — add `{ exact: true }` or use `getByRole(role, { name })` to pin a single element.
 
@@ -27,6 +27,8 @@ Locate an element by its accessibility role, optionally filtered by accessible n
 
 ```typescript
 device.getByRole("button", { name: "Submit" })
+device.getByRole("button", { name: "sign in" })                 // also matches "SIGN IN", "Sign in now"
+device.getByRole("button", { name: "Sign In", exact: true })    // only "Sign In"
 device.getByRole("textfield", { name: "Email" })
 device.getByRole("checkbox")
 device.getByRole("switch", { name: "Dark Mode", checked: true })
@@ -39,11 +41,14 @@ device.getByRole("button", { name: "Details", expanded: true })
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `name` | `string` | Filter by accessible name (exact, with whitespace normalized like `getByText`) |
+| `name` | `string` | Filter by accessible name. **Case-insensitive substring match by default**, like Playwright; whitespace is normalized like `getByText` |
+| `exact` | `boolean` | Match `name` case-sensitively and as the whole string (whitespace still normalized). Ignored without `name` |
 | `checked` | `boolean` | Filter by checked state (checkbox, switch, radio) |
 | `disabled` | `boolean` | Filter by disabled state |
 | `selected` | `boolean` | Filter by selected state (tab, option) |
 | `expanded` | `boolean` | Filter by expanded state (accordion, dropdown) |
+
+The accessible name is the element's content description / accessibility label, its text, or — on Android — the joined text of its descendants. Because the default is a case-insensitive substring match, a name can match more than one element (`{ name: "Show overlay" }` also matches *Show overlay briefly*); acting on such a locator throws a [strict mode](#strict-mode) violation — add `exact: true`. The case-insensitive default also covers platform casing differences, such as React Native's `<Button title="Sign In">`, which Android renders as `SIGN IN`.
 
 ### `device.getByDescription(text: string): ElementHandle`
 

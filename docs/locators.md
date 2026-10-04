@@ -75,6 +75,12 @@ await device.getByRole("checkbox", { name: "Remember me" }).tap()
 await device.getByRole("switch", { name: "Dark mode" }).tap()
 ```
 
+As in Playwright, `name` is a **case-insensitive substring match** by default, so `{ name: "sign in" }` finds a button labelled `SIGN IN` (how Android renders React Native's `<Button title="Sign In">`) or `Sign in now`. Pass `exact: true` for a case-sensitive, whole-string match — needed when one name is part of another on the same screen:
+
+```typescript
+await device.getByRole("button", { name: "Show overlay", exact: true }).tap()  // not "Show overlay briefly"
+```
+
 Supported roles map to platform-native element types. On iOS, many React Native components render as `XCUIElementTypeOther` — Tapsmith identifies roles from accessibility traits (e.g. a `Pressable` with `accessibilityRole="button"` gets the button trait) and falls back to matching `.other` elements by name. Native iOS and Android apps use typed elements that map directly.
 
 | Role | Android classes | iOS types |
