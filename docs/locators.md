@@ -147,6 +147,8 @@ await device.getByText("Sign In", { exact: true }).tap()
 await expect(device.getByText("3 items")).toBeVisible()
 ```
 
+Whitespace differences don't matter: non-breaking spaces, line breaks and runs of spaces in the element's text (or in your query) are treated as a single space, and leading and trailing whitespace is ignored — the same normalization Playwright applies. `getByText("Welcome to Expo")` finds a heading rendered as `Welcome to&nbsp;Expo`.
+
 > **Strict mode:** because of the substring default, `getByText("Sign in")` also matches longer text such as `"Sign in to continue"`. A locator that resolves to more than one element throws a `strict mode violation` when you act or assert on it (instead of silently using the first match). Disambiguate with `{ exact: true }`, `getByRole(role, { name })`, `getByTestId()`, or `.first()/.nth()/.last()`. Absence checks (`toBeHidden`, `not.toBeVisible`, `waitFor({ state: "hidden" })`) and multi-element APIs (`count()`, `all()`, `toHaveCount`) are exempt. See the [API reference](api-reference.md#strict-mode) for the full rules. WebView locators (`webview.getBy*`, `webview.locator(css)`) enforce the same rules.
 
 ### `getByDescription(text)`

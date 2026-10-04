@@ -147,8 +147,23 @@ export function formatSelector(sel: Selector): string {
 
 // ─── Internal builders (used by Device/ElementHandle getBy* methods) ───
 
+/**
+ * Throw when a getBy* text argument is not a string. The parameters are typed
+ * `string`, but tests run through tsx are not type-checked, and a RegExp used
+ * to reach the agent as its source text and silently match nothing.
+ */
+function assertStringArg(value: unknown, what: string): void {
+  if (typeof value === 'string') return;
+  const got = value instanceof RegExp ? 'a RegExp' : value === null ? 'null' : `a ${typeof value}`;
+  const hint = value instanceof RegExp
+    ? ' Regular-expression matching is not supported; pass the text as a string (whitespace differences such as non-breaking spaces and line breaks are ignored).'
+    : '';
+  throw new TypeError(`${what} expects a string, got ${got}.${hint}`);
+}
+
 /** @internal */
 export function _role(roleName: string, options?: { name?: string; checked?: boolean; disabled?: boolean; selected?: boolean; expanded?: boolean }): Selector {
+  if (options?.name !== undefined) assertStringArg(options.name, 'getByRole() option `name`');
   return makeSelector({
     type: 'role',
     value: {
@@ -164,11 +179,13 @@ export function _role(roleName: string, options?: { name?: string; checked?: boo
 
 /** @internal */
 export function _text(exactText: string): Selector {
+  assertStringArg(exactText, 'getByText()');
   return makeSelector({ type: 'text', value: exactText });
 }
 
 /** @internal */
 export function _textContains(partial: string): Selector {
+  assertStringArg(partial, 'getByText()');
   return makeSelector({ type: 'textContains', value: partial });
 }
 
@@ -204,5 +221,6 @@ export function _xpath(expr: string): Selector {
 
 /** @internal */
 export function _label(text: string): Selector {
+  assertStringArg(text, 'getByLabel()');
   return makeSelector({ type: 'label', value: text });
 }

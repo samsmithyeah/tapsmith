@@ -206,6 +206,15 @@ function getNodeClassName(node: HierarchyNode): string {
 
 // ─── Node Matching ───
 
+/**
+ * Collapse whitespace runs (JavaScript's `\s`, so NBSP and line breaks too) to
+ * one space and trim — how the agents compare getByText, getByRole names and
+ * getByLabel (PILOT-510, Playwright's text normalization).
+ */
+function normalizeWhitespace(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
 function isWebViewNode(node: HierarchyNode): boolean {
   return node.attributes.get('webview') === 'true';
 }
@@ -220,9 +229,9 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
   // Native selector types match native nodes
   switch (selector.type) {
     case 'text':
-      return getNodeText(node) === selector.value;
+      return normalizeWhitespace(getNodeText(node)) === normalizeWhitespace(selector.value);
     case 'textContains':
-      return getNodeText(node).includes(selector.value);
+      return normalizeWhitespace(getNodeText(node)).includes(normalizeWhitespace(selector.value));
     case 'contentDesc':
       return getNodeContentDesc(node) === selector.value;
     case 'id': {
@@ -236,7 +245,7 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
     case 'label': {
       const role = getNodeRole(node);
       if (!FORM_FIELD_ROLES.has(role)) return false;
-      return getNodeAccessibleName(node) === selector.value;
+      return normalizeWhitespace(getNodeAccessibleName(node)) === normalizeWhitespace(selector.value);
     }
     case 'testId': {
       const rid = getNodeId(node);
@@ -246,7 +255,7 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
       const role = getNodeRole(node);
       if (role !== selector.value) return false;
       if (selector.name) {
-        return getNodeAccessibleName(node) === selector.name;
+        return normalizeWhitespace(getNodeAccessibleName(node)) === normalizeWhitespace(selector.name);
       }
       return true;
     }
