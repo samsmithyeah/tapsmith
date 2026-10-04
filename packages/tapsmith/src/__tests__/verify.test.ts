@@ -3,7 +3,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { SpawnSyncOptions, SpawnSyncReturns } from 'node:child_process';
-import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport, noTestsRanError, runVerify, stderrTail } from '../verify.js';
+import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport, noTestsRanError, runVerify, stderrTail, configLoadFix } from '../verify.js';
+import { TapsmithNotInstalledError } from '../config.js';
 
 // runVerify spawns the real `tapsmith test`; the tests below replace that
 // child with one that writes a canned JSON report. Every other spawnSync call
@@ -289,6 +290,20 @@ describe('runVerify() with a config that fails to load', () => {
       process.exitCode = exitCode;
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // `npx tapsmith init` writes a config importing tapsmith into a project
+  // that may not have it; "fix the config" sent users to the wrong place
+  // (PILOT-551). (Vitest's own resolver finds `tapsmith` from any directory,
+  // so this cannot go through a real load here; config.test.ts covers that.)
+  it('gives the install command when the config imports tapsmith and the project lacks it', () => {
+    const err = new TapsmithNotInstalledError(
+      '/p/tapsmith.config.ts',
+      { command: 'yarn', args: ['add', '-D', 'tapsmith'], display: 'yarn add -D tapsmith' },
+      new Error("Cannot find module 'tapsmith'"),
+    );
+    expect(configLoadFix(err)).toBe('Run: yarn add -D tapsmith');
+    expect(configLoadFix(new Error('boom'))).not.toMatch(/init|install/);
   });
 });
 
