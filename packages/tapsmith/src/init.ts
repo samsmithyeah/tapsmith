@@ -139,7 +139,8 @@ export function typedBuildPath(val: string, cwd: string = process.cwd()): string
   const p = normalizeTypedPath(val);
   if (!path.isAbsolute(p)) return p;
   const rel = path.relative(cwd, p);
-  return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : p;
+  const outside = rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+  return rel && !outside ? rel : p;
 }
 
 /**

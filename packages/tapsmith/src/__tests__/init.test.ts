@@ -449,6 +449,8 @@ describe('typedBuildPath() (PILOT-513)', () => {
 
   it('makes a path inside the project relative, like the detected builds', () => {
     expect(typedBuildPath(`  ${path.join(project, 'android', 'app.apk')} `, project)).toBe(path.join('android', 'app.apk'));
+    // A first segment that merely starts with two dots is still inside the project.
+    expect(typedBuildPath(path.join(project, '..cache', 'app.apk'), project)).toBe(path.join('..cache', 'app.apk'));
   });
 
   it('keeps a relative path as typed, and a path outside the project absolute', () => {

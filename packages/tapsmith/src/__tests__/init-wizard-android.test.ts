@@ -204,7 +204,8 @@ describe('configureAndroid() build detection (PILOT-513)', () => {
     expect(out).not.toMatch(/Install Android platform-tools/);
   });
 
-  it('finds platform-tools at Android Studio\'s default SDK location when ANDROID_HOME is unset', async () => {
+  // On Windows the default SDK is under LOCALAPPDATA, not HOME.
+  it.skipIf(process.platform === 'win32')('finds platform-tools at Android Studio\'s default SDK location when ANDROID_HOME is unset', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-home-'));
     const sdk = process.platform === 'darwin' ? path.join(home, 'Library', 'Android', 'sdk') : path.join(home, 'Android', 'Sdk');
     const platformTools = path.join(sdk, 'platform-tools');
