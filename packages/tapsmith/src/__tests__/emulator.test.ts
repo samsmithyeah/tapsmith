@@ -1272,6 +1272,24 @@ function makePermissiveExec(responses: Record<string, string | Error>) {
   }) as unknown as typeof import('node:child_process').execFileSync;
 }
 
+/**
+ * A spawned process's stand-in: no real PID, so nothing on the host is ever
+ * signalled. It ends on the first signal it obeys, as a `ChildProcess` does.
+ */
+function fakeChildProcess(obeys: ReadonlyArray<NodeJS.Signals> = ['SIGTERM', 'SIGKILL']) {
+  const proc = {
+    pid: 4242 as number | undefined,
+    exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
+    kill: vi.fn((sig: NodeJS.Signals = 'SIGTERM') => {
+      if (proc.exitCode !== null || proc.signalCode !== null) return false;
+      if (obeys.includes(sig)) proc.signalCode = sig;
+      return true;
+    }),
+  };
+  return proc;
+}
+
 function makeLaunchedEmulator(
   avd: string,
   port: number,
@@ -1284,9 +1302,7 @@ function makeLaunchedEmulator(
     headless: true,
     logPath: path.join(os.tmpdir(), `tapsmith-emulator-${port}.log`),
     exited,
-    process: {
-      kill: vi.fn(),
-    },
+    process: fakeChildProcess(),
   } as unknown as import('../emulator.js').LaunchedEmulator;
 }
 
@@ -2198,6 +2214,7 @@ describe('provisionEmulators boots emulators side by side', () => {
     probeDeviceHealth: (serial: string) => ({ serial, healthy: true }),
     waitForDeviceStability: async (serial: string) => ({ serial, healthy: true }),
     killEmulator: vi.fn(),
+    stopLaunchedEmulator: async () => true,
   };
 
   /** A boot wait that finishes only when the test says so, counting how many are in flight. */
@@ -2359,7 +2376,7 @@ describe('provisionEmulators boots emulators side by side', () => {
     const boots = controlledBoots();
     const provision = provisionEmulators(
       { existingSerials: [], workers: 3, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
-      { ...base, launchConcurrency: 3, launchEmulator: (avd, port) => ({ ...makeLaunchedEmulator(avd, port), process: { pid: port * 10, kill: vi.fn() } } as unknown as import('../emulator.js').LaunchedEmulator), waitForBoot: boots.waitForBoot },
+      { ...base, launchConcurrency: 3, launchEmulator: (avd, port) => ({ ...makeLaunchedEmulator(avd, port), process: Object.assign(fakeChildProcess(), { pid: port * 10 }) } as unknown as import('../emulator.js').LaunchedEmulator), waitForBoot: boots.waitForBoot },
     );
     await boots.untilStarted(3);
     boots.pending.get('emulator-5554')!.resolve();
@@ -2459,64 +2476,47 @@ describe('provisionEmulators boots emulators side by side', () => {
 });
 
 describe('stopLaunchedEmulator (PILOT-512)', () => {
-  /** A fake process group: `alive` until the signals it obeys arrive. */
-  function fakeGroup(obeys: ReadonlyArray<NodeJS.Signals>) {
-    let alive = true;
-    const sent: Array<[number, NodeJS.Signals | 0]> = [];
-    const signal = (pid: number, sig: NodeJS.Signals | 0) => {
-      if (sig !== 0) sent.push([pid, sig]);
-      if (!alive) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
-      if (sig !== 0 && obeys.includes(sig)) alive = false;
-    };
-    return { signal, sent, isAlive: () => alive };
-  }
-  const emuWithPid = (pid: number | undefined) => {
-    const emu = makeLaunchedEmulator('Pixel', 5554);
-    (emu.process as unknown as { pid: number | undefined }).pid = pid;
-    return emu;
-  };
-  const instant = { sleep: async () => undefined, graceMs: 1_000 };
+  const emuWith = (proc: ReturnType<typeof fakeChildProcess>) =>
+    ({ process: proc }) as unknown as import('../emulator.js').LaunchedEmulator;
+  const instant = { sleep: async () => undefined, graceMs: 0 };
 
   it('stops a process that obeys SIGTERM without escalating', async () => {
-    const group = fakeGroup(['SIGTERM']);
-    expect(await stopLaunchedEmulator(emuWithPid(4242), { ...instant, signal: group.signal })).toBe(true);
-    expect(group.sent.map(([, sig]) => sig)).not.toContain('SIGKILL');
-    // The whole process group: a launcher that forked would otherwise leave its child.
-    expect(group.sent).toContainEqual([-4242, 'SIGTERM']);
+    const proc = fakeChildProcess(['SIGTERM']);
+    expect(await stopLaunchedEmulator(emuWith(proc), instant)).toBe(true);
+    expect(proc.kill.mock.calls).toEqual([['SIGTERM']]);
   });
 
   it('escalates to SIGKILL when SIGTERM is ignored (a modal dialog, for one)', async () => {
-    const group = fakeGroup(['SIGKILL']);
-    expect(await stopLaunchedEmulator(emuWithPid(4242), { ...instant, signal: group.signal })).toBe(true);
-    expect(group.sent).toContainEqual([-4242, 'SIGKILL']);
-    expect(group.isAlive()).toBe(false);
+    const proc = fakeChildProcess(['SIGKILL']);
+    expect(await stopLaunchedEmulator(emuWith(proc), instant)).toBe(true);
+    expect(proc.kill.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']]);
   });
 
   it('reports a process that survives SIGKILL as not stopped', async () => {
-    const group = fakeGroup([]);
-    expect(await stopLaunchedEmulator(emuWithPid(4242), { ...instant, signal: group.signal })).toBe(false);
+    expect(await stopLaunchedEmulator(emuWith(fakeChildProcess([])), instant)).toBe(false);
   });
 
-  it('has nothing to stop when the process never got a PID', async () => {
-    const group = fakeGroup([]);
-    expect(await stopLaunchedEmulator(emuWithPid(undefined), { ...instant, signal: group.signal })).toBe(true);
-    expect(group.sent).toEqual([]);
+  it('signals nothing once the process has exited, nor when it never got a PID', async () => {
+    const exited = fakeChildProcess();
+    exited.exitCode = 0;
+    expect(await stopLaunchedEmulator(emuWith(exited), instant)).toBe(true);
+    expect(exited.kill).not.toHaveBeenCalled();
+    const unspawned = fakeChildProcess();
+    unspawned.pid = undefined;
+    expect(await stopLaunchedEmulator(emuWith(unspawned), instant)).toBe(true);
+    expect(unspawned.kill).not.toHaveBeenCalled();
   });
 
-  it.skipIf(process.platform === 'win32')('kills a real detached process group that ignores SIGTERM, children included', async () => {
-    // A parent and its child, both ignoring SIGTERM, in a process group of their own.
-    const ignoreTerm = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
-    const script = `${ignoreTerm} require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(ignoreTerm)}], { stdio: 'ignore' }); process.stdout.write('ready\\n');`;
-    const child = spawn(process.execPath, ['-e', script], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  it.skipIf(process.platform === 'win32')('kills a real detached process that ignores SIGTERM', async () => {
+    const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); process.stdout.write('ready'); setInterval(() => {}, 1000);"], {
+      detached: true, stdio: ['ignore', 'pipe', 'ignore'],
+    });
     await new Promise<void>((resolve) => child.stdout!.once('data', () => resolve()));
-    const pid = child.pid!;
-    const emu = makeLaunchedEmulator('Pixel', 5554);
-    (emu as unknown as { process: typeof child }).process = child;
     try {
-      expect(await stopLaunchedEmulator(emu, { graceMs: 1_000 })).toBe(true);
-      expect(() => process.kill(-pid, 0)).toThrow();
+      expect(await stopLaunchedEmulator({ process: child }, { graceMs: 500 })).toBe(true);
+      expect(child.signalCode).toBe('SIGKILL');
     } finally {
-      try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+      child.kill('SIGKILL');
     }
   });
 });
