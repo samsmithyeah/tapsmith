@@ -10,6 +10,9 @@ import { beforeEach, describe, expect, test } from "tapsmith"
 import { openScreen } from "../utils/app-reset.js"
 
 describe("Whitespace-normalized text matching (PILOT-510)", () => {
+  // Tests tap counters on one screen, so each needs a fresh app state.
+  test.use({ appResetScope: "test" })
+
   beforeEach(async ({ device }) => {
     await openScreen(device, "/text-matching")
   })
