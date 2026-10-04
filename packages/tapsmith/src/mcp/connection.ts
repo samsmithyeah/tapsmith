@@ -2127,21 +2127,27 @@ function removeConnection(conn: DaemonConnection): void {
   // sources that ever registered pay for the locked registry write: this runs
   // from `ensureConnected` whenever a 1s probe fails, and the lock blocks the
   // event loop while it waits.
+  let stopped = false;
   if (isRegistered(conn.source)) {
     unregisterDaemon(conn.address);
-    if (conn.daemonProcess && !daemonInUseByOthers(conn.address)) conn.daemonProcess.kill();
+    if (conn.daemonProcess && !daemonInUseByOthers(conn.address)) {
+      conn.daemonProcess.kill();
+      stopped = true;
+    }
   } else if (conn.daemonProcess) {
     conn.daemonProcess.kill();
+    stopped = true;
   }
   _connections = _connections.filter(c => c !== conn);
   for (const [serial, c] of _deviceIndex) {
     if (c === conn) _deviceIndex.delete(serial);
   }
-  // The session no longer drives the device it prepared through this daemon
+  // A daemon this session stopped no longer drives the device it prepared
   // (PILOT-381): give the claim back unless another of its daemons serves it.
-  // Never a UI worker's: that device is the UI session's, driven by its
-  // workers whatever happens to this connection.
-  if (conn.source !== 'ui') {
+  // Not one left running — dropped after a 1 s stall, it is still pointed at
+  // the device and the session may well go on driving it once it answers; nor
+  // a UI worker's, whose device is the UI session's.
+  if (stopped && conn.source !== 'ui') {
     for (const device of new Set([conn.preparedDevice, conn.claimedDevice])) {
       if (device && !_connections.some((c) => c.preparedDevice === device || c.claimedDevice === device)) {
         giveBack(device);
