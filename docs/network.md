@@ -11,9 +11,9 @@ Both features share the same underlying MITM proxy infrastructure.
 
 ## Prerequisites
 
-Network interception requires the MITM proxy to be active. The proxy starts automatically when tracing is enabled with `network: true` (the default). Without it, route handlers never fire and `waitForRequest`/`waitForResponse` never resolve.
+Network interception requires the MITM proxy to be active. The proxy starts automatically when tracing is enabled with `network: true` (the default). **Tracing is off by default** (`trace: "off"`), so out of the box no proxy runs: route handlers never fire and `waitForRequest`/`waitForResponse` never resolve. (`tapsmith init` writes `trace: { mode: 'retain-on-failure' }` when you enable network capture in the wizard.)
 
-Enable tracing in your config:
+Enable tracing in your config — any mode that records the test's first attempt (`"on"`, `"retain-on-failure"`, `"retain-on-first-failure"`, `"retain-on-failure-and-retries"`) starts the proxy for every test. `"on-first-retry"` and `"on-all-retries"` record only retries, so routes do not fire on a test's first attempt:
 
 ```typescript
 import { defineConfig } from "tapsmith"
@@ -42,7 +42,7 @@ export default defineConfig({
 
 A `--trace <mode>` flag replaces the config's whole `trace` value, `network` included, so keep the mode in the config for this.
 
-When network capture is off, `device.route()` silently registers the handler but it will never fire because no traffic passes through the proxy.
+When network capture is off, `device.route()` still registers the handler, but it can never fire because no traffic passes through the proxy. At the end of such a test Tapsmith prints a warning naming it (`device.route() handlers never fired: "…" registered route handlers, but network capture was not running`), so a mock that silently did nothing does not go unnoticed.
 
 HTTP/2 traffic is intercepted when the client accepts Tapsmith's MITM CA — including gRPC, and including Firestore on Android. Clients that use embedded roots or certificate pinning reject external MITM certificates (Firestore on iOS always does); Tapsmith detects that rejection for HTTP/2-capable clients and tunnels later connections so the app keeps working, but route handlers and waiters cannot see the encrypted requests inside. See [HTTP/2, gRPC, and passthrough connections](#http2-grpc-and-passthrough-connections).
 

@@ -905,6 +905,94 @@ describe('runner execution', () => {
     }
   });
 
+  describe('route handlers with no network proxy (PILOT-517)', () => {
+    // A device whose route manager reports registered handlers, with or
+    // without a daemon-side proxy that could ever deliver requests to them.
+    const makeRoutedDevice = (opts: { proxyRunning: boolean; routes: boolean; name?: string }) => ({
+      ...(opts.name ? { _traceDeviceId: opts.name } : {}),
+      tracing: new Tracing(async () => undefined, async () => undefined),
+      waitForIdle: vi.fn(async () => {}),
+      _networkProxyRunning: opts.proxyRunning,
+      _routeManager: { hasRoutes: opts.routes, removeAllRoutes: vi.fn(async () => {}) },
+      _startNetworkCapture: vi.fn(async () => ({ success: true, proxyPort: 1, errorMessage: '' })),
+      _stopNetworkCapture: vi.fn(async () => ({ success: true, entries: [], errorMessage: '' })),
+      _stopDeviceLogStream: vi.fn(),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
+      _disposeRouteManager: vi.fn(async () => {}),
+      _disposeWebViewManager: vi.fn(async () => {}),
+      _resetWebViewContext: vi.fn(),
+    });
+    const routeWarnings = (warn: { mock: { calls: unknown[][] } }): string[] =>
+      warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('device.route()'));
+
+    it('warns, naming the test, when a test registers routes and no proxy is running', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const device = makeRoutedDevice({ proxyRunning: false, routes: true });
+      try {
+        pushContext();
+        tapsmithTest('mocks the feed without tracing', async () => {});
+        const ctx = popContext();
+        const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
+          devices: [{ name: 'device-1', device: device as any }],
+        }));
+        expect(result.tests.map((t) => t.status)).toEqual(['passed']);
+        const warnings = routeWarnings(warn);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain('"mocks the feed without tracing"');
+        expect(warnings[0]).toContain('network capture was not running');
+        expect(warnings[0]).toContain("trace: 'retain-on-failure'");
+        // The routes are still cleaned up between tests.
+        expect(device._routeManager.removeAllRoutes).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('stays quiet when the proxy is running or no routes are registered', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        for (const [i, device] of [
+          makeRoutedDevice({ proxyRunning: true, routes: true }),
+          makeRoutedDevice({ proxyRunning: false, routes: false }),
+        ].entries()) {
+          pushContext();
+          tapsmithTest(`quiet route case ${i}`, async () => {});
+          const ctx = popContext();
+          await runSuiteContext(ctx, '', [], [], makeOpts({
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
+            devices: [{ name: 'device-1', device: device as any }],
+          }));
+        }
+        expect(routeWarnings(warn)).toEqual([]);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('names the group member whose routes cannot fire', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const alice = makeRoutedDevice({ proxyRunning: true, routes: true, name: 'alice' });
+      const bob = makeRoutedDevice({ proxyRunning: false, routes: true, name: 'bob' });
+      try {
+        pushContext();
+        tapsmithTest('group route test', async () => {});
+        const ctx = popContext();
+        await runSuiteContext(ctx, '', [], [], makeOpts({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mocks
+          devices: [{ name: 'alice', device: alice as any }, { name: 'bob', device: bob as any }],
+        }));
+        const warnings = routeWarnings(warn);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain('[bob]');
+        expect(warnings[0]).not.toContain('[alice]');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
   it('starts single-device network capture without requiring isolation', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-network-single-'));
     const mockDevice = {
