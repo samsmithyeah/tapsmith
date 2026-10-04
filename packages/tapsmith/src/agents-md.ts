@@ -26,14 +26,14 @@ This project uses [Tapsmith](https://github.com/tapsmith/tapsmith) for mobile E2
 - Config lives in \`tapsmith.config.ts\`.
 - Environment problems: \`npx tapsmith doctor --json\` (each failing check includes a \`fix\`).
 - Verify the whole setup end-to-end: \`npx tapsmith verify --json\`.
-- Failed runs record traces; open with \`npx tapsmith show-trace <trace.zip>\`.
+- Traces are recorded only when tracing is on (\`trace\` in the config, or \`--trace retain-on-failure\`); open one with \`npx tapsmith show-trace <trace.zip>\`. Network mocks (\`device.route()\`) also need it: they only fire while a trace with network capture is recording.
 
 ### MCP workflow
 
 Prefer the UI-backed MCP server over the standalone headless server. If the user already has \`npx tapsmith test --ui\` running, ask them for the MCP URL shown in the UI and register it as \`tapsmith-ui\`:
 
 - Claude Code: \`claude mcp add tapsmith-ui --transport http http://localhost:<port>/mcp\`
-- Codex: \`codex mcp add tapsmith-ui http://localhost:<port>/mcp\`
+- Codex: \`codex mcp add tapsmith-ui --url http://localhost:<port>/mcp\`
 
 The UI MCP session shares the browser test runner, device, test tree, results, traces, and mutual exclusion. Use the headless stdio server only when no UI session is available or you specifically need an isolated agent-owned session:
 
@@ -50,7 +50,7 @@ When using MCP, inspect before editing: \`tapsmith_snapshot\` for the accessibil
 - Group related behavior with \`describe()\`. Keep each test focused on one user-visible behavior, and use hooks only to put the app into a known starting state.
 - Prefer screen objects for reused screens. A screen object should take \`Device\`, expose locators as getters, and provide composite multi-step actions such as \`login()\` or \`openSettings()\`. Avoid one-line wrappers around \`.tap()\`; tests can tap exposed locators directly.
 - Keep assertions in tests, not screen objects. Screen objects provide locators and intentful actions; specs decide what must be true.
-- Tests should be independent and parallel-safe. Tapsmith resets the app for you between files — or before every test, automatically, when the app mounts \`@tapsmith/react-native\` (a warm, acknowledged in-app reset; recommend adding it to React Native apps). Declare a policy with \`test.use({ appReset: 'clear' | 'restart' | 'warm' | 'none', appResetScope: 'file' | 'test' })\` instead of writing \`restartApp()\` / \`launchApp({ clearData: true })\` in a \`beforeEach\`; \`device.resetApp({ target })\` runs the same reset mid-test. Prefer deep links, API setup, setup projects, or saved app state over clicking through unrelated setup UI. Generate unique names/emails/IDs for data created during tests.
+- Tests should be independent and parallel-safe. Tapsmith resets the app for you once per test file by default; a scope that needs a fresh app before every test opts in with \`test.use({ appResetScope: 'test' })\`. When the app mounts \`@tapsmith/react-native\`, each reset is a warm, acknowledged in-app reset well under a second (recommend adding it to React Native apps). Declare a policy with \`test.use({ appReset: 'clear' | 'restart' | 'warm' | 'none', appResetScope: 'file' | 'test' })\` instead of writing \`restartApp()\` / \`launchApp({ clearData: true })\` in a \`beforeEach\`; \`device.resetApp({ target })\` runs the same reset mid-test. Prefer deep links, API setup, setup projects, or saved app state over clicking through unrelated setup UI. Generate unique names/emails/IDs for data created during tests.
 - Clean up per-test network routes or mocks, for example with \`device.unrouteAll()\`, when a test installs routes that could affect later tests.
 
 ### Projects and authenticated state
