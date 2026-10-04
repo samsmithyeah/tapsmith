@@ -115,6 +115,15 @@ function allDevices(opts: RunOptions): Device[] {
   return opts.devices.map((d) => d.device);
 }
 
+/**
+ * Budget for the best-effort idle wait before each test. Short on purpose: a
+ * screen that never goes idle (a looping animation, a spinner) holds the
+ * Android agent's wait for the full budget, and with the config timeout that
+ * was 30s of silent overhead per test (PILOT-509). Matches the settle waits in
+ * session-preflight.ts.
+ */
+const PRE_TEST_IDLE_TIMEOUT_MS = 1_000;
+
 /** Run `fn` against every device concurrently, swallowing per-device errors. */
 async function forEachDeviceBestEffort(opts: RunOptions, fn: (device: Device) => Promise<unknown> | unknown): Promise<void> {
   await Promise.allSettled(allDevices(opts).map(async (d) => { await fn(d); }));
@@ -1943,12 +1952,13 @@ async function runSuiteContext(
             }
           }
 
-          // Wait for the device to be idle before each test. This ensures
-          // previous test actions (toasts, animations, async operations) have
-          // settled before hooks and assertions start, preventing flakiness
-          // under load (e.g. parallel workers sharing host CPU).
+          // Give the device a moment to go idle before each test, so the
+          // previous test's toasts, animations and async work settle before
+          // hooks and assertions start (flakiness under load, e.g. parallel
+          // workers sharing host CPU). Bounded: on a screen that never goes
+          // idle the Android agent blocks for the whole budget it is given.
           // Best effort — don't fail the test if an idle wait times out.
-          await forEachDeviceBestEffort(opts, (d) => d.waitForIdle());
+          await forEachDeviceBestEffort(opts, (d) => d.waitForIdle(PRE_TEST_IDLE_TIMEOUT_MS));
 
           if (hasTestScopedFixtures) {
             // Collect the fixture names destructured by the test and its hooks.

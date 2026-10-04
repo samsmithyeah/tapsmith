@@ -294,8 +294,8 @@ describe('runner with a device group', () => {
 
     expect(alice.calls).toEqual(['resetApp:clear']);
     expect(bob.calls).toEqual(['resetApp:clear']);
-    expect(alice.device.waitForIdle).toHaveBeenCalled();
-    expect(bob.device.waitForIdle).toHaveBeenCalled();
+    expect(alice.device.waitForIdle).toHaveBeenCalledWith(1_000);
+    expect(bob.device.waitForIdle).toHaveBeenCalledWith(1_000);
     // Readiness is verified on both daemons.
     expect(alice.client.ping).toHaveBeenCalled();
     expect(bob.client.ping).toHaveBeenCalled();
