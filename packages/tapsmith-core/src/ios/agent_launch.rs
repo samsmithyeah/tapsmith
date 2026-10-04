@@ -109,6 +109,17 @@ async fn start_agent_impl(
     super::agent_registry::reap_orphans().await;
     // Check if agent is already running by trying to connect
     if !force && ping_agent(agent_port).await.is_ok() {
+        // A runner answering on this port is only ours to adopt if it serves
+        // this device. Another session's runner for another simulator on the
+        // same port would otherwise be driven as this one (PILOT-381).
+        if let AgentPortOwner::Other(other) = agent_port_listeners(agent_port).await.judge(udid) {
+            bail!(
+                "The iOS agent port {agent_port} is held by a Tapsmith runner for another device \
+                 ({other}), not {udid}. Another Tapsmith session is probably driving {other} \
+                 through it; refusing to adopt its agent. Stop that session, or run this one \
+                 on a different daemon."
+            );
+        }
         info!("iOS agent is already running");
         crate::timing::timing_log!(
             "kind=boot name=agent dur_ms={} reused=true udid={udid}",
@@ -654,6 +665,111 @@ fn strip_patched_suffixes(path: &str) -> String {
     }
 }
 
+/// What is listening on an agent port, as far as the host can tell: the
+/// command lines of the listening processes.
+struct AgentPortListeners(Vec<String>);
+
+/// Whose runner is on the agent port, judged against the device we want.
+#[derive(Debug, PartialEq, Eq)]
+enum AgentPortOwner {
+    /// A listener serves this device.
+    Serves,
+    /// The only device a listener names is another one.
+    Other(String),
+    /// Nothing identifies a device (no `lsof`, an unfamiliar listener):
+    /// adopted as before, since refusing would break every such host.
+    Unknown,
+}
+
+impl AgentPortListeners {
+    fn judge(&self, udid: &str) -> AgentPortOwner {
+        let mut other = None;
+        for command in &self.0 {
+            match device_in_listener_command(command) {
+                Some(found) if found.eq_ignore_ascii_case(udid) => return AgentPortOwner::Serves,
+                Some(found) => other = other.or_else(|| Some(found.to_string())),
+                // An Android session's `adb forward` on this port answers the
+                // ping with its own agent's pong.
+                None if is_adb_command(command) => {
+                    other = other.or_else(|| {
+                        Some("an Android device, through an adb port forward".to_string())
+                    });
+                }
+                None => {}
+            }
+        }
+        other.map_or(AgentPortOwner::Unknown, AgentPortOwner::Other)
+    }
+}
+
+/// Whether a listener's command line is the adb server (`adb … fork-server …`).
+fn is_adb_command(command: &str) -> bool {
+    command
+        .split_whitespace()
+        .next()
+        .is_some_and(|program| program == "adb" || program.ends_with("/adb"))
+}
+
+/// The device a process listening on an agent port serves, read from its
+/// command line: a simulator runner runs from its simulator's data directory
+/// (`…/CoreSimulator/Devices/<UDID>/data/…`), and a physical device's agent
+/// port is an `iproxy --udid <UDID> …` tunnel.
+fn device_in_listener_command(command: &str) -> Option<&str> {
+    const SIM_MARKER: &str = "CoreSimulator/Devices/";
+    if let Some(idx) = command.find(SIM_MARKER) {
+        let rest = &command[idx + SIM_MARKER.len()..];
+        let udid = rest.split('/').next().unwrap_or("");
+        if !udid.is_empty() {
+            return Some(udid);
+        }
+    }
+    if command.contains("iproxy") {
+        let mut words = command.split_whitespace();
+        while let Some(word) = words.next() {
+            if word == "--udid" || word == "-u" {
+                return words.next();
+            }
+            if let Some(udid) = word.strip_prefix("--udid=") {
+                return Some(udid);
+            }
+        }
+    }
+    None
+}
+
+/// The command lines of the processes listening on `127.0.0.1:port`. Empty
+/// when they cannot be read (no `lsof`, nothing listening).
+async fn agent_port_listeners(port: u16) -> AgentPortListeners {
+    let pids = match Command::new("lsof")
+        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"])
+        .output()
+        .await
+    {
+        Ok(out) => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse::<u32>().ok())
+            .collect::<Vec<_>>(),
+        Err(e) => {
+            debug!(port, error = %e, "lsof unavailable; cannot tell whose agent is on the port");
+            Vec::new()
+        }
+    };
+    let mut commands = Vec::new();
+    for pid in pids {
+        if let Ok(out) = Command::new("ps")
+            .args(["-o", "command=", "-p", &pid.to_string()])
+            .output()
+            .await
+        {
+            let command = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !command.is_empty() {
+                commands.push(command);
+            }
+        }
+    }
+    AgentPortListeners(commands)
+}
+
 /// Ping the iOS agent to check if it's running.
 async fn ping_agent(port: u16) -> Result<()> {
     let addr = format!("127.0.0.1:{port}");
@@ -885,6 +1001,72 @@ mod tests {
         // Non-numeric port — must not strip.
         let q = "/tmp/Foo.xctestrun.launch.portABC.patched.xctestrun";
         assert_eq!(strip_patched_suffixes(q), q);
+    }
+
+    const SIM_A: &str = "11111111-2222-3333-4444-555555555555";
+    const SIM_B: &str = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
+
+    fn runner_command(udid: &str) -> String {
+        format!(
+            "/Users/me/Library/Developer/CoreSimulator/Devices/{udid}/data/Containers/Bundle/\
+             Application/X/TapsmithAgentUITests-Runner.app/TapsmithAgentUITests-Runner"
+        )
+    }
+
+    #[test]
+    fn agent_port_owner_adopts_this_simulators_runner() {
+        let listeners = AgentPortListeners(vec![runner_command(SIM_A)]);
+        assert_eq!(listeners.judge(SIM_A), AgentPortOwner::Serves);
+    }
+
+    #[test]
+    fn agent_port_owner_names_another_simulators_runner() {
+        let listeners = AgentPortListeners(vec![runner_command(SIM_B)]);
+        assert_eq!(
+            listeners.judge(SIM_A),
+            AgentPortOwner::Other(SIM_B.to_string())
+        );
+    }
+
+    #[test]
+    fn agent_port_owner_reads_an_iproxy_tunnel_udid() {
+        let tunnel = AgentPortListeners(vec!["iproxy --udid 00008110-ABC 18700:18700".to_string()]);
+        assert_eq!(tunnel.judge("00008110-ABC"), AgentPortOwner::Serves);
+        assert_eq!(
+            tunnel.judge("00008110-XYZ"),
+            AgentPortOwner::Other("00008110-ABC".to_string())
+        );
+        let short = AgentPortListeners(vec![
+            "/opt/homebrew/bin/iproxy -u 0000-DEF 18700:18700".to_string()
+        ]);
+        assert_eq!(short.judge("0000-DEF"), AgentPortOwner::Serves);
+    }
+
+    #[test]
+    fn agent_port_owner_refuses_an_adb_forward_on_the_port() {
+        let listeners = AgentPortListeners(vec![
+            "adb -L tcp:5037 fork-server server --reply-fd 4".to_string()
+        ]);
+        assert!(matches!(listeners.judge(SIM_A), AgentPortOwner::Other(_)));
+    }
+
+    #[test]
+    fn agent_port_owner_is_unknown_when_nothing_names_a_device() {
+        assert_eq!(
+            AgentPortListeners(vec![]).judge(SIM_A),
+            AgentPortOwner::Unknown
+        );
+        let unrelated =
+            AgentPortListeners(vec!["/usr/local/bin/some-server --port 18700".to_string()]);
+        assert_eq!(unrelated.judge(SIM_A), AgentPortOwner::Unknown);
+    }
+
+    #[test]
+    fn agent_port_owner_prefers_a_listener_serving_this_device() {
+        // Two listeners (an IPv4 and an IPv6 socket of different processes):
+        // one of them serving this device is enough.
+        let listeners = AgentPortListeners(vec![runner_command(SIM_B), runner_command(SIM_A)]);
+        assert_eq!(listeners.judge(SIM_A), AgentPortOwner::Serves);
     }
 
     #[test]
