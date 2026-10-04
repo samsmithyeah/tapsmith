@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { androidEmulatorCaptureLine, avdPickerChoices, generateConfig, generatedProjects, generateExampleTest, runInit } from '../init.js';
+import { androidEmulatorCaptureLine, avdPickerChoices, normalizeTypedPath, typedBuildPath, validateBuildPath, generateConfig, generatedProjects, generateExampleTest, runInit } from '../init.js';
 import type { AndroidConfig, IosConfig, Platform } from '../init.js';
 import { platformlessIosFields } from '../doctor.js';
 import { _internal } from '../runner.js';
@@ -335,12 +335,12 @@ describe('avdPickerChoices()', () => {
 
 describe('androidEmulatorCaptureLine()', () => {
   it('says capture works automatically only for a capture-capable AVD', () => {
-    expect(stripAnsi(androidEmulatorCaptureLine('Tapsmith_Phone_API_36', studioAvds)))
+    expect(stripAnsi(androidEmulatorCaptureLine('Tapsmith_Phone_API_36', studioAvds, true)))
       .toBe('  ✓ Android emulator (Tapsmith_Phone_API_36) — works automatically');
   });
 
   it('warns for a Play image, with the non-destructive fix', () => {
-    const line = stripAnsi(androidEmulatorCaptureLine('Medium_Phone_API_36', studioAvds));
+    const line = stripAnsi(androidEmulatorCaptureLine('Medium_Phone_API_36', studioAvds, true));
     expect(line).toMatch(/^ {2}⚠ Android emulator — AVD Medium_Phone_API_36 uses a Google Play system image/);
     expect(line).not.toContain('works automatically');
     expect(line).toContain("set avd: 'Tapsmith_Phone_API_36'");
@@ -348,13 +348,116 @@ describe('androidEmulatorCaptureLine()', () => {
   });
 
   it('warns when the AVD image could not be read', () => {
-    expect(stripAnsi(androidEmulatorCaptureLine('Mystery', [{ name: 'Mystery' }]))).toContain('Could not read the system image of AVD Mystery');
+    expect(stripAnsi(androidEmulatorCaptureLine('Mystery', [{ name: 'Mystery' }], true))).toContain('Could not read the system image of AVD Mystery');
   });
 
   it('warns, without repeating the AVD warning already printed, when no AVD was chosen', () => {
-    const line = stripAnsi(androidEmulatorCaptureLine(undefined, studioAvds));
+    const line = stripAnsi(androidEmulatorCaptureLine(undefined, studioAvds, true));
     expect(line).toBe('  ⚠ Android emulator — no AVD selected (see the AVD warning above)');
     expect(line).not.toContain('works automatically');
+  });
+
+  it('never says capture works automatically when ADB is missing (PILOT-513)', () => {
+    const line = stripAnsi(androidEmulatorCaptureLine('Tapsmith_Phone_API_36', studioAvds, false));
+    expect(line).not.toContain('works automatically');
+    expect(line).toMatch(/^ {2}⚠ Android emulator — ADB not found/);
+  });
+
+  it('still names a Play image when ADB is missing: capture would record nothing once adb is fixed', () => {
+    const lines = stripAnsi(androidEmulatorCaptureLine('Medium_Phone_API_36', studioAvds, false)).split('\n');
+    expect(lines[0]).toMatch(/ADB not found/);
+    expect(lines[1]).toMatch(/^ {2}⚠ Android emulator — AVD Medium_Phone_API_36 uses a Google Play system image/);
+  });
+});
+
+describe('validateBuildPath() (PILOT-513)', () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-path-'));
+    fs.mkdirSync(path.join(tmp, 'out', 'Debug-iphonesimulator', 'My App.app'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'out', 'Release-iphoneos', 'MyApp.app'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'out', 'app.apk'), '');
+  });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it('accepts an existing APK file, relative to the project or absolute, ignoring surrounding spaces', () => {
+    expect(validateBuildPath('./out/app.apk', 'apk', tmp)).toBe(true);
+    expect(validateBuildPath(`  ${path.join(tmp, 'out', 'app.apk')} `, 'apk', tmp)).toBe(true);
+  });
+
+  it('refuses an empty path', () => {
+    expect(validateBuildPath('  ', 'apk', tmp)).toBe('APK path is required');
+    expect(validateBuildPath('', 'simulator-app', tmp)).toBe('.app path is required');
+    expect(validateBuildPath('', 'device-app', tmp)).toBe('Device app path is required');
+  });
+
+  it('refuses a path that does not exist, naming it', () => {
+    const msg = validateBuildPath('./android/app-debug.apk', 'apk', tmp);
+    expect(msg).not.toBe(true);
+    expect(msg).toContain('./android/app-debug.apk');
+    expect(msg).toMatch(/does not exist/);
+  });
+
+  it('refuses a directory for an APK and a file for an .app bundle', () => {
+    expect(validateBuildPath('./out', 'apk', tmp)).toMatch(/is a directory/);
+    expect(validateBuildPath('./out/app.apk', 'simulator-app', tmp)).toMatch(/not an \.app bundle/);
+    // The Products folder above the bundle is a directory but not an .app.
+    expect(validateBuildPath('./out/Debug-iphonesimulator', 'simulator-app', tmp)).toMatch(/not an \.app bundle/);
+    expect(validateBuildPath('./out/Release-iphoneos/MyApp.app/', 'device-app', tmp)).toBe(true);
+  });
+
+  it('accepts .app bundle directories, including paths with spaces', () => {
+    expect(validateBuildPath('./out/Debug-iphonesimulator/My App.app', 'simulator-app', tmp)).toBe(true);
+    expect(validateBuildPath('./out/Release-iphoneos/MyApp.app', 'device-app', tmp)).toBe(true);
+  });
+
+  it('accepts a path the way a shell reads it: quoted, backslash-escaped or under ~', () => {
+    const app = path.join(tmp, 'out', 'Debug-iphonesimulator', 'My App.app');
+    expect(validateBuildPath(`'${app}'`, 'simulator-app', tmp)).toBe(true);
+    expect(validateBuildPath(`"${app}"`, 'simulator-app', tmp)).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(validateBuildPath(app.replace(/ /g, '\\ '), 'simulator-app', tmp)).toBe(true);
+    }
+    expect(validateBuildPath('~/definitely-not-here-pilot-513.apk', 'apk', tmp)).toMatch(/^.*definitely-not-here-pilot-513\.apk does not exist/);
+  });
+
+  it('still refuses a simulator build for a physical device', () => {
+    expect(validateBuildPath('./out/Debug-iphonesimulator/My App.app', 'device-app', tmp))
+      .toBe('This looks like a simulator build — physical devices need an iphoneos build');
+  });
+});
+
+describe('normalizeTypedPath() (PILOT-513)', () => {
+  it('expands a leading ~ to the home directory', () => {
+    expect(normalizeTypedPath(' ~/builds/app.apk ')).toBe(path.join(os.homedir(), 'builds', 'app.apk'));
+    expect(normalizeTypedPath('~')).toBe(os.homedir());
+    expect(normalizeTypedPath('./~/app.apk')).toBe('./~/app.apk');
+  });
+
+  it('drops one pair of surrounding quotes, keeping what is inside as typed', () => {
+    expect(normalizeTypedPath('"/a/My App.app"')).toBe('/a/My App.app');
+    expect(normalizeTypedPath("'/a/My App.app'")).toBe('/a/My App.app');
+  });
+
+  it.skipIf(process.platform === 'win32')('unescapes a path dragged into a terminal', () => {
+    expect(normalizeTypedPath('/a/My\\ App\\ \\(1\\).app')).toBe('/a/My App (1).app');
+  });
+});
+
+describe('typedBuildPath() (PILOT-513)', () => {
+  const project = path.join(os.tmpdir(), 'proj');
+
+  it('makes a path inside the project relative, like the detected builds', () => {
+    expect(typedBuildPath(`  ${path.join(project, 'android', 'app.apk')} `, project)).toBe(path.join('android', 'app.apk'));
+    // A first segment that merely starts with two dots is still inside the project.
+    expect(typedBuildPath(path.join(project, '..cache', 'app.apk'), project)).toBe(path.join('..cache', 'app.apk'));
+  });
+
+  it('keeps a relative path as typed, and a path outside the project absolute', () => {
+    expect(typedBuildPath('./build/app.apk', project)).toBe('./build/app.apk');
+    const outside = path.join(os.tmpdir(), 'elsewhere', 'app.apk');
+    expect(typedBuildPath(outside, project)).toBe(outside);
+    expect(typedBuildPath(path.join(os.tmpdir(), 'proj-sibling', 'a.apk'), project)).toBe(path.join(os.tmpdir(), 'proj-sibling', 'a.apk'));
   });
 });
 

@@ -2670,7 +2670,7 @@ npx tapsmith test --reporter json     # writes tapsmith-results/results.json
 
 ### `tapsmith init [options]`
 
-Set up a project. With no options, in a terminal, it runs the interactive wizard: it detects your environment (ADB, Xcode, simulators, emulators), walks you through platform and app configuration, and generates a `tapsmith.config.ts`, an example test and an `AGENTS.md` section.
+Set up a project. With no options, in a terminal, it runs the interactive wizard: it detects your environment (ADB, Xcode, simulators, emulators), offers the app builds it finds under `android/` and `ios/` (a typed path must exist), walks you through platform and app configuration, and generates a `tapsmith.config.ts`, an example test and an `AGENTS.md` section.
 
 Pass `--yes` or any setup flag below (every flag but `--json`) to run non-interactively instead, for scripts and AI agents: anything not given is auto-detected, and a choice that cannot be made (two APKs, say) exits 1 naming the candidates and the flag that picks one. `--json` only changes the output, so an agent passes `--yes --json`. Without a terminal and without `--yes` or a setup flag, `init` exits 1 rather than waiting for input. iOS physical devices need the interactive wizard, for its code-signing preflight.
 
