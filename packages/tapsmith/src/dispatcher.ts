@@ -17,6 +17,7 @@ import { sharedDeviceGroup } from './project.js';
 import { findDaemonBin } from './daemon-bin.js';
 import { assignGroupMemberDevices, deviceGroupSize, resolveDeviceGroup, type DeviceGroupEntry } from './config.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
+import { skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { labelledMessage, withDetail } from './error-detail.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary, type DaemonOutputCapture, type DaemonStartFailed } from './daemon-start.js';
 import type { TestResult, SuiteResult } from './runner.js';
@@ -1444,8 +1445,12 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     } else {
       // ─── Android device discovery & provisioning ───
       const androidDevices = onlineDevices.filter((d) => d.platform !== 'ios');
+      // Devices another live Tapsmith session holds are skipped (PILOT-381),
+      // but stay "occupied" for the emulator launch below.
+      const unheldAndroid = withoutHeldDevices(androidDevices.map((d) => d.serial));
+      for (const claim of unheldAndroid.held) note(skippedHeldDeviceMessage(claim));
       const prefilteredOnline = prefilterDevicesForStrategy(
-        androidDevices.map((d) => d.serial),
+        unheldAndroid.free,
         deviceStrategy,
         config.avd,
       );

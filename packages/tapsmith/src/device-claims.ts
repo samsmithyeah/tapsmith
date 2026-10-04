@@ -463,3 +463,8 @@ export function heldDevicesNote(held: readonly DeviceClaim[]): string {
   const list = held.map((c) => `${c.device} (${describeHolder(c)})`).join('; ');
   return ` In use by ${held.length === 1 ? 'another Tapsmith session' : 'other Tapsmith sessions'}: ${list}.`;
 }
+
+/** `Skipping emulator-5554: in use by another Tapsmith session, …` — for auto-pick paths. */
+export function skippedHeldDeviceMessage(claim: DeviceClaim): string {
+  return `Skipping ${claim.device}: in use by another Tapsmith session, ${describeHolder(claim)}.`;
+}

@@ -18,6 +18,27 @@ vi.mock('proper-lockfile', () => ({
   },
 }));
 
+// Simulators other live Tapsmith sessions hold (PILOT-381), by UDID. Plain
+// functions, not vi.fn: `resetAllMocks` below would wipe their behaviour.
+const claims = vi.hoisted(() => ({ held: new Set<string>() }));
+vi.mock('../device-claims.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../device-claims.js')>();
+  const holder = (device: string) => ({
+    device,
+    session: { id: 'other', pid: 1, command: 'tapsmith test --ui', project: '/elsewhere', startedAt: '2026-01-01T00:00:00Z' },
+    claimantPid: 1,
+    claimedAt: '2026-01-01T00:00:00Z',
+  });
+  return {
+    ...actual,
+    devicesHeldElsewhere: () => new Set(claims.held),
+    withoutHeldDevices: (candidates: readonly string[]) => ({
+      free: candidates.filter((d) => !claims.held.has(d)),
+      held: candidates.filter((d) => claims.held.has(d)).map(holder),
+    }),
+  };
+});
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- overloaded execFileSync signatures make proper mock typing impractical
 const mockedExecFileSync = vi.mocked(childProcess.execFileSync) as any;
 const mockedReadFileSync = vi.mocked(fs.readFileSync);
@@ -79,6 +100,7 @@ function mockListSimulators(sims: Array<Partial<SimulatorInfo>>): void {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  claims.held.clear();
   // Default: manifest doesn't exist (readFileSync throws), but pretend the
   // file exists on disk so ensureManifestFile() skips its initialization
   // write — keeping the first writeFileSync call as the actual data write
@@ -972,5 +994,91 @@ describe('getSimulatorScreenScale', () => {
   it('returns 3 for unknown UDIDs', () => {
     mockListSimulators([]);
     expect(getSimulatorScreenScale('UNKNOWN')).toBe(3);
+  });
+});
+
+// ─── Device claims (PILOT-381) ───
+
+describe('simulators another live Tapsmith session holds', () => {
+  function simctl(sims: Array<Partial<SimulatorInfo>>, calls: string[][] = []): void {
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      calls.push([cmd, ...(args ?? [])]);
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') {
+        return makeSimctlOutput(sims) as unknown as Buffer;
+      }
+      return '' as unknown as Buffer;
+    });
+  }
+
+  it('are not adoptable', () => {
+    simctl([
+      { udid: 'HELD', name: 'iPhone 17 Pro', state: 'Booted' },
+      { udid: 'HELD_CLONE', name: 'iPhone 17 Pro (Tapsmith Worker 1)', state: 'Booted' },
+      { udid: 'FREE_CLONE', name: 'iPhone 17 Pro (Tapsmith Worker 2)', state: 'Booted' },
+    ]);
+    claims.held = new Set(['HELD', 'HELD_CLONE']);
+    expect(listAdoptableBootedSimulators('iPhone 17 Pro').map((s) => s.udid)).toEqual(['FREE_CLONE']);
+  });
+
+  it('are passed over by name for a free one of the same name', () => {
+    const calls: string[][] = [];
+    simctl([
+      { udid: 'HELD', name: 'iPhone 16', state: 'Booted' },
+      { udid: 'FREE', name: 'iPhone 16', state: 'Shutdown' },
+    ], calls);
+    claims.held = new Set(['HELD']);
+    expect(provisionSimulator('iPhone 16').udid).toBe('FREE');
+    expect(calls.some((c) => c[2] === 'boot' && c[3] === 'FREE')).toBe(true);
+  });
+
+  it('are refused by name, naming the holder, when every one of that name is held', () => {
+    simctl([{ udid: 'HELD', name: 'iPhone 16', state: 'Booted' }]);
+    claims.held = new Set(['HELD']);
+    expect(() => provisionSimulator('iPhone 16', { attempts: 3, delayMs: 0 }))
+      .toThrow(/Device HELD is in use by another Tapsmith session: `tapsmith test --ui`/);
+  });
+
+  it('are neither reused nor deleted by the stale-clone sweep', () => {
+    mockedReadFileSync.mockReturnValue(JSON.stringify([
+      { udid: 'HELD_CLONE', name: 'iPhone 16 (Tapsmith Worker 1)', sourceName: 'iPhone 16', createdAt: '2026-01-01' },
+    ]));
+    const calls: string[][] = [];
+    simctl([
+      { udid: 'HELD_CLONE', name: 'iPhone 16 (Tapsmith Worker 1)', state: 'Booted' },
+      { udid: 'HELD_ORPHAN', name: 'iPhone 16 (Tapsmith Worker 2)', state: 'Booted' },
+    ], calls);
+    claims.held = new Set(['HELD_CLONE', 'HELD_ORPHAN']);
+
+    const result = cleanupStaleSimulators('iPhone 16');
+    expect(result).toEqual({ reusable: [], killed: [] });
+    expect(calls.some((c) => c[2] === 'delete' || c[2] === 'shutdown')).toBe(false);
+    // Still recorded: its owner's clone stays in the manifest.
+    const written = JSON.parse(String(mockedWriteFileSync.mock.calls.at(-1)?.[1] ?? '[]')) as Array<{ udid: string }>;
+    expect(written.map((e) => e.udid)).toContain('HELD_CLONE');
+  });
+
+  it('are not taken, pruned or shut down as a clone source by provisioning', () => {
+    const calls: string[][] = [];
+    simctl([
+      { udid: 'PRIMARY', name: 'iPhone 16', state: 'Booted' },
+      { udid: 'HELD', name: 'iPhone 16', state: 'Booted' },
+      { udid: 'HELD_REUSE', name: 'iPhone 16 (Tapsmith Worker 1)', state: 'Booted' },
+    ], calls);
+    mockedReadFileSync.mockReturnValue('[]');
+    claims.held = new Set(['HELD', 'HELD_REUSE']);
+
+    const result = provisionSimulators({
+      simulatorName: 'iPhone 16',
+      workers: 2,
+      existingUdids: ['PRIMARY'],
+      reusableUdids: ['HELD_REUSE'],
+      onProgress: () => {},
+    });
+    expect(result.allUdids).not.toContain('HELD');
+    expect(result.allUdids).not.toContain('HELD_REUSE');
+    for (const c of calls) {
+      if (c[2] === 'delete' || c[2] === 'shutdown') expect(c).not.toContain('HELD');
+      if (c[2] === 'delete') expect(c).not.toContain('HELD_REUSE');
+    }
   });
 });

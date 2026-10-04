@@ -16,6 +16,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { withFileLockSync } from './file-lock.js';
+import { DeviceClaimedError, devicesHeldElsewhere, withoutHeldDevices } from './device-claims.js';
 
 export interface SimulatorInfo {
   udid: string
@@ -99,7 +100,8 @@ function isTapsmithCloneOf(name: string, source: string): boolean {
  * whose name or UDID is the configured value, and Tapsmith's own clones of it
  * (`<configured> (Tapsmith Worker N)`, the names `provisionSimulators` gives
  * them) (PILOT-511). Any other booted simulator is left alone — it may be one
- * the developer is using.
+ * the developer is using — and so is one another live Tapsmith session has
+ * claimed (PILOT-381).
  *
  * Only simulators on one iOS runtime are returned, because the agent's
  * xctestrun is OS-version-specific (one built for iOS 26.4 fails on 26.1):
@@ -112,8 +114,11 @@ export function listAdoptableBootedSimulators(
   opts: { among?: readonly string[]; compatibleWith?: string } = {},
 ): SimulatorInfo[] {
   const booted = listBootedSimulators();
+  // Never one another live Tapsmith session holds (PILOT-381): adopting it
+  // puts two sessions' agents on one simulator.
+  const held = new Set(withoutHeldDevices(booted.map((s) => s.udid)).held.map((c) => c.device));
   let matching = booted.filter((s) =>
-    s.name === configured || s.udid === configured || isTapsmithCloneOf(s.name, configured),
+    (s.name === configured || s.udid === configured || isTapsmithCloneOf(s.name, configured)) && !held.has(s.udid),
   );
   if (opts.among) {
     const byUdid = new Map(matching.map((s) => [s.udid, s]));
@@ -368,7 +373,11 @@ export function installedAppMatches(udid: string, bundleId: string, appPath: str
  * Find a simulator matching the given name (or UDID).
  * Prefers booted simulators. Returns undefined if no match found.
  */
-export function findSimulator(nameOrUdid: string): SimulatorInfo | undefined {
+export function findSimulator(
+  nameOrUdid: string,
+  /** By-name matches to pass over (simulators other sessions hold). A UDID is always honoured. */
+  skip: ReadonlySet<string> = new Set(),
+): SimulatorInfo | undefined {
   const all = listSimulators();
 
   // Try exact UDID match first
@@ -376,7 +385,7 @@ export function findSimulator(nameOrUdid: string): SimulatorInfo | undefined {
   if (byUdid) return byUdid;
 
   // Try name match, preferring booted ones
-  const byName = all.filter((s) => s.name === nameOrUdid);
+  const byName = all.filter((s) => s.name === nameOrUdid && !skip.has(s.udid));
   const booted = byName.find((s) => s.state === 'Booted');
   if (booted) return booted;
 
@@ -407,10 +416,18 @@ export function provisionSimulator(
     delayMs: FIND_SIMULATOR_RETRY_DELAY_MS,
   },
 ): { udid: string; bootComplete: boolean } {
-  let sim = findSimulator(simulatorName);
+  // A same-named simulator another live session holds is not this run's to
+  // take (PILOT-381): pass over it to another one of that name.
+  const held = devicesHeldElsewhere();
+  let sim = findSimulator(simulatorName, held);
   for (let attempt = 1; !sim && attempt < retry.attempts; attempt++) {
+    // Every one of that name held: no retry will free it — say by whom.
+    if (held.size > 0) {
+      const [holder] = withoutHeldDevices(listSimulators().filter((s) => s.name === simulatorName).map((s) => s.udid)).held;
+      if (holder) throw new DeviceClaimedError(holder.device, holder);
+    }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retry.delayMs);
-    sim = findSimulator(simulatorName);
+    sim = findSimulator(simulatorName, held);
   }
   if (!sim) {
     throw new Error(
@@ -820,6 +837,9 @@ export function cleanupStaleSimulators(
   const reusable: string[] = [];
   const killed: string[] = [];
   const handledUdids = new Set<string>();
+  // Clones another live Tapsmith session is driving are neither reused nor
+  // deleted here (PILOT-381): both would pull a simulator out from under it.
+  const heldElsewhere = devicesHeldElsewhere();
 
   // Phase 1: manifest-based reclamation. Hold the manifest lock across the
   // entire read-modify-write so two concurrent Tapsmith runs don't both try to
@@ -834,8 +854,9 @@ export function cleanupStaleSimulators(
       // looks abandoned and a concurrent run breaks the lock underneath it.
       heartbeat();
 
-      // Only reclaim clones matching the current simulator name
-      if (entry.sourceName !== simulatorName) {
+      // Only reclaim clones matching the current simulator name, and never
+      // one another session holds.
+      if (entry.sourceName !== simulatorName || heldElsewhere.has(entry.udid)) {
         surviving.push(entry);
         handledUdids.add(entry.udid);
         continue;
@@ -886,6 +907,7 @@ export function cleanupStaleSimulators(
   for (const sim of allSims) {
     if (handledUdids.has(sim.udid)) continue;
     if (!tapsmithWorkerPattern.test(sim.name)) continue;
+    if (heldElsewhere.has(sim.udid)) continue;
     // Read again, immediately before deleting. Phase 1's view of the manifest
     // is as old as the sweep, and the lock is released by now — a run that
     // recorded a clone in between would otherwise have it deleted here on the
@@ -974,6 +996,9 @@ export function provisionSimulators(opts: {
   // simulators on the same OS version. Mismatched runtimes cause
   // xcodebuild test-without-building to fail.
   const allSims = listSimulators();
+  // Simulators another live Tapsmith session holds: never adopted, reused,
+  // pruned or shut down as a clone source here (PILOT-381).
+  const heldElsewhere = devicesHeldElsewhere();
   const primarySim = existingUdids.length > 0
     ? allSims.find((s) => s.udid === existingUdids[0])
     : undefined;
@@ -982,7 +1007,7 @@ export function provisionSimulators(opts: {
   // Phase 0a: reuse healthy clones from previous runs (already booted)
   for (const udid of reusableUdids) {
     if (allUdids.length >= workers) break;
-    if (existingSet.has(udid)) continue;
+    if (existingSet.has(udid) || heldElsewhere.has(udid)) continue;
     const sim = allSims.find((s) => s.udid === udid);
     if (primaryRuntime && sim?.runtime !== primaryRuntime) {
       // Runtime mismatch — delete the stale clone so it gets re-created
@@ -999,7 +1024,7 @@ export function provisionSimulators(opts: {
   }
 
   // Prune excess reusable clones beyond what we need
-  const unusedReusable = reusableUdids.filter((u) => !allUdids.includes(u));
+  const unusedReusable = reusableUdids.filter((u) => !allUdids.includes(u) && !heldElsewhere.has(u));
   if (unusedReusable.length > 0) {
     for (const udid of unusedReusable) {
       deleteSimulator(udid);
@@ -1015,6 +1040,7 @@ export function provisionSimulators(opts: {
     s.name === simulatorName
     && !existingSet.has(s.udid)
     && !allUdids.includes(s.udid)
+    && !heldElsewhere.has(s.udid)
     && (!primaryRuntime || s.runtime === primaryRuntime),
   );
 
@@ -1059,7 +1085,7 @@ export function provisionSimulators(opts: {
   if (!source) {
     // All matching sims are booted — shut one down temporarily to use as clone source.
     // Never shut down sims in existingUdids — they may have an active agent session.
-    const candidate = refreshed.find((s) => runtimeMatch(s) && !existingSet.has(s.udid));
+    const candidate = refreshed.find((s) => runtimeMatch(s) && !existingSet.has(s.udid) && !heldElsewhere.has(s.udid));
     if (candidate && candidate.state === 'Booted') {
       shutdownSimulator(candidate.udid);
       waitForSimulatorState(candidate.udid, 'Shutdown', 10_000);

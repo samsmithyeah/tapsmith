@@ -29,7 +29,7 @@ import {
   type DeviceSession,
 } from './device-session.js';
 import type { PreparedState, ResetCapabilities } from './app-reset.js';
-import { currentSession, ensureClaimSession } from './device-claims.js';
+import { currentSession, ensureClaimSession, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { discoverTestFiles } from './test-file-discovery.js';
 import { resolveTsxBin } from './child-scripts.js';
@@ -1031,8 +1031,11 @@ async function ensureSequentialTargetDevice(
     }
 
     // Check for already-booted simulators
+    // Not one another live Tapsmith session holds (PILOT-381):
+    // provisionSimulator below passes over those too.
     const booted = listBootedSimulators();
-    const matching = booted.find((s) => s.name === simulatorName || s.udid === simulatorName);
+    const heldBooted = new Set(withoutHeldDevices(booted.map((s) => s.udid)).held.map((c) => c.device));
+    const matching = booted.find((s) => (s.name === simulatorName || s.udid === simulatorName) && !heldBooted.has(s.udid));
     if (matching) {
       const message = `Reusing already-booted simulator ${matching.udid} (${matching.name}).`;
       if (progress) progress.update('primary-device', { state: 'running', detail: `reusing already-booted ${matching.name}` });
@@ -1086,8 +1089,15 @@ async function ensureSequentialTargetDevice(
 
   const deviceStrategy = resolveDeviceStrategy(config);
   const onlineSerials = listConnectedDeviceSerials();
+  // Devices another live Tapsmith session holds are skipped, not taken
+  // (PILOT-381). They stay "occupied" for the emulator launch below.
+  const unheldOnline = withoutHeldDevices(onlineSerials);
+  for (const claim of unheldOnline.held) {
+    if (progress) progress.note(skippedHeldDeviceMessage(claim));
+    else process.stderr.write(`${DIM}${skippedHeldDeviceMessage(claim)}${RESET}\n`);
+  }
   const prefilteredOnline = prefilterDevicesForStrategy(
-    onlineSerials,
+    unheldOnline.free,
     deviceStrategy,
     config.avd,
   );
@@ -1236,7 +1246,13 @@ async function provisionMultiWorkerDevices(
     }
   } else {
     const allConnected = listConnectedDeviceSerials();
-    const others = allConnected.filter((s) => s !== config.device && !pinned.includes(s));
+    // Never another live session's device (PILOT-381, PILOT-328).
+    const unheld = withoutHeldDevices(allConnected);
+    for (const claim of unheld.held) {
+      if (opts?.progress) opts.progress.note(skippedHeldDeviceMessage(claim));
+      else if (!opts?.quiet) process.stderr.write(`${DIM}${skippedHeldDeviceMessage(claim)}${RESET}\n`);
+    }
+    const others = unheld.free.filter((s) => s !== config.device && !pinned.includes(s));
     serials = [config.device!, ...pinned, ...others].filter(Boolean);
 
     if (serials.length < wanted && config.launchEmulators) {
