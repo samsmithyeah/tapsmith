@@ -227,7 +227,7 @@ export function resolveInitPlan(
       const candidates = detect.findIosAppCandidates(cwd);
       if (candidates.length === 0) {
         throw new InitError('NO_IOS_APP', 'No simulator .app bundle found under ios/', {
-          fix: 'Build your app for the simulator (xcodebuild -sdk iphonesimulator), or pass --app <path>',
+          fix: 'Build your app for the simulator (in ios/: xcodebuild -workspace <App>.xcworkspace -scheme <App> -sdk iphonesimulator -derivedDataPath build), or pass --app <path>',
         });
       }
       if (candidates.length > 1) {
