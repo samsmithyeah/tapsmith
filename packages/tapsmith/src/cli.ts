@@ -9,7 +9,7 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { printsBanner, runCli, type CliHandlers, type TestCommandArgs } from './cli-program.js';
-import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, primaryDevicePin, deviceGroupSize, assignGroupMemberDevices, EXPLICIT_WORKERS, isExplicitWorkers, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
+import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, primaryDevicePin, deviceGroupSize, assignGroupMemberDevices, EXPLICIT_WORKERS, isExplicitWorkers, isTapsmithNotInstalledError, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
 import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
@@ -3037,6 +3037,14 @@ main().catch(async (err) => {
     if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) {
       console.error((err as Error)?.stack ?? err);
     }
+    process.exit(1);
+  }
+
+  // Tapsmith missing from the project (PILOT-551): the message is the whole
+  // story and the fix; a stack of loader frames would bury it.
+  if (isTapsmithNotInstalledError(err)) {
+    console.error(red(message));
+    if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) console.error(err.stack);
     process.exit(1);
   }
 
