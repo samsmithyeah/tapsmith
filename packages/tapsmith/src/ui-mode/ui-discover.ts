@@ -10,6 +10,7 @@
 
 import * as path from 'node:path';
 import { discoverTestFile } from '../runner.js';
+import { loadErrorForReport } from '../load-failure.js';
 import type {
   UIDiscoverMessage,
   UIDiscoverChildMessage,
@@ -97,7 +98,9 @@ process.on('message', async (msg: UIDiscoverMessage) => {
       process.exit(0);
     }
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
+    // Without the cache-bust query discovery's import leaves in a CommonJS
+    // require stack, so the same load error reads the same each time (PILOT-545).
+    const error = loadErrorForReport(err);
     send({
       type: 'discover-error',
       filePath: msg.filePath,

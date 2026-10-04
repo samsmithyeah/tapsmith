@@ -3490,7 +3490,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     }
   }
 
-  async function runFileWithDeps(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<void> {
+  async function runFileWithDeps(filePath: string, requestedFilter?: string, explicitProjectName?: string): Promise<void> {
+    const testFilter = runFilterForFile(filePath, requestedFilter);
     await ensureWorkersReady();
     if (!useParallel()) { reportNoWorkers(); return; }
     {

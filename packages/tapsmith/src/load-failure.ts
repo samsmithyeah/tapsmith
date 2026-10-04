@@ -122,6 +122,33 @@ interface MissingImport {
 const IMPORT_LINE_RE = /\b(import|require|from)\b/;
 const STRING_LITERAL_RE = /(['"`])([^'"`\n]+)\1/g;
 
+/** The `?t=<ms>` query Tapsmith appends to re-imported test files to bust the ESM cache. */
+const CACHE_BUST_RE = /\?t=\d+/g;
+
+/**
+ * The error a file that failed to load reports: a copy of the thrown value
+ * (the loader can re-throw the very same object for another import of the
+ * file, which must not change under an earlier result), without the
+ * cache-bust query tsx's CommonJS resolver leaves in the importer path — it
+ * differs on every import, so one error would read as a new one each run — and
+ * with a frame at the failing import for a missing module.
+ */
+export function loadErrorForReport(err: unknown): Error {
+  const source = err instanceof Error ? err : new Error(String(err));
+  const copy = Object.create(Object.getPrototypeOf(source) as object) as Error;
+  // Own enumerable fields (`code`, `requireStack`, …), then the
+  // non-enumerable ones Error keeps as own properties, as plain values.
+  Object.assign(copy, source);
+  const define = (key: string, value: unknown): void => {
+    Object.defineProperty(copy, key, { value, writable: true, configurable: true, enumerable: false });
+  };
+  define('message', source.message.replace(CACHE_BUST_RE, ''));
+  if (source.stack !== undefined) define('stack', source.stack.replace(CACHE_BUST_RE, ''));
+  if (Object.prototype.hasOwnProperty.call(source, 'name')) define('name', source.name);
+  if (source.cause !== undefined) define('cause', source.cause);
+  return withMissingImportFrame(copy);
+}
+
 /**
  * Return `error` with a stack frame at the failing import prepended to its
  * frames when it is a missing-module error whose import line can be found.

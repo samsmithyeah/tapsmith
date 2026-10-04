@@ -23,7 +23,7 @@ const brotliDecompress = promisify(zlib.brotliDecompress);
 import type { TapsmithConfig, Platform, UseOptions } from './config.js';
 import type { Device } from './device.js';
 import type { TapsmithReporter } from './reporter.js';
-import { fileLoadFailureTitle, withMissingImportFrame } from './load-failure.js';
+import { fileLoadFailureTitle, loadErrorForReport } from './load-failure.js';
 import { APIRequestContext } from './api-request.js';
 import { flushSoftErrors } from './expect.js';
 import { FixtureRegistry, resolveFixtures, fixtureParameterNames, functionHasParameters, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
@@ -3000,14 +3000,13 @@ export function fileLevelFailureResult(
   opts: Pick<RunOptions, 'testFilePath' | 'projectName'>,
   err: unknown,
 ): TestResult {
-  const error = err instanceof Error ? err : new Error(String(err));
   const title = fileLoadFailureTitle(opts.testFilePath ?? '');
   return {
     name: title,
     fullName: title,
     status: 'failed',
     durationMs: 0,
-    error: withMissingImportFrame(error),
+    error: loadErrorForReport(err),
     project: opts.projectName,
     filePath: opts.testFilePath,
     fileLevelFailure: true,

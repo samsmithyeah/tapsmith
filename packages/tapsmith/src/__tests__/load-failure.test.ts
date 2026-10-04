@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { fileLoadFailureTitle, loadFailureFollowUp, loadFailureTreeNode, runFilterForFile, withoutLoadFailedFiles, parseMissingImport, withMissingImportFrame } from '../load-failure.js';
+import { fileLoadFailureTitle, loadErrorForReport, loadFailureFollowUp, loadFailureTreeNode, runFilterForFile, withoutLoadFailedFiles, parseMissingImport, withMissingImportFrame } from '../load-failure.js';
 import { extractStack } from '../trace/trace-collector.js';
 import type { TestTreeNode } from '../ui-mode/ui-protocol.js';
 import { formatError } from '../reporters/base.js';
@@ -201,5 +201,32 @@ describe('runFilterForFile', () => {
     expect(runFilterForFile('/r/a.test.ts', 'login works')).toBe('login works');
     expect(runFilterForFile('/r/a.test.ts', undefined)).toBeUndefined();
     expect(runFilterForFile('/r/b.test.ts', 'a.test.ts — failed to load')).toBe('a.test.ts — failed to load');
+  });
+});
+
+describe('loadErrorForReport', () => {
+  it('strips the import cache-bust query tsx puts in a CommonJS require stack, so one error reads the same on every run', () => {
+    const err = errorWithStack("Cannot find module './nope'\nRequire stack:\n- /p/tests/b.test.ts?t=1791152071448");
+    const report = loadErrorForReport(err);
+    expect(report.message).toBe("Cannot find module './nope'\nRequire stack:\n- /p/tests/b.test.ts");
+    expect(report.stack).not.toContain('?t=');
+  });
+
+  it('returns a copy: the loader can re-throw the same error object for another import, which must not change', () => {
+    const file = writeTestFile(SOURCE);
+    const err = errorWithStack(`Cannot find module '../helpers/login'\nRequire stack:\n- ${file}`);
+    const original = err.stack;
+    const first = loadErrorForReport(err);
+    const second = loadErrorForReport(err);
+    expect(err.stack).toBe(original);
+    expect(second.stack).toBe(first.stack);
+    expect(second.stack!.split('\n').filter((l) => l.includes(`${file}:2:23`))).toHaveLength(1);
+  });
+
+  it('keeps the error\'s class and code', () => {
+    const err = Object.assign(new TypeError('x is not a function'), { code: 'X' });
+    const report = loadErrorForReport(err);
+    expect(report).toBeInstanceOf(TypeError);
+    expect((report as Error & { code?: string }).code).toBe('X');
   });
 });
