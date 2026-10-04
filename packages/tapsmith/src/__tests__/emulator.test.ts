@@ -1751,9 +1751,11 @@ describe('provisionEmulators and macOS App Nap (PILOT-515)', () => {
     try { fs.unlinkSync(manifestFile); } catch { /* ok */ }
     const disableAppNap = vi.fn(() => appNap);
     const messages: Array<[string, string | undefined]> = [];
+    // Judged as on a developer's Mac, not by this machine's own CI or display.
+    const resolveLaunchSettings = (options: { headless?: boolean } | undefined) => ({ headless: options?.headless === true, args: [] });
     const result = await provisionEmulators(
       { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions, onProgress: (message, level) => { messages.push([message, level]); } },
-      { ...base, platform, disableAppNap },
+      { ...base, platform, disableAppNap, resolveLaunchSettings },
     );
     const entries = manifestEntries();
     try { fs.unlinkSync(manifestFile); } catch { /* ok */ }

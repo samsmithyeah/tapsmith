@@ -469,11 +469,13 @@ emulator never waits on a crash-report or metrics prompt that nobody will answer
 On macOS, App Nap slows a windowed emulator down once its window is hidden, or once the
 display sleeps while you are away. A slowed emulator stops answering, and the run fails
 with adb timeouts. So before it launches a windowed emulator, Tapsmith turns App Nap off
-for the emulator. It sets the standard `NSAppSleepDisabled` setting for the emulator's
-`qemu-system-*` program, says so the first time, and gives the command that undoes it:
+for the emulator. It sets the standard `NSAppSleepDisabled` setting for each of the
+emulator's windowed `qemu-system-*` programs (on Apple silicon, `qemu-system-aarch64` and
+`qemu-system-armel`), says so the first time, and gives the commands that undo it:
 
 ```bash
 defaults delete qemu-system-aarch64 NSAppSleepDisabled
+defaults delete qemu-system-armel NSAppSleepDisabled
 ```
 
 The setting also covers emulators you start yourself, and the emulator reads it only at

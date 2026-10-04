@@ -2008,6 +2008,8 @@ interface ProvisionDeps {
   waitForEmulatorStartup: (emu: LaunchedEmulator) => Promise<void>
   /** How many emulators boot at once. */
   launchConcurrency: number
+  /** `resolveEmulatorLaunchSettings`, judged against the real environment. */
+  resolveLaunchSettings: (options: EmulatorLaunchOptions | undefined) => EmulatorLaunchSettings & { windowUnavailable?: string }
   /** Turns macOS App Nap off for the emulator's qemu (`disableEmulatorAppNap`). */
   disableAppNap: (emulator: string) => EmulatorAppNapResult
   platform: NodeJS.Platform
@@ -2075,6 +2077,7 @@ export async function provisionEmulators(opts: {
     reserveEmulatorPort: deps.reserveEmulatorPort ?? reserveEmulatorPort,
     waitForEmulatorStartup: deps.waitForEmulatorStartup ?? waitForEmulatorStartup,
     launchConcurrency: deps.launchConcurrency ?? defaultLaunchConcurrency(),
+    resolveLaunchSettings: deps.resolveLaunchSettings ?? ((options) => resolveEmulatorLaunchSettings(options)),
     disableAppNap: deps.disableAppNap ?? ((command) => disableEmulatorAppNap(command)),
     platform: deps.platform ?? process.platform,
   };
@@ -2132,7 +2135,7 @@ export async function provisionEmulators(opts: {
   const existingNote = existingCount > 0
     ? ` (${existingCount} already connected, need ${workers} total)`
     : '';
-  const settings = resolveEmulatorLaunchSettings(opts.launchOptions);
+  const settings = resolvedDeps.resolveLaunchSettings(opts.launchOptions);
   // Only an explicit `headless: false` is worth a warning; the default just
   // adapts, and the Starting line below says why.
   if (settings.windowUnavailable && opts.launchOptions?.headless === false) {
