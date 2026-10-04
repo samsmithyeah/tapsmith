@@ -139,13 +139,15 @@ describe('expoBuildHint() (PILOT-557)', () => {
     expect(hint).toContain('`npx expo prebuild --platform android` (this Expo project has no android/ yet), then `cd android && ./gradlew assembleRelease`');
     expect(hint).toContain('android/app/build/outputs/apk/release/app-release.apk');
     // run:android resolves a device before building, so it is only the alternative.
-    expect(hint).toContain('`npx expo run:android --variant release` does both in one step, but needs a running emulator or device');
+    expect(hint).toContain('`npx expo run:android --variant release` builds and installs in one step, but needs a running emulator or device');
     expect(hint).not.toContain('assembleDebug');
     expect(hint).toContain('https://tapsmith.dev/getting-started/#react-native-and-expo');
   });
 
   it('Android, prebuilt: no prebuild step', () => {
-    expect(expoBuildHint(['android'], { ...managed, hasAndroidDir: true })).not.toContain('prebuild');
+    const hint = expoBuildHint(['android'], { ...managed, hasAndroidDir: true });
+    expect(hint).not.toContain('prebuild');
+    expect(hint).not.toContain('both');
   });
 
   it('iOS, managed: prebuild, then an xcodebuild into ios/build where init looks', () => {

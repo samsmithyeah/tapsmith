@@ -205,7 +205,7 @@ function expoBuildStep(platform: 'android' | 'ios', expo: ExpoProject): string {
     const generate = expo.hasAndroidDir ? '' : '`npx expo prebuild --platform android` (this Expo project has no android/ yet), then ';
     return `Build a release APK with ${generate}\`cd android && ${env}./gradlew assembleRelease\`, `
       + 'which writes android/app/build/outputs/apk/release/app-release.apk '
-      + '(`npx expo run:android --variant release` does both in one step, but needs a running emulator or device to install on).';
+      + '(`npx expo run:android --variant release` builds and installs in one step, but needs a running emulator or device to install on).';
   }
   const generate = expo.hasIosDir ? '' : '`npx expo prebuild --platform ios` (this Expo project has no ios/ yet), then ';
   return `Build a simulator app with ${generate}\`cd ios && ${env}xcodebuild -workspace <App>.xcworkspace -scheme <App> `
