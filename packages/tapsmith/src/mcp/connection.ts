@@ -1559,13 +1559,11 @@ async function prepareTarget(
   // nor take a device another session holds (PILOT-381).
   const daemonHolder = await daemonDriverElsewhere(conn.address, async () => wasPointedAt, currentSession());
   if (daemonHolder) throw new DaemonClaimedError(conn.address, daemonHolder);
-  const freshClaim = claimDeviceOrThrow(serial, currentSession(), { daemonAddress: conn.address });
-  // A target that does not come up gives back a claim it just made: an MCP
-  // server lives for hours, and other sessions would otherwise be refused a
-  // device it never got to drive.
-  const releaseOnFailure = (): void => {
-    if (freshClaim) releaseDeviceClaim(serial, currentSession());
-  };
+  claimDeviceOrThrow(serial, currentSession(), { daemonAddress: conn.address });
+  // A target that does not come up gives its device back: an MCP server
+  // lives for hours, and other sessions would otherwise be refused a device
+  // it is not driving.
+  const releaseOnFailure = (): void => releaseDeviceClaim(serial, currentSession());
   try {
     await setDeviceExplained(conn.client, serial);
   } catch (err) {
@@ -2082,6 +2080,14 @@ function removeConnection(conn: DaemonConnection): void {
   for (const [serial, c] of _deviceIndex) {
     if (c === conn) _deviceIndex.delete(serial);
   }
+  // The session no longer drives the device it prepared through this daemon
+  // (PILOT-381): give the claim back unless another of its daemons serves it.
+  // Never a UI worker's: that device is the UI session's, driven by its
+  // workers whatever happens to this connection.
+  const device = conn.preparedDevice;
+  if (device && conn.source !== 'ui' && !_connections.some((c) => c.preparedDevice === device)) {
+    releaseDeviceClaim(device, currentSession());
+  }
 }
 
 // ─── Device & Agent Setup ───
@@ -2112,14 +2118,14 @@ async function setDeviceAndAgent(
     return undefined;
   }
 
-  const freshClaim = claimDeviceOrThrow(serial, currentSession(), { daemonAddress: address });
+  claimDeviceOrThrow(serial, currentSession(), { daemonAddress: address });
   try {
     await setDeviceExplained(client, serial);
     log(`Using device: ${serial}`);
     await startAgentFromConfig(client, config, { serial });
   } catch (err) {
     // The caller drops this daemon: give back the device it never drove.
-    if (freshClaim) releaseDeviceClaim(serial, currentSession());
+    releaseDeviceClaim(serial, currentSession());
     throw err;
   }
   return serial;

@@ -17,7 +17,7 @@ import { sharedDeviceGroup } from './project.js';
 import { findDaemonBin } from './daemon-bin.js';
 import { assignGroupMemberDevices, deviceGroupSize, resolveDeviceGroup, type DeviceGroupEntry } from './config.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
-import { claimDeviceOrThrow, currentSession, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
+import { claimDeviceOrThrow, claimUpTo, currentSession, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { labelledMessage, withDetail } from './error-detail.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary, type DaemonOutputCapture, type DaemonStartFailed } from './daemon-start.js';
 import type { TestResult, SuiteResult } from './runner.js';
@@ -1551,6 +1551,11 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         ? [primary, ...members]
         : [primary, ...pinnedMemberSerials, ...deviceSerials.filter((s) => s !== primary && !pinnedMemberSerials.includes(s))];
     }
+    // Claimed as they are picked, and only as many as the workers use
+    // (PILOT-381): two sessions provisioning at once then divide the free
+    // devices instead of both taking the first ones (pinned ones were claimed
+    // above, and are this session's already).
+    deviceSerials = claimUpTo(deviceSerials, maxUsefulWorkers * groupSize).claimed;
     if (deviceSerials.length < groupSize) {
       failStep('worker-devices', `device group needs ${groupSize} device(s); ${deviceSerials.length} available`);
       throw new LaunchSetupError(

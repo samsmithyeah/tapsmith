@@ -8,6 +8,7 @@ import {
   SESSION_ENV,
   claimDevice,
   claimFirstFree,
+  claimUpTo,
   claimDeviceOrThrow,
   currentSession,
   daemonDriverElsewhere,
@@ -195,6 +196,25 @@ describe('device claims', () => {
     claimDevice('emulator-5554', holder, { daemonAddress: 'localhost:50051', env });
     claimDevice('SIM-X', holder, { daemonAddress: 'localhost:50051', env });
     expect((await daemonDriverElsewhere('localhost:50051', async () => 'SIM-X', session(), { env }))?.device).toBe('SIM-X');
+  });
+
+  it('remembers every daemon the other session drove the device through', async () => {
+    // The root opened it on its primary daemon, then a worker on its own.
+    const holder = session();
+    claimDevice('emulator-5554', holder, { daemonAddress: 'localhost:50051', env });
+    claimDevice('emulator-5554', holder, { daemonAddress: 'localhost:50052', env });
+    const active = async () => 'emulator-5554';
+    expect((await daemonDriverElsewhere('localhost:50051', active, session(), { env }))?.session.id).toBe(holder.id);
+    expect((await daemonDriverElsewhere('localhost:50052', active, session(), { env }))?.session.id).toBe(holder.id);
+  });
+
+  it('claims up to a count, in order, skipping held devices and leaving the rest unclaimed', () => {
+    claimDevice('b', session(), { env });
+    const me = session();
+    const res = claimUpTo(['a', 'b', 'c', 'd'], 2, me, { env });
+    expect(res.claimed).toEqual(['a', 'c']);
+    expect(res.held.map((h) => h.device)).toEqual(['b']);
+    expect(listDeviceClaims({ env }).map((c) => c.device)).toEqual(['a', 'b', 'c']);
   });
 
   it('does not ask for the active device when nobody else claimed through the daemon', async () => {

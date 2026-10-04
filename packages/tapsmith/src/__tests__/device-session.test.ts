@@ -785,13 +785,25 @@ describe('device claims (PILOT-381)', () => {
     expect(listDeviceClaims()).toEqual([]);
   });
 
-  it('keeps a claim the session already held when a re-open fails (a watch re-run, a respawned worker)', async () => {
-    claimDevice('emulator-5554', SESSION, { daemonAddress: 'localhost:50052' });
+  it('gives back a claim the session made earlier (the CLI\'s pick) when the open of that device fails', async () => {
+    claimDevice('emulator-5554', SESSION);
     mocks.failAgentFor.add('emulator-5554');
     await expect(openDeviceSession(
       { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
       makeConfig(),
-      { claimSession: SESSION, label: 'Worker 0' },
+      { claimSession: SESSION, label: 'Device' },
+    )).rejects.toThrow();
+    const { listDeviceClaims } = await import('../device-claims.js');
+    expect(listDeviceClaims()).toEqual([]);
+  });
+
+  it('keeps the claim when an adopting open fails (a watch re-run of a device the session goes on driving)', async () => {
+    claimDevice('emulator-5554', SESSION, { daemonAddress: 'localhost:50052' });
+    mocks.preflight.ensureSessionReady.mockRejectedValueOnce(new Error('agent gone'));
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Run', adopt: true },
     )).rejects.toThrow();
     const { listDeviceClaims } = await import('../device-claims.js');
     expect(listDeviceClaims().map((c) => c.device)).toEqual(['emulator-5554']);

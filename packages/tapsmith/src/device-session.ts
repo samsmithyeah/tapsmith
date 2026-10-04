@@ -519,8 +519,7 @@ async function prelaunchSimulatorApp(config: TapsmithConfig, serial: string): Pr
 
 /**
  * Claim `spec.serial` for `session`, refusing when another live session holds
- * the device, or drives a device through this very daemon. Returns whether
- * the claim is new, so a failed open can give it back.
+ * the device, or drives a device through this very daemon.
  *
  * The daemon check compares the daemon's *active* device with the other
  * session's claim: an address alone is not proof, since a port a dead daemon
@@ -530,14 +529,14 @@ async function claimForSession(
   client: TapsmithGrpcClient,
   spec: DeviceSessionSpec,
   session: SessionIdentity,
-): Promise<boolean> {
+): Promise<void> {
   const daemonHolder = await daemonDriverElsewhere(
     spec.daemonAddress,
     () => client.listDevices().then((res) => res.devices.find((d) => d.state === 'Active')?.serial),
     session,
   );
   if (daemonHolder) throw new DaemonClaimedError(spec.daemonAddress, daemonHolder);
-  return claimDeviceOrThrow(spec.serial, session, { daemonAddress: spec.daemonAddress });
+  claimDeviceOrThrow(spec.serial, session, { daemonAddress: spec.daemonAddress });
 }
 
 /**
@@ -594,14 +593,18 @@ export async function openDeviceSession(
     adopted: !!opts.adopt,
   };
 
-  // Whether this open made the session's claim on the device — given back if
-  // the open fails, so a long-lived session (UI, watch, an MCP server) does
-  // not go on holding a device it never got to drive. A claim the session
-  // already held (a respawned worker, a watch re-run) is kept.
-  let freshClaim = false;
+  // Whether this open holds the session's claim on the device. A failed open
+  // gives it back, so a long-lived session (UI, watch, an MCP server) does not
+  // go on holding a device it never got to drive — whoever claimed it first
+  // (the CLI's pick, a group's pre-claim). Not an adopting open: the device
+  // is one the session set up and goes on driving elsewhere (a watch re-run
+  // child, a UI worker adopting the primary), and its failure here says
+  // nothing about that.
+  let claimed = false;
   try {
     progress(`claiming device ${spec.serial}`);
-    freshClaim = await claimForSession(client, spec, opts.claimSession);
+    await claimForSession(client, spec, opts.claimSession);
+    claimed = true;
     progress(`selecting device ${spec.serial}`);
     if (opts.refreshDeviceList) await device.listDevices();
     let unreachableSince: number | undefined;
@@ -755,7 +758,7 @@ export async function openDeviceSession(
     return session;
   } catch (err) {
     await closeDeviceSession(session);
-    if (freshClaim) releaseDeviceClaim(spec.serial, opts.claimSession);
+    if (claimed && !opts.adopt) releaseDeviceClaim(spec.serial, opts.claimSession);
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(message.startsWith(label) ? message : `${label}: ${message}`);
   }
@@ -778,16 +781,18 @@ export async function openDeviceGroup(
   // Claimed before anything slow (the artifact resolution below may build the
   // simulator agent): a device another session holds is refused up front.
   // Without a daemon address — each member's open records it once its daemon
-  // has passed the ownership check. Claims made here are given back if the
-  // group does not open: a group is atomic, and so is what it holds.
-  const freshClaims: string[] = [];
+  // has passed the ownership check. Given back if the group does not open (a
+  // group is atomic, and so is what it holds), except for adopting members:
+  // see openDeviceSession.
+  const claimedHere: string[] = [];
   try {
     for (const spec of specs) {
-      if (claimDeviceOrThrow(spec.serial, opts.claimSession)) freshClaims.push(spec.serial);
+      claimDeviceOrThrow(spec.serial, opts.claimSession);
+      if (!spec.adopt) claimedHere.push(spec.serial);
     }
     return await openClaimedDeviceGroup(specs, config, opts);
   } catch (err) {
-    for (const serial of freshClaims) releaseDeviceClaim(serial, opts.claimSession);
+    for (const serial of claimedHere) releaseDeviceClaim(serial, opts.claimSession);
     throw err;
   }
 }

@@ -64,8 +64,14 @@ export interface DeviceClaim {
   session: SessionIdentity
   /** The process that made the claim (a worker, a watch child, the root). */
   claimantPid: number
-  /** The daemon the session drives this device through, when known. */
+  /** The daemon the session drives this device through most recently, when known. */
   daemonAddress?: string
+  /**
+   * Every daemon the session has driven this device through (a sequential
+   * run's primary daemon and a worker's, say) — each is that session's while
+   * pointed at this device.
+   */
+  daemonAddresses?: string[]
   /** ISO time the claim was made. */
   claimedAt: string
 }
@@ -154,6 +160,20 @@ function readSessionEnv(env: NodeJS.ProcessEnv): SessionIdentity | undefined {
  * recorded it — and take a live session's device as stale.
  */
 function processStartToken(pid: number): string | undefined {
+  // Linux: the start time in clock ticks since boot, straight from the
+  // kernel. `ps lstart` there is derived from a boot time that procps
+  // recomputes on every read, and can come out a second off — a live
+  // session would then look like a recycled pid.
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
+    // Fields after the command name, which is in parentheses and may contain
+    // spaces: state is field 3, starttime field 22.
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    const ticks = fields[19];
+    if (ticks && /^\d+$/.test(ticks)) return `ticks:${ticks}`;
+  } catch {
+    // No procfs (macOS): fall through to ps.
+  }
   try {
     const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
       env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
@@ -240,7 +260,9 @@ function isDeviceClaim(value: unknown): value is DeviceClaim {
     && isSessionIdentity(v.session)
     && typeof v.claimantPid === 'number'
     && typeof v.claimedAt === 'string'
-    && (v.daemonAddress === undefined || typeof v.daemonAddress === 'string');
+    && (v.daemonAddress === undefined || typeof v.daemonAddress === 'string')
+    && (v.daemonAddresses === undefined
+      || (Array.isArray(v.daemonAddresses) && v.daemonAddresses.every((a) => typeof a === 'string')));
 }
 
 function readClaim(file: string): DeviceClaim | undefined {
@@ -279,6 +301,12 @@ function withRegistryLock<T>(dir: string, fn: () => T): T {
   return fn();
 }
 
+/** Every daemon address a claim names (older claims carry only `daemonAddress`). */
+function addressesOf(claim: DeviceClaim | undefined): string[] {
+  if (!claim) return [];
+  return [...new Set([...(claim.daemonAddresses ?? []), ...(claim.daemonAddress ? [claim.daemonAddress] : [])])];
+}
+
 /**
  * Claim `device` for `session`.
  *
@@ -304,6 +332,10 @@ export function claimDevice(
       session,
       claimantPid: process.pid,
       daemonAddress: opts.daemonAddress ?? (sameSession ? existing?.daemonAddress : undefined),
+      daemonAddresses: [...new Set([
+        ...(sameSession ? addressesOf(existing) : []),
+        ...(opts.daemonAddress ? [opts.daemonAddress] : []),
+      ])],
       claimedAt: sameSession && existing ? existing.claimedAt : new Date().toISOString(),
     });
     return { ok: true, fresh: !sameSession };
@@ -322,18 +354,14 @@ export class DeviceClaimedError extends Error {
   }
 }
 
-/**
- * {@link claimDevice}, throwing a {@link DeviceClaimedError} naming the holder
- * on refusal. Returns whether the claim is new (`ClaimResult.fresh`).
- */
+/** {@link claimDevice}, throwing a {@link DeviceClaimedError} naming the holder on refusal. */
 export function claimDeviceOrThrow(
   device: string,
   session: SessionIdentity,
   opts: ClaimOptions & { daemonAddress?: string } = {},
-): boolean {
+): void {
   const res = claimDevice(device, session, opts);
   if (!res.ok) throw new DeviceClaimedError(device, res.holder);
-  return res.fresh;
 }
 
 /**
@@ -454,7 +482,7 @@ export function daemonClaimsElsewhere(
 ): DeviceClaim[] {
   const wanted = normalizeAddress(address);
   return [...heldElsewhere(session, opts).values()]
-    .filter((claim) => claim.daemonAddress !== undefined && normalizeAddress(claim.daemonAddress) === wanted);
+    .filter((claim) => addressesOf(claim).some((a) => normalizeAddress(a) === wanted));
 }
 
 /**
@@ -526,4 +554,34 @@ export function claimFirstFree(
     if (claimDevice(device, session, opts).ok) return device;
   }
   return undefined;
+}
+
+/**
+ * Claim, in order, up to `count` of `candidates` — those `session` can have —
+ * at the moment they are picked, so two sessions provisioning at the same
+ * time divide the free devices between them instead of both taking the first
+ * ones. Devices another session holds are skipped; ones beyond `count` are
+ * left unclaimed (and dropped from the result) so a run never holds devices it
+ * will not use.
+ */
+export function claimUpTo(
+  candidates: readonly string[],
+  count: number,
+  session: SessionIdentity = currentSession(),
+  opts: ClaimOptions = {},
+): { claimed: string[]; held: DeviceClaim[] } {
+  const claimed: string[] = [];
+  const held: DeviceClaim[] = [];
+  for (const device of candidates) {
+    if (claimed.length >= count) break;
+    const res = claimDevice(device, session, opts);
+    if (res.ok) claimed.push(device);
+    else held.push(res.holder);
+  }
+  return { claimed, held };
+}
+
+/** The devices `session` holds now. */
+export function sessionDevices(session: SessionIdentity = currentSession(), opts: ClaimOptions = {}): Set<string> {
+  return new Set(listDeviceClaims(opts).filter((c) => c.session.id === session.id).map((c) => c.device));
 }

@@ -379,4 +379,18 @@ describe('daemons another session owns', () => {
     // Only discovery's daemon: none was started for the refused pin.
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
+
+  it('gives the device back when its target cannot be prepared', async () => {
+    const { listDeviceClaims } = await import('../device-claims.js');
+    spawnMock.mockImplementation(() => new FakeDaemon());
+    waitForReady = () => Promise.resolve(spawnMock.mock.calls.length > 0);
+    listDevices = () => Promise.resolve({ devices: [{ serial: 'emulator-5560', state: 'Discovered', platform: 'android' } as never] });
+    // The fake client has no setDevice: selecting the device fails.
+    const config = {
+      platform: 'android', device: 'emulator-5560', package: 'com.x', timeout: 1000, retries: 0, screenshot: 'never',
+      testMatch: [], daemonAddress: 'localhost:50051', rootDir: '/p', outputDir: 'out', workers: 1, launchEmulators: false,
+    } as unknown as Parameters<typeof ensurePlatformTarget>[0];
+    await expect(ensurePlatformTarget(config)).rejects.toThrow();
+    expect(listDeviceClaims().map((c) => c.device)).not.toContain('emulator-5560');
+  });
 });
