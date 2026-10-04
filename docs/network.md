@@ -11,7 +11,7 @@ Both features share the same underlying MITM proxy infrastructure.
 
 ## Prerequisites
 
-Network interception requires the MITM proxy to be active. The proxy starts automatically when tracing is enabled with `network: true` (the default). **Tracing is off by default** (`trace: "off"`), so out of the box no proxy runs: route handlers never fire and `waitForRequest`/`waitForResponse` never resolve. (`tapsmith init` writes `trace: { mode: 'retain-on-failure' }` when you enable network capture in the wizard.)
+Network interception requires the MITM proxy to be active. The proxy starts automatically when tracing is enabled with `network: true` (the default). **Tracing is off by default** (`trace: "off"`), so out of the box no proxy runs: route handlers never fire and `waitForRequest`/`waitForResponse` never resolve. (`tapsmith init` writes `trace: { mode: 'retain-on-failure' }` when you enable network capture in the wizard.) [UI mode](ui-mode.md) turns tracing on when the config leaves it off, so a mock that works under `--ui` can still do nothing under `tapsmith test` until the config sets `trace`.
 
 Enable tracing in your config — any mode that records the test's first attempt (`"on"`, `"retain-on-failure"`, `"retain-on-first-failure"`, `"retain-on-failure-and-retries"`) starts the proxy for every test. `"on-first-retry"` and `"on-all-retries"` start it only for retries, so a test's first attempt has no proxy unless an earlier test's retry already started one (Tapsmith keeps it running for the rest of the session). Don't rely on that: use a mode that records first attempts if your tests mock the network:
 

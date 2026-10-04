@@ -93,6 +93,8 @@ cd ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp \
   -configuration Release -sdk iphonesimulator -derivedDataPath build build
 ```
 
+When a debug APK is also lying around, the wizard lists it first and `tapsmith init --yes` picks it over the release one: choose the release APK in the wizard, or pass `--apk android/app/build/outputs/apk/release/app-release.apk`.
+
 **Expo** projects have no `android/` or `ios/` folder until you generate them:
 
 - `npx expo prebuild` generates the native projects; then build them with the commands above.

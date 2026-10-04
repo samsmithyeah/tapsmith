@@ -923,6 +923,8 @@ describe('runner execution', () => {
         waitForIdle: vi.fn(async () => {}),
         _networkProxyRunning: opts.proxyRunning,
         _takeRouteRegistrations: vi.fn(() => { const n = registered; registered = 0; return n; }),
+        /** What a successful device.route() call does to the count. */
+        registerRoute: () => { registered++; },
         _routeManager: { hasRoutes: opts.routesLeft ?? opts.registered > 0, removeAllRoutes: vi.fn(async () => {}) },
         _startNetworkCapture: vi.fn(async () => {
           if (opts.captureStarts === false) return { success: false, proxyPort: 0, errorMessage: 'Network Extension not approved' };
@@ -1000,16 +1002,66 @@ describe('runner execution', () => {
       }
     });
 
-    it('stays quiet for routes registered before capture started, once the traced test starts it', async () => {
-      // A beforeAll route is registered before any test has started capture;
-      // the check runs at test end, by which time the trace has started it.
+    it('stays quiet for a beforeAll route registered before capture started, once the traced test starts it', async () => {
+      // The beforeAll runs before any test has started capture; the check
+      // runs at test end, by which time the trace has started it.
       const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-route-beforeall-'));
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const device = makeRoutedDevice({ proxyRunning: false, registered: 1 });
+      const device = makeRoutedDevice({ proxyRunning: false, registered: 0 });
+      let proxyAtRegistration: boolean | undefined;
       try {
-        await runOne('route from beforeAll', [{ name: 'device-1', device }], tracedConfig(tempRoot));
+        pushContext();
+        tapsmithBeforeAll(async () => {
+          proxyAtRegistration = device._networkProxyRunning;
+          device.registerRoute();
+        });
+        tapsmithTest('route from beforeAll', async () => {});
+        const ctx = popContext();
+        await runSuiteContext(ctx, '', [], [], makeOpts({
+          config: makeConfig(tracedConfig(tempRoot)),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
+          devices: [{ name: 'device-1', device: device as any }],
+        }));
+        expect(proxyAtRegistration).toBe(false);
         expect(device._startNetworkCapture).toHaveBeenCalled();
         expect(routeWarnings(warn)).toEqual([]);
+      } finally {
+        warn.mockRestore();
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('warns for the first attempt but not the traced retry under on-first-retry', async () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-route-first-retry-'));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const device = makeRoutedDevice({ proxyRunning: false, registered: 0 });
+      const warningsAtAttemptStart: number[] = [];
+      let attempt = 0;
+      try {
+        pushContext();
+        tapsmithTest('flaky mocked test', async () => {
+          warningsAtAttemptStart.push(routeWarnings(warn).length);
+          device.registerRoute();
+          if (attempt++ === 0) throw new Error('first attempt fails');
+        });
+        const ctx = popContext();
+        const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+          config: makeConfig({
+            ...tracedConfig(tempRoot),
+            retries: 1,
+            trace: { mode: 'on-first-retry', network: true, screenshots: false, snapshots: false, sources: false, deviceLogs: false },
+          }),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
+          devices: [{ name: 'device-1', device: device as any }],
+        }));
+        expect(result.tests.map((t) => t.status)).toEqual(['passed']);
+        // Attempt 0 records nothing, so its route could not fire: warned
+        // before attempt 1 began. Attempt 1 is traced and starts the proxy.
+        expect(warningsAtAttemptStart).toEqual([0, 1]);
+        const warnings = routeWarnings(warn);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain('network capture was not running');
+        expect(device._startNetworkCapture).toHaveBeenCalledTimes(1);
       } finally {
         warn.mockRestore();
         fs.rmSync(tempRoot, { recursive: true, force: true });
