@@ -749,8 +749,9 @@ class ActionExecutor(
             // Check if target is already visible
             val targetBy =
                 when {
-                    targetSelector.text != null -> By.text(targetSelector.text)
-                    targetSelector.textContains != null -> By.textContains(targetSelector.textContains)
+                    targetSelector.text != null -> By.text(TextMatch.exactPattern(targetSelector.text))
+                    targetSelector.textContains != null ->
+                        By.text(TextMatch.containsPattern(targetSelector.textContains))
                     targetSelector.contentDesc != null -> By.desc(targetSelector.contentDesc)
                     targetSelector.id != null -> By.res(targetSelector.id)
                     else -> throw InvalidSelectorException("scrollTo requires text, textContains, contentDesc, or id")

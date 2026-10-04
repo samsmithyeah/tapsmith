@@ -129,7 +129,7 @@ class ElementFinder {
             // Filter by accessible name if provided
             if let name = selector.name {
                 results = results.filter { elem in
-                    elem.label == name || elem.title == name
+                    TextMatch.equals(elem.label, name) || TextMatch.equals(elem.title, name)
                 }
             }
             return results
@@ -137,14 +137,14 @@ class ElementFinder {
 
         // Text selector — search across all element types
         if let text = selector.text {
-            let predicate = NSPredicate(format: "label == %@", text)
+            let predicate = NSPredicate(format: "label MATCHES %@", TextMatch.exactPattern(text))
             let query = root.descendants(matching: .any).matching(predicate)
             return allElements(from: query)
         }
 
         // TextContains selector
         if let textContains = selector.textContains {
-            let predicate = NSPredicate(format: "label CONTAINS %@", textContains)
+            let predicate = NSPredicate(format: "label MATCHES %@", TextMatch.containsPattern(textContains))
             let query = root.descendants(matching: .any).matching(predicate)
             return allElements(from: query)
         }
@@ -195,7 +195,7 @@ class ElementFinder {
                 .switch, .slider, .stepper, .picker,
                 .checkBox, .radioButton,
             ]
-            let predicate = NSPredicate(format: "label == %@", label)
+            let predicate = NSPredicate(format: "label MATCHES %@", TextMatch.exactPattern(label))
             let query = root.descendants(matching: .any).matching(predicate)
             let all = allElements(from: query)
             return all.filter { inputTypes.contains($0.elementType) }

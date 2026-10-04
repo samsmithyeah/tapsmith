@@ -289,9 +289,9 @@ class ActionExecutor {
     private func findTargetInContainer(_ selector: ElementSelector) -> XCUIElement? {
         let predicate: NSPredicate
         if let text = selector.text {
-            predicate = NSPredicate(format: "label == %@", text)
+            predicate = NSPredicate(format: "label MATCHES %@", TextMatch.exactPattern(text))
         } else if let textContains = selector.textContains {
-            predicate = NSPredicate(format: "label CONTAINS %@", textContains)
+            predicate = NSPredicate(format: "label MATCHES %@", TextMatch.containsPattern(textContains))
         } else if let contentDesc = selector.contentDesc {
             predicate = NSPredicate(format: "label == %@", contentDesc)
         } else if let id = selector.id {
