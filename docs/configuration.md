@@ -33,7 +33,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `platform` | `"android" \| "ios"` | `"android"` | Target platform. **Required for iOS**: it is not inferred from `app`, and a config (or project `use`) that sets `app`, `simulator` or `iosXctestrun` without `platform` is treated as Android when a device is picked, then refused when tests start (`tapsmith doctor` flags it as `config-platform`). |
+| `platform` | `"android" \| "ios"` | `"android"` | Target platform. **Required for iOS**: it is not inferred from `app`, and a config (or project `use`) that sets `app`, `simulator` or `iosXctestrun` without `platform` is treated as Android: the run looks for an Android device (and fails there when there is none), and is refused when tests start (`tapsmith doctor` flags it as `config-platform`). |
 | `apk` | `string` | `undefined` | Path to the APK under test (Android). |
 | `app` | `string` | `undefined` | Path to the .app bundle under test (iOS). For simulators, build a simulator-slice `.app`. For physical devices, the `.app` must be code-signed with a profile matching the device — see [iOS physical devices](./ios-physical-devices.md). |
 | `package` | `string` | `undefined` | Package name (Android) or bundle identifier (iOS) of the app under test. Tapsmith launches the app before tests and resets it between test files only when this is set; without it, tests start on whatever is on screen. |

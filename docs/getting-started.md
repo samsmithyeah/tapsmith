@@ -78,10 +78,13 @@ Passing `-derivedDataPath build` keeps the build at a stable path you can put in
 ### React Native and Expo
 
 A React Native **Debug** build does not contain your JavaScript: it loads it from the
-Metro dev server at launch. Tests against a Debug build need Metro running in another
-terminal (`npx expo start` or `npx react-native start`), or the app opens on a red
-"unable to load script" screen. A **Release** build bundles the JavaScript into the app
-and runs on its own, which also makes it the right choice for CI:
+Metro dev server at launch. Without Metro running (`npx expo start` or
+`npx react-native start`) it opens on a red error screen instead of your app. Even with
+Metro running, an Expo build that includes `expo-dev-client` opens the dev launcher
+rather than the app on a cold launch, and a physical Android device reaches Metro only
+after `adb reverse tcp:8081 tcp:8081`. A **Release** build bundles the JavaScript into
+the app and runs on its own, which makes it the simplest choice for tests, locally and
+in CI:
 
 ```bash
 # Android (the React Native template signs release builds with the debug keystore)
@@ -100,7 +103,7 @@ When a debug APK is also lying around, the wizard lists it first and `tapsmith i
 - `npx expo run:android --variant release` generates, builds and installs in one step, leaving the APK in `android/app/build/outputs/apk/release/`. `npx expo run:ios --configuration Release` does the same for iOS, but builds into Xcode's default DerivedData folder (the path above), where `tapsmith init` does not look: enter that path, or build with the `xcodebuild … -derivedDataPath build` command above after `expo prebuild`.
 - With EAS, use a build profile that produces simulator and installable builds, for example `"e2e": { "ios": { "simulator": true }, "android": { "buildType": "apk" } }` in `eas.json`, then `eas build --profile e2e --platform ios --local` (or download the build). An iOS simulator build arrives as a `.tar.gz`; extract it and point `app` at the `.app` inside.
 
-If the app mounts [`@tapsmith/react-native`](warm-reset.md), its reset hooks are on in Debug builds but compiled out of Release builds unless you turn them on for your test build. In an Expo project, set `EXPO_PUBLIC_TAPSMITH_HOOKS=1` at build time (Expo inlines `EXPO_PUBLIC_*` variables into the bundle). A bare React Native app does not inline that variable, so pass the hooks' `enabled` prop from a build-time flag of your own instead.
+If the app mounts [`@tapsmith/react-native`](warm-reset.md), its reset hooks are on in Debug builds but switched off in Release builds unless you turn them on for your test build. In an Expo project, set `EXPO_PUBLIC_TAPSMITH_HOOKS=1` at build time (Expo inlines `EXPO_PUBLIC_*` variables into the bundle). A bare React Native app does not inline that variable, so pass the hooks' `enabled` prop from a build-time flag of your own instead.
 
 ## Quick Setup (Recommended)
 
@@ -218,7 +221,7 @@ export default defineConfig({
 });
 ```
 
-For iOS, `platform: "ios"` is required: Tapsmith does not infer the platform from `app`, and a config that sets `app` or `simulator` without it is treated as Android when picking a device and then refused when tests start (`tapsmith doctor` reports it up front as `config-platform`). Set `app` to the `.app` bundle built for the iOS Simulator, `package` to its bundle identifier (needed to launch and reset the app, as on Android), and `simulator` to the simulator to boot.
+For iOS, `platform: "ios"` is required: Tapsmith does not infer the platform from `app`, and a config that sets `app` or `simulator` without it is treated as Android: the run looks for an Android device (and fails there when there is none), and is refused when tests start (`tapsmith doctor` reports it up front as `config-platform`). Set `app` to the `.app` bundle built for the iOS Simulator, `package` to its bundle identifier (needed to launch and reset the app, as on Android), and `simulator` to the simulator to boot.
 
 See the [Configuration](configuration.md) guide for all available options.
 
