@@ -598,12 +598,12 @@ let _discoveryFailures: string[] = [];
  * server, whose MCP endpoint runs in the very process that provisioned the UI
  * session's devices: its hold is the UI session's, and lasts as long as it.
  */
-function giveBack(device: string, failed?: DaemonConnection): void {
+function giveBack(device: string, from?: DaemonConnection): void {
   if (_uiMode) return;
   // Another pooled daemon of this session still serves it: keep it. Not the
-  // one whose target just failed (`failed`): it is pointed there, but serves
-  // nothing.
-  if (_connections.some((c) => c !== failed && (c.preparedDevice === device || c.claimedDevice === device))) return;
+  // one it is being given back from (`from`: its target failed, or it is
+  // being repointed), which still records the device but no longer serves it.
+  if (_connections.some((c) => c !== from && (c.preparedDevice === device || c.claimedDevice === device))) return;
   releaseDeviceClaim(device, currentSession());
 }
 
@@ -1633,8 +1633,7 @@ async function prepareTarget(
   const previous = conn.preparedDevice ?? conn.claimedDevice;
   if (repointed && previous && previous !== serial) {
     conn.claimedDevice = undefined;
-    const stillServed = _connections.some((c) => c !== conn && (c.preparedDevice === previous || c.claimedDevice === previous));
-    if (!stillServed) giveBack(previous);
+    giveBack(previous, conn);
   }
   // Record the move before starting the agent: `setDevice` has already
   // happened, so if the agent start throws, the next claim must still see this
