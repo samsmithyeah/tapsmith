@@ -649,17 +649,16 @@ class ElementFinder(private val device: UiDevice) {
             // Store the name requirement but don't add it to `by` here.
         }
 
-        // Text selectors
+        // Text selectors — whitespace-normalized like Playwright (PILOT-510):
+        // a non-breaking space or line break in the element's text matches a
+        // plain space in the query.
         if (selector.text != null) {
-            by = if (by != null) by.text(selector.text) else By.text(selector.text)
+            val pattern = TextMatch.exactPattern(selector.text)
+            by = if (by != null) by.text(pattern) else By.text(pattern)
         }
         if (selector.textContains != null) {
-            by =
-                if (by != null) {
-                    by.textContains(selector.textContains)
-                } else {
-                    By.textContains(selector.textContains)
-                }
+            val pattern = TextMatch.containsPattern(selector.textContains)
+            by = if (by != null) by.text(pattern) else By.text(pattern)
         }
 
         // Content description
@@ -793,7 +792,7 @@ class ElementFinder(private val device: UiDevice) {
 
         for (input in allInputs) {
             // Strategy 1: contentDescription matches the label text
-            if (input.contentDescription == labelText) {
+            if (TextMatch.equalsNormalized(input.contentDescription, labelText)) {
                 results.add(input)
                 continue
             }
@@ -802,7 +801,7 @@ class ElementFinder(private val device: UiDevice) {
             try {
                 val labelNode = nodeInfo.labeledBy ?: continue
                 try {
-                    if (labelNode.text?.toString() == labelText) {
+                    if (TextMatch.equalsNormalized(labelNode.text, labelText)) {
                         results.add(input)
                     }
                 } finally {
@@ -1004,9 +1003,9 @@ class ElementFinder(private val device: UiDevice) {
         obj: UiObject2,
         name: String,
     ): Boolean {
-        return obj.contentDescription == name ||
-            obj.text == name ||
-            collectDescendantText(obj) == name
+        return TextMatch.equalsNormalized(obj.contentDescription, name) ||
+            TextMatch.equalsNormalized(obj.text, name) ||
+            TextMatch.equalsNormalized(collectDescendantText(obj), name)
     }
 
     private fun collectDescendantTextParts(

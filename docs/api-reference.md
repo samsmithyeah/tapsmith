@@ -17,6 +17,8 @@ device.getByText("Welcome")                          // substring
 device.getByText("Sign In", { exact: true })         // exact
 ```
 
+Whitespace is normalized on both sides before comparing, exact or not, as in Playwright: runs of whitespace — including non-breaking spaces (`&nbsp;`, U+00A0), other Unicode spaces and line breaks — collapse to one space, and leading and trailing whitespace is ignored. So `getByText("Welcome to Expo", { exact: true })` matches text rendered as `Welcome to&nbsp;Expo` or split over two lines. The same applies to `getByRole`'s `name` and to `getByLabel`. Matching is case-sensitive, and `text` must be a string: a regular expression throws a `TypeError`.
+
 > Because the default is a substring match, `getByText("Sign in")` also matches longer text like `"Sign in to continue"`. When that happens, acting on the locator throws a [strict mode](#strict-mode) violation — add `{ exact: true }` or use `getByRole(role, { name })` to pin a single element.
 
 ### `device.getByRole(role: string, options?): ElementHandle`
@@ -37,7 +39,7 @@ device.getByRole("button", { name: "Details", expanded: true })
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `name` | `string` | Filter by accessible name |
+| `name` | `string` | Filter by accessible name (exact, with whitespace normalized like `getByText`) |
 | `checked` | `boolean` | Filter by checked state (checkbox, switch, radio) |
 | `disabled` | `boolean` | Filter by disabled state |
 | `selected` | `boolean` | Filter by selected state (tab, option) |
@@ -75,6 +77,8 @@ Locate an input element by its associated label text. Finds form controls (text 
 
 - **Android**: matches inputs whose `contentDescription` equals the text, or inputs linked via `labelFor`/`labeledBy`.
 - **iOS**: matches input elements (text fields, switches, sliders, etc.) whose `accessibilityLabel` equals the text.
+
+The comparison normalizes whitespace like `getByText`.
 
 ```typescript
 device.getByLabel("Email")           // finds the email text field

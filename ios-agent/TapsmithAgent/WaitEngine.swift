@@ -188,10 +188,12 @@ class WaitEngine {
     /// Returns nil if the selector type cannot be expressed as a direct query.
     private func buildWaitQuery(_ selector: ElementSelector) -> XCUIElementQuery? {
         if let text = selector.text {
-            return app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", text))
+            return app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label MATCHES %@", TextMatch.exactPattern(text)))
         }
         if let textContains = selector.textContains {
-            return app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", textContains))
+            return app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label MATCHES %@", TextMatch.containsPattern(textContains)))
         }
         if let contentDesc = selector.contentDesc {
             return app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", contentDesc))
