@@ -475,6 +475,8 @@ interface SuiteEntry {
   fn: () => void;
   only: boolean;
   skip: boolean;
+  /** Set by `describe.serial()`; a `describe.configure({ mode })` inside the body overrides it. */
+  mode?: DescribeMode;
   ctx?: SuiteContext;
 }
 
@@ -488,6 +490,8 @@ interface SuiteContext {
   beforeEach: HookEntry[];
   afterEach: HookEntry[];
   useOptions?: UseOptions;
+  /** `'serial'`: a failed test skips the rest of this scope (PILOT-544). */
+  mode?: DescribeMode;
 }
 
 // Store registration state on globalThis so ESM and CJS module instances
@@ -535,7 +539,8 @@ function popContext(): SuiteContext {
 
 function materializeSuiteEntry(entry: SuiteEntry): SuiteContext {
   if (entry.ctx) return entry.ctx;
-  pushContext();
+  const ctx = pushContext();
+  if (entry.mode) ctx.mode = entry.mode;
   try {
     entry.fn();
     entry.ctx = popContext();
@@ -577,6 +582,17 @@ export interface TestFn<Fixtures extends object = TestFixtures> {
    */
   use: (options: UseOptions) => void;
   /**
+   * Playwright's `test.describe` — the same API as the bare `describe` export,
+   * including `.only`, `.skip`, `.serial` and `.configure`.
+   *
+   * ```ts
+   * test.describe("login", () => {
+   *   test("works", async ({ device }) => { ... })
+   * })
+   * ```
+   */
+  describe: DescribeFn;
+  /**
    * Create a new test function with additional fixtures.
    *
    * ```ts
@@ -597,10 +613,59 @@ export interface TestFn<Fixtures extends object = TestFixtures> {
   afterEach: (fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
 }
 
+/**
+ * How the tests of a describe scope relate to each other.
+ * - `'default'`: independent tests (a failure does not affect the others).
+ * - `'serial'`: a failed test skips every later test of the scope, including
+ *   nested describes (Playwright `test.describe.serial`).
+ * - `'parallel'`: accepted for Playwright compatibility. Tapsmith runs the
+ *   tests of a file in order on one device, so this behaves like `'default'`;
+ *   use `--workers` to run files in parallel.
+ */
+export type DescribeMode = 'default' | 'parallel' | 'serial';
+
+/** Options for `test.describe.configure()` (Playwright's shape). */
+export interface DescribeConfigureOptions {
+  mode?: DescribeMode;
+  /** Retry count for failed tests in this scope — same as `test.use({ retries })`. */
+  retries?: number;
+  /** Action/assertion timeout for this scope (ms) — same as `test.use({ timeout })`. */
+  timeout?: number;
+}
+
 export interface DescribeFn {
   (name: string, fn: () => void): void;
   only: (name: string, fn: () => void) => void;
   skip: (name: string, fn: () => void) => void;
+  /**
+   * Declare a group of tests that depend on each other: when one fails, the
+   * rest of the group (nested describes included) is skipped.
+   */
+  serial: ((name: string, fn: () => void) => void) & {
+    only: (name: string, fn: () => void) => void;
+  };
+  /**
+   * Configure the enclosing describe scope, or the whole file when called at
+   * the top level.
+   *
+   * ```ts
+   * test.describe.configure({ mode: "serial", retries: 1 })
+   * ```
+   */
+  configure: (options: DescribeConfigureOptions) => void;
+}
+
+/**
+ * Validate the scope options shared by `test.use()` and
+ * `test.describe.configure()`; `api` names the caller in the message.
+ */
+function validateScopeTimeoutAndRetries(options: { timeout?: number; retries?: number }, api: string): void {
+  if (options.timeout !== undefined && !(typeof options.timeout === 'number' && options.timeout > 0)) {
+    throw new Error(`${api} timeout must be a positive number`);
+  }
+  if (options.retries !== undefined && !(typeof options.retries === 'number' && options.retries >= 0)) {
+    throw new Error(`${api} retries must be a non-negative number`);
+  }
 }
 
 function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry): TestFn<F> {
@@ -621,12 +686,7 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
       },
       use: (options: UseOptions) => {
         syncRegistry();
-        if (options.timeout !== undefined && options.timeout <= 0) {
-          throw new Error('test.use() timeout must be a positive number');
-        }
-        if (options.retries !== undefined && options.retries < 0) {
-          throw new Error('test.use() retries must be a non-negative number');
-        }
+        validateScopeTimeoutAndRetries(options, 'test.use()');
         validateAppResetOptions(options, 'test.use()');
         validateRecordingModes(options, 'test.use()');
         if (options.devices !== undefined) {
@@ -643,6 +703,7 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
         const ctx = currentContext();
         ctx.useOptions = { ...ctx.useOptions, ...options };
       },
+      describe,
       extend: <T extends Record<string, unknown>>(
         definitions: FixtureDefinitions<T, F & T>,
       ): TestFn<F & T> => {
@@ -664,21 +725,81 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
   return fn;
 }
 
-export const test: TestFn = createTestFn(getActiveFixtureRegistry());
+/**
+ * Register a suite, refusing the Playwright call shapes Tapsmith does not
+ * support with a message that says so — without this they reach the runner
+ * as a suite whose body is not a function and fail with a raw TypeError.
+ */
+function registerSuite(api: string, args: unknown[], flags: Pick<SuiteEntry, 'only' | 'skip' | 'mode'>): void {
+  const [name, second, third] = args;
+  if (typeof name === 'function') {
+    throw new Error(
+      `${api}() needs a title: anonymous describe blocks aren't supported yet. `
+      + `Give the group a title: ${api}('my group', () => { ... }).`,
+    );
+  }
+  if (typeof name !== 'string') {
+    throw new Error(`${api}() takes a title string and a callback: ${api}('my group', () => { ... }).`);
+  }
+  if (typeof second !== 'function') {
+    if (second !== null && typeof second === 'object' && typeof third === 'function') {
+      throw new Error(
+        `${api}('${name}', details, callback): the details object (tag, annotation) isn't supported yet. `
+        + `Drop it and call ${api}('${name}', () => { ... }).`,
+      );
+    }
+    throw new Error(`${api}('${name}') needs a callback: ${api}('${name}', () => { ... }).`);
+  }
+  currentContext().suites.push({ name, fn: second as () => void, only: flags.only, skip: flags.skip, mode: flags.mode });
+}
+
+const DESCRIBE_MODES: readonly DescribeMode[] = ['default', 'parallel', 'serial'];
+const DESCRIBE_CONFIGURE_KEYS = new Set(['mode', 'retries', 'timeout']);
+
+function configureDescribe(options: DescribeConfigureOptions): void {
+  const api = 'test.describe.configure()';
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error(`${api} takes an options object: { mode?, retries?, timeout? }`);
+  }
+  for (const key of Object.keys(options)) {
+    if (!DESCRIBE_CONFIGURE_KEYS.has(key)) {
+      throw new Error(`${api} does not support '${key}'. Supported options: mode, retries, timeout.`);
+    }
+  }
+  if (options.mode !== undefined && !DESCRIBE_MODES.includes(options.mode)) {
+    throw new Error(`${api} mode must be one of 'default', 'parallel' or 'serial' (got ${JSON.stringify(options.mode)})`);
+  }
+  validateScopeTimeoutAndRetries(options, api);
+  const ctx = currentContext();
+  if (options.mode !== undefined) ctx.mode = options.mode;
+  const { retries, timeout } = options;
+  if (retries !== undefined || timeout !== undefined) {
+    ctx.useOptions = {
+      ...ctx.useOptions,
+      ...(retries !== undefined ? { retries } : {}),
+      ...(timeout !== undefined ? { timeout } : {}),
+    };
+  }
+}
 
 export const describe: DescribeFn = Object.assign(
-  (name: string, fn: () => void) => {
-    currentContext().suites.push({ name, fn, only: false, skip: false });
-  },
+  (...args: unknown[]) => { registerSuite('test.describe', args, { only: false, skip: false }); },
   {
-    only: (name: string, fn: () => void) => {
-      currentContext().suites.push({ name, fn, only: true, skip: false });
-    },
-    skip: (name: string, fn: () => void) => {
-      currentContext().suites.push({ name, fn, only: false, skip: true });
-    },
+    only: (...args: unknown[]) => { registerSuite('test.describe.only', args, { only: true, skip: false }); },
+    skip: (...args: unknown[]) => { registerSuite('test.describe.skip', args, { only: false, skip: true }); },
+    serial: Object.assign(
+      (...args: unknown[]) => { registerSuite('test.describe.serial', args, { only: false, skip: false, mode: 'serial' }); },
+      {
+        only: (...args: unknown[]) => {
+          registerSuite('test.describe.serial.only', args, { only: true, skip: false, mode: 'serial' });
+        },
+      },
+    ),
+    configure: configureDescribe,
   },
-);
+) as DescribeFn;
+
+export const test: TestFn = createTestFn(getActiveFixtureRegistry());
 
 export function beforeAll(fn: HookFn): void {
   currentContext().beforeAll.push({ fn });
@@ -1156,6 +1277,13 @@ interface InheritedScopeSetup {
    * reset in its first test's duration, the way Playwright counts fixtures.
    */
   setup?: { pendingMs: number };
+  /**
+   * The serial group (`describe.serial` / `describe.configure({ mode:
+   * 'serial' })`) this scope belongs to, shared down the tree: once any test
+   * in it fails, every later test of the group is skipped, nested describes
+   * included (Playwright semantics).
+   */
+  serialGroup?: { failed: boolean };
 }
 
 function replayBeforeAllEvents(
@@ -1322,6 +1450,8 @@ async function runSuiteContext(
   // resolve the isolation policy it declares — see resolveScope.
   const { opts, policy, scopeTimeout } = resolveScope(ctx.useOptions, parentOpts, parentPolicy);
   const isRoot = parentPrefix === '';
+  // A serial scope inside another serial group stays part of that group.
+  const serialGroup = inherited.serialGroup ?? (ctx.mode === 'serial' ? { failed: false } : undefined);
   // Compare against what the device actually holds (the last policy applied
   // in this file), falling back to the lexical parent before anything ran.
   const appliedPolicy = opts._applied?.current ?? parentPolicy;
@@ -1626,7 +1756,7 @@ async function runSuiteContext(
     // testFilter is a case-insensitive substring match against the fullName.
     // grep / grepInvert match against the fullName as regular expressions.
     const filteredOut = !passesTestFilter(fullName, opts);
-    const shouldSkip = entry.skip || (hasOnly && !entry.only) || filteredOut;
+    const shouldSkip = entry.skip || (hasOnly && !entry.only) || filteredOut || !!serialGroup?.failed;
 
     if (shouldSkip) {
       const skippedResult: TestResult = {
@@ -2534,6 +2664,7 @@ async function runSuiteContext(
     };
     result.tests.push(testResult);
     opts.reporter?.onTestEnd?.(testResult);
+    if (status === 'failed' && serialGroup) serialGroup.failed = true;
 
     if (status === 'failed' && error && opts.abortFileOnError?.(error)) {
       opts._abortFileController?.abort();
@@ -2558,6 +2689,22 @@ async function runSuiteContext(
       continue;
     }
 
+    if (serialGroup?.failed) {
+      // An earlier test of the serial group failed: the whole describe is
+      // skipped without its hooks or app reset, and — like a test the loop
+      // above skips — each of its tests is reported as skipped.
+      const childCtx = materializeSuiteEntry(suiteEntry);
+      const prefix = parentPrefix ? `${parentPrefix} > ${suiteEntry.name}` : suiteEntry.name;
+      const skippedResult = skipAll(childCtx, prefix);
+      for (const t of collectResults(skippedResult)) {
+        t.project = opts.projectName;
+        t.filePath = opts.testFilePath;
+        opts.reporter?.onTestEnd?.(t);
+      }
+      result.suites.push(skippedResult);
+      continue;
+    }
+
     const childCtx = materializeSuiteEntry(suiteEntry);
     const prefix = parentPrefix ? `${parentPrefix} > ${suiteEntry.name}` : suiteEntry.name;
     const childInherited: InheritedScopeSetup = {
@@ -2573,11 +2720,17 @@ async function runSuiteContext(
             actionCount: setupActionCount,
           }]
         : inherited.recordings,
+      serialGroup,
     };
     const childResult = await runSuiteContext(
       childCtx, prefix, allBeforeEach, allAfterEach, opts, policy, childInherited,
     );
     result.suites.push(childResult);
+    // A child whose beforeAll failed marks its tests failed without running
+    // them, so the test loop never saw the failure.
+    if (serialGroup && !serialGroup.failed && collectResults(childResult).some((t) => t.status === 'failed')) {
+      serialGroup.failed = true;
+    }
   }
 
   // Run afterAll hooks with tracing (same pattern as beforeAll).
