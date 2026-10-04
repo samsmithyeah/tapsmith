@@ -906,37 +906,63 @@ describe('runner execution', () => {
   });
 
   describe('route handlers with no network proxy (PILOT-517)', () => {
-    // A device whose route manager reports registered handlers, with or
-    // without a daemon-side proxy that could ever deliver requests to them.
-    const makeRoutedDevice = (opts: { proxyRunning: boolean; routes: boolean; name?: string }) => ({
-      ...(opts.name ? { _traceDeviceId: opts.name } : {}),
-      tracing: new Tracing(async () => undefined, async () => undefined),
-      waitForIdle: vi.fn(async () => {}),
-      _networkProxyRunning: opts.proxyRunning,
-      _routeManager: { hasRoutes: opts.routes, removeAllRoutes: vi.fn(async () => {}) },
-      _startNetworkCapture: vi.fn(async () => ({ success: true, proxyPort: 1, errorMessage: '' })),
-      _stopNetworkCapture: vi.fn(async () => ({ success: true, entries: [], errorMessage: '' })),
-      _stopDeviceLogStream: vi.fn(),
-      _startDaemonLogStream: vi.fn(),
-      _stopDaemonLogStream: vi.fn(),
-      _disposeRouteManager: vi.fn(async () => {}),
-      _disposeWebViewManager: vi.fn(async () => {}),
-      _resetWebViewContext: vi.fn(),
-    });
+    // A device lifecycle mock. `registered` is how many routes the test
+    // registered (what route() counts); `routesLeft` whether any are still
+    // registered at test end; capture start flips the proxy flag like Device.
+    const makeRoutedDevice = (opts: {
+      proxyRunning: boolean
+      registered: number
+      routesLeft?: boolean
+      captureStarts?: boolean
+      name?: string
+    }) => {
+      let registered = opts.registered;
+      const device = {
+        ...(opts.name ? { _traceDeviceId: opts.name } : {}),
+        tracing: new Tracing(async () => undefined, async () => undefined),
+        waitForIdle: vi.fn(async () => {}),
+        _networkProxyRunning: opts.proxyRunning,
+        _takeRouteRegistrations: vi.fn(() => { const n = registered; registered = 0; return n; }),
+        _routeManager: { hasRoutes: opts.routesLeft ?? opts.registered > 0, removeAllRoutes: vi.fn(async () => {}) },
+        _startNetworkCapture: vi.fn(async () => {
+          if (opts.captureStarts === false) return { success: false, proxyPort: 0, errorMessage: 'Network Extension not approved' };
+          device._networkProxyRunning = true;
+          return { success: true, proxyPort: 1, errorMessage: '' };
+        }),
+        _stopNetworkCapture: vi.fn(async () => ({ success: true, entries: [], errorMessage: '' })),
+        _stopDeviceLogStream: vi.fn(),
+        _startDaemonLogStream: vi.fn(),
+        _stopDaemonLogStream: vi.fn(),
+        _disposeRouteManager: vi.fn(async () => {}),
+        _disposeWebViewManager: vi.fn(async () => {}),
+        _resetWebViewContext: vi.fn(),
+      };
+      return device;
+    };
     const routeWarnings = (warn: { mock: { calls: unknown[][] } }): string[] =>
       warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('device.route()'));
+    const runOne = async (
+      testName: string,
+      devices: Array<{ name: string; device: unknown }>,
+      config: Partial<TapsmithConfig> = {},
+    ) => {
+      pushContext();
+      tapsmithTest(testName, async () => {});
+      const ctx = popContext();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mocks
+      return runSuiteContext(ctx, '', [], [], makeOpts({ config: makeConfig(config), devices: devices as any }));
+    };
+    const tracedConfig = (tempRoot: string): Partial<TapsmithConfig> => ({
+      rootDir: tempRoot,
+      outputDir: 'out',
+      trace: { mode: 'on', network: true, screenshots: false, snapshots: false, sources: false, deviceLogs: false },
+    });
 
     it('warns, naming the test, when a test registers routes and no proxy is running', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const device = makeRoutedDevice({ proxyRunning: false, routes: true });
+      const device = makeRoutedDevice({ proxyRunning: false, registered: 1 });
       try {
-        pushContext();
-        tapsmithTest('mocks the feed without tracing', async () => {});
-        const ctx = popContext();
-        const result = await runSuiteContext(ctx, '', [], [], makeOpts({
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
-          devices: [{ name: 'device-1', device: device as any }],
-        }));
+        const result = await runOne('mocks the feed without tracing', [{ name: 'device-1', device }]);
         expect(result.tests.map((t) => t.status)).toEqual(['passed']);
         const warnings = routeWarnings(warn);
         expect(warnings).toHaveLength(1);
@@ -950,39 +976,68 @@ describe('runner execution', () => {
       }
     });
 
-    it('stays quiet when the proxy is running or no routes are registered', async () => {
+    it('still warns when the test removed its own routes before it ended', async () => {
+      // e.g. afterEach(() => device.unrouteAll()) — nothing left registered.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const device = makeRoutedDevice({ proxyRunning: false, registered: 2, routesLeft: false });
+      try {
+        await runOne('cleans up its own routes', [{ name: 'device-1', device }]);
+        expect(routeWarnings(warn)).toHaveLength(1);
+        expect(device._routeManager.removeAllRoutes).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('stays quiet when the proxy is running or no route was registered', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
-        for (const [i, device] of [
-          makeRoutedDevice({ proxyRunning: true, routes: true }),
-          makeRoutedDevice({ proxyRunning: false, routes: false }),
-        ].entries()) {
-          pushContext();
-          tapsmithTest(`quiet route case ${i}`, async () => {});
-          const ctx = popContext();
-          await runSuiteContext(ctx, '', [], [], makeOpts({
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
-            devices: [{ name: 'device-1', device: device as any }],
-          }));
-        }
+        await runOne('quiet route case proxy', [{ name: 'device-1', device: makeRoutedDevice({ proxyRunning: true, registered: 1 }) }]);
+        await runOne('quiet route case none', [{ name: 'device-1', device: makeRoutedDevice({ proxyRunning: false, registered: 0 }) }]);
         expect(routeWarnings(warn)).toEqual([]);
       } finally {
         warn.mockRestore();
       }
     });
 
+    it('stays quiet for routes registered before capture started, once the traced test starts it', async () => {
+      // A beforeAll route is registered before any test has started capture;
+      // the check runs at test end, by which time the trace has started it.
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-route-beforeall-'));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const device = makeRoutedDevice({ proxyRunning: false, registered: 1 });
+      try {
+        await runOne('route from beforeAll', [{ name: 'device-1', device }], tracedConfig(tempRoot));
+        expect(device._startNetworkCapture).toHaveBeenCalled();
+        expect(routeWarnings(warn)).toEqual([]);
+      } finally {
+        warn.mockRestore();
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('blames the failed capture start, not the trace settings, when tracing is on', async () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-route-capture-failed-'));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const device = makeRoutedDevice({ proxyRunning: false, registered: 1, captureStarts: false });
+      try {
+        await runOne('route with failed capture', [{ name: 'device-1', device }], tracedConfig(tempRoot));
+        const warnings = routeWarnings(warn);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain('network capture failed to start');
+        expect(warnings[0]).not.toContain("trace: 'retain-on-failure'");
+      } finally {
+        warn.mockRestore();
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    });
+
     it('names the group member whose routes cannot fire', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const alice = makeRoutedDevice({ proxyRunning: true, routes: true, name: 'alice' });
-      const bob = makeRoutedDevice({ proxyRunning: false, routes: true, name: 'bob' });
+      const alice = makeRoutedDevice({ proxyRunning: true, registered: 1, name: 'alice' });
+      const bob = makeRoutedDevice({ proxyRunning: false, registered: 1, name: 'bob' });
       try {
-        pushContext();
-        tapsmithTest('group route test', async () => {});
-        const ctx = popContext();
-        await runSuiteContext(ctx, '', [], [], makeOpts({
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mocks
-          devices: [{ name: 'alice', device: alice as any }, { name: 'bob', device: bob as any }],
-        }));
+        await runOne('group route test', [{ name: 'alice', device: alice }, { name: 'bob', device: bob }]);
         const warnings = routeWarnings(warn);
         expect(warnings).toHaveLength(1);
         expect(warnings[0]).toContain('[bob]');

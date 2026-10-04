@@ -13,7 +13,7 @@ Both features share the same underlying MITM proxy infrastructure.
 
 Network interception requires the MITM proxy to be active. The proxy starts automatically when tracing is enabled with `network: true` (the default). **Tracing is off by default** (`trace: "off"`), so out of the box no proxy runs: route handlers never fire and `waitForRequest`/`waitForResponse` never resolve. (`tapsmith init` writes `trace: { mode: 'retain-on-failure' }` when you enable network capture in the wizard.)
 
-Enable tracing in your config — any mode that records the test's first attempt (`"on"`, `"retain-on-failure"`, `"retain-on-first-failure"`, `"retain-on-failure-and-retries"`) starts the proxy for every test. `"on-first-retry"` and `"on-all-retries"` record only retries, so routes do not fire on a test's first attempt:
+Enable tracing in your config — any mode that records the test's first attempt (`"on"`, `"retain-on-failure"`, `"retain-on-first-failure"`, `"retain-on-failure-and-retries"`) starts the proxy for every test. `"on-first-retry"` and `"on-all-retries"` start it only for retries, so a test's first attempt has no proxy unless an earlier test's retry already started one (Tapsmith keeps it running for the rest of the session). Don't rely on that: use a mode that records first attempts if your tests mock the network:
 
 ```typescript
 import { defineConfig } from "tapsmith"
@@ -42,7 +42,7 @@ export default defineConfig({
 
 A `--trace <mode>` flag replaces the config's whole `trace` value, `network` included, so keep the mode in the config for this.
 
-When network capture is off, `device.route()` still registers the handler, but it can never fire because no traffic passes through the proxy. At the end of such a test Tapsmith prints a warning naming it (`device.route() handlers never fired: "…" registered route handlers, but network capture was not running`), so a mock that silently did nothing does not go unnoticed.
+When network capture is off, `device.route()` still registers the handler, but it can never fire because no traffic passes through the proxy. At the end of a test that registered a route (even one it removed again) while no proxy was running, Tapsmith prints a warning naming it: `device.route() handlers never fired: "…" registered route handlers, but network capture was not running`. When tracing is on but capture failed to start, the warning says so instead and points at the `Network capture` warning that explains why.
 
 HTTP/2 traffic is intercepted when the client accepts Tapsmith's MITM CA — including gRPC, and including Firestore on Android. Clients that use embedded roots or certificate pinning reject external MITM certificates (Firestore on iOS always does); Tapsmith detects that rejection for HTTP/2-capable clients and tunnels later connections so the app keeps working, but route handlers and waiters cannot see the encrypted requests inside. See [HTTP/2, gRPC, and passthrough connections](#http2-grpc-and-passthrough-connections).
 

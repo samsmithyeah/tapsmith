@@ -172,6 +172,8 @@ export class Device {
    */
   private _networkCaptureEverStarted = false;
   private _networkCaptureError: string | undefined;
+  /** Successful `route()` calls since the runner last took the count. */
+  private _routeRegistrations = 0;
   /**
    * @internal — How the last successful capture start routed this device's
    * traffic (recorded per device in trace metadata). Undefined when capture
@@ -1090,7 +1092,19 @@ export class Device {
       throw new Error(error);
     }
     await this._ensureRouteManager().addRoute(url, handler, options);
+    this._routeRegistrations++;
     this._emitNetworkAction('route', formatPattern(url), start, true, undefined, source, stack);
+  }
+
+  /**
+   * @internal — How many routes were registered since the last call, then
+   * reset. The runner reads it after each test: routes the test (or a hook
+   * before it) registered, even if it unrouted them again itself.
+   */
+  _takeRouteRegistrations(): number {
+    const n = this._routeRegistrations;
+    this._routeRegistrations = 0;
+    return n;
   }
 
   /**

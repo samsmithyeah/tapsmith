@@ -328,15 +328,21 @@ function _warnCaptureOnce(prefix: string, msg: string): void {
  * Warn that a test's `device.route()` handlers could never fire because no
  * network proxy was running. Once per test (and device) per process, so a
  * suite of route-using tests names each one without repeating on retries.
+ * `captureAttempted`: this attempt tried to start capture and it failed — the
+ * cause is that failure (warned separately), not the trace settings.
  */
-function _warnRoutesWithoutProxy(fullName: string, deviceName: string | undefined): void {
+function _warnRoutesWithoutProxy(fullName: string, deviceName: string | undefined, captureAttempted: boolean): void {
   const who = deviceName ? `[${deviceName}] ` : '';
+  const why = captureAttempted
+    ? 'but network capture failed to start on this device (see the "Network capture" warning above), ' +
+      'so no request could reach them.'
+    : 'but network capture was not running, so no request could reach them. Routes go through the ' +
+      'network proxy, which Tapsmith starts only for a test whose trace records network traffic: set ' +
+      "trace: 'retain-on-failure' (or 'on') in your config, or pass --trace retain-on-failure, and " +
+      'leave trace `network` enabled.';
   _warnCaptureOnce(
     'device.route() handlers never fired',
-    `${who}"${fullName}" registered route handlers, but network capture was not running, ` +
-      'so no request could reach them. Routes go through the network proxy, which runs only while ' +
-      "a trace with network capture is recording: set trace: 'retain-on-failure' (or 'on') in your " +
-      'config, or pass --trace retain-on-failure, and leave trace `network` enabled. ' +
+    `${who}"${fullName}" registered route handlers, ${why} ` +
       'See https://tapsmith.dev/guides/network/#prerequisites',
   );
 }
@@ -2181,13 +2187,16 @@ async function runSuiteContext(
       // Clean up route interception between tests so routes don't leak
       // across tests within the same describe block.
       await forEachDeviceBestEffort(opts, async (d) => {
-        if (!d._routeManager?.hasRoutes) return;
         // Route handlers only ever see requests through the daemon's network
-        // proxy, which runs only while a trace with network capture records.
-        // Without one, route() registered a handler that could never fire —
-        // say so instead of leaving the user guessing (PILOT-517).
-        if (!d._networkProxyRunning) _warnRoutesWithoutProxy(fullName, d._traceDeviceId);
-        await d._routeManager.removeAllRoutes();
+        // proxy, which only a trace recording network starts. Without one,
+        // the routes this test registered — even ones it has since removed —
+        // could never fire: say so instead of leaving the user guessing
+        // (PILOT-517). Optional call: lifecycle mocks stand in for Device.
+        const registered = d._takeRouteRegistrations?.() ?? 0;
+        if (registered > 0 && !d._networkProxyRunning) {
+          _warnRoutesWithoutProxy(fullName, d._traceDeviceId, recording && traceConfig.network);
+        }
+        if (d._routeManager?.hasRoutes) await d._routeManager.removeAllRoutes();
       });
 
       // Collect soft assertion failures (PILOT-43)

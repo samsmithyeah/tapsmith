@@ -117,7 +117,7 @@ The wizard walks through these steps:
 4. **iOS** — choose simulators, physical devices or both. For simulators, pick your simulator `.app` the same way and the simulator to boot. For physical devices, the wizard runs a code-signing preflight, offers to build the device agent, and asks for your device-signed (`iphoneos`) `.app`. It reads each build's bundle ID and asks only when it can't. Choosing both writes two projects, `ios` (simulator) and `ios-device` (physical device), so `npx tapsmith test --project ios-device` runs on the device alone (the layout of [Running simulator and device together](./ios-physical-devices.md#running-simulator-and-device-together), with these project names)
 5. **Network capture** — optionally record HTTP/HTTPS traffic; saying yes writes `trace: { mode: 'retain-on-failure' }`, which [`device.route()`](network.md#prerequisites) needs, and lists the per-platform setup still to do
 6. **iOS simulator agent** — if no simulator agent build is found, offers to build it now (~30 s)
-7. **Config** — writes `tapsmith.config.ts`, always with `platform` and `package` set for each platform
+7. **Config** — writes `tapsmith.config.ts` with the app, its `package` and, for iOS, `platform: 'ios'` and the simulator
 8. **Example test** — optionally creates `tests/example.test.ts`
 9. **AGENTS.md** — optionally adds a Tapsmith section to `AGENTS.md` for AI coding agents
 
@@ -217,7 +217,7 @@ export default defineConfig({
 });
 ```
 
-For iOS, `platform: "ios"` is required: Tapsmith does not infer the platform from `app`, and a config that sets `app` or `simulator` without it is refused (`tapsmith doctor` reports it as `config-platform`). Set `app` to the `.app` bundle built for the iOS Simulator, `package` to its bundle identifier (needed to launch and reset the app, as on Android), and `simulator` to the simulator to boot.
+For iOS, `platform: "ios"` is required: Tapsmith does not infer the platform from `app`, and a config that sets `app` or `simulator` without it is treated as Android when picking a device and then refused when tests start (`tapsmith doctor` reports it up front as `config-platform`). Set `app` to the `.app` bundle built for the iOS Simulator, `package` to its bundle identifier (needed to launch and reset the app, as on Android), and `simulator` to the simulator to boot.
 
 See the [Configuration](configuration.md) guide for all available options.
 
