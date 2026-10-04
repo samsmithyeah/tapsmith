@@ -254,6 +254,7 @@ describe('runListDevices --json', () => {
       deps: {
         fetchDevices: async () => [],
         enrich: () => ({ physical: [], usbAttached: new Set() }),
+        claims: () => new Map(),
         stdout: (t) => { out += t; },
         stderr: (t) => { err += t; },
         ...deps,
@@ -271,7 +272,7 @@ describe('runListDevices --json', () => {
     const parsed = JSON.parse(h.out()) as { devices: Array<Record<string, unknown>> };
     expect(Object.keys(parsed)).toEqual(['devices']);
     expect(parsed.devices).toEqual([{
-      ready: true, platform: 'android-emu', serial: 'emulator-5554', name: 'Pixel 9', osLabel: 'Android 15', blockers: [],
+      ready: true, platform: 'android-emu', serial: 'emulator-5554', name: 'Pixel 9', osLabel: 'Android 15', blockers: [], inUseBy: null,
     }]);
     expect(h.err()).toBe('');
   });
@@ -282,7 +283,7 @@ describe('runListDevices --json', () => {
     });
     expect(await runListDevices({ json: true }, h.deps)).toBe(0);
     expect(JSON.parse(h.out())).toEqual({ devices: [{
-      ready: false, platform: 'android', serial: 'R5CR1234XYZ', name: '', osLabel: '', blockers: ['Accept the USB debugging prompt on the device'],
+      ready: false, platform: 'android', serial: 'R5CR1234XYZ', name: '', osLabel: '', blockers: ['Accept the USB debugging prompt on the device'], inUseBy: null,
     }] });
 
     const text = capture({
@@ -294,6 +295,35 @@ describe('runListDevices --json', () => {
     expect(plain).toContain('R5CR1234XYZ');
     expect(plain).toContain('Accept the USB debugging prompt on the device');
     expect(plain).toContain('0 ready · 1 need attention');
+  });
+
+  // PILOT-381: the claim list is what agents and scripts read instead of
+  // guessing each session's device from process trees.
+  it('says which other Tapsmith session holds a device, in JSON and in the table', async () => {
+    const claim = {
+      device: 'emulator-5554',
+      session: { id: 's', pid: 4242, command: 'tapsmith test --ui', project: '/work/app', startedAt: '2026-10-04T10:00:00.000Z' },
+      claimantPid: 4243,
+      daemonAddress: 'localhost:50051',
+      claimedAt: '2026-10-04T10:00:01.000Z',
+    };
+    const devices = async () => [
+      daemonDevice({ serial: 'emulator-5554', model: 'Pixel 9', platform: 'android', isEmulator: true, state: 'device', osVersion: '15' }),
+      daemonDevice({ serial: 'emulator-5556', model: 'Pixel 9', platform: 'android', isEmulator: true, state: 'device', osVersion: '15' }),
+    ];
+    const h = capture({ fetchDevices: devices, claims: () => new Map([['emulator-5554', claim]]) });
+    expect(await runListDevices({ json: true }, h.deps)).toBe(0);
+    const parsed = JSON.parse(h.out()) as { devices: Array<Record<string, unknown>> };
+    expect(parsed.devices.map((d) => [d.serial, d.inUseBy])).toEqual([
+      ['emulator-5554', { command: 'tapsmith test --ui', pid: 4242, project: '/work/app', since: '2026-10-04T10:00:01.000Z', daemonAddress: 'localhost:50051' }],
+      ['emulator-5556', null],
+    ]);
+
+    const text = capture({ fetchDevices: devices, claims: () => new Map([['emulator-5554', claim]]) });
+    expect(await runListDevices({ json: false }, text.deps)).toBe(0);
+    const plain = text.out().replace(/\x1b\[[0-9;]*m/g, '');
+    expect(plain).toMatch(/emulator-5554 .*In use by `tapsmith test --ui` \(pid 4242\)/);
+    expect(plain).toContain('2 ready · 0 need attention · 1 in use by other Tapsmith sessions');
   });
 
   it.each([

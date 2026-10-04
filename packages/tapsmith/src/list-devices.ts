@@ -23,6 +23,7 @@ import { findDaemonBin } from './daemon-bin.js';
 import { TapsmithGrpcClient, type DeviceInfoProto } from './grpc-client.js';
 import { pickFreePort } from './port-utils.js';
 import { formatJson, jsonError } from './cli-json.js';
+import { currentSession, listDeviceClaims, type DeviceClaim } from './device-claims.js';
 import { androidUnusableDeviceFix } from './adb-devices.js';
 import {
   listPhysicalDevices,
@@ -57,6 +58,45 @@ export interface DeviceRow {
    * when `ready` is true. Ordered by fix priority (attach USB first, then
    * pair, then Developer Mode, then DDI). */
   blockers: string[]
+  /**
+   * The live Tapsmith session that has claimed this device (PILOT-381), or
+   * null when none has. A claimed device is refused to every other session.
+   */
+  inUseBy: DeviceHolder | null
+}
+
+/** Who holds a device, as `list-devices` reports it. */
+export interface DeviceHolder {
+  /** What started that session: `tapsmith test --ui`, `tapsmith mcp-server`. */
+  command: string
+  /** The session's root process. */
+  pid: number
+  /** The directory that session was started in. */
+  project: string
+  /** ISO time the device was claimed. */
+  since: string
+  /** The daemon that session drives the device through, when known. */
+  daemonAddress: string | null
+}
+
+function holderOf(claim: DeviceClaim): DeviceHolder {
+  return {
+    command: claim.session.command,
+    pid: claim.session.pid,
+    project: claim.session.project,
+    since: claim.claimedAt,
+    daemonAddress: claim.daemonAddress ?? null,
+  };
+}
+
+/** Live claims of sessions other than this one, by device. */
+function liveClaimsByDevice(): Map<string, DeviceClaim> {
+  const me = currentSession().id;
+  const byDevice = new Map<string, DeviceClaim>();
+  for (const { live, ...claim } of listDeviceClaims()) {
+    if (live && claim.session.id !== me) byDevice.set(claim.device, claim);
+  }
+  return byDevice;
 }
 
 /**
@@ -75,6 +115,8 @@ export function buildDeviceRows(
   daemonDevices: DeviceInfoProto[],
   devicectlDevices: PhysicalDeviceInfo[],
   usbAttached: Set<string> = new Set(),
+  /** Live claims of other sessions, by device serial. */
+  claims: ReadonlyMap<string, DeviceClaim> = new Map(),
 ): DeviceRow[] {
   const byUdid = new Map<string, PhysicalDeviceInfo>();
   for (const d of devicectlDevices) byUdid.set(d.udid, d);
@@ -90,6 +132,7 @@ export function buildDeviceRows(
       name: device.model || '',
       osLabel: osLabelFor(device, physical),
       blockers,
+      inUseBy: claims.has(device.serial) ? holderOf(claims.get(device.serial)!) : null,
     };
   });
 
@@ -241,9 +284,11 @@ function formatTable(rows: DeviceRow[]): string {
 
   const readyCount = rows.filter((r) => r.ready).length;
   const blockedCount = rows.length - readyCount;
-  const summary = blockedCount === 0
+  const inUseCount = rows.filter((r) => r.inUseBy).length;
+  const inUse = inUseCount > 0 ? ` · ${yellow(`${inUseCount} in use by other Tapsmith sessions`)}` : '';
+  const summary = (blockedCount === 0
     ? green(`${readyCount} ready · 0 need attention`)
-    : `${green(`${readyCount} ready`)} · ${yellow(`${blockedCount} need attention`)}`;
+    : `${green(`${readyCount} ready`)} · ${yellow(`${blockedCount} need attention`)}`) + inUse;
 
   const lines = [headerLine, dim(separator), ...body, '', summary];
 
@@ -260,16 +305,23 @@ function formatTable(rows: DeviceRow[]): string {
   return lines.join('\n') + '\n';
 }
 
-/** Uncolored status cell — "Ready" or blockers joined with " · ". */
-function statusStringPlain(r: DeviceRow): string {
-  if (r.ready) return 'Ready';
-  return r.blockers.join(' · ');
+/** `In use by \`tapsmith test --ui\` (pid 4242)` — another session holds it. */
+function inUseText(holder: DeviceHolder): string {
+  return `In use by \`${holder.command}\` (pid ${holder.pid})`;
 }
 
-/** Colored status cell — "Ready" green, blockers yellow. */
+/** Uncolored status cell — "Ready", or blockers and who holds it joined with " · ". */
+function statusStringPlain(r: DeviceRow): string {
+  const parts = r.ready ? [] : [...r.blockers];
+  if (r.inUseBy) parts.push(inUseText(r.inUseBy));
+  return parts.length === 0 ? 'Ready' : parts.join(' · ');
+}
+
+/** Colored status cell — "Ready" green, blockers yellow, held devices yellow. */
 function statusStringColored(r: DeviceRow): string {
-  if (r.ready) return green('Ready');
-  return r.blockers.map((b) => yellow(b)).join(' · ');
+  const parts = r.ready ? [] : r.blockers.map((b) => yellow(b));
+  if (r.inUseBy) parts.push(yellow(inUseText(r.inUseBy)));
+  return parts.length === 0 ? green('Ready') : parts.join(' · ');
 }
 
 // ─── Daemon bootstrap ───────────────────────────────────────────────────
@@ -418,6 +470,8 @@ export interface ListDevicesDeps {
   fetchDevices: () => Promise<DeviceInfoProto[]>;
   /** devicectl + USB cross-reference for physical iOS devices. */
   enrich: () => { physical: PhysicalDeviceInfo[]; usbAttached: Set<string> };
+  /** Live claims of other Tapsmith sessions, by device (PILOT-381). */
+  claims: () => ReadonlyMap<string, DeviceClaim>;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -446,6 +500,7 @@ export async function runListDevices(opts: { json: boolean }, overrides: Partial
   const deps: ListDevicesDeps = {
     fetchDevices: () => listDevicesFromDaemon(),
     enrich: enrichFromHost,
+    claims: liveClaimsByDevice,
     stdout: (text) => { process.stdout.write(text); },
     stderr: (text) => { process.stderr.write(text); },
     ...overrides,
@@ -455,7 +510,7 @@ export async function runListDevices(opts: { json: boolean }, overrides: Partial
   try {
     const daemonDevices = await deps.fetchDevices();
     const { physical, usbAttached } = deps.enrich();
-    rows = buildDeviceRows(daemonDevices, physical, usbAttached);
+    rows = buildDeviceRows(daemonDevices, physical, usbAttached, deps.claims());
   } catch (err) {
     // Text mode lets an unexpected error reach the CLI's fatal-error handler,
     // stack and all, like the other commands.

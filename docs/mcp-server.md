@@ -108,6 +108,12 @@ either:
 session merely *sees* — another simulator, a peer session's device — cannot be
 acted on: its daemon is pointed elsewhere.
 
+A headless server never takes a device, or a daemon, that another running
+Tapsmith session holds — a `tapsmith test` run, a UI session, or another MCP
+server (see [Several sessions on one machine](./parallel-and-sharding.md#several-sessions-on-one-machine)).
+It picks a free device instead, and a pinned one that is held is refused with
+an error naming the session that holds it.
+
 For a project that drives several devices per test (`use.devices`, see
 [Multi-device tests](./multi-device.md)), `device` also accepts a member's
 **name** — `device: "bob"`. Such a project is discoverable without reading the

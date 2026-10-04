@@ -19,6 +19,7 @@ Most users will never need to set any of these. They are primarily useful for de
 |---|---|
 | `TAPSMITH_DEBUG` | Enable debug logging in the TypeScript SDK (assertion polling, element resolution, etc.). Set to `1` or `true`. |
 | `RUST_LOG` | Control Rust daemon log verbosity. Examples: `RUST_LOG=info`, `RUST_LOG=tapsmith_core=debug`. Useful for diagnosing MITM proxy issues, agent startup failures, and device communication problems. |
+| `TAPSMITH_CLAIMS_DIR` | Where device claims are kept (default `~/.tapsmith/claims`). Sessions only see each other's claims when they use the same directory. |
 
 ## Telemetry
 
@@ -60,6 +61,7 @@ These are set by Tapsmith internally and generally should not be modified by use
 | Variable | Description |
 |---|---|
 | `TAPSMITH_WORKER_ID` | Set by the CLI in parallel and watch mode. Identifies the current worker process. |
+| `TAPSMITH_DEVICE_SESSION` | Set once by the CLI or MCP server at startup and inherited by every forked worker: the session that claims devices (see [Several sessions on one machine](parallel-and-sharding.md#several-sessions-on-one-machine)). Every process of one invocation claims as that session. Not intended to be set by hand. |
 | `TAPSMITH_TELEMETRY_SESSION` | Set once by the CLI or MCP server at startup and inherited by every forked worker, so all of one invocation's telemetry events share a `session_id`. Not intended to be set by hand. |
 | `TAPSMITH_DAEMON_ADDRESS` | Comma-separated daemon addresses. Used internally by MCP server mode. |
 | `TAPSMITH_UI_DEV_URL` | Development server URL for UI mode's frontend. Internal use only. |
