@@ -3030,14 +3030,12 @@ element and a download link in each test's detail panel.
 import { defineConfig } from 'tapsmith'
 
 export default defineConfig({
-  use: {
-    video: 'retain-on-failure', // mode shorthand
-    // — or —
-    video: {
-      mode: 'on',
-      size: { width: 1280, height: 720 }, // Android only
-    },
-  },
+  video: 'retain-on-failure', // mode shorthand
+  // — or —
+  // video: {
+  //   mode: 'on',
+  //   size: { width: 1280, height: 720 }, // Android only
+  // },
 })
 ```
 

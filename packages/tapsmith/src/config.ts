@@ -937,7 +937,15 @@ const positiveMs = check((v) => isFiniteNumber(v) && v > 0, 'a positive number o
 const nonNegativeInteger = check((v) => Number.isInteger(v) && (v as number) >= 0, 'a non-negative integer');
 const positiveInteger = check((v) => Number.isInteger(v) && (v as number) >= 1, 'a positive integer');
 const globs = check(isStringArray, 'an array of glob strings', (v) => (typeof v === 'string' ? `wrap it: ['${v}']` : undefined));
-const regExps = check((v) => isRegExp(v) || (Array.isArray(v) && v.every(isRegExp)), 'a RegExp or an array of RegExps');
+/**
+ * `null`, `false` and `''` mean "off" for options whose consumers have always
+ * read any falsy value as unset (`reporter: CI && 'github'`,
+ * `grep: GREP ? new RegExp(GREP) : null`), as for `trace` and `video`.
+ */
+function orOff(inner: KeyCheck): KeyCheck {
+  return (value, name) => (value === null || value === false || value === '' ? undefined : inner(value, name));
+}
+const regExps = orOff(check((v) => isRegExp(v) || (Array.isArray(v) && v.every(isRegExp)), 'a RegExp or an array of RegExps'));
 
 function oneOf(values: readonly string[]): KeyCheck {
   const listed = values.map((v) => `'${v}'`);
@@ -1062,10 +1070,10 @@ const ROOT_CHECKS: { readonly [K in keyof TapsmithConfig]-?: KeyCheck } = {
   typingDelay: nonNegativeMs,
   doubleTapInterval: positiveMs,
   simulator: optionalString,
-  reporter: check(
+  reporter: orOff(check(
     (v) => isReporterDescription(v) || (Array.isArray(v) && v.every(isReporterDescription)),
     'a reporter name, a [name, options] tuple, or an array of them',
-  ),
+  )),
   workers: positiveInteger,
   shard: check(
     (v) => isPlainObject(v) && Number.isInteger(v.current) && Number.isInteger(v.total)
@@ -1211,8 +1219,9 @@ function configShapeIssues(config: Record<string, unknown>): string[] {
 
 /**
  * The config a loaded module exports, validated. A config file must export
- * the config as its default: a module without one used to run on the
- * built-in defaults, as if the file were empty.
+ * the config as its default: without one, its named exports used to be read
+ * as the config, so `export const config = defineConfig(…)` ran on the
+ * built-in defaults.
  */
 function configFromModule(mod: Record<string, unknown>, configPath: string): Partial<TapsmithConfig> {
   if (mod.default === undefined) {

@@ -208,6 +208,11 @@ describe('config validation at load (PILOT-552)', () => {
         .toMatch(/projects\[0\]\.use\.appReset must be one of[\s\S]*projects\[0\]\.use\.platform must be 'android' or 'ios' \(got null\)/);
     });
 
+    it('reads null, false and empty reporter and grep values as unset, as their consumers always have', async () => {
+      writeConfig('export default { reporter: false, grep: null, grepInvert: "", projects: [{ name: "p", grep: false }] }\n');
+      await expect(loadConfig(root)).resolves.toBeTruthy();
+    });
+
     it('accepts a reporter tuple whose options are left undefined', async () => {
       // `['html', CI ? { open: 'never' } : undefined]`: every reporter defaults its options.
       writeConfig('export default { reporter: [["html", undefined]] }\n');
