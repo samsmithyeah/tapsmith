@@ -196,21 +196,30 @@ function expoHooksNote(expo: ExpoProject): string {
     : `For sub-second resets between tests, mount @tapsmith/react-native and build test builds with ${HOOKS_FLAG} (https://tapsmith.dev/guides/warm-reset/).`;
 }
 
-/**
- * How to build an Expo project's app for `platform` so `tapsmith init` finds
- * it: the release build getting-started documents (a release build runs
- * without Metro), with the hooks flag folded in when the app uses them.
- */
-export function expoBuildHint(platform: 'android' | 'ios', expo: ExpoProject): string {
+/** The build step for one platform, as a sentence. */
+function expoBuildStep(platform: 'android' | 'ios', expo: ExpoProject): string {
   const env = expo.usesTapsmithHooks ? `${HOOKS_FLAG} ` : '';
   if (platform === 'android') {
     const generate = expo.hasAndroidDir ? '' : ' (it generates android/, which this Expo project does not have yet)';
     return `Build a release APK with \`${env}npx expo run:android --variant release\`${generate}; `
-      + `it writes android/app/build/outputs/apk/release/app-release.apk. ${expoHooksNote(expo)} See ${EXPO_BUILD_DOCS}`;
+      + 'it writes android/app/build/outputs/apk/release/app-release.apk.';
   }
   const generate = expo.hasIosDir ? '' : '`npx expo prebuild --platform ios` (this Expo project has no ios/ yet), then ';
   return `Build a simulator app with ${generate}\`cd ios && ${env}xcodebuild -workspace <App>.xcworkspace -scheme <App> `
     + '-configuration Release -sdk iphonesimulator -derivedDataPath build build`; '
-    + '`npx expo run:ios --configuration Release` builds into Xcode\'s DerivedData instead, where init does not look. '
-    + `${expoHooksNote(expo)} See ${EXPO_BUILD_DOCS}`;
+    + '`npx expo run:ios --configuration Release` builds into Xcode\'s DerivedData instead, where init does not look.';
+}
+
+/**
+ * How to build an Expo project's app so `tapsmith init` finds it: the release
+ * build getting-started documents (a release build runs without Metro) for
+ * each platform, with the hooks flag folded in when the app uses them, then
+ * `alternative` (the flag that skips the build), the hooks note and the docs.
+ */
+export function expoBuildHint(platforms: Array<'android' | 'ios'>, expo: ExpoProject, alternative?: string): string {
+  const steps = platforms.map((p) => {
+    const step = expoBuildStep(p, expo);
+    return platforms.length > 1 ? `${p === 'android' ? 'Android' : 'iOS'}: ${step}` : step;
+  });
+  return [...steps, ...(alternative ? [alternative] : []), expoHooksNote(expo), `See ${EXPO_BUILD_DOCS}`].join(' ');
 }

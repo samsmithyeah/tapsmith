@@ -280,7 +280,7 @@ export async function configureAndroid(env: EnvScan, expo?: ExpoProject): Promis
     message: 'Where is your Android APK?',
     candidates: orderApkCandidates(findApkCandidates(process.cwd())),
     noneFound: expo
-      ? `No APK found under android/**/build/outputs/apk/. ${expoBuildHint('android', expo)} Or enter its path.`
+      ? `No APK found under android/**/build/outputs/apk/. ${expoBuildHint(['android'], expo, 'Or enter its path.')}`
       : 'No APK found under android/**/build/outputs/apk/ — build one first (e.g. cd android && ./gradlew assembleDebug; a React Native Debug build also needs Metro running, see https://tapsmith.dev/getting-started/#build-the-app-under-test), or enter its path.',
     typeMessage: 'Path to your Android APK:',
   });
@@ -362,7 +362,7 @@ export async function configureIos(env: EnvScan, expo?: ExpoProject): Promise<Io
       message: 'Where is your iOS .app bundle? (simulator build)',
       candidates: findIosAppCandidates(process.cwd()),
       noneFound: expo
-        ? `No simulator build (.app) found under ios/. ${expoBuildHint('ios', expo)} Or enter its path.`
+        ? `No simulator build (.app) found under ios/. ${expoBuildHint(['ios'], expo, 'Or enter its path.')}`
         : 'No simulator build (.app) found under ios/ — build one first (in ios/: xcodebuild -workspace <App>.xcworkspace -scheme <App> -sdk iphonesimulator -derivedDataPath build; see https://tapsmith.dev/getting-started/#build-the-app-under-test), or enter its path.',
       typeMessage: 'Path to your simulator build (.app):',
     });

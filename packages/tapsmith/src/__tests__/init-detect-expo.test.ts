@@ -135,7 +135,7 @@ describe('readExpoAppConfig() (PILOT-557)', () => {
 
 describe('expoBuildHint() (PILOT-557)', () => {
   it('Android, managed: expo run:android generates android/ and says where the APK lands', () => {
-    const hint = expoBuildHint('android', managed);
+    const hint = expoBuildHint(['android'], managed);
     expect(hint).toContain('`npx expo run:android --variant release`');
     expect(hint).toContain('does not have yet');
     expect(hint).toContain('android/app/build/outputs/apk/release/app-release.apk');
@@ -144,11 +144,11 @@ describe('expoBuildHint() (PILOT-557)', () => {
   });
 
   it('Android, prebuilt: no "does not have android/ yet"', () => {
-    expect(expoBuildHint('android', { ...managed, hasAndroidDir: true })).not.toContain('does not have yet');
+    expect(expoBuildHint(['android'], { ...managed, hasAndroidDir: true })).not.toContain('does not have yet');
   });
 
   it('iOS, managed: prebuild, then an xcodebuild into ios/build where init looks', () => {
-    const hint = expoBuildHint('ios', managed);
+    const hint = expoBuildHint(['ios'], managed);
     expect(hint).toContain('`npx expo prebuild --platform ios`');
     expect(hint).toContain('-derivedDataPath build');
     expect(hint).toContain('-configuration Release -sdk iphonesimulator');
@@ -156,18 +156,28 @@ describe('expoBuildHint() (PILOT-557)', () => {
   });
 
   it('iOS, prebuilt: no prebuild step', () => {
-    expect(expoBuildHint('ios', { ...managed, hasIosDir: true })).not.toContain('prebuild');
+    expect(expoBuildHint(['ios'], { ...managed, hasIosDir: true })).not.toContain('prebuild');
   });
 
   it('with the hooks dependency, sets EXPO_PUBLIC_TAPSMITH_HOOKS=1 on the build and warns never to ship it', () => {
     const hooks = { ...managed, usesTapsmithHooks: true };
-    expect(expoBuildHint('android', hooks)).toContain('`EXPO_PUBLIC_TAPSMITH_HOOKS=1 npx expo run:android --variant release`');
-    expect(expoBuildHint('ios', hooks)).toContain('cd ios && EXPO_PUBLIC_TAPSMITH_HOOKS=1 xcodebuild');
-    expect(expoBuildHint('android', hooks)).toMatch(/test builds only, never for store builds/);
+    expect(expoBuildHint(['android'], hooks)).toContain('`EXPO_PUBLIC_TAPSMITH_HOOKS=1 npx expo run:android --variant release`');
+    expect(expoBuildHint(['ios'], hooks)).toContain('cd ios && EXPO_PUBLIC_TAPSMITH_HOOKS=1 xcodebuild');
+    expect(expoBuildHint(['android'], hooks)).toMatch(/test builds only, never for store builds/);
+  });
+
+  it('labels each platform and says the hooks note and docs link once for both, after the alternative', () => {
+    const hint = expoBuildHint(['android', 'ios'], managed, 'Or pass --apk.');
+    expect(hint).toMatch(/^Android: Build a release APK/);
+    expect(hint).toContain(' iOS: Build a simulator app');
+    expect(hint.split('EXPO_PUBLIC_TAPSMITH_HOOKS=1')).toHaveLength(2);
+    expect(hint.split('https://tapsmith.dev/getting-started/#react-native-and-expo')).toHaveLength(2);
+    expect(hint.indexOf('Or pass --apk.')).toBeLessThan(hint.indexOf('@tapsmith/react-native'));
+    expect(hint).toMatch(/See https:\/\/tapsmith\.dev\/getting-started\/#react-native-and-expo$/);
   });
 
   it('without the hooks dependency, mentions the flag as the way to warm resets, not in the command', () => {
-    const hint = expoBuildHint('android', managed);
+    const hint = expoBuildHint(['android'], managed);
     expect(hint).not.toContain('`EXPO_PUBLIC_TAPSMITH_HOOKS=1 npx');
     expect(hint).toContain('@tapsmith/react-native');
     expect(hint).toContain('EXPO_PUBLIC_TAPSMITH_HOOKS=1');

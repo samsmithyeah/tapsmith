@@ -159,10 +159,9 @@ export function resolveInitPlan(
     if (inferred.length === 0) {
       const expoProject = expo();
       if (expoProject) {
-        const builds = [`Android: ${detectDefaults.expoBuildHint('android', expoProject)}`];
-        if (env.isMacOS) builds.push(`iOS: ${detectDefaults.expoBuildHint('ios', expoProject)}`);
+        const buildable: Array<'android' | 'ios'> = env.isMacOS ? ['android', 'ios'] : ['android'];
         throw new InitError('NO_PLATFORM', 'Could not infer target platform: this Expo project has no android/ or ios/ directory yet, so there is no build to test', {
-          fix: `Build the app first, then re-run init. ${builds.join(' ')} Or pass --platform with --apk/--app pointing at an existing build`,
+          fix: `Build the app, then re-run init. ${detectDefaults.expoBuildHint(buildable, expoProject, 'Or pass --platform with --apk/--app pointing at an existing build.')}`,
         });
       }
       throw new InitError('NO_PLATFORM', 'Could not infer target platform (no android/ or ios/ directory found)', {
@@ -188,7 +187,7 @@ export function resolveInitPlan(
         const expoProject = expo();
         if (expoProject) {
           throw new InitError('NO_APK', 'No Android APK found under android/**/build/outputs/apk/', {
-            fix: `${detectDefaults.expoBuildHint('android', expoProject)} Or pass --apk <path>`,
+            fix: detectDefaults.expoBuildHint(['android'], expoProject, 'Or pass --apk <path>.'),
           });
         }
         throw new InitError('NO_APK', 'No Android APK found under android/**/build/outputs/apk/', {
@@ -254,7 +253,7 @@ export function resolveInitPlan(
         const expoProject = expo();
         if (expoProject) {
           throw new InitError('NO_IOS_APP', 'No simulator .app bundle found under ios/', {
-            fix: `${detectDefaults.expoBuildHint('ios', expoProject)} Or pass --app <path>`,
+            fix: detectDefaults.expoBuildHint(['ios'], expoProject, 'Or pass --app <path>.'),
           });
         }
         throw new InitError('NO_IOS_APP', 'No simulator .app bundle found under ios/', {
