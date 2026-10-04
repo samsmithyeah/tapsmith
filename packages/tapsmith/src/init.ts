@@ -126,7 +126,21 @@ export function validateBuildPath(val: string, kind: BuildKind, cwd: string = pr
   return true;
 }
 
-const OTHER_PATH = '\0other-path';
+// The name is what enquirer echoes once chosen, so it is the label itself.
+const OTHER_PATH = 'Enter another path…';
+
+/**
+ * The path to write into the config for a typed build path: read as a shell
+ * would ({@link normalizeTypedPath}) and, when it is inside the project (an
+ * absolute path dragged in, or `~/…`), made project-relative like the
+ * detected builds, so the config works on other machines.
+ */
+export function typedBuildPath(val: string, cwd: string = process.cwd()): string {
+  const p = normalizeTypedPath(val);
+  if (!path.isAbsolute(p)) return p;
+  const rel = path.relative(cwd, p);
+  return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : p;
+}
 
 /**
  * Ask for a build: the builds detection found, as a select (with a way out to
@@ -143,18 +157,18 @@ async function askBuildPath(opts: {
   const validate = (val: string): true | string => validateBuildPath(val, opts.kind);
   if (opts.candidates.length === 0) {
     console.log(dim(`  ${opts.noneFound}`));
-    return normalizeTypedPath(await ask<string>({ type: 'input', message: opts.message, validate }));
+    return typedBuildPath(await ask<string>({ type: 'input', message: opts.message, validate }));
   }
   const picked = await ask<string>({
     type: 'select',
     message: opts.message,
     choices: [
       ...opts.candidates.map((c) => ({ name: c, message: c })),
-      { name: OTHER_PATH, message: 'Enter another path…' },
+      { name: OTHER_PATH, message: OTHER_PATH },
     ],
   });
   if (picked !== OTHER_PATH) return picked;
-  return normalizeTypedPath(await ask<string>({ type: 'input', message: opts.typeMessage, validate }));
+  return typedBuildPath(await ask<string>({ type: 'input', message: opts.typeMessage, validate }));
 }
 
 /** Debug APKs first (the build `init --yes` prefers), then the rest. */

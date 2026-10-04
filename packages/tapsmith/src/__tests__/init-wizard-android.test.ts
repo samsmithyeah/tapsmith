@@ -64,7 +64,6 @@ const env: EnvScan = {
 
 const DEBUG_APK = 'android/app/build/outputs/apk/debug/app-debug.apk';
 const RELEASE_APK = 'android/app/build/outputs/apk/release/app-release.apk';
-const OTHER = 'Enter another path';
 
 function script(extra: Array<[RegExp, unknown]> = []): void {
   // Extras first: the first matching pattern answers.
@@ -104,7 +103,8 @@ describe('configureAndroid() build detection (PILOT-513)', () => {
     const q = question(/Where is your Android APK/);
     expect(q?.type).toBe('select');
     expect(q?.choices?.map((c) => c.name)[0]).toBe(RELEASE_APK);
-    expect(q?.choices?.[q.choices.length - 1].message).toMatch(new RegExp(OTHER));
+    // enquirer echoes the chosen choice's name, so "another path" must read as its label.
+    expect(q?.choices?.at(-1)).toEqual({ name: 'Enter another path…', message: 'Enter another path…' });
     expect(android.apkPath).toBe(RELEASE_APK);
     expect(android.packageName).toBe('com.acme.app');
     expect(question(/package name/)).toBeUndefined();

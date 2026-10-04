@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { androidEmulatorCaptureLine, avdPickerChoices, normalizeTypedPath, validateBuildPath, generateConfig, generatedProjects, generateExampleTest, runInit } from '../init.js';
+import { androidEmulatorCaptureLine, avdPickerChoices, normalizeTypedPath, typedBuildPath, validateBuildPath, generateConfig, generatedProjects, generateExampleTest, runInit } from '../init.js';
 import type { AndroidConfig, IosConfig, Platform } from '../init.js';
 import { platformlessIosFields } from '../doctor.js';
 import { _internal } from '../runner.js';
@@ -441,6 +441,21 @@ describe('normalizeTypedPath() (PILOT-513)', () => {
 
   it.skipIf(process.platform === 'win32')('unescapes a path dragged into a terminal', () => {
     expect(normalizeTypedPath('/a/My\\ App\\ \\(1\\).app')).toBe('/a/My App (1).app');
+  });
+});
+
+describe('typedBuildPath() (PILOT-513)', () => {
+  const project = path.join(os.tmpdir(), 'proj');
+
+  it('makes a path inside the project relative, like the detected builds', () => {
+    expect(typedBuildPath(`  ${path.join(project, 'android', 'app.apk')} `, project)).toBe(path.join('android', 'app.apk'));
+  });
+
+  it('keeps a relative path as typed, and a path outside the project absolute', () => {
+    expect(typedBuildPath('./build/app.apk', project)).toBe('./build/app.apk');
+    const outside = path.join(os.tmpdir(), 'elsewhere', 'app.apk');
+    expect(typedBuildPath(outside, project)).toBe(outside);
+    expect(typedBuildPath(path.join(os.tmpdir(), 'proj-sibling', 'a.apk'), project)).toBe(path.join(os.tmpdir(), 'proj-sibling', 'a.apk'));
   });
 });
 
