@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { distance as levenshtein } from 'fastest-levenshtein';
 import type { ReporterConfig } from './reporter.js';
 import type { TraceMode, TraceConfig } from './trace/types.js';
 import type { VideoMode, VideoConfig } from './video/types.js';
@@ -110,7 +111,7 @@ export interface TapsmithConfig {
    * @example
    * projects: [{
    *   name: 'chat',
-   *   testMatch: '**\/multi-user/**',
+   *   testMatch: ['**\/multi-user/**'],
    *   use: { devices: [{ name: 'alice' }, { name: 'bob' }] },
    * }]
    */
@@ -414,7 +415,7 @@ export function effectiveConfigForProject(
   // Root-level only: projects on one device target share its emulators, so a
   // per-project value could not be honoured consistently.
   if ('emulatorLaunchOptions' in project.use) {
-    throw new Error('config: emulatorLaunchOptions is a root-level option; move it out of the project\'s `use`.');
+    throw invalid('config', 'emulatorLaunchOptions is a root-level option; move it out of the project\'s `use`.');
   }
   const merged = { ...config } as unknown as Record<string, unknown>;
   for (const [key, value] of Object.entries(project.use)) {
@@ -496,6 +497,40 @@ const DEFAULT_CONFIG: TapsmithConfig = {
   launchEmulators: false,
 };
 
+// ─── Validation errors (PILOT-552) ───
+
+/**
+ * A config key or value Tapsmith refuses. Configs run through tsx without
+ * type-checking, so everything `TapsmithConfig`'s types promise is checked
+ * again at load, as Playwright does: the error names the file and each bad
+ * key or value, and the run stops before doing any work.
+ */
+export class ConfigValidationError extends Error {
+  readonly code = 'TAPSMITH_INVALID_CONFIG';
+  /** Each problem, starting with the key it is about (`workers must be …`). */
+  readonly issues: readonly string[];
+  /** The config file, once the error has been traced to one. */
+  readonly configPath: string | undefined;
+
+  // No parameter properties: Node's type stripping cannot run them.
+  constructor(issues: readonly string[], where: { source?: string; configPath?: string } = {}) {
+    const body = issues.length === 1 ? ` ${issues[0]}` : issues.map((issue) => `\n  - ${issue}`).join('');
+    super(where.configPath ? `Invalid config file ${where.configPath}:${body}` : `${where.source ?? 'config'}:${body}`);
+    this.name = 'ConfigValidationError';
+    this.issues = issues;
+    this.configPath = where.configPath;
+  }
+}
+
+/** By code, not class: the error may come from another copy of this module (a config loaded through tsx). */
+export function isConfigValidationError(err: unknown): err is ConfigValidationError {
+  return err instanceof Error && (err as { code?: unknown }).code === 'TAPSMITH_INVALID_CONFIG';
+}
+
+function invalid(source: string, issue: string): ConfigValidationError {
+  return new ConfigValidationError([issue], { source });
+}
+
 /**
  * Drop keys whose value is explicitly `undefined` so spread-merging cannot
  * clobber defaults — `{ ...DEFAULT_CONFIG, ...raw }` would otherwise turn
@@ -513,6 +548,10 @@ function omitUndefined<T extends object>(raw: T): T {
  * Define a Tapsmith configuration. Merges the provided overrides with defaults.
  */
 export function defineConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
+  // Every problem at once, as loadConfig reports them: the per-key validators
+  // below stop at the first, and a typo'd key would only surface after it.
+  const issues = isPlainObject(overrides) ? configShapeIssues(overrides) : [];
+  if (issues.length > 0) throw new ConfigValidationError(issues);
   const clean = omitUndefined(overrides);
   const merged = applyConfigDefaults({ ...DEFAULT_CONFIG, ...clean }, clean);
   withExplicitRootDir(merged, clean.rootDir !== undefined);
@@ -562,39 +601,39 @@ export function validateDevicesOption(
   if (devices === undefined) return;
   if (typeof devices === 'number') {
     if (!Number.isInteger(devices) || devices < 1) {
-      throw new Error(`${source}: devices must be a positive integer or an array of { name, device? } entries (got ${JSON.stringify(devices)})`);
+      throw invalid(source, `devices must be a positive integer or an array of { name, device? } entries (got ${JSON.stringify(devices)})`);
     }
     if (devices > MAX_DEVICE_GROUP_SIZE) {
-      throw new Error(`${source}: devices must be at most ${MAX_DEVICE_GROUP_SIZE} (got ${devices})`);
+      throw invalid(source, `devices must be at most ${MAX_DEVICE_GROUP_SIZE} (got ${devices})`);
     }
     return;
   }
   if (!Array.isArray(devices) || devices.length === 0) {
-    throw new Error(`${source}: devices must be a positive integer or a non-empty array of { name, device? } entries (got ${JSON.stringify(devices)})`);
+    throw invalid(source, `devices must be a positive integer or a non-empty array of { name, device? } entries (got ${JSON.stringify(devices)})`);
   }
   if (devices.length > MAX_DEVICE_GROUP_SIZE) {
-    throw new Error(`${source}: devices may declare at most ${MAX_DEVICE_GROUP_SIZE} members (got ${devices.length})`);
+    throw invalid(source, `devices may declare at most ${MAX_DEVICE_GROUP_SIZE} members (got ${devices.length})`);
   }
 
   const names = new Set<string>();
   const serials = new Set<string>();
   for (const [i, entry] of devices.entries()) {
     if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string' || entry.name.trim() === '') {
-      throw new Error(`${source}: devices[${i}] must be an object with a non-empty string \`name\` (got ${JSON.stringify(entry)})`);
+      throw invalid(source, `devices[${i}] must be an object with a non-empty string \`name\` (got ${JSON.stringify(entry)})`);
     }
     if (!/^[A-Za-z0-9_-]+$/.test(entry.name)) {
-      throw new Error(`${source}: devices[${i}].name "${entry.name}" may only contain letters, digits, '-' and '_' (it names trace and screenshot files)`);
+      throw invalid(source, `devices[${i}].name "${entry.name}" may only contain letters, digits, '-' and '_' (it names trace and screenshot files)`);
     }
     if (names.has(entry.name)) {
-      throw new Error(`${source}: devices[${i}].name "${entry.name}" is used by another entry; names must be unique within the group`);
+      throw invalid(source, `devices[${i}].name "${entry.name}" is used by another entry; names must be unique within the group`);
     }
     names.add(entry.name);
     if (entry.device !== undefined) {
       if (typeof entry.device !== 'string' || entry.device.trim() === '') {
-        throw new Error(`${source}: devices[${i}].device must be a non-empty serial / UDID when set (got ${JSON.stringify(entry.device)})`);
+        throw invalid(source, `devices[${i}].device must be a non-empty serial / UDID when set (got ${JSON.stringify(entry.device)})`);
       }
       if (serials.has(entry.device)) {
-        throw new Error(`${source}: devices[${i}].device "${entry.device}" is pinned by another entry; one device cannot serve two members`);
+        throw invalid(source, `devices[${i}].device "${entry.device}" is pinned by another entry; one device cannot serve two members`);
       }
       serials.add(entry.device);
     }
@@ -704,24 +743,25 @@ function validateEmulatorLaunchOptions(raw: Partial<TapsmithConfig>): void {
   const options = raw.emulatorLaunchOptions;
   if (options === undefined) return;
   if (options === null || typeof options !== 'object' || Array.isArray(options)) {
-    throw new Error(`config: emulatorLaunchOptions must be an object (got ${JSON.stringify(options)})`);
+    throw invalid('config', `emulatorLaunchOptions must be an object (got ${JSON.stringify(options)})`);
   }
   const unknown = Object.keys(options).filter((key) => key !== 'headless' && key !== 'args');
   if (unknown.length > 0) {
-    throw new Error(`config: emulatorLaunchOptions has unknown ${unknown.length === 1 ? 'key' : 'keys'} ${unknown.join(', ')} (expected headless, args)`);
+    throw invalid('config', `emulatorLaunchOptions has unknown ${unknown.length === 1 ? 'key' : 'keys'} ${unknown.join(', ')} (expected headless, args)`);
   }
   if (options.headless !== undefined && typeof options.headless !== 'boolean') {
-    throw new Error(`config: emulatorLaunchOptions.headless must be a boolean (got ${JSON.stringify(options.headless)})`);
+    throw invalid('config', `emulatorLaunchOptions.headless must be a boolean (got ${JSON.stringify(options.headless)})`);
   }
   if (options.args === undefined) return;
   if (!Array.isArray(options.args) || options.args.some((arg) => typeof arg !== 'string')) {
-    throw new Error(`config: emulatorLaunchOptions.args must be an array of strings (got ${JSON.stringify(options.args)})`);
+    throw invalid('config', `emulatorLaunchOptions.args must be an array of strings (got ${JSON.stringify(options.args)})`);
   }
   // `@Name` is the emulator's shorthand for `-avd Name`, and it reads `--flag` as `-flag`.
   const reserved = options.args.filter((arg) => RESERVED_EMULATOR_ARGS.includes(arg.replace(/^--/, '-')) || arg.startsWith('@'));
   if (reserved.length > 0) {
-    throw new Error(
-      `config: emulatorLaunchOptions.args must not include ${reserved.join(', ')}: Tapsmith sets the AVD, `
+    throw invalid(
+      'config',
+      `emulatorLaunchOptions.args must not include ${reserved.join(', ')}: Tapsmith sets the AVD, `
       + 'console port and read-only mode itself (use `avd` to choose the AVD).',
     );
   }
@@ -731,15 +771,15 @@ function validateEmulatorLaunchOptions(raw: Partial<TapsmithConfig>): void {
 function validateUiOptions(raw: Partial<TapsmithConfig>): void {
   if (raw.telemetry !== undefined && typeof raw.telemetry !== 'boolean') {
     // A string `'false'` would read as opted-in; refuse rather than guess.
-    throw new Error(`config: telemetry must be a boolean (got ${JSON.stringify(raw.telemetry)})`);
+    throw invalid('config', `telemetry must be a boolean (got ${JSON.stringify(raw.telemetry)})`);
   }
   if (raw.ui === undefined) return;
   if (raw.ui.prepareBetweenRuns !== undefined && typeof raw.ui.prepareBetweenRuns !== 'boolean') {
-    throw new Error(`config: ui.prepareBetweenRuns must be a boolean (got ${JSON.stringify(raw.ui.prepareBetweenRuns)})`);
+    throw invalid('config', `ui.prepareBetweenRuns must be a boolean (got ${JSON.stringify(raw.ui.prepareBetweenRuns)})`);
   }
   if (raw.ui.prepareDelayMs !== undefined
     && (!Number.isInteger(raw.ui.prepareDelayMs) || raw.ui.prepareDelayMs < 0)) {
-    throw new Error(`config: ui.prepareDelayMs must be a non-negative integer (got ${JSON.stringify(raw.ui.prepareDelayMs)})`);
+    throw invalid('config', `ui.prepareDelayMs must be a non-negative integer (got ${JSON.stringify(raw.ui.prepareDelayMs)})`);
   }
 }
 
@@ -784,8 +824,9 @@ export function validateRecordingModes(
     const mode: unknown = objectForm ? (value as { mode?: unknown }).mode : value;
     if (objectForm && (mode == null || mode === false || mode === '')) continue;
     if (typeof mode !== 'string' || !modes.includes(mode)) {
-      throw new Error(
-        `${source}: ${key} must be one of ${modes.map((m) => `'${m}'`).join(', ')} (got ${JSON.stringify(mode)})`,
+      throw invalid(
+        source,
+        `${key} must be one of ${modes.map((m) => `'${m}'`).join(', ')} (got ${JSON.stringify(mode)})`,
       );
     }
   }
@@ -802,18 +843,416 @@ export function validateAppResetOptions(
 ): void {
   if (options.appResetColdEvery !== undefined
     && (!Number.isInteger(options.appResetColdEvery) || options.appResetColdEvery < 0)) {
-    throw new Error(`${source}: appResetColdEvery must be a non-negative integer (got ${JSON.stringify(options.appResetColdEvery)})`);
+    throw invalid(source, `appResetColdEvery must be a non-negative integer (got ${JSON.stringify(options.appResetColdEvery)})`);
   }
   if (options.appReset !== undefined && !APP_RESET_MODES.includes(options.appReset)) {
-    throw new Error(
-      `${source}: appReset must be one of ${APP_RESET_MODES.map((m) => `'${m}'`).join(', ')} (got ${JSON.stringify(options.appReset)})`,
+    throw invalid(
+      source,
+      `appReset must be one of ${APP_RESET_MODES.map((m) => `'${m}'`).join(', ')} (got ${JSON.stringify(options.appReset)})`,
     );
   }
   if (options.appResetScope !== undefined && !APP_RESET_SCOPES.includes(options.appResetScope)) {
-    throw new Error(
-      `${source}: appResetScope must be one of ${APP_RESET_SCOPES.map((s) => `'${s}'`).join(', ')} (got ${JSON.stringify(options.appResetScope)})`,
+    throw invalid(
+      source,
+      `appResetScope must be one of ${APP_RESET_SCOPES.map((s) => `'${s}'`).join(', ')} (got ${JSON.stringify(options.appResetScope)})`,
     );
   }
+}
+
+// ─── Config shape (PILOT-552) ───
+//
+// Every key a config file may set, with the check its value must pass. The
+// tables are typed against `TapsmithConfig`, `UseOptions` and `ProjectConfig`,
+// so a key added to one of them does not compile until it has a check here.
+
+/** Checks one value; returns its issues, or undefined when the value is fine. `name` is the key's full path. */
+type KeyCheck = (value: unknown, name: string) => string | string[] | undefined;
+
+/** An object literal (or `Object.create(null)`): not an array, RegExp, Promise or function. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Object.prototype.toString.call(value) === '[object Object]' && typeof value === 'object';
+}
+
+function isRegExp(value: unknown): value is RegExp {
+  // Not `instanceof`: a config can come from another realm or module copy.
+  return Object.prototype.toString.call(value) === '[object RegExp]';
+}
+
+/** A value as the error shows it: `"iOS"`, `[/a/, "b"]`, `a function`. */
+function describeValue(value: unknown): string {
+  if (typeof value === 'function') return 'a function';
+  // JSON would show NaN and Infinity as null, which reads as an explicit `null`.
+  if (typeof value === 'number') return String(value);
+  if (isRegExp(value)) return String(value);
+  if (Array.isArray(value) && value.some(isRegExp)) return `[${value.map(describeValue).join(', ')}]`;
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/**
+ * The candidate `input` most likely meant: a case-insensitive match, else the
+ * closest within a small edit distance (`timout` → `timeout`, `apkk` → `apk`).
+ */
+function suggestFrom(input: string, candidates: readonly string[]): string | undefined {
+  const lower = input.toLowerCase();
+  const sameCase = candidates.find((c) => c.toLowerCase() === lower);
+  if (sameCase) return sameCase;
+  const limit = Math.max(1, Math.min(2, Math.floor(input.length / 3)));
+  let best: string | undefined;
+  let bestDistance = Infinity;
+  for (const candidate of candidates) {
+    const d = levenshtein(lower, candidate.toLowerCase());
+    if (d <= limit && d < bestDistance) {
+      best = candidate;
+      bestDistance = d;
+    }
+  }
+  return best;
+}
+
+function check(ok: (value: unknown) => boolean, expected: string, hint?: (value: unknown) => string | undefined): KeyCheck {
+  return (value, name) => {
+    if (ok(value)) return undefined;
+    const extra = hint?.(value);
+    return `${name} must be ${expected} (got ${describeValue(value)}${extra ? `; ${extra}` : ''})`;
+  };
+}
+
+const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string');
+
+const aString = check((v) => typeof v === 'string', 'a string');
+/**
+ * An optional path, name or serial. `null` means unset, as it always has
+ * downstream: `device: process.env.DEVICE ?? null`. Other kinds of option
+ * refuse `null` — their validators and defaults never accepted it.
+ */
+const optionalString = check((v) => v === null || typeof v === 'string', 'a string');
+const aBoolean = check((v) => typeof v === 'boolean', 'a boolean');
+const nonNegativeMs = check((v) => isFiniteNumber(v) && v >= 0, 'a non-negative number of milliseconds');
+const positiveMs = check((v) => isFiniteNumber(v) && v > 0, 'a positive number of milliseconds');
+const nonNegativeInteger = check((v) => Number.isInteger(v) && (v as number) >= 0, 'a non-negative integer');
+const positiveInteger = check((v) => Number.isInteger(v) && (v as number) >= 1, 'a positive integer');
+const globs = check(isStringArray, 'an array of glob strings', (v) => (typeof v === 'string' ? `wrap it: ['${v}']` : undefined));
+/**
+ * `null`, `false` and `''` mean "off" for options whose consumers have always
+ * read any falsy value as unset (`reporter: CI && 'github'`,
+ * `grep: GREP ? new RegExp(GREP) : null`), as for `trace` and `video`.
+ */
+function orOff(inner: KeyCheck): KeyCheck {
+  return (value, name) => (value === null || value === false || value === '' ? undefined : inner(value, name));
+}
+const regExps = orOff(check((v) => isRegExp(v) || (Array.isArray(v) && v.every(isRegExp)), 'a RegExp or an array of RegExps'));
+
+function oneOf(values: readonly string[]): KeyCheck {
+  const listed = values.map((v) => `'${v}'`);
+  const expected = values.length === 2 ? `${listed[0]} or ${listed[1]}` : `one of ${listed.join(', ')}`;
+  return check(
+    (v) => typeof v === 'string' && values.includes(v),
+    expected,
+    (v) => {
+      const suggestion = typeof v === 'string' ? suggestFrom(v, values) : undefined;
+      return suggestion ? `did you mean '${suggestion}'?` : undefined;
+    },
+  );
+}
+
+/** A reporter name, or `[name]` / `[name, options]`. */
+function isReporterDescription(v: unknown): boolean {
+  if (typeof v === 'string') return true;
+  return Array.isArray(v) && typeof v[0] === 'string'
+    // `['html', CI ? { open: 'never' } : undefined]`: every reporter defaults its options.
+    && (v.length === 1 || (v.length === 2 && (v[1] === undefined || isPlainObject(v[1]))));
+}
+
+/**
+ * Run one of the throwing validators above on a single key, so a project's
+ * `use` gets exactly the root's checks and messages. Their issues start with
+ * the key, which is swapped for its full path.
+ */
+function delegated(key: string, validate: (options: Partial<TapsmithConfig>) => void): KeyCheck {
+  return (value, name) => {
+    try {
+      validate({ [key]: value } as Partial<TapsmithConfig>);
+      return undefined;
+    } catch (err) {
+      if (!isConfigValidationError(err)) throw err;
+      const issue = err.issues[0] ?? err.message;
+      return issue.startsWith(key) ? name + issue.slice(key.length) : `${name}: ${issue}`;
+    }
+  };
+}
+
+/**
+ * Check an option object's keys against `known` (unknown keys, with a
+ * suggestion), then its values with `values`. Typed records make the key
+ * lists complete: a new nested option does not compile until it is listed.
+ */
+function optionObject(known: Readonly<Record<string, true>>, values?: KeyCheck): KeyCheck {
+  const keys = Object.keys(known);
+  return (value, name) => {
+    if (!isPlainObject(value)) return `${name} must be an object (got ${describeValue(value)})`;
+    const issues = Object.keys(value)
+      .filter((key) => !Object.prototype.hasOwnProperty.call(known, key))
+      .map((key) => unknownKey(key, `${name}.`, keys));
+    const valueIssue = values?.(value, name);
+    return [...issues, ...(valueIssue === undefined ? [] : [valueIssue].flat())];
+  };
+}
+
+const UI_KEYS: { readonly [K in keyof NonNullable<TapsmithConfig['ui']>]-?: true } = {
+  prepareBetweenRuns: true,
+  prepareDelayMs: true,
+};
+
+const TRACE_KEYS: { readonly [K in keyof TraceConfig]-?: true } = {
+  mode: true,
+  screenshots: true,
+  snapshots: true,
+  sources: true,
+  attachments: true,
+  network: true,
+  networkHosts: true,
+  networkIgnoreHosts: true,
+  networkPassthroughHosts: true,
+  networkHttpPorts: true,
+  deviceLogs: true,
+  daemonLogs: true,
+};
+
+const VIDEO_KEYS: { readonly [K in keyof VideoConfig]-?: true } = {
+  mode: true,
+  size: true,
+};
+
+/** `trace` / `video`: the mode in either form, plus the object form's keys. */
+function recordingOption(key: 'trace' | 'video', known: Readonly<Record<string, true>>): KeyCheck {
+  const mode = delegated(key, (o) => validateRecordingModes(o));
+  const object = optionObject(known);
+  return (value, name) => {
+    const modeIssue = mode(value, name);
+    if (modeIssue !== undefined || !isPlainObject(value)) return modeIssue;
+    return object(value, name);
+  };
+}
+
+const ROOT_CHECKS: { readonly [K in keyof TapsmithConfig]-?: KeyCheck } = {
+  platform: oneOf(['android', 'ios']),
+  apk: optionalString,
+  app: optionalString,
+  activity: optionalString,
+  // Positive: 0 is not "no timeout" (as in Playwright) but a budget already spent.
+  timeout: positiveMs,
+  retries: nonNegativeInteger,
+  screenshot: oneOf(['always', 'only-on-failure', 'never']),
+  testMatch: globs,
+  daemonAddress: aString,
+  daemonBin: optionalString,
+  device: optionalString,
+  devices: delegated('devices', (o) => validateDevicesOption(o)),
+  deviceStrategy: oneOf(['prefer-connected', 'avd-only']),
+  rootDir: aString,
+  outputDir: aString,
+  package: optionalString,
+  agentApk: optionalString,
+  agentTestApk: optionalString,
+  iosXctestrun: optionalString,
+  resetAppDeepLink: optionalString,
+  resetAppWaitMs: nonNegativeMs,
+  appReset: delegated('appReset', (o) => validateAppResetOptions(o)),
+  appResetScope: delegated('appResetScope', (o) => validateAppResetOptions(o)),
+  appResetColdEvery: delegated('appResetColdEvery', (o) => validateAppResetOptions(o)),
+  ui: optionObject(UI_KEYS, delegated('ui', (o) => validateUiOptions(o))),
+  telemetry: aBoolean,
+  typingDelay: nonNegativeMs,
+  doubleTapInterval: positiveMs,
+  simulator: optionalString,
+  reporter: orOff(check(
+    (v) => isReporterDescription(v) || (Array.isArray(v) && v.every(isReporterDescription)),
+    'a reporter name, a [name, options] tuple, or an array of them',
+  )),
+  workers: positiveInteger,
+  shard: check(
+    (v) => isPlainObject(v) && Number.isInteger(v.current) && Number.isInteger(v.total)
+      && (v.current as number) >= 1 && (v.current as number) <= (v.total as number),
+    '{ current, total } with 1 <= current <= total',
+  ),
+  launchEmulators: aBoolean,
+  avd: optionalString,
+  emulatorLaunchOptions: delegated('emulatorLaunchOptions', (o) => validateEmulatorLaunchOptions(o)),
+  trace: recordingOption('trace', TRACE_KEYS),
+  video: recordingOption('video', VIDEO_KEYS),
+  projects: check(Array.isArray, 'an array of project objects'),
+  baseURL: optionalString,
+  extraHTTPHeaders: check(
+    (v) => isPlainObject(v) && Object.values(v).every((h) => typeof h === 'string'),
+    'an object of string header values',
+  ),
+  grep: regExps,
+  grepInvert: regExps,
+};
+
+const USE_CHECKS: { readonly [K in keyof UseOptions]-?: KeyCheck } = {
+  timeout: ROOT_CHECKS.timeout,
+  screenshot: ROOT_CHECKS.screenshot,
+  retries: ROOT_CHECKS.retries,
+  trace: ROOT_CHECKS.trace,
+  video: ROOT_CHECKS.video,
+  platform: ROOT_CHECKS.platform,
+  device: ROOT_CHECKS.device,
+  devices: ROOT_CHECKS.devices,
+  avd: ROOT_CHECKS.avd,
+  simulator: ROOT_CHECKS.simulator,
+  apk: ROOT_CHECKS.apk,
+  app: ROOT_CHECKS.app,
+  package: ROOT_CHECKS.package,
+  activity: ROOT_CHECKS.activity,
+  agentApk: ROOT_CHECKS.agentApk,
+  agentTestApk: ROOT_CHECKS.agentTestApk,
+  iosXctestrun: ROOT_CHECKS.iosXctestrun,
+  deviceStrategy: ROOT_CHECKS.deviceStrategy,
+  launchEmulators: ROOT_CHECKS.launchEmulators,
+  resetAppDeepLink: ROOT_CHECKS.resetAppDeepLink,
+  resetAppWaitMs: ROOT_CHECKS.resetAppWaitMs,
+  appReset: ROOT_CHECKS.appReset,
+  appResetScope: ROOT_CHECKS.appResetScope,
+  appResetColdEvery: ROOT_CHECKS.appResetColdEvery,
+  doubleTapInterval: ROOT_CHECKS.doubleTapInterval,
+  baseURL: ROOT_CHECKS.baseURL,
+  extraHTTPHeaders: ROOT_CHECKS.extraHTTPHeaders,
+  appState: optionalString,
+};
+
+const PROJECT_CHECKS: { readonly [K in keyof ProjectConfig]-?: KeyCheck } = {
+  name: check((v) => typeof v === 'string' && v.trim() !== '', 'a non-empty string'),
+  testMatch: globs,
+  testIgnore: globs,
+  dependencies: check(isStringArray, 'an array of project names'),
+  use: (value, name) => (isPlainObject(value) ? undefined : `${name} must be an object (got ${describeValue(value)})`),
+  workers: positiveInteger,
+  grep: regExps,
+  grepInvert: regExps,
+};
+
+/** What to say about a root key Tapsmith does not know, when a near-miss suggestion would not help. */
+const ROOT_KEY_HINTS: Record<string, string> = {
+  use: "Tapsmith has no root-level `use`: set these options at the top level, or in a project's `use`",
+  testDir: 'Tapsmith finds tests under `rootDir` with `testMatch`',
+  appState: "appState is set in a project's `use` or with test.use()",
+  testIgnore: 'testIgnore is set per project (projects[].testIgnore)',
+};
+
+/**
+ * Check `object`'s keys against `checks`, appending each problem to `issues`.
+ * `prefix` is the path to `object` (`projects[0].use.`); `unknown` words the
+ * issue for a key that is not in `checks`.
+ */
+function checkKeys(
+  object: Record<string, unknown>,
+  checks: Readonly<Record<string, KeyCheck>>,
+  prefix: string,
+  issues: string[],
+  unknown: (key: string) => string,
+): void {
+  for (const [key, value] of Object.entries(object)) {
+    if (!Object.prototype.hasOwnProperty.call(checks, key)) {
+      issues.push(unknown(key));
+      continue;
+    }
+    // Unset. `null` is a value: each check says whether it accepts it.
+    if (value === undefined) continue;
+    const issue = checks[key](value, prefix + key);
+    if (issue !== undefined) issues.push(...[issue].flat());
+  }
+}
+
+function unknownKey(key: string, prefix: string, known: readonly string[], hint?: string): string {
+  if (hint) return `unknown option '${prefix}${key}' (${hint})`;
+  const suggestion = suggestFrom(key, known);
+  return `unknown option '${prefix}${key}'${suggestion ? ` (did you mean '${prefix}${suggestion}'?)` : ''}`;
+}
+
+function checkProjectUse(use: Record<string, unknown>, prefix: string, issues: string[]): void {
+  const useKeys = Object.keys(USE_CHECKS);
+  checkKeys(use, USE_CHECKS, `${prefix}use.`, issues, (key) => {
+    const name = `${prefix}use.${key}`;
+    if (key !== 'use' && Object.prototype.hasOwnProperty.call(PROJECT_CHECKS, key)) {
+      return `${name} can't be set in \`use\`; set it on the project itself (${prefix}${key})`;
+    }
+    if (Object.prototype.hasOwnProperty.call(ROOT_CHECKS, key)) {
+      return `${name} can't be set per project; set it at the top level of the config`;
+    }
+    return unknownKey(key, `${prefix}use.`, useKeys);
+  });
+}
+
+/**
+ * Every problem with a config file's default export, in key order: unknown
+ * keys (with a near-miss suggestion), values of the wrong type, enum values
+ * Tapsmith does not accept — at the root, in `ui`, in each project and its
+ * `use`. Empty when the config is valid.
+ */
+function configShapeIssues(config: Record<string, unknown>): string[] {
+  const issues: string[] = [];
+  const rootKeys = Object.keys(ROOT_CHECKS);
+  checkKeys(config, ROOT_CHECKS, '', issues, (key) => unknownKey(key, '', rootKeys, ROOT_KEY_HINTS[key]));
+
+  if (Array.isArray(config.projects)) {
+    const projectKeys = Object.keys(PROJECT_CHECKS);
+    config.projects.forEach((project: unknown, i: number) => {
+      const prefix = `projects[${i}].`;
+      if (!isPlainObject(project)) {
+        issues.push(`projects[${i}] must be a project object (got ${describeValue(project)})`);
+        return;
+      }
+      // Required, so checked even when absent.
+      if (project.name === undefined) issues.push(`${prefix}name must be a non-empty string (got undefined)`);
+      checkKeys(project, PROJECT_CHECKS, prefix, issues, (key) => unknownKey(key, prefix, projectKeys));
+      if (isPlainObject(project.use)) checkProjectUse(project.use, prefix, issues);
+    });
+  }
+  return issues;
+}
+
+/**
+ * The config a loaded module exports, validated. A config file must export
+ * the config as its default: without one, its named exports used to be read
+ * as the config, so `export const config = defineConfig(…)` ran on the
+ * built-in defaults.
+ */
+function configFromModule(mod: Record<string, unknown>, configPath: string): Partial<TapsmithConfig> {
+  if (mod.default === undefined) {
+    const named = Object.keys(mod).filter((key) => key !== 'default' && key !== '__esModule');
+    const found = named.length === 0
+      ? ''
+      : ` (found named export${named.length === 1 ? '' : 's'} ${named.map((n) => `\`${n}\``).join(', ')})`;
+    throw new ConfigValidationError(
+      [`it has no default export${found}. Export the config as the default: \`export default defineConfig({ ... })\``],
+      { configPath },
+    );
+  }
+  const config = mod.default;
+  if (!isPlainObject(config)) {
+    throw new ConfigValidationError(
+      [`the default export must be a config object (got ${describeValue(config)})`],
+      { configPath },
+    );
+  }
+  const issues = configShapeIssues(config);
+  if (issues.length > 0) throw new ConfigValidationError(issues, { configPath });
+  return config as Partial<TapsmithConfig>;
+}
+
+/** A validation error raised while a config was imported or merged, traced to its file. */
+function withConfigFile(err: unknown, configPath: string): unknown {
+  const validation = [err, (err as { cause?: unknown } | null)?.cause].find(isConfigValidationError);
+  if (!validation) return err;
+  // Raised by a config this one loads (`loadConfig` inside a config): already names its file.
+  if (validation.configPath) return validation;
+  return new ConfigValidationError(validation.issues ?? [validation.message], { configPath });
 }
 
 /**
@@ -1163,6 +1602,10 @@ async function importConfigModule(configPath: string): Promise<Record<string, un
   try {
     return await importConfigModuleOnce(configPath);
   } catch (err) {
+    // `defineConfig`'s own checks throw while the config is imported: say
+    // which file, the way load-time validation does, not as a load failure.
+    const traced = withConfigFile(err, configPath);
+    if (traced !== err) throw traced;
     throw await explainMissingTapsmith(configPath, err);
   }
 }
@@ -1327,19 +1770,7 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
     if (!fs.existsSync(configPath)) {
       throw new Error(`Config file not found: ${configPath}`);
     }
-    const mod = await importConfigModule(configPath);
-    // Keep the original for rawHasExplicitWorkers — omitUndefined produces a
-    // fresh object, dropping the non-enumerable EXPLICIT_WORKERS symbol that
-    // defineConfig-produced configs carry.
-    const original: Partial<TapsmithConfig> = mod.default ?? mod;
-    const raw = omitUndefined(original);
-    const merged = applyConfigDefaults(
-      { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, root) },
-      raw,
-    );
-    withExplicitRootDir(merged, rawHasExplicitRootDir(original));
-    withConfigPath(merged, configPath);
-    return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
+    return loadConfigFile(configPath, root);
   }
 
   const configPath = findConfigFile(root);
@@ -1348,20 +1779,32 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
     // broken one is a hard error, never a reason to try the next candidate
     // or fall back to the defaults: either would run the session under a
     // config the user is not editing (PILOT-262).
-    const mod = await importConfigModule(configPath);
-    const original: Partial<TapsmithConfig> = (mod.default as Partial<TapsmithConfig>) ?? mod;
-    const raw = omitUndefined(original);
-    const merged = applyConfigDefaults(
-      { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, root) },
-      raw,
-    );
-    withExplicitRootDir(merged, rawHasExplicitRootDir(original));
-    withConfigPath(merged, configPath);
-    return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
+    return loadConfigFile(configPath, root);
   }
 
   const defaults: TapsmithConfig = { ...DEFAULT_CONFIG, rootDir: root };
   withExplicitRootDir(defaults, false);
   withConfigPath(defaults, undefined);
   return withExplicitWorkers(defaults, false);
+}
+
+async function loadConfigFile(configPath: string, root: string): Promise<TapsmithConfig> {
+  const mod = await importConfigModule(configPath);
+  // Keep the original for rawHasExplicitWorkers — omitUndefined produces a
+  // fresh object, dropping the non-enumerable EXPLICIT_WORKERS symbol that
+  // defineConfig-produced configs carry.
+  const original = configFromModule(mod, configPath);
+  const raw = omitUndefined(original);
+  let merged: TapsmithConfig;
+  try {
+    merged = applyConfigDefaults(
+      { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, root) },
+      raw,
+    );
+  } catch (err) {
+    throw withConfigFile(err, configPath);
+  }
+  withExplicitRootDir(merged, rawHasExplicitRootDir(original));
+  withConfigPath(merged, configPath);
+  return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
 }
