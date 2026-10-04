@@ -1589,6 +1589,22 @@ describe('describeBootTimeout (PILOT-512)', () => {
     );
   });
 
+  it('quotes the emulator’s own log lines, not a crash report it dumps after them', () => {
+    // A launch stuck at the crash-report consent dialog prints the pending
+    // report's annotations after its own line, unprefixed (emulator 36.6).
+    const log = [
+      'INFO         | Crash report mode parameter is set to \'ask\'',
+      'INFO         | Showing crashdialog to get consent.',
+      '  module_list[0].crashpad_annotations["hw.lcd.height"] (type = 1) = 2400',
+      'supportsPrivateData = 1',
+      '  module_list[0].crashpad_annotations["command_line"] (type = 1) = -avd Pixel',
+    ].join('\n');
+    expect(describeBootTimeout(timeout, { logPath: '/tmp/x.log' }, () => log)).toBe(
+      'Emulator emulator-5554 did not boot within 120s. Its last output: Crash report mode parameter is set to \'ask\' / '
+      + 'Showing crashdialog to get consent. Full output: /tmp/x.log',
+    );
+  });
+
   it('names the log alone when it is empty', () => {
     expect(describeBootTimeout(timeout, { logPath: '/tmp/x.log' }, () => '\n'))
       .toBe('Emulator emulator-5554 did not boot within 120s. Full output: /tmp/x.log');

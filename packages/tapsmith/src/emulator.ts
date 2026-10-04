@@ -1401,9 +1401,12 @@ function logLines(log: string): string[] {
   return log.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
 }
 
+/** The `INFO         | ` prefix of a line the emulator logs itself. */
+const LOG_LEVEL_PREFIX = /^[A-Z_]+\s*\|\s*/;
+
 /** The last few log lines, without their `LEVEL |` prefix or a trailing full stop. */
 function quoteLogLines(lines: readonly string[]): string[] {
-  return lines.slice(-EXIT_OUTPUT_LINES).map((line) => line.replace(/^[A-Z_]+\s*\|\s*/, '').replace(/\.+$/, ''));
+  return lines.slice(-EXIT_OUTPUT_LINES).map((line) => line.replace(LOG_LEVEL_PREFIX, '').replace(/\.+$/, ''));
 }
 
 /**
@@ -1420,7 +1423,12 @@ export function describeBootTimeout(
   if (emu.logPath === undefined) return `${base}.`;
   let quoted: string[] = [];
   try {
-    quoted = quoteLogLines(logLines(readLog(emu.logPath)));
+    const lines = logLines(readLog(emu.logPath));
+    // The emulator's own lines (`INFO | …`), not what it dumps between them:
+    // a launch stuck at the crash-report dialog prints the pending report's
+    // annotations after the line that says so.
+    const own = lines.filter((line) => LOG_LEVEL_PREFIX.test(line));
+    quoted = quoteLogLines(own.length > 0 ? own : lines);
   } catch {
     // The log has gone: name where it was.
   }
