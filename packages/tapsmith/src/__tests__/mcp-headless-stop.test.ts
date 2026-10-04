@@ -459,3 +459,25 @@ describe('run child naming', () => {
     await expect(run).rejects.not.toThrow(/Watch worker/);
   });
 });
+
+describe('a file that failed to load (PILOT-545)', () => {
+  it('keeps the runner\'s load-failure result flagged as file-level, so a later real run retires it', async () => {
+    const child = scriptedChild();
+    const dispatcher = armDispatcher(child, [FILE]);
+    const run = dispatcher.runFiles([FILE]);
+    await untilRunning(child);
+
+    const loadFailure = {
+      ...testEnd('Failed to load test file', 'failed', 0, "Cannot find module '../helpers/login'").result,
+      fileLevelFailure: true,
+    };
+    child.emit('message', { type: 'test-end', result: loadFailure });
+    child.emit('message', fileDone(FILE, [loadFailure], 0));
+
+    const result = await run;
+    expect(result.failed).toBe(1);
+    const entry = dispatcher.getResults().find((r) => r.fullName === 'Failed to load test file');
+    expect(entry).toMatchObject({ status: 'failed', fileLevelFailure: true });
+    expect(entry?.error).toContain('Cannot find module');
+  });
+});

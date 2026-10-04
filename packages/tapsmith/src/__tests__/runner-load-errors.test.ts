@@ -7,11 +7,11 @@ import { pathToFileURL } from 'node:url';
 import {
   collectResults,
   runTestFile,
-  FILE_LOAD_FAILURE_TITLE,
   type RunOptions,
   type TestResult,
 } from '../runner.js';
 import type { TapsmithConfig } from '../config.js';
+import { FILE_LOAD_FAILURE_TITLE } from '../load-failure.js';
 import { extractStack } from '../trace/trace-collector.js';
 
 // PILOT-545: a test file whose import throws (a missing module, a TypeError at

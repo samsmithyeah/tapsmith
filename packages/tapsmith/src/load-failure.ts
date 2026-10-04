@@ -1,5 +1,10 @@
 /**
- * Point a "module not found" load error at the import that asked for it.
+ * Test files that fail to load (PILOT-545).
+ *
+ * Such a file reports one failed result, titled {@link FILE_LOAD_FAILURE_TITLE},
+ * in place of its tests.
+ *
+ * ## Pointing a "module not found" error at the import that asked for it
  *
  * A test file that imports a missing module fails inside the module resolver,
  * so the error's stack holds only resolver frames and reporters have no user
@@ -12,6 +17,40 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { TestTreeNode } from './ui-mode/ui-protocol.js';
+
+/**
+ * Title of the single failed result a test file that cannot be loaded reports
+ * in place of its tests. Shared with UI mode, whose tree shows the same row
+ * for a file whose discovery failed, so a run's result lands on it.
+ */
+export const FILE_LOAD_FAILURE_TITLE = 'Failed to load test file';
+
+/**
+ * UI mode's tree node for a file whose discovery failed to load it: the file,
+ * holding the one failed row its runs report, with the load error on it.
+ * Without it the file vanished from the tree, its error only on the server's
+ * stderr, and a run's result for it had no row to land on.
+ */
+export function loadFailureTreeNode(filePath: string, error: string): TestTreeNode {
+  return {
+    id: filePath,
+    type: 'file',
+    name: path.basename(filePath),
+    filePath,
+    fullName: path.basename(filePath),
+    status: 'idle',
+    children: [{
+      id: `${filePath}::${FILE_LOAD_FAILURE_TITLE}`,
+      type: 'test',
+      name: FILE_LOAD_FAILURE_TITLE,
+      filePath,
+      fullName: FILE_LOAD_FAILURE_TITLE,
+      status: 'failed',
+      error,
+    }],
+  };
+}
 
 interface MissingImport {
   /** The specifier as written (tsx, Vite) or as resolved to a path (Node ESM). */

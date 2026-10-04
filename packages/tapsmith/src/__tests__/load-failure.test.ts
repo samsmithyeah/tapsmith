@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { parseMissingImport, withMissingImportFrame } from '../load-error-frame.js';
+import { FILE_LOAD_FAILURE_TITLE, loadFailureTreeNode, parseMissingImport, withMissingImportFrame } from '../load-failure.js';
 import { extractStack } from '../trace/trace-collector.js';
 import { formatError } from '../reporters/base.js';
 
@@ -113,5 +113,29 @@ describe('withMissingImportFrame', () => {
     const original = new TypeError('x.fixme is not a function');
     const stack = original.stack;
     expect(withMissingImportFrame(original).stack).toBe(stack);
+  });
+});
+
+describe('loadFailureTreeNode', () => {
+  it('keeps a file UI mode could not load in the tree, as one failed row with the error', () => {
+    expect(loadFailureTreeNode('/repo/tests/a-broken.test.ts', "Cannot find module '../helpers/login'")).toEqual({
+      id: '/repo/tests/a-broken.test.ts',
+      type: 'file',
+      name: 'a-broken.test.ts',
+      filePath: '/repo/tests/a-broken.test.ts',
+      fullName: 'a-broken.test.ts',
+      status: 'idle',
+      children: [{
+        // Same id scheme and fullName as a discovered test, so the runner's
+        // load-failure result for this file lands on this row.
+        id: `/repo/tests/a-broken.test.ts::${FILE_LOAD_FAILURE_TITLE}`,
+        type: 'test',
+        name: FILE_LOAD_FAILURE_TITLE,
+        filePath: '/repo/tests/a-broken.test.ts',
+        fullName: FILE_LOAD_FAILURE_TITLE,
+        status: 'failed',
+        error: "Cannot find module '../helpers/login'",
+      }],
+    });
   });
 });

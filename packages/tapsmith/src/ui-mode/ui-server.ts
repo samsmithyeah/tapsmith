@@ -23,6 +23,7 @@ import { McpEventEmitter } from '../mcp/events.js';
 import { McpSessionRouter } from '../mcp/http-session-router.js';
 import { configureMcpConnection } from '../mcp/connection.js';
 import { matchRequestedFiles, fileFailureEntry } from '../mcp/headless-dispatcher.js';
+import { loadFailureTreeNode } from '../load-failure.js';
 import { pickResolvedDeviceName } from '../mcp/tools/device-target.js';
 
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
@@ -1346,7 +1347,10 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         } else {
           console.error(`Discovery error for ${filePath}: ${response.error.message}`);
           discoveryErrors.set(filePath, response.error.message);
-          resolve(null);
+          // The file failed to load: keep it in the tree as one failed row
+          // carrying the error, where a run's load-failure result lands too
+          // (PILOT-545), rather than letting it vanish.
+          resolve(loadFailureTreeNode(filePath, response.error.message));
         }
       });
 
@@ -1476,6 +1480,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     workerId?: number,
     projectName?: string,
     warnings?: string[],
+    fileLevelFailure?: boolean,
   ): void {
     if (status === 'failed') failedFiles.add(filePath);
 
@@ -1483,6 +1488,9 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     testResults.set(key, {
       fullName, filePath, status, duration, error, tracePath, videoPath, projectName, workerId,
       ...(warnings?.length ? { warnings } : {}),
+      // The runner's stand-in for a file that failed to load (PILOT-545):
+      // flagged so MCP's suite board retires it once the file runs for real.
+      ...(fileLevelFailure ? { fileLevelFailure: true } : {}),
     });
 
     broadcast({
@@ -2728,6 +2736,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
                 worker.id,
                 worker.currentFile?.projectName,
                 result.warnings,
+                result.fileLevelFailure,
               );
               worker.reportedInFile?.add(result.fullName);
               if (result.status === 'passed') worker.passed++;

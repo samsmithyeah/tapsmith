@@ -23,7 +23,7 @@ const brotliDecompress = promisify(zlib.brotliDecompress);
 import type { TapsmithConfig, Platform, UseOptions } from './config.js';
 import type { Device } from './device.js';
 import type { TapsmithReporter } from './reporter.js';
-import { withMissingImportFrame } from './load-error-frame.js';
+import { FILE_LOAD_FAILURE_TITLE, withMissingImportFrame } from './load-failure.js';
 import { APIRequestContext } from './api-request.js';
 import { flushSoftErrors } from './expect.js';
 import { FixtureRegistry, resolveFixtures, fixtureParameterNames, functionHasParameters, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
@@ -415,13 +415,6 @@ export interface TestResult {
    */
   fileLevelFailure?: boolean;
 }
-
-/**
- * Title of the single failed result a test file that cannot be loaded reports
- * in place of its tests. Shared with UI mode, whose tree shows the same row
- * for a file whose discovery failed, so a run's result lands on it.
- */
-export const FILE_LOAD_FAILURE_TITLE = 'Failed to load test file';
 
 export interface SuiteResult {
   name: string;
