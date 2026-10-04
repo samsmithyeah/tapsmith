@@ -133,6 +133,14 @@ class SnapshotElementFinder {
         // Check once if keyboard is visible (for focus detection).
         // Keyboard = elementType 56 (XCUIElement.ElementType.keyboard).
         let keyboardVisibleInSnapshot = hasKeyboardInTree(snapshotDict)
+
+        // Number the app's descendants in pre-order (XCUIElementQuery order)
+        // so a role+name match can be re-resolved by its index within the
+        // live query that finds it again (cacheQueryElement, PILOT-549).
+        var queryNodes: [QueryNode] = []
+        if selector.role != nil, selector.name != nil {
+            SnapshotElementFinder.numberDescendants(of: &snapshotDict, into: &queryNodes)
+        }
         var liveFocusedTextInputFetched = false
         var cachedLiveFocusedTextInput: LiveFocusedTextInput?
         let liveFocusedTextInput = { [weak self] () -> LiveFocusedTextInput? in
@@ -178,18 +186,16 @@ class SnapshotElementFinder {
             idSeen[id] = n + 1
             return n
         }
-        // Each match's index within its role+name re-resolution group — the
-        // matches the live query in cacheQueryElement would return.
-        let labelIndices = QueryIndex.occurrenceIndices(matches.map { (nodeDict, _) in
-            let raw = parseUInt(nodeDict["elementType"]) ?? 0
+        // Each role+name match's index within the live query that
+        // cacheQueryElement re-resolves it with (nil: no numbered node).
+        let labelIndices: [Int?] = matches.map { (nodeDict, _) in
+            guard let ordinal = nodeDict[SnapshotElementFinder.ordinalKey] as? Int,
+                  ordinal < queryNodes.count else { return nil }
+            let raw = queryNodes[ordinal].typeRaw
             let type = XCUIElement.ElementType(rawValue: raw)
-            return QueryIndex.roleNameKey(
-                elementTypeRaw: raw,
-                typeIsSpecific: type != nil && type != .other && type != .any,
-                identifier: nodeDict["identifier"] as? String ?? "",
-                label: nodeDict["label"] as? String ?? ""
-            )
-        })
+            let specific = type != nil && type != .other && type != .any
+            return QueryIndex.liveIndex(of: ordinal, in: queryNodes, scopeTypeRaw: specific ? raw : nil)
+        }
 
         let results = matches.enumerated().map { (matchIndex, match) in
             let (nodeDict, frame) = match
@@ -727,6 +733,26 @@ class SnapshotElementFinder {
     /// could become noticeable. KVC has no Method-cache equivalent in Swift,
     /// so the cost is intrinsic until iOS exposes traits in
     /// dictionaryRepresentation directly.
+    /// Key under which numberDescendants stores a node's pre-order ordinal.
+    static let ordinalKey = "tapsmithQueryOrdinal"
+
+    /// Number every descendant of `dict` (not `dict` itself — XCUIElement
+    /// `descendants` queries exclude the root) in pre-order, storing the
+    /// ordinal under `ordinalKey` and the node's query fields in `nodes`.
+    static func numberDescendants(of dict: inout [String: Any], into nodes: inout [QueryNode]) {
+        guard var children = dict["children"] as? [[String: Any]] else { return }
+        for i in children.indices {
+            children[i][ordinalKey] = nodes.count
+            nodes.append(QueryNode(
+                typeRaw: parseUInt(children[i]["elementType"]) ?? 0,
+                label: children[i]["label"] as? String ?? "",
+                identifier: children[i]["identifier"] as? String ?? ""
+            ))
+            numberDescendants(of: &children[i], into: &nodes)
+        }
+        dict["children"] = children
+    }
+
     static func annotateTraits(dict: inout [String: Any], snapshot: XCUIElementSnapshot) {
         // Bare `value(forKey:)` on an NSObject that doesn't have the key
         // throws an Objective-C NSUnknownKeyException, which is *not*
@@ -1255,7 +1281,7 @@ class SnapshotElementFinder {
         selector: ElementSelector,
         matchIndex: Int,
         idIndex: Int,
-        labelIndex: Int,
+        labelIndex: Int?,
         snapshotNode: [String: Any]? = nil
     ) {
         // Build a query that matches this element
@@ -1329,10 +1355,10 @@ class SnapshotElementFinder {
             // so a name query would also match unrelated earlier labels that
             // merely contain it (a header above the button) and shift the
             // positional index. Re-resolve by the matched node's own label
-            // (and identifier), indexed within that re-resolution group
-            // (QueryIndex.roleNameKey mirrors this query's scope).
+            // (and identifier), at its index among every node of the tree
+            // this query returns (QueryIndex.liveIndex).
             let nodeLabel = snapshotNode?["label"] as? String ?? ""
-            if !nodeLabel.isEmpty {
+            if !nodeLabel.isEmpty, let labelIndex {
                 var predicates = [NSPredicate(format: "label == %@", nodeLabel)]
                 if !nodeIdentifier.isEmpty {
                     predicates.append(NSPredicate(format: "identifier == %@", nodeIdentifier))

@@ -390,7 +390,7 @@ export const STRICT_MODE_VIOLATION_BRAND = Symbol.for('tapsmith.StrictModeViolat
  * Thrown when a locator used for an action, single-element query, or
  * assertion resolves to more than one element. Mirrors Playwright's strict
  * mode: acting on an ambiguous selector is an error, never a silent
- * first-match. Disambiguate with `{ exact: true }`, `getByRole(role, { name })`,
+ * first-match. Disambiguate with `{ exact: true }`, `getByRole(role, { name, exact: true })`,
  * `getByTestId()`, or `.first()/.nth()/.last()`.
  */
 export class StrictModeViolationError extends Error {
@@ -490,7 +490,7 @@ export function buildStrictModeViolationError(
   const message =
     `strict mode violation: ${selectorDescription} resolved to ${totalCount} elements:\n` +
     `${lines.join('\n')}\n` +
-    'Hint: use { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last() to target a single element.';
+    'Hint: use { exact: true }, getByRole(role, { name, exact: true }), getByTestId(), or .first()/.nth()/.last() to target a single element.';
   return new StrictModeViolationError(message, elements, totalCount);
 }
 

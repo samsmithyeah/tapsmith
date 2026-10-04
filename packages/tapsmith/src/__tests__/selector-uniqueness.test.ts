@@ -253,4 +253,20 @@ describe('getByRole name matching in the playground (PILOT-549)', () => {
     const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [notes, empty])];
     expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("textfield", { name: "email" })')!)).toEqual([empty]);
   });
+
+  it("matches an Android node's joined descendant text, like the agent", () => {
+    const save = makeNode('android.widget.Button', { class: 'android.widget.Button', 'content-desc': 'Save', bounds: '[0,0][100,50]' });
+    const label = makeNode('android.widget.TextView', { class: 'android.widget.TextView', text: 'Save draft' });
+    const container = makeNode('android.view.ViewGroup', { class: 'android.view.ViewGroup', 'tapsmith-role': 'button', bounds: '[0,60][100,110]' }, [label]);
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [save, container])];
+    const parsed = parseSelectorString('device.getByRole("button", { name: "save" })')!;
+    expect(findMatchingNodes(roots, parsed)).toEqual([save, container]);
+  });
+
+  it('accepts one whole child of an iOS ", "-joined label under exact', () => {
+    const row = makeNode('XCUIElementTypeButton', { type: 'XCUIElementTypeButton', label: 'Intro, Sign In', bounds: '[0,0][100,50]' });
+    const roots = [makeNode('XCUIElementTypeOther', { type: 'XCUIElementTypeOther' }, [row])];
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("button", { name: "Sign In", exact: true })')!)).toEqual([row]);
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("button", { name: "Sign", exact: true })')!)).toEqual([]);
+  });
 });

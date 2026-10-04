@@ -114,24 +114,32 @@ enum TextMatch {
     }
 }
 
+/// One snapshot node, as the live XCUIElement re-resolution query sees it.
+struct QueryNode {
+    let typeRaw: UInt
+    let label: String
+    let identifier: String
+}
+
 /// Positional bookkeeping for re-resolving a role+name snapshot match through
 /// a live XCUIElement query (PILOT-549). That query finds the match again by
 /// its exact label (and identifier, when it has one), scoped to its element
-/// type when the type is specific, so the match's index must count only the
-/// matches the same query would return — its re-resolution group.
+/// type when the type is specific. Its index must therefore count every node
+/// of the app's tree that the same query returns — other roles, other
+/// scopes, unmatched same-label nodes included — not just the matches.
 enum QueryIndex {
-    /// The group key: scope type (0 = any), identifier and exact label.
-    static func roleNameKey(elementTypeRaw: UInt, typeIsSpecific: Bool, identifier: String, label: String) -> String {
-        "\(typeIsSpecific ? elementTypeRaw : 0)\u{1}\(identifier)\u{1}\(label)"
-    }
-
-    /// Each key's occurrence index among the keys before it that are equal.
-    static func occurrenceIndices(_ keys: [String]) -> [Int] {
-        var seen: [String: Int] = [:]
-        return keys.map { key in
-            let n = seen[key, default: 0]
-            seen[key] = n + 1
-            return n
+    /// The index of `nodes[ordinal]` within the live query's results, where
+    /// `nodes` is the app's descendants in pre-order (XCUIElementQuery order)
+    /// and `scopeTypeRaw` is the query's element type, or nil for any type.
+    static func liveIndex(of ordinal: Int, in nodes: [QueryNode], scopeTypeRaw: UInt?) -> Int {
+        let target = nodes[ordinal]
+        var count = 0
+        for node in nodes[..<ordinal]
+        where node.label == target.label
+            && (target.identifier.isEmpty || node.identifier == target.identifier)
+            && (scopeTypeRaw == nil || node.typeRaw == scopeTypeRaw) {
+            count += 1
         }
+        return count
     }
 }

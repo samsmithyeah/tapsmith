@@ -98,19 +98,24 @@ expect("name exact pattern: child label", matches(ex, "Intro, Sign In"))
 expect("name exact pattern: case-sensitive", !matches(ex, "SIGN IN"))
 expect("name exact pattern: not a partial", !matches(ex, "Sign In now"))
 
-// Re-resolution groups for role+name matches (PILOT-549): rows sharing a
-// testID but not a label, or sharing a label across type scopes, are counted
-// separately, because the live query narrows by both.
-let rowA = QueryIndex.roleNameKey(elementTypeRaw: 46, typeIsSpecific: false, identifier: "row", label: "Item 1")
-let rowB = QueryIndex.roleNameKey(elementTypeRaw: 46, typeIsSpecific: false, identifier: "row", label: "Item 2")
-expect("same id, different labels: separate groups", QueryIndex.occurrenceIndices([rowA, rowB]) == [0, 0])
-let otherSave = QueryIndex.roleNameKey(elementTypeRaw: 46, typeIsSpecific: false, identifier: "", label: "Save")
-let buttonSave = QueryIndex.roleNameKey(elementTypeRaw: 9, typeIsSpecific: true, identifier: "", label: "Save")
-expect("same label, different type scope: separate groups",
-       QueryIndex.occurrenceIndices([otherSave, buttonSave, otherSave]) == [0, 0, 1])
-expect("specific types key by type",
-       QueryIndex.roleNameKey(elementTypeRaw: 9, typeIsSpecific: true, identifier: "", label: "x")
-           != QueryIndex.roleNameKey(elementTypeRaw: 10, typeIsSpecific: true, identifier: "", label: "x"))
+// Live re-resolution index for role+name matches (PILOT-549): the position
+// within what `label == L [AND identifier == I]` on the scoped type returns.
+func node(_ type: UInt, _ label: String, _ id: String = "") -> QueryNode {
+    QueryNode(typeRaw: type, label: label, identifier: id)
+}
+let other: UInt = 46, button: UInt = 9, staticText: UInt = 48
+// Two "Delete" buttons: the first has a testID, the second none. The second's
+// query (label only) also returns the first, so it is index 1.
+let deletes = [node(other, "Delete", "delete-1"), node(other, "Delete")]
+expect("no-id node counts earlier id'd same-label nodes", QueryIndex.liveIndex(of: 1, in: deletes, scopeTypeRaw: nil) == 1)
+expect("id'd node counts only its id", QueryIndex.liveIndex(of: 0, in: deletes, scopeTypeRaw: nil) == 0)
+// Rows sharing a testID but not a label.
+let rows = [node(other, "Item 1", "row"), node(other, "Item 2", "row")]
+expect("same id, different label: own label only", QueryIndex.liveIndex(of: 1, in: rows, scopeTypeRaw: nil) == 0)
+// An .any query (RN .other) also returns a native button and a heading with the same label.
+let saves = [node(staticText, "Save"), node(other, "Save"), node(button, "Save"), node(other, "Save")]
+expect(".any scope counts every same-label node", QueryIndex.liveIndex(of: 3, in: saves, scopeTypeRaw: nil) == 3)
+expect("a specific scope counts only its type", QueryIndex.liveIndex(of: 2, in: saves, scopeTypeRaw: button) == 0)
 
 if failures > 0 {
     print("\(failures) failure(s)")

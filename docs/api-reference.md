@@ -19,7 +19,7 @@ device.getByText("Sign In", { exact: true })         // exact
 
 Whitespace is normalized on both sides before comparing, exact or not, as in Playwright: runs of whitespace — including non-breaking spaces (`&nbsp;`, U+00A0), other Unicode spaces and line breaks — collapse to one space, and leading and trailing whitespace is ignored. So `getByText("Welcome to Expo", { exact: true })` matches text rendered as `Welcome to&nbsp;Expo` or split over two lines. The same applies to `getByRole`'s `name` and to `getByLabel`. `getByText` matching is case-sensitive, and `text` must be a string: a regular expression throws a `TypeError`.
 
-> Because the default is a substring match, `getByText("Sign in")` also matches longer text like `"Sign in to continue"`. When that happens, acting on the locator throws a [strict mode](#strict-mode) violation — add `{ exact: true }` or use `getByRole(role, { name })` to pin a single element.
+> Because the default is a substring match, `getByText("Sign in")` also matches longer text like `"Sign in to continue"`. When that happens, acting on the locator throws a [strict mode](#strict-mode) violation — add `{ exact: true }` or use `getByRole(role, { name, exact: true })` to pin a single element.
 
 ### `device.getByRole(role: string, options?): ElementHandle`
 
@@ -122,7 +122,7 @@ Like Playwright, Tapsmith locators are **strict**: a locator used for an action,
 strict mode violation: getByText("Sign in") resolved to 2 elements:
     1) text "Sign in to continue to DreamSpinner" [44,210][436,260] aka device.getByText("Sign in to continue to DreamSpinner", { exact: true })
     2) button "Sign in" [44,640][436,712] aka device.getByRole("button", { name: "Sign in", exact: true })
-Hint: use { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last() to target a single element.
+Hint: use { exact: true }, getByRole(role, { name, exact: true }), getByTestId(), or .first()/.nth()/.last() to target a single element.
 ```
 
 This is the safety net for the substring default of `getByText` — without it, an ambiguous locator would silently act on the first match in document order, which is rarely the element you meant.

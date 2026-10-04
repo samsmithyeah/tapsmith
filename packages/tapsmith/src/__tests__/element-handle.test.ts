@@ -845,7 +845,7 @@ describe('tap()', () => {
       'strict mode violation: getByText("Sign in") resolved to 2 elements:\n' +
       '    1) text "Sign in to continue to DreamSpinner" [44,210][436,260] aka device.getByText("Sign in to continue to DreamSpinner", { exact: true })\n' +
       '    2) button "Sign in" [44,640][436,712] aka device.getByRole("button", { name: "Sign in", exact: true })\n' +
-      'Hint: use { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last() to target a single element.',
+      'Hint: use { exact: true }, getByRole(role, { name, exact: true }), getByTestId(), or .first()/.nth()/.last() to target a single element.',
     );
     // Strict violations must throw immediately — no polling out the timeout
     expect(client.findElements).toHaveBeenCalledTimes(1);

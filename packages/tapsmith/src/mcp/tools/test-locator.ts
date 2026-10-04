@@ -15,7 +15,7 @@ const TEST_LOCATOR_TIMEOUT_MS = 1_000;
 
 const STRICT_HINT =
   'Actions and assertions on this locator will throw a strict mode violation at runtime. ' +
-  'Disambiguate with { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last().';
+  'Disambiguate with { exact: true }, getByRole(role, { name, exact: true }), getByTestId(), or .first()/.nth()/.last().';
 
 export function registerTestLocatorTool(server: McpServer, dispatcher?: TestDispatcher): void {
   server.tool(

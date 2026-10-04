@@ -219,11 +219,33 @@ function normalizeWhitespace(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
 }
 
+// The Android agent's EDIT_TEXT_HINT_CLASS_PATTERN and MAX_DESCENDANT_TEXT_DEPTH.
+const ANDROID_EDIT_TEXT_CLASSES = new Set([
+  'android.widget.EditText',
+  'android.widget.AutoCompleteTextView',
+  'com.google.android.material.textfield.TextInputEditText',
+  'androidx.appcompat.widget.AppCompatEditText',
+]);
+const MAX_DESCENDANT_TEXT_DEPTH = 6;
+
+/** The Android agent's joined descendant text: each child's text, else its content-desc, else its own descendants'. */
+function descendantText(node: HierarchyNode, depth = 0): string[] {
+  if (depth >= MAX_DESCENDANT_TEXT_DEPTH) return [];
+  const parts: string[] = [];
+  for (const child of node.children) {
+    const own = child.attributes.get('text') || child.attributes.get('content-desc');
+    if (own) parts.push(own);
+    else parts.push(...descendantText(child, depth + 1));
+  }
+  return parts;
+}
+
 /**
  * Whether a node's accessible name matches a getByRole `name` the way the
  * agents match it (PILOT-549): any of its name sources — Android
- * content-desc and text, iOS label and title — case-insensitively by
- * substring, or whole and case-sensitively with `exact`. An Android
+ * content-desc, text and joined descendant text; iOS label and title —
+ * case-insensitively by substring, or whole and case-sensitively with
+ * `exact` (on iOS, also one whole child of a ", "-joined label). An Android
  * EditText's text is its typed value unless it equals the hint (an empty
  * field reports its hint as text), and a typed value is only compared whole.
  */
@@ -234,13 +256,18 @@ function roleNameMatches(node: HierarchyNode, name: string, exact: boolean): boo
     const value = normalizeWhitespace(actual);
     return wholeOnly ? value === query : value.toLowerCase().includes(query.toLowerCase());
   };
+  const isAndroid = node.attributes.has('class');
   const text = node.attributes.get('text');
-  const textIsValue = text !== undefined && /EditText/.test(node.attributes.get('class') ?? '')
+  const textIsValue = text !== undefined && ANDROID_EDIT_TEXT_CLASSES.has(node.attributes.get('class') ?? '')
     && text !== node.attributes.get('hint');
+  const iosChildLabel = (label: string | undefined): boolean =>
+    exact && label !== undefined && normalizeWhitespace(label).split(', ').includes(query);
   return matches(node.attributes.get('content-desc'), exact)
     || matches(node.attributes.get('label'), exact)
     || matches(node.attributes.get('title'), exact)
-    || matches(text, exact || textIsValue);
+    || matches(text, exact || textIsValue)
+    || (!isAndroid && (iosChildLabel(node.attributes.get('label')) || iosChildLabel(node.attributes.get('title'))))
+    || (isAndroid && matches(descendantText(node).join(' '), exact));
 }
 
 function isWebViewNode(node: HierarchyNode): boolean {
