@@ -54,6 +54,7 @@ import { startLiveNetwork } from './trace/live-network.js';
 import { telemetry, runEventFromResults, type RunMode } from './telemetry.js';
 import { isRecoverableInfrastructureError } from './worker-protocol.js';
 import { filterEntriesByHosts } from './trace/filter-hosts.js';
+import { defineStandIns, notSupportedYet } from './not-supported.js';
 
 // ─── Trace Device Info ───
 
@@ -722,8 +723,19 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
   // Object.assign can't infer the generic F — cast through unknown is safe
   // because each property is typed correctly in the object literal above.
   ) as unknown as TestFn<F>;
+  defineStandIns(fn, TEST_STAND_INS);
   return fn;
 }
+
+/** Playwright `test.*` APIs Tapsmith doesn't have yet — see not-supported.ts. */
+const TEST_STAND_INS = {
+  step: notSupportedYet('test.step', 'Group actions in the trace with device.tracing.group(name) / groupEnd() instead.'),
+  fixme: notSupportedYet('test.fixme', 'Use test.skip(title, fn) for now.'),
+  fail: notSupportedYet('test.fail'),
+  slow: notSupportedYet('test.slow', 'Raise the timeout for a describe scope with test.use({ timeout }).'),
+  setTimeout: notSupportedYet('test.setTimeout', 'Raise the timeout for a describe scope with test.use({ timeout }).'),
+  info: notSupportedYet('test.info'),
+};
 
 /**
  * Register a suite, refusing the Playwright call shapes Tapsmith does not
@@ -798,6 +810,13 @@ export const describe: DescribeFn = Object.assign(
     configure: configureDescribe,
   },
 ) as DescribeFn;
+defineStandIns(describe, {
+  fixme: notSupportedYet('test.describe.fixme', 'Use test.describe.skip(title, fn) for now.'),
+  parallel: notSupportedYet(
+    'test.describe.parallel',
+    'Use test.describe(): Tapsmith runs the tests of a file in order on one device, and runs files in parallel with --workers.',
+  ),
+});
 
 export const test: TestFn = createTestFn(getActiveFixtureRegistry());
 
