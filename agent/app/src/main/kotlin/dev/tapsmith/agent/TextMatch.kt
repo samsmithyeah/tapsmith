@@ -51,6 +51,27 @@ object TextMatch {
         return normalize(actual.toString()).lowercase().contains(normalize(query).lowercase())
     }
 
+    /**
+     * Whether an element's accessible name matches [name]: its content
+     * description, its text, or its joined [descendantText] (read lazily —
+     * each child read is an accessibility round-trip). An editable field's
+     * text is its typed value, which is not part of its accessible name
+     * (Playwright; the iOS agent checks label/title only), so it is still
+     * compared whole: typing "email me later" into Notes must not make that
+     * field match name "Email".
+     */
+    fun accessibleNameMatches(
+        contentDescription: CharSequence?,
+        text: CharSequence?,
+        isEditable: Boolean,
+        descendantText: () -> CharSequence?,
+        name: String,
+        exact: Boolean,
+    ): Boolean =
+        nameMatches(contentDescription, name, exact) ||
+            nameMatches(text, name, exact || isEditable) ||
+            nameMatches(descendantText(), name, exact)
+
     /** Full-match pattern: the text equals [query] after normalizing both. */
     fun exactPattern(query: String): Pattern = Pattern.compile("$WS_CLASS*${wordsPattern(query)}$WS_CLASS*")
 

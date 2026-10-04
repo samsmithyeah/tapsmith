@@ -178,6 +178,15 @@ class SnapshotElementFinder {
             idSeen[id] = n + 1
             return n
         }
+        // Each match's index among the matches sharing its exact label, for
+        // re-resolving a role+name match by that label (see cacheQueryElement).
+        var labelSeen: [String: Int] = [:]
+        let labelIndices: [Int] = matches.map { (nodeDict, _) in
+            let label = nodeDict["label"] as? String ?? ""
+            let n = labelSeen[label, default: 0]
+            labelSeen[label] = n + 1
+            return n
+        }
 
         let results = matches.enumerated().map { (matchIndex, match) in
             let (nodeDict, frame) = match
@@ -224,7 +233,9 @@ class SnapshotElementFinder {
             // This is deferred — the query object is created but not evaluated until
             // a property (like .isHittable) is accessed. Pass the snapshot node so the
             // query can use element type + identifier for more precise matching.
-            cacheQueryElement(elementId: elementId, selector: selector, matchIndex: matchIndex, idIndex: idIndices[matchIndex], snapshotNode: nodeDict)
+            cacheQueryElement(elementId: elementId, selector: selector, matchIndex: matchIndex, idIndex: idIndices[matchIndex],
+                labelIndex: labelIndices[matchIndex], snapshotNode: nodeDict
+            )
             // The snapshot's hasFocus is unreliable on Xcode 26 — it can
             // report false even when the text input is the first responder.
             // Use the snapshot when it reports true; otherwise fall back to
@@ -1241,6 +1252,7 @@ class SnapshotElementFinder {
         selector: ElementSelector,
         matchIndex: Int,
         idIndex: Int,
+        labelIndex: Int,
         snapshotNode: [String: Any]? = nil
     ) {
         // Build a query that matches this element
@@ -1310,9 +1322,20 @@ class SnapshotElementFinder {
             element = resolve(labelQuery(concatenatedLabelPredicate(contentDesc)))
         } else if selector.role != nil, let name = selector.name {
             // Role + name: e.g. role("button", "Sign in")
-            element = resolve(labelQuery(
-                NSPredicate(format: "label MATCHES %@", TextMatch.nameQueryPattern(name, exact: selector.nameExact))
-            ))
+            // The name is a case-insensitive substring by default (PILOT-549),
+            // so a name query would also match unrelated earlier labels that
+            // merely contain it (a header above the button) and shift the
+            // positional index. Re-resolve by the matched node's own label,
+            // indexed among the matches that share it.
+            let nodeLabel = snapshotNode?["label"] as? String ?? ""
+            if !nodeLabel.isEmpty {
+                let base = labelQuery(NSPredicate(format: "label == %@", nodeLabel))
+                element = nodeIdentifier.isEmpty ? base.element(boundBy: labelIndex) : resolve(base)
+            } else {
+                element = resolve(labelQuery(
+                    NSPredicate(format: "label MATCHES %@", TextMatch.nameQueryPattern(name, exact: selector.nameExact))
+                ))
+            }
         } else if let role = selector.role {
             // Role-only: match by type.
             if let types = try? RoleMapping.elementTypes(for: role), let firstType = types.first {

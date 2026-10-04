@@ -258,6 +258,12 @@ describe('getByRole name matching options (PILOT-549)', () => {
     expect(formatSelector(_role('button'))).toBe('getByRole("button")');
   });
 
+  it('formats state filters too, so the locator can be pasted back', () => {
+    expect(formatSelector(_role('button', { name: 'Item 3', exact: true, selected: true })))
+      .toBe('getByRole("button", { name: "Item 3", exact: true, selected: true })');
+    expect(formatSelector(_role('switch', { checked: false }))).toBe('getByRole("switch", { checked: false })');
+  });
+
   it('escapes quotes in the formatted name', () => {
     expect(formatSelector(_role('button', { name: 'Say "hi"' }))).toBe('getByRole("button", { name: "Say \\"hi\\"" })');
   });

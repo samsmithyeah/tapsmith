@@ -148,8 +148,14 @@ export function formatSelector(sel: Selector): string {
     case 'role': {
       const rv = sel.kind.value;
       // Rendered as the call the user wrote, so it can be pasted back as code.
-      base = rv.name
-        ? `getByRole(${JSON.stringify(rv.role)}, { name: ${JSON.stringify(rv.name)}${rv.exact ? ', exact: true' : ''} })`
+      const opts: string[] = [];
+      if (rv.name) opts.push(`name: ${JSON.stringify(rv.name)}`);
+      if (rv.name && rv.exact) opts.push('exact: true');
+      for (const key of ['checked', 'disabled', 'selected', 'expanded'] as const) {
+        if (rv[key] !== undefined) opts.push(`${key}: ${rv[key]}`);
+      }
+      base = opts.length
+        ? `getByRole(${JSON.stringify(rv.role)}, { ${opts.join(', ')} })`
         : `getByRole(${JSON.stringify(rv.role)})`;
       break;
     }

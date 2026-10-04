@@ -105,4 +105,18 @@ class TextMatchTest {
             java.util.Locale.setDefault(saved)
         }
     }
+
+    @Test
+    fun `an editable field's typed value is not a substring accessible name`() {
+        fun matches(
+            text: String,
+            editable: Boolean,
+        ) = TextMatch.accessibleNameMatches(null, text, editable, { null }, "Email", exact = false)
+        assertFalse(matches("email me later", editable = true))
+        assertTrue(matches("Email", editable = true))
+        assertTrue(matches("Your EMAIL address", editable = false))
+        assertTrue(
+            TextMatch.accessibleNameMatches("Email address", "x", true, { null }, "email", exact = false),
+        )
+    }
 }

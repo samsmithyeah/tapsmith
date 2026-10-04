@@ -121,7 +121,7 @@ Like Playwright, Tapsmith locators are **strict**: a locator used for an action,
 ```
 strict mode violation: getByText("Sign in") resolved to 2 elements:
     1) text "Sign in to continue to DreamSpinner" [44,210][436,260] aka device.getByText("Sign in to continue to DreamSpinner", { exact: true })
-    2) button "Sign in" [44,640][436,712] aka device.getByRole("button", { name: "Sign in" })
+    2) button "Sign in" [44,640][436,712] aka device.getByRole("button", { name: "Sign in", exact: true })
 Hint: use { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last() to target a single element.
 ```
 

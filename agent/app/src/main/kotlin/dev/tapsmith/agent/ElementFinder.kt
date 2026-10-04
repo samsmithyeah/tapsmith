@@ -1006,9 +1006,15 @@ class ElementFinder(private val device: UiDevice) {
         name: String,
         exact: Boolean,
     ): Boolean {
-        return TextMatch.nameMatches(obj.contentDescription, name, exact) ||
-            TextMatch.nameMatches(obj.text, name, exact) ||
-            TextMatch.nameMatches(collectDescendantText(obj), name, exact)
+        val isEditText = EDIT_TEXT_HINT_CLASS_PATTERN.matcher(obj.className ?: "").matches()
+        return TextMatch.accessibleNameMatches(
+            contentDescription = obj.contentDescription,
+            text = obj.text,
+            isEditable = isEditText,
+            descendantText = { collectDescendantText(obj) },
+            name = name,
+            exact = exact,
+        )
     }
 
     private fun collectDescendantTextParts(
