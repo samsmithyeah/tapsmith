@@ -50,7 +50,7 @@ import {
   forceCleanupSimulators,
   killAgentRunnersForSimulators,
   filterHealthySimulators,
-  listCompatibleBootedSimulators,
+  listAdoptableBootedSimulators,
   type ClonedSimulator,
 } from './ios-simulator.js';
 import { freeStaleAgentPort, findPidsOnPort } from './port-utils.js';
@@ -1382,18 +1382,19 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       // ─── Every device named outright ───
       deviceSerials = fullyPinned;
       launchProgress?.update('worker-devices', { state: 'running', detail: `pinned ${fullyPinned.join(', ')}` });
-    } else if (isIos) {
+    } else if (isIos && config.simulator) {
       // ─── iOS simulator discovery & provisioning ───
-      // The daemon reports ALL booted iOS simulators. Filter to only those
-      // compatible with the primary — different runtimes cause xcodebuild
-      // test-without-building to fail since the xctestrun is OS-version-specific.
+      // (`isIos` without `simulator` is the physical bucket above.)
+      // The daemon reports ALL booted iOS simulators. Adopt only the ones the
+      // config names (`simulator`, by name or UDID) — any other may be one the
+      // developer is using (PILOT-511) — on one runtime, since xcodebuild
+      // test-without-building fails across OS versions. Tapsmith's own clones
+      // come back through `reusableSimulatorUdids` when provisioning below.
       const iosDevices = onlineDevices.filter((d) => d.platform === 'ios');
-      let candidateUdids = iosDevices.map((d) => d.serial);
-      if (candidateUdids.length > 0) {
-        const compatible = listCompatibleBootedSimulators(candidateUdids[0]);
-        const compatibleSet = new Set(compatible.map((s) => s.udid));
-        candidateUdids = candidateUdids.filter((u) => compatibleSet.has(u));
-      }
+      const daemonIosUdids = new Set(iosDevices.map((d) => d.serial));
+      const candidateUdids = listAdoptableBootedSimulators(config.simulator, {
+        among: iosDevices.map((d) => d.serial),
+      }).map((s) => s.udid);
       const iosHealthy = filterHealthySimulators(candidateUdids);
       for (const unhealthy of iosHealthy.unhealthySimulators) {
         if (launchProgress) launchProgress.note(`Skipping unhealthy simulator ${unhealthy.udid}: ${unhealthy.reason}.`);
@@ -1402,7 +1403,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       deviceSerials = iosHealthy.healthyUdids;
 
       const neededWorkers = maxUsefulWorkers * groupSize;
-      if (deviceSerials.length < neededWorkers && config.simulator) {
+      if (deviceSerials.length < neededWorkers) {
         const detail = `provisioning iOS simulators: have ${deviceSerials.length}, need ${neededWorkers}`;
         if (launchProgress) launchProgress.update('worker-devices', { state: 'running', detail });
         else process.stderr.write(`${DIM}${detail}${RESET}\n`);
@@ -1429,8 +1430,9 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           else note(message);
         }
 
-        // Re-discover devices so the daemon sees newly booted simulators
-        if (provision.allUdids.length > iosDevices.length) {
+        // Re-discover devices so the daemon sees newly booted simulators. By
+        // UDID, not count: simulators left alone above pad the daemon's list.
+        if (provision.allUdids.some((u) => !daemonIosUdids.has(u))) {
           // Give simulators a moment to register, then refresh
           await new Promise((resolve) => setTimeout(resolve, 2_000));
           const refreshClient = new TapsmithGrpcClient(`localhost:${firstDaemonPort}`);
