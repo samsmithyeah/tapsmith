@@ -209,8 +209,13 @@ export function avdPickerChoices(
 
 /** The wizard's network-capture summary line for the Android emulator. */
 export function androidEmulatorCaptureLine(avd: string | undefined, avdImages: AvdImageInfo[], adbFound: boolean): string {
-  // configureAndroid has already printed the fix.
-  if (!adbFound) return `  ${YELLOW}⚠${RESET} Android emulator — ADB not found, so Tapsmith cannot reach it yet (see the ADB warning above)`;
+  if (!adbFound) {
+    // configureAndroid has already printed the fix. A Play image still needs
+    // saying: it is why capture will record nothing once adb is fixed.
+    const playWarning = avd ? avdCaptureWarning(avd, avdImages) : undefined;
+    const line = `  ${YELLOW}⚠${RESET} Android emulator — ADB not found, so Tapsmith cannot reach it yet (see the ADB warning above)`;
+    return playWarning ? `${line}\n  ${YELLOW}⚠${RESET} Android emulator — ${playWarning}` : line;
+  }
   // The picker always returns an AVD, so no AVD means `emulator -list-avds`
   // listed none — configureAndroid has already printed why.
   if (!avd) return `  ${YELLOW}⚠${RESET} Android emulator — no AVD selected (see the AVD warning above)`;
@@ -321,7 +326,7 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
       kind: 'simulator-app',
       message: 'Where is your iOS .app bundle? (simulator build)',
       candidates: findIosAppCandidates(process.cwd()),
-      noneFound: 'No simulator build (.app) found under ios/ — build one first (xcodebuild -sdk iphonesimulator -derivedDataPath ios/build), or enter its path.',
+      noneFound: 'No simulator build (.app) found under ios/ — build one first (in ios/: xcodebuild -workspace <App>.xcworkspace -scheme <App> -sdk iphonesimulator -derivedDataPath build), or enter its path.',
       typeMessage: 'Path to your simulator build (.app):',
     });
     simBundleId = detectBundleId(appPath);

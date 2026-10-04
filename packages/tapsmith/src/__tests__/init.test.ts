@@ -362,6 +362,12 @@ describe('androidEmulatorCaptureLine()', () => {
     expect(line).not.toContain('works automatically');
     expect(line).toMatch(/^ {2}⚠ Android emulator — ADB not found/);
   });
+
+  it('still names a Play image when ADB is missing: capture would record nothing once adb is fixed', () => {
+    const lines = stripAnsi(androidEmulatorCaptureLine('Medium_Phone_API_36', studioAvds, false)).split('\n');
+    expect(lines[0]).toMatch(/ADB not found/);
+    expect(lines[1]).toMatch(/^ {2}⚠ Android emulator — AVD Medium_Phone_API_36 uses a Google Play system image/);
+  });
 });
 
 describe('validateBuildPath() (PILOT-513)', () => {
