@@ -75,7 +75,12 @@ export interface ListedDeviceClaim extends DeviceClaim {
   live: boolean
 }
 
-export type ClaimResult = { ok: true } | { ok: false; holder: DeviceClaim };
+/**
+ * `fresh` is true when this call made the claim (the session did not already
+ * hold the device), so a caller whose setup then fails knows to give it back
+ * ({@link releaseDeviceClaim}) — and to leave alone a claim it found.
+ */
+export type ClaimResult = { ok: true; fresh: boolean } | { ok: false; holder: DeviceClaim };
 
 /** Test seam: where the registry lives, and the environment the session is read from. */
 interface ClaimOptions {
@@ -301,7 +306,7 @@ export function claimDevice(
       daemonAddress: opts.daemonAddress ?? (sameSession ? existing?.daemonAddress : undefined),
       claimedAt: sameSession && existing ? existing.claimedAt : new Date().toISOString(),
     });
-    return { ok: true };
+    return { ok: true, fresh: !sameSession };
   });
 }
 
@@ -317,14 +322,33 @@ export class DeviceClaimedError extends Error {
   }
 }
 
-/** {@link claimDevice}, throwing a {@link DeviceClaimedError} naming the holder on refusal. */
+/**
+ * {@link claimDevice}, throwing a {@link DeviceClaimedError} naming the holder
+ * on refusal. Returns whether the claim is new (`ClaimResult.fresh`).
+ */
 export function claimDeviceOrThrow(
   device: string,
   session: SessionIdentity,
   opts: ClaimOptions & { daemonAddress?: string } = {},
-): void {
+): boolean {
   const res = claimDevice(device, session, opts);
   if (!res.ok) throw new DeviceClaimedError(device, res.holder);
+  return res.fresh;
+}
+
+/**
+ * Give back `session`'s claim on `device` — for a caller whose setup on a
+ * device it just claimed failed, so a session that lives on (UI, watch, an MCP
+ * server) does not hold a device it is not driving. A claim of another
+ * session is never touched.
+ */
+export function releaseDeviceClaim(device: string, session: SessionIdentity, opts: ClaimOptions = {}): void {
+  const dir = claimsDir(opts.env ?? process.env);
+  withRegistryLock(dir, () => {
+    const file = claimFile(dir, device);
+    if (readClaim(file)?.session.id !== session.id) return;
+    try { fs.rmSync(file, { force: true }); } catch { /* already gone */ }
+  });
 }
 
 /** Drop every claim `sessionId` holds. */
@@ -416,20 +440,40 @@ function normalizeAddress(address: string): string {
 }
 
 /**
- * A live claim of another session made through the daemon at `address` — the
- * daemon is that session's, and selecting a device on it would repoint the
- * device that session is driving. Undefined when no other live session uses it.
+ * The live claims other sessions made through the daemon at `address`. When
+ * the daemon's active device is one of them, the daemon is that session's,
+ * and selecting a device on it would repoint the device it is driving. One
+ * session can hold several (a sequential run's projects each claim their
+ * device through the same port), so callers match the active device against
+ * every one — see {@link daemonDriverElsewhere}.
  */
-export function daemonHeldElsewhere(
+export function daemonClaimsElsewhere(
   address: string,
   session: SessionIdentity = currentSession(),
   opts: ClaimOptions = {},
-): DeviceClaim | undefined {
+): DeviceClaim[] {
   const wanted = normalizeAddress(address);
-  for (const claim of heldElsewhere(session, opts).values()) {
-    if (claim.daemonAddress && normalizeAddress(claim.daemonAddress) === wanted) return claim;
-  }
-  return undefined;
+  return [...heldElsewhere(session, opts).values()]
+    .filter((claim) => claim.daemonAddress !== undefined && normalizeAddress(claim.daemonAddress) === wanted);
+}
+
+/**
+ * The other live session driving its device through the daemon at `address`,
+ * judged by the device that daemon is pointed at now (`activeDevice`): an
+ * address alone is not proof, since a port a dead daemon left behind can be
+ * reused by an unrelated one. `activeDevice` is only asked for when some other
+ * session has claimed a device through this address.
+ */
+export async function daemonDriverElsewhere(
+  address: string,
+  activeDevice: () => Promise<string | undefined>,
+  session: SessionIdentity = currentSession(),
+  opts: ClaimOptions = {},
+): Promise<DeviceClaim | undefined> {
+  const claims = daemonClaimsElsewhere(address, session, opts);
+  if (claims.length === 0) return undefined;
+  const active = await activeDevice().catch(() => undefined);
+  return active === undefined ? undefined : claims.find((claim) => claim.device === active);
 }
 
 /** Thrown when a session would select a device on another live session's daemon. */
@@ -465,4 +509,21 @@ export function heldDevicesNote(held: readonly DeviceClaim[]): string {
 /** `Skipping emulator-5554: in use by another Tapsmith session, …` — for auto-pick paths. */
 export function skippedHeldDeviceMessage(claim: DeviceClaim): string {
   return `Skipping ${claim.device}: in use by another Tapsmith session, ${describeHolder(claim)}.`;
+}
+
+/**
+ * Claim the first of `candidates` (in order) `session` can have, at the moment
+ * it is picked — so two sessions starting together cannot both pick the same
+ * free device and find out only when the loser's setup reaches its claim.
+ * Returns the device claimed, or undefined when every candidate is held.
+ */
+export function claimFirstFree(
+  candidates: readonly string[],
+  session: SessionIdentity = currentSession(),
+  opts: ClaimOptions = {},
+): string | undefined {
+  for (const device of candidates) {
+    if (claimDevice(device, session, opts).ok) return device;
+  }
+  return undefined;
 }

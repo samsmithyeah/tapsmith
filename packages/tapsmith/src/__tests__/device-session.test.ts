@@ -774,6 +774,43 @@ describe('device claims (PILOT-381)', () => {
     )).resolves.toBeDefined();
   });
 
+  it('gives back the claim when the open fails, so the session does not hold a device it never drove', async () => {
+    mocks.failAgentFor.add('emulator-5554');
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Worker 0' },
+    )).rejects.toThrow();
+    const { listDeviceClaims } = await import('../device-claims.js');
+    expect(listDeviceClaims()).toEqual([]);
+  });
+
+  it('keeps a claim the session already held when a re-open fails (a watch re-run, a respawned worker)', async () => {
+    claimDevice('emulator-5554', SESSION, { daemonAddress: 'localhost:50052' });
+    mocks.failAgentFor.add('emulator-5554');
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Worker 0' },
+    )).rejects.toThrow();
+    const { listDeviceClaims } = await import('../device-claims.js');
+    expect(listDeviceClaims().map((c) => c.device)).toEqual(['emulator-5554']);
+  });
+
+  it('gives back the members it claimed when a later member is refused', async () => {
+    claimDevice('emulator-5556', OTHER);
+    await expect(openDeviceGroup(
+      [
+        { name: 'alice', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+        { name: 'bob', serial: 'emulator-5556', daemonAddress: 'localhost:50053' },
+      ],
+      makeConfig(),
+      { claimSession: SESSION, label: 'Worker 0' },
+    )).rejects.toThrow(/emulator-5556 is in use/);
+    const { listDeviceClaims } = await import('../device-claims.js');
+    expect(listDeviceClaims().map((c) => [c.device, c.session.id])).toEqual([['emulator-5556', 'other-session']]);
+  });
+
   it('refuses a group before resolving agent artifacts when any member is held', async () => {
     claimDevice('emulator-5556', OTHER);
     await expect(openDeviceGroup(

@@ -7,13 +7,15 @@ import {
   CLAIMS_DIR_ENV,
   SESSION_ENV,
   claimDevice,
+  claimFirstFree,
   claimDeviceOrThrow,
   currentSession,
-  daemonHeldElsewhere,
+  daemonDriverElsewhere,
   describeHolder,
   devicesHeldElsewhere,
   ensureClaimSession,
   listDeviceClaims,
+  releaseDeviceClaim,
   releaseSessionClaims,
   withoutHeldDevices,
   type SessionIdentity,
@@ -51,7 +53,7 @@ describe('device claims', () => {
 
   it('lets a session claim a free device and records who holds it', () => {
     const me = session({ command: 'tapsmith test --ui' });
-    expect(claimDevice('emulator-5554', me, { daemonAddress: 'localhost:50051', env })).toEqual({ ok: true });
+    expect(claimDevice('emulator-5554', me, { daemonAddress: 'localhost:50051', env })).toEqual({ ok: true, fresh: true });
     const claims = listDeviceClaims({ env });
     expect(claims).toHaveLength(1);
     expect(claims[0]).toMatchObject({
@@ -65,9 +67,19 @@ describe('device claims', () => {
 
   it('is re-entrant for the same session (workers, watch re-runs, MCP run_tests children)', () => {
     const me = session();
-    expect(claimDevice('emulator-5554', me, { env }).ok).toBe(true);
-    expect(claimDevice('emulator-5554', me, { env }).ok).toBe(true);
+    expect(claimDevice('emulator-5554', me, { env })).toEqual({ ok: true, fresh: true });
+    expect(claimDevice('emulator-5554', me, { env })).toEqual({ ok: true, fresh: false });
     expect(listDeviceClaims({ env })).toHaveLength(1);
+  });
+
+  it('releases one device of a session, and never another session\'s claim', () => {
+    const me = session();
+    const other = session();
+    claimDevice('mine', me, { env });
+    claimDevice('theirs', other, { env });
+    releaseDeviceClaim('mine', me, { env });
+    releaseDeviceClaim('theirs', me, { env });
+    expect(listDeviceClaims({ env }).map((c) => c.device)).toEqual(['theirs']);
   });
 
   it('refuses a device a live other session holds, and names the holder', () => {
@@ -84,7 +96,7 @@ describe('device claims', () => {
   it('takes over a claim whose session process is gone (crash, kill -9)', () => {
     claimDevice('emulator-5554', session({ pid: deadPid() }), { env });
     const me = session();
-    expect(claimDevice('emulator-5554', me, { env })).toEqual({ ok: true });
+    expect(claimDevice('emulator-5554', me, { env })).toEqual({ ok: true, fresh: true });
     expect(listDeviceClaims({ env })[0].session.id).toBe(me.id);
   });
 
@@ -145,6 +157,14 @@ describe('device claims', () => {
     expect([...devicesHeldElsewhere(me, { env })]).toEqual(['theirs']);
   });
 
+  it('claims the first free candidate at pick time, so a session starting at the same moment takes the next', () => {
+    const a = session();
+    const b = session();
+    expect(claimFirstFree(['emulator-5554', 'emulator-5556'], a, { env })).toBe('emulator-5554');
+    expect(claimFirstFree(['emulator-5554', 'emulator-5556'], b, { env })).toBe('emulator-5556');
+    expect(claimFirstFree(['emulator-5554', 'emulator-5556'], session(), { env })).toBeUndefined();
+  });
+
   it('splits a candidate list into free and held devices, keeping order', () => {
     const me = session();
     claimDevice('b', session({ command: 'tapsmith test --watch' }), { env });
@@ -153,19 +173,41 @@ describe('device claims', () => {
     expect(held.map((h) => h.device)).toEqual(['b']);
   });
 
-  it('finds the live session that owns a daemon address, whatever the loopback spelling', () => {
+  it('finds the live session driving its device through a daemon, whatever the loopback spelling', async () => {
     const holder = session();
     claimDevice('emulator-5554', holder, { daemonAddress: 'localhost:50051', env });
-    expect(daemonHeldElsewhere('127.0.0.1:50051', session(), { env })?.session.id).toBe(holder.id);
-    expect(daemonHeldElsewhere('localhost:50051', holder, { env })).toBeUndefined();
-    expect(daemonHeldElsewhere('localhost:50052', session(), { env })).toBeUndefined();
+    const active = async () => 'emulator-5554';
+    expect((await daemonDriverElsewhere('127.0.0.1:50051', active, session(), { env }))?.session.id).toBe(holder.id);
+    expect(await daemonDriverElsewhere('localhost:50051', active, holder, { env })).toBeUndefined();
+    expect(await daemonDriverElsewhere('localhost:50052', active, session(), { env })).toBeUndefined();
+  });
+
+  it('is not fooled by a reused port: a daemon not pointed at the claimed device is not that session\'s', async () => {
+    claimDevice('emulator-5554', session(), { daemonAddress: 'localhost:50051', env });
+    expect(await daemonDriverElsewhere('localhost:50051', async () => 'emulator-5556', session(), { env })).toBeUndefined();
+    expect(await daemonDriverElsewhere('localhost:50051', async () => undefined, session(), { env })).toBeUndefined();
+  });
+
+  it('matches the active device against every claim the other session made through the daemon', async () => {
+    // A sequential run's projects claim their devices through the same port
+    // one after the other; the one it drives now may not sort first.
+    const holder = session();
+    claimDevice('emulator-5554', holder, { daemonAddress: 'localhost:50051', env });
+    claimDevice('SIM-X', holder, { daemonAddress: 'localhost:50051', env });
+    expect((await daemonDriverElsewhere('localhost:50051', async () => 'SIM-X', session(), { env }))?.device).toBe('SIM-X');
+  });
+
+  it('does not ask for the active device when nobody else claimed through the daemon', async () => {
+    let asked = false;
+    await daemonDriverElsewhere('localhost:50051', async () => { asked = true; return 'x'; }, session(), { env });
+    expect(asked).toBe(false);
   });
 
   it('never fails the caller when the registry cannot be written', () => {
     const file = path.join(dir, 'not-a-dir');
     fs.writeFileSync(file, 'x');
     const broken = { [CLAIMS_DIR_ENV]: file };
-    expect(claimDevice('emulator-5554', session(), { env: broken })).toEqual({ ok: true });
+    expect(claimDevice('emulator-5554', session(), { env: broken }).ok).toBe(true);
     expect(listDeviceClaims({ env: broken })).toEqual([]);
   });
 

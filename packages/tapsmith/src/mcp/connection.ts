@@ -18,8 +18,9 @@ import {
   DeviceClaimedError,
   claimDeviceOrThrow,
   currentSession,
-  daemonHeldElsewhere,
+  daemonDriverElsewhere,
   heldDevicesNote,
+  releaseDeviceClaim,
   withoutHeldDevices,
 } from '../device-claims.js';
 
@@ -598,12 +599,12 @@ async function withoutOtherSessionsDaemons<T extends { client: TapsmithGrpcClien
 ): Promise<T[]> {
   const session = currentSession();
   const kept = await Promise.all(live.map(async (daemon) => {
-    const holder = daemonHeldElsewhere(daemon.address, session);
+    const holder = await daemonDriverElsewhere(
+      daemon.address,
+      () => daemon.client.listDevices().then(({ devices }) => activeDeviceOf(devices)),
+      session,
+    );
     if (!holder) return daemon;
-    const active = await daemon.client.listDevices()
-      .then(({ devices }) => activeDeviceOf(devices))
-      .catch(() => undefined);
-    if (active !== holder.device) return daemon;
     log(`Ignoring ${daemon.address} — another Tapsmith session is driving ${holder.device} through it`);
     daemon.client.close();
     return null;
@@ -1556,10 +1557,21 @@ async function prepareTarget(
   const wasPointedAt = await currentDevice(conn) ?? conn.preparedDevice;
   // Never move a daemon another live session is driving its device through,
   // nor take a device another session holds (PILOT-381).
-  const daemonHolder = daemonHeldElsewhere(conn.address, currentSession());
-  if (daemonHolder && wasPointedAt === daemonHolder.device) throw new DaemonClaimedError(conn.address, daemonHolder);
-  claimDeviceOrThrow(serial, currentSession(), { daemonAddress: conn.address });
-  await setDeviceExplained(conn.client, serial);
+  const daemonHolder = await daemonDriverElsewhere(conn.address, async () => wasPointedAt, currentSession());
+  if (daemonHolder) throw new DaemonClaimedError(conn.address, daemonHolder);
+  const freshClaim = claimDeviceOrThrow(serial, currentSession(), { daemonAddress: conn.address });
+  // A target that does not come up gives back a claim it just made: an MCP
+  // server lives for hours, and other sessions would otherwise be refused a
+  // device it never got to drive.
+  const releaseOnFailure = (): void => {
+    if (freshClaim) releaseDeviceClaim(serial, currentSession());
+  };
+  try {
+    await setDeviceExplained(conn.client, serial);
+  } catch (err) {
+    releaseOnFailure();
+    throw err;
+  }
   const repointed = isRepointing(wasPointedAt, serial);
   // Record the move before starting the agent: `setDevice` has already
   // happened, so if the agent start throws, the next claim must still see this
@@ -1575,6 +1587,7 @@ async function prepareTarget(
     // keeps both facts, so a broken target is not counted as a device the
     // session drives.
     conn.agentFailed = true;
+    releaseOnFailure();
     throw err;
   }
   // The daemon that was prepared for a serial is the one that serves it, even
@@ -2099,10 +2112,16 @@ async function setDeviceAndAgent(
     return undefined;
   }
 
-  claimDeviceOrThrow(serial, currentSession(), { daemonAddress: address });
-  await setDeviceExplained(client, serial);
-  log(`Using device: ${serial}`);
-  await startAgentFromConfig(client, config, { serial });
+  const freshClaim = claimDeviceOrThrow(serial, currentSession(), { daemonAddress: address });
+  try {
+    await setDeviceExplained(client, serial);
+    log(`Using device: ${serial}`);
+    await startAgentFromConfig(client, config, { serial });
+  } catch (err) {
+    // The caller drops this daemon: give back the device it never drove.
+    if (freshClaim) releaseDeviceClaim(serial, currentSession());
+    throw err;
+  }
   return serial;
 }
 

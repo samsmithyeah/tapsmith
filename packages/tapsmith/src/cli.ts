@@ -29,7 +29,7 @@ import {
   type DeviceSession,
 } from './device-session.js';
 import type { PreparedState, ResetCapabilities } from './app-reset.js';
-import { currentSession, ensureClaimSession, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
+import { claimDeviceOrThrow, claimFirstFree, currentSession, ensureClaimSession, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { discoverTestFiles } from './test-file-discovery.js';
 import { resolveTsxBin } from './child-scripts.js';
@@ -381,6 +381,12 @@ async function ensureDaemonRunning(
   // the config. A listener that does not answer is a stale daemon: kill it and
   // reuse the port so the --platform flag is always the current one.
   let sharingWithLiveSession = false;
+  // The agent port the daemon forwards to (iOS: the port its runner listens
+  // on). The default 18700 is the live session's too when we share the
+  // machine with one, so ours takes a free port as well — the new daemon
+  // would otherwise find that session's runner on 18700 and (rightly) refuse
+  // to adopt it, or a second runner could not bind it (PILOT-381).
+  let agentPort: number | undefined;
   try {
     const probe = new TapsmithGrpcClient(address);
     const alive = await probe.waitForReady(1_000);
@@ -391,6 +397,9 @@ async function ensureDaemonRunning(
       const requestedPort = requestedAddress.split(':').pop() ?? port;
       address = `localhost:${freePort}`;
       port = String(freePort);
+      let freeAgentPort = await pickFreePort();
+      while (freeAgentPort === freePort) freeAgentPort = await pickFreePort();
+      agentPort = freeAgentPort;
       if (progress) progress.note(`port ${requestedPort} is in use by another Tapsmith session; starting on ${address}`);
       else console.log(dim(`Daemon port ${requestedPort} is in use by another Tapsmith session; starting on ${address}`));
     } else {
@@ -445,6 +454,7 @@ async function ensureDaemonRunning(
   // Start a fresh daemon
   const resolvedBin = process.env.TAPSMITH_DAEMON_BIN ?? daemonBin ?? findDaemonBin();
   const daemonArgs = ['--port', port];
+  if (agentPort !== undefined) daemonArgs.push('--agent-port', String(agentPort));
   if (platform) daemonArgs.push('--platform', platform);
   // `TAPSMITH_DAEMON_LOG=<path>` sends the daemon's stdout and stderr to a
   // file, for debugging daemon-side behaviour (MITM proxy pre-start,
@@ -825,6 +835,9 @@ async function openGroupMembersOnFreshDaemons(
   const members = group.slice(1);
   const provisioned = await provisionGroupMemberDevices(cfg, group, progress);
   launchedEmulators.push(...provisioned.launched);
+  // Before `adb root` below: a member another session drives is refused
+  // without touching it (PILOT-381). openDeviceGroup re-claims them as its own.
+  for (const serial of provisioned.serials) claimDeviceOrThrow(serial, currentSession());
 
   const daemonBin = resolveDaemonBin(cfg);
   const traceConfig = resolveTraceConfig(cfg.trace);
@@ -980,6 +993,10 @@ async function ensureSequentialTargetDevice(
   // alone, which left a group pinning both members with its primary auto-picked.
   const pinned = primaryDevicePin(config);
   if (pinned) {
+    // Claimed before anything touches it (the health check may restart adb,
+    // network capture restarts adbd as root): a device another session drives
+    // is refused here, not after its run has been disturbed (PILOT-381).
+    claimDeviceOrThrow(pinned, currentSession());
     // If the device is an iOS simulator that's already booted, log reuse
     if (config.platform === 'ios') {
       const { listBootedSimulators } = await import('./ios-simulator.js');
@@ -1007,6 +1024,7 @@ async function ensureSequentialTargetDevice(
       try {
         const { resolvePhysicalIosDevice } = await import('./ios-device-resolve.js');
         const udid = resolvePhysicalIosDevice();
+        claimDeviceOrThrow(udid, currentSession());
         const message = `Auto-detected physical iOS device ${udid}.`;
         if (progress) progress.note(message);
         else process.stderr.write(`${DIM}${message}${RESET}\n`);
@@ -1033,9 +1051,13 @@ async function ensureSequentialTargetDevice(
     // Check for already-booted simulators
     // Not one another live Tapsmith session holds (PILOT-381):
     // provisionSimulator below passes over those too.
+    // Claimed as it is picked, so a session starting at the same moment
+    // takes another one rather than this one.
     const booted = listBootedSimulators();
-    const heldBooted = new Set(withoutHeldDevices(booted.map((s) => s.udid)).held.map((c) => c.device));
-    const matching = booted.find((s) => (s.name === simulatorName || s.udid === simulatorName) && !heldBooted.has(s.udid));
+    const matchingUdid = claimFirstFree(
+      booted.filter((s) => s.name === simulatorName || s.udid === simulatorName).map((s) => s.udid),
+    );
+    const matching = booted.find((s) => s.udid === matchingUdid);
     if (matching) {
       const message = `Reusing already-booted simulator ${matching.udid} (${matching.name}).`;
       if (progress) progress.update('primary-device', { state: 'running', detail: `reusing already-booted ${matching.name}` });
@@ -1047,6 +1069,7 @@ async function ensureSequentialTargetDevice(
     try {
       progress?.update('primary-device', { state: 'running', detail: `booting ${simulatorName}` });
       const { udid, bootComplete } = provisionSimulator(simulatorName);
+      claimDeviceOrThrow(udid, currentSession());
       // Installed now, while the simulator is still settling, rather than
       // right before the agent starts: on a hosted runner the first launch
       // of a just-installed app then pushed the agent past its startup bound.
@@ -1116,8 +1139,11 @@ async function ensureSequentialTargetDevice(
     progress,
   );
 
-  if (selectedOnline.selectedSerials.length > 0) {
-    return { selectedSerial: selectedOnline.selectedSerials[0], launched: [] };
+  // Claimed as it is picked: a session starting at the same moment, which
+  // saw the same free devices, takes the next one instead of this one.
+  const pickedOnline = claimFirstFree(selectedOnline.selectedSerials);
+  if (pickedOnline) {
+    return { selectedSerial: pickedOnline, launched: [] };
   }
 
   if (!config.launchEmulators) {
@@ -1152,7 +1178,7 @@ async function ensureSequentialTargetDevice(
   warnSequentialSkippedDevices(selectedProvisioned.skippedDevices, progress);
 
   return {
-    selectedSerial: selectedProvisioned.selectedSerials[0],
+    selectedSerial: claimFirstFree(selectedProvisioned.selectedSerials),
     launched: provision.launched,
   };
 }

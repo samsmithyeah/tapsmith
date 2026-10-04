@@ -116,8 +116,8 @@ async fn start_agent_impl(
             bail!(
                 "The iOS agent port {agent_port} is held by a Tapsmith runner for another device \
                  ({other}), not {udid}. Another Tapsmith session is probably driving {other} \
-                 through it; refusing to adopt its agent. Stop that session, or run this one \
-                 on a different daemon."
+                 through it; refusing to adopt its agent. Stop that session, or start this \
+                 daemon with a free --agent-port."
             );
         }
         info!("iOS agent is already running");

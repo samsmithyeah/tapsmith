@@ -17,7 +17,7 @@ import { sharedDeviceGroup } from './project.js';
 import { findDaemonBin } from './daemon-bin.js';
 import { assignGroupMemberDevices, deviceGroupSize, resolveDeviceGroup, type DeviceGroupEntry } from './config.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
-import { skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
+import { claimDeviceOrThrow, currentSession, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { labelledMessage, withDetail } from './error-detail.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary, type DaemonOutputCapture, type DaemonStartFailed } from './daemon-start.js';
 import type { TestResult, SuiteResult } from './runner.js';
@@ -1377,11 +1377,15 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           );
         }
       }
+      // Refused before any worker touches it when another session drives it.
+      claimDeviceOrThrow(deviceSerials[0], currentSession());
       launchProgress?.update('worker-devices', { state: 'running', detail: `physical iOS device ${deviceSerials[0]}` });
       if (!launchProgress) process.stderr.write(`${DIM}Physical iOS device: ${deviceSerials[0]}${RESET}\n`);
     } else if (fullyPinned) {
       // ─── Every device named outright ───
       deviceSerials = fullyPinned;
+      // Refused before any worker touches them when another session drives one.
+      for (const serial of fullyPinned) claimDeviceOrThrow(serial, currentSession());
       launchProgress?.update('worker-devices', { state: 'running', detail: `pinned ${fullyPinned.join(', ')}` });
     } else if (isIos && config.simulator) {
       // ─── iOS simulator discovery & provisioning ───
