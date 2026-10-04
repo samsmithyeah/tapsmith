@@ -395,6 +395,9 @@ describe('validateBuildPath() (PILOT-513)', () => {
   it('refuses a directory for an APK and a file for an .app bundle', () => {
     expect(validateBuildPath('./out', 'apk', tmp)).toMatch(/is a directory/);
     expect(validateBuildPath('./out/app.apk', 'simulator-app', tmp)).toMatch(/not an \.app bundle/);
+    // The Products folder above the bundle is a directory but not an .app.
+    expect(validateBuildPath('./out/Debug-iphonesimulator', 'simulator-app', tmp)).toMatch(/not an \.app bundle/);
+    expect(validateBuildPath('./out/Release-iphoneos/MyApp.app/', 'device-app', tmp)).toBe(true);
   });
 
   it('accepts .app bundle directories, including paths with spaces', () => {

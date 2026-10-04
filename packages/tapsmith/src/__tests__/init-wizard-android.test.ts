@@ -86,6 +86,12 @@ describe('configureAndroid() build detection (PILOT-513)', () => {
     apkCandidates = [];
     logged = [];
     vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logged.push(stripAnsi(args.join(' '))); });
+    // Keep the machine's own Android SDK out of the adb fix.
+    vi.unstubAllEnvs();
+    vi.stubEnv('ANDROID_HOME', '');
+    vi.stubEnv('ANDROID_SDK_ROOT', '');
+    vi.stubEnv('HOME', path.join(os.tmpdir(), 'tapsmith-no-such-home'));
+    vi.stubEnv('LOCALAPPDATA', '');
   });
 
   it('offers the one APK it found, pre-selected, and reads its package', async () => {
@@ -127,7 +133,7 @@ describe('configureAndroid() build detection (PILOT-513)', () => {
     const android = await configureAndroid(env);
 
     const q = question(/Path to your Android APK/);
-    expect(q?.validate).toBeTypeOf('function');
+    expect(q?.validate?.(os.tmpdir())).toMatch(/is a directory, not an APK file/);
     expect(q?.initial).toBeUndefined();
     expect(android.apkPath).toBe('./custom/app.apk');
     expect(android.packageName).toBe('com.acme.custom');
@@ -186,6 +192,7 @@ describe('configureAndroid() build detection (PILOT-513)', () => {
     packages.set(DEBUG_APK, 'com.acme.app');
     script([[/Where is your Android APK/, DEBUG_APK]]);
     try {
+      vi.stubEnv('ANDROID_HOME', sdk);
       await configureAndroid({ ...env, adbVersion: undefined, androidHome: sdk });
     } finally {
       fs.rmSync(sdk, { recursive: true, force: true });
@@ -195,6 +202,25 @@ describe('configureAndroid() build detection (PILOT-513)', () => {
     expect(out).toContain(`adb is in ${platformTools} but not on PATH`);
     expect(out).toContain(`export PATH="${platformTools}:$PATH"`);
     expect(out).not.toMatch(/Install Android platform-tools/);
+  });
+
+  it('finds platform-tools at Android Studio\'s default SDK location when ANDROID_HOME is unset', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-home-'));
+    const sdk = process.platform === 'darwin' ? path.join(home, 'Library', 'Android', 'sdk') : path.join(home, 'Android', 'Sdk');
+    const platformTools = path.join(sdk, 'platform-tools');
+    fs.mkdirSync(platformTools, { recursive: true });
+    fs.writeFileSync(path.join(platformTools, 'adb'), '');
+    apkCandidates = [DEBUG_APK];
+    packages.set(DEBUG_APK, 'com.acme.app');
+    script([[/Where is your Android APK/, DEBUG_APK]]);
+    try {
+      vi.stubEnv('HOME', home);
+      await configureAndroid({ ...env, adbVersion: undefined });
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+
+    expect(logged.join('\n')).toContain(`adb is in ${platformTools} but not on PATH`);
   });
 
   it('says nothing about ADB when it is present', async () => {

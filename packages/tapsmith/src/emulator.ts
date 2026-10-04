@@ -779,6 +779,27 @@ function isFile(file: string): boolean {
 }
 
 /**
+ * Where an Android SDK may be, in lookup order: `$ANDROID_HOME`,
+ * `$ANDROID_SDK_ROOT`, then the default location for the OS (where Android
+ * Studio installs it, without setting either variable).
+ */
+export function androidSdkRoots(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  home: string = os.homedir(),
+): string[] {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const sdkRoots: string[] = [];
+  if (env.ANDROID_HOME) sdkRoots.push(env.ANDROID_HOME);
+  if (env.ANDROID_SDK_ROOT) sdkRoots.push(env.ANDROID_SDK_ROOT);
+  if (platform === 'darwin') sdkRoots.push(p.join(home, 'Library', 'Android', 'sdk'));
+  else if (platform === 'win32') {
+    if (env.LOCALAPPDATA) sdkRoots.push(p.join(env.LOCALAPPDATA, 'Android', 'Sdk'));
+  } else sdkRoots.push(p.join(home, 'Android', 'Sdk'));
+  return sdkRoots;
+}
+
+/**
  * Locate the Android `emulator` binary: `$ANDROID_HOME/emulator/emulator`,
  * then `$ANDROID_SDK_ROOT/…`, then the default SDK location for the OS
  * (where Android Studio installs it), then PATH. A stock Android Studio setup
@@ -796,13 +817,7 @@ export function resolveEmulatorBinary(
   const p = platform === 'win32' ? path.win32 : path.posix;
   const binaryName = platform === 'win32' ? 'emulator.exe' : 'emulator';
 
-  const sdkRoots: string[] = [];
-  if (env.ANDROID_HOME) sdkRoots.push(env.ANDROID_HOME);
-  if (env.ANDROID_SDK_ROOT) sdkRoots.push(env.ANDROID_SDK_ROOT);
-  if (platform === 'darwin') sdkRoots.push(p.join(home, 'Library', 'Android', 'sdk'));
-  else if (platform === 'win32') {
-    if (env.LOCALAPPDATA) sdkRoots.push(p.join(env.LOCALAPPDATA, 'Android', 'Sdk'));
-  } else sdkRoots.push(p.join(home, 'Android', 'Sdk'));
+  const sdkRoots = androidSdkRoots(env, platform, home);
 
   const tried: string[] = [];
   for (const root of sdkRoots) {

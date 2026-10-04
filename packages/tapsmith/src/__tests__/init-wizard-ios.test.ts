@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as os from 'node:os';
 import type { EnvScan } from '../env-scan.js';
 
 // ─── Mocks ───
@@ -279,7 +280,7 @@ describe('configureIos() build detection (PILOT-513)', () => {
     const ios = await configureIos(env);
 
     expect(question(/simulator build\)/)?.choices?.map((c) => c.name).slice(0, 2)).toEqual(simCandidates);
-    expect(question(/Path to your simulator build/)?.validate).toBeTypeOf('function');
+    expect(question(/Path to your simulator build/)?.validate?.(os.tmpdir())).toMatch(/not an \.app bundle/);
     expect(ios.appPath).toBe('./custom/My.app');
   });
 
@@ -294,6 +295,7 @@ describe('configureIos() build detection (PILOT-513)', () => {
       expect(q?.initial).toBeUndefined();
       expect(q?.validate?.('./does/not/exist.app')).toMatch(/does not exist/);
     }
+    expect(question(/device build \.app/)?.validate?.('./build/Debug-iphonesimulator/A.app')).toMatch(/simulator build/);
   });
 
   it('never defaults a bundle id to a placeholder when no build has one to read', async () => {

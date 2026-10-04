@@ -13,6 +13,7 @@ import {
   preferDebugApk,
 } from './init-detect.js';
 import { ADB_FIX } from './adb-devices.js';
+import { androidSdkRoots } from './emulator.js';
 import type { InitCommandOptions } from './cli-program.js';
 import { formatJson, jsonError } from './cli-json.js';
 import { avdCaptureSupport, avdCaptureWarning, noAvdsListedMessage, type AvdImageInfo } from './avd-images.js';
@@ -119,7 +120,9 @@ export function validateBuildPath(val: string, kind: BuildKind, cwd: string = pr
     return `${p} does not exist — check the path, or build your app first`;
   }
   if (kind === 'apk' && stat.isDirectory()) return `${p} is a directory, not an APK file`;
-  if (kind !== 'apk' && !stat.isDirectory()) return `${p} is not an .app bundle (a directory)`;
+  if (kind !== 'apk' && (!stat.isDirectory() || path.extname(p).toLowerCase() !== '.app')) {
+    return `${p} is not an .app bundle (a directory named <App>.app)`;
+  }
   return true;
 }
 
@@ -217,13 +220,17 @@ export function androidEmulatorCaptureLine(avd: string | undefined, avdImages: A
     : `  ${green('✓')} Android emulator (${avd}) — works automatically`;
 }
 
-/** The fix for a missing adb, concrete when the SDK's platform-tools are installed but not on PATH. */
-function adbMissingFix(androidHome: string | undefined): string {
-  if (androidHome) {
-    const platformTools = path.join(androidHome, 'platform-tools');
-    if (fs.existsSync(path.join(platformTools, process.platform === 'win32' ? 'adb.exe' : 'adb'))) {
-      return `adb is in ${platformTools} but not on PATH — add that directory to PATH (e.g. export PATH="${platformTools}:$PATH" in your shell profile)`;
-    }
+/**
+ * The fix for a missing adb: concrete when an SDK where Android Studio puts
+ * it (or `$ANDROID_HOME`) has platform-tools that just aren't on PATH.
+ */
+function adbMissingFix(): string {
+  const win = process.platform === 'win32';
+  for (const root of androidSdkRoots()) {
+    const platformTools = path.join(root, 'platform-tools');
+    if (!fs.existsSync(path.join(platformTools, win ? 'adb.exe' : 'adb'))) continue;
+    const example = win ? '' : ` (e.g. export PATH="${platformTools}:$PATH" in your shell profile)`;
+    return `adb is in ${platformTools} but not on PATH — add that directory to PATH${example}`;
   }
   return ADB_FIX;
 }
@@ -232,7 +239,7 @@ export async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
   console.log(`  ${bold('Android')}`);
   if (!env.adbVersion) {
     console.log(`  ${YELLOW}⚠${RESET} ADB not found — Tapsmith cannot reach Android devices or emulators until it is on PATH`);
-    console.log(dim(`    ${adbMissingFix(env.androidHome)}`));
+    console.log(dim(`    ${adbMissingFix()}`));
   }
 
   const apkPath = await askBuildPath({
