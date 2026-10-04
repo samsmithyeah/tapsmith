@@ -2019,7 +2019,7 @@ This gives full visibility into test-level API calls alongside device interactio
 
 ### `defineConfig(overrides?: Partial<TapsmithConfig>): TapsmithConfig`
 
-Create a Tapsmith configuration by merging overrides with defaults. Used in `tapsmith.config.ts`.
+Create a Tapsmith configuration by merging overrides with defaults. Used in `tapsmith.config.ts`. Throws an error with `code` `TAPSMITH_INVALID_CONFIG` listing every problem when an override is unknown, of the wrong type or outside its allowed values; `loadConfig` reports it with the config file's path.
 
 ```typescript
 import { defineConfig } from "tapsmith";

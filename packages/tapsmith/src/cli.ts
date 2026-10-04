@@ -3044,7 +3044,9 @@ main().catch(async (err) => {
   // story and the fix; a stack of loader frames would bury it.
   // A bad key or value in the config (PILOT-552): the message names the file
   // and every problem; the loader's stack would bury them.
-  if (isTapsmithNotInstalledError(err) || isConfigValidationError(err)) {
+  // Only one traced to the config file: a test.use() error needs its stack to
+  // point at the spec that made it.
+  if (isTapsmithNotInstalledError(err) || (isConfigValidationError(err) && err.configPath)) {
     console.error(red(message));
     if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) console.error(err.stack);
     process.exit(1);

@@ -881,6 +881,8 @@ function isRegExp(value: unknown): value is RegExp {
 /** A value as the error shows it: `"iOS"`, `[/a/, "b"]`, `a function`. */
 function describeValue(value: unknown): string {
   if (typeof value === 'function') return 'a function';
+  // JSON would show NaN and Infinity as null, which reads as an explicit `null`.
+  if (typeof value === 'number') return String(value);
   if (isRegExp(value)) return String(value);
   if (Array.isArray(value) && value.some(isRegExp)) return `[${value.map(describeValue).join(', ')}]`;
   try {
@@ -955,7 +957,7 @@ function isReporterDescription(v: unknown): boolean {
   if (typeof v === 'string') return true;
   return Array.isArray(v) && typeof v[0] === 'string'
     // `['html', CI ? { open: 'never' } : undefined]`: every reporter defaults its options.
-    && (v.length === 1 || (v.length === 2 && (v[1] == null || isPlainObject(v[1]))));
+    && (v.length === 1 || (v.length === 2 && (v[1] === undefined || isPlainObject(v[1]))));
 }
 
 /**
@@ -1034,7 +1036,8 @@ const ROOT_CHECKS: { readonly [K in keyof TapsmithConfig]-?: KeyCheck } = {
   apk: optionalString,
   app: optionalString,
   activity: optionalString,
-  timeout: nonNegativeMs,
+  // Positive: 0 is not "no timeout" (as in Playwright) but a budget already spent.
+  timeout: positiveMs,
   retries: nonNegativeInteger,
   screenshot: oneOf(['always', 'only-on-failure', 'never']),
   testMatch: globs,

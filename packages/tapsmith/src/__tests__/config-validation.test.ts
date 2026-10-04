@@ -55,7 +55,7 @@ describe('config validation at load (PILOT-552)', () => {
     it('lists every problem at once', async () => {
       const err = await loadError('{ apkk: "./a.apk", timeout: "5s", retries: -1 }');
       expect(err.message).toContain('\n  - unknown option \'apkk\' (did you mean \'apk\'?)');
-      expect(err.message).toContain('\n  - timeout must be a non-negative number of milliseconds (got "5s")');
+      expect(err.message).toContain('\n  - timeout must be a positive number of milliseconds (got "5s")');
       expect(err.message).toContain('\n  - retries must be a non-negative integer (got -1)');
     });
 
@@ -151,8 +151,10 @@ describe('config validation at load (PILOT-552)', () => {
       ['workers', '"two"', 'workers must be a positive integer (got "two")'],
       ['workers', '0', 'workers must be a positive integer (got 0)'],
       ['workers', '1.5', 'workers must be a positive integer (got 1.5)'],
-      ['timeout', '-1', 'timeout must be a non-negative number of milliseconds (got -1)'],
-      ['timeout', 'null', 'timeout must be a non-negative number of milliseconds (got null)'],
+      ['timeout', '-1', 'timeout must be a positive number of milliseconds (got -1)'],
+      ['timeout', '0', 'timeout must be a positive number of milliseconds (got 0)'],
+      ['timeout', 'NaN', 'timeout must be a positive number of milliseconds (got NaN)'],
+      ['timeout', 'null', 'timeout must be a positive number of milliseconds (got null)'],
       ['retries', '"2"', 'retries must be a non-negative integer (got "2")'],
       ['apk', '42', 'apk must be a string (got 42)'],
       ['launchEmulators', '"yes"', 'launchEmulators must be a boolean (got "yes")'],
@@ -175,7 +177,7 @@ describe('config validation at load (PILOT-552)', () => {
 
     it('reports a function value readably', async () => {
       expect((await loadError('{ timeout: () => 5000 }')).message).toContain(
-        'timeout must be a non-negative number of milliseconds (got a function)',
+        'timeout must be a positive number of milliseconds (got a function)',
       );
     });
 
@@ -194,7 +196,7 @@ describe('config validation at load (PILOT-552)', () => {
       ['devices', 'devices must be a positive integer'],
       ['emulatorLaunchOptions', 'emulatorLaunchOptions must be an object (got null)'],
       ['platform', "platform must be 'android' or 'ios' (got null)"],
-      ['timeout', 'timeout must be a non-negative number of milliseconds (got null)'],
+      ['timeout', 'timeout must be a positive number of milliseconds (got null)'],
     ])('rejects %s: null at load', async (key, expected) => {
       const err = await loadError(`{ ${key}: null }`);
       expect(err.message).toContain(expected);
@@ -208,8 +210,12 @@ describe('config validation at load (PILOT-552)', () => {
 
     it('accepts a reporter tuple whose options are left undefined', async () => {
       // `['html', CI ? { open: 'never' } : undefined]`: every reporter defaults its options.
-      writeConfig('export default { reporter: [["html", undefined], ["json", null]] }\n');
+      writeConfig('export default { reporter: [["html", undefined]] }\n');
       await expect(loadConfig(root)).resolves.toBeTruthy();
+    });
+
+    it('rejects a reporter tuple whose options are null, which no reporter accepts', async () => {
+      expect((await loadError('{ reporter: [["json", null]] }')).message).toContain('reporter must be a reporter name');
     });
 
     it('checks the keys of the trace and video object forms', async () => {
@@ -225,7 +231,7 @@ describe('config validation at load (PILOT-552)', () => {
 
     it('accepts every valid shape', async () => {
       writeConfig(`export default {
-        platform: 'android', apk: './a.apk', activity: '.Main', timeout: 0, retries: 2,
+        platform: 'android', apk: './a.apk', activity: '.Main', timeout: 1, retries: 2,
         screenshot: 'never', testMatch: ['**/*.test.ts'], daemonAddress: 'localhost:1',
         daemonBin: '/bin/x', device: 'emulator-5554', devices: 2, deviceStrategy: 'avd-only',
         rootDir: '.', outputDir: 'out', package: 'com.x', agentApk: 'a', agentTestApk: 'b',
@@ -285,7 +291,7 @@ describe('config validation at load (PILOT-552)', () => {
       const err = await loadError('{ projects: [{ name: "ios", use: { platform: "iOS", simulater: "iPhone 16", timeout: "1" } }] }');
       expect(err.message).toContain("projects[0].use.platform must be 'android' or 'ios' (got \"iOS\"; did you mean 'ios'?)");
       expect(err.message).toContain("unknown option 'projects[0].use.simulater' (did you mean 'projects[0].use.simulator'?)");
-      expect(err.message).toContain('projects[0].use.timeout must be a non-negative number of milliseconds (got "1")');
+      expect(err.message).toContain('projects[0].use.timeout must be a positive number of milliseconds (got "1")');
     });
 
     it('validates enum options a project `use` shares with the root', async () => {
