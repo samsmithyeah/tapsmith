@@ -20,6 +20,7 @@ import lockfile from 'proper-lockfile';
 import type { DeviceStrategy, EmulatorLaunchOptions } from './config.js';
 import { xmlUnescape } from './app-reset.js';
 import { parseAdbDevicesOutput } from './adb-devices.js';
+import { describeEmulatorAppNap, disableEmulatorAppNap, type EmulatorAppNapResult } from './emulator-app-nap.js';
 
 const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
@@ -50,6 +51,12 @@ interface EmulatorManifestEntry {
   booting?: boolean
   /** The Tapsmith process that launched it. */
   ownerPid?: number
+  /**
+   * Windowed on macOS: whether App Nap was off for it at launch
+   * (`disableEmulatorAppNap`, PILOT-515). Absent for other launches, and for
+   * any launched by a Tapsmith from before it turned App Nap off.
+   */
+  appNapDisabled?: boolean
 }
 
 function manifestPath(): string {
@@ -107,6 +114,7 @@ export function recordLaunchedEmulators(
     launchedAt: new Date().toISOString(),
     ownerPid: process.pid,
     ...(options.booting ? { booting: true } : {}),
+    ...(emu.appNapDisabled !== undefined ? { appNapDisabled: emu.appNapDisabled } : {}),
   }));
   writeManifest([...existing, ...newEntries]);
 }
@@ -156,6 +164,7 @@ interface ReclaimDeps {
   probeDeviceHealth: (serial: string) => DeviceHealthResult
   killEmulator: (serial: string) => void
   killProcess: (pid: number) => void
+  platform: NodeJS.Platform
 }
 
 function resolveReclaimDeps(deps: Partial<ReclaimDeps>): ReclaimDeps {
@@ -169,6 +178,7 @@ function resolveReclaimDeps(deps: Partial<ReclaimDeps>): ReclaimDeps {
     probeDeviceHealth: deps.probeDeviceHealth ?? probeDeviceHealth,
     killEmulator: deps.killEmulator ?? killEmulator,
     killProcess: deps.killProcess ?? killProcess,
+    platform: deps.platform ?? process.platform,
   };
 }
 
@@ -311,6 +321,16 @@ export function reclaimOrphanedEmulators(
               ? ` This run would launch it ${wantedHeadless ? 'headless' : 'with a window'}: stop it (adb -s ${entry.serial} emu kill) to relaunch it that way.`
               : '')
             + `${RESET}\n`);
+        // Launched by a Tapsmith that left App Nap on: macOS throttles it as
+        // soon as its window is hidden (PILOT-515). Only a relaunch reads the
+        // setting again.
+        if (d.platform === 'darwin' && !reusedHeadless && entry.appNapDisabled === undefined) {
+          process.stderr.write(
+            `${YELLOW}${entry.serial} was launched before Tapsmith turned off macOS App Nap for the emulator, so macOS may `
+            + 'slow it down while its window is hidden or the display sleeps, and adb commands then time out. '
+            + `Stop it (adb -s ${entry.serial} emu kill) so the next run relaunches it with App Nap off.${RESET}\n`,
+          );
+        }
         reusable.push(entry.serial);
         // A launch interrupted mid-boot that has since booted: ready now.
         if (entry.booting) {
@@ -1034,6 +1054,8 @@ export interface LaunchedEmulator {
   headless: boolean
   /** The file the emulator's stdout and stderr go to; undefined when it could not be opened. */
   logPath: string | undefined
+  /** Windowed on macOS: whether App Nap was off for it at launch (`EmulatorManifestEntry.appNapDisabled`). */
+  appNapDisabled?: boolean
   /**
    * Settles when the process fails to spawn or exits — whenever that is.
    * During boot it means the launch failed (`describeEmulatorExit`).
@@ -1986,6 +2008,9 @@ interface ProvisionDeps {
   waitForEmulatorStartup: (emu: LaunchedEmulator) => Promise<void>
   /** How many emulators boot at once. */
   launchConcurrency: number
+  /** Turns macOS App Nap off for the emulator's qemu (`disableEmulatorAppNap`). */
+  disableAppNap: (emulator: string) => EmulatorAppNapResult
+  platform: NodeJS.Platform
 }
 
 /**
@@ -2050,6 +2075,8 @@ export async function provisionEmulators(opts: {
     reserveEmulatorPort: deps.reserveEmulatorPort ?? reserveEmulatorPort,
     waitForEmulatorStartup: deps.waitForEmulatorStartup ?? waitForEmulatorStartup,
     launchConcurrency: deps.launchConcurrency ?? defaultLaunchConcurrency(),
+    disableAppNap: deps.disableAppNap ?? ((command) => disableEmulatorAppNap(command)),
+    platform: deps.platform ?? process.platform,
   };
   const needed = workers - existingSerials.length;
 
@@ -2111,6 +2138,15 @@ export async function provisionEmulators(opts: {
   if (settings.windowUnavailable && opts.launchOptions?.headless === false) {
     logProgress(`Launching emulators headless although emulatorLaunchOptions.headless is false: ${settings.windowUnavailable}.`, 'warning');
   }
+  // macOS App Nap throttles a windowed emulator once its window is hidden or
+  // the display sleeps; the emulator reads the opt-out only at launch (PILOT-515).
+  let appNapDisabled: boolean | undefined;
+  if (!settings.headless && resolvedDeps.platform === 'darwin') {
+    const appNap = resolvedDeps.disableAppNap(emulator.command);
+    appNapDisabled = appNap.kind === 'disabled';
+    const notice = describeEmulatorAppNap(appNap);
+    if (notice) logProgress(notice.message, notice.level);
+  }
   if (avd) {
     logProgress(`Launching ${needed} emulator(s) using AVD ${avd}${existingNote}...`);
   } else {
@@ -2159,6 +2195,7 @@ export async function provisionEmulators(opts: {
       try {
         await previousStarted;
         emu = resolvedDeps.launchEmulator(candidateAvd, port, settings, emulator.command);
+        if (appNapDisabled !== undefined) emu.appNapDisabled = appNapDisabled;
         const launchedEmu = emu;
         void resolvedDeps.waitForEmulatorStartup(launchedEmu).catch(() => undefined).finally(markStarted);
         // Recorded at once, not when every boot is done: an interrupted run
