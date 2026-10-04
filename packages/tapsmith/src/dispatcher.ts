@@ -1387,9 +1387,9 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       // (`isIos` without `simulator` is the physical bucket above.)
       // The daemon reports ALL booted iOS simulators. Adopt only the ones the
       // config names (`simulator`, by name or UDID) — any other may be one the
-      // developer is using (PILOT-511) — on one runtime, since xcodebuild
-      // test-without-building fails across OS versions. Tapsmith's own clones
-      // come back through `reusableSimulatorUdids` when provisioning below.
+      // developer is using (PILOT-511) — and Tapsmith's own clones of it, on
+      // one runtime, since xcodebuild test-without-building fails across OS
+      // versions.
       const iosDevices = onlineDevices.filter((d) => d.platform === 'ios');
       const daemonIosUdids = new Set(iosDevices.map((d) => d.serial));
       const candidateUdids = listAdoptableBootedSimulators(config.simulator, {

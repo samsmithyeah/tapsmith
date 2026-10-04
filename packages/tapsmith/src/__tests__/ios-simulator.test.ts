@@ -152,14 +152,28 @@ describe('listAdoptableBootedSimulators (PILOT-511)', () => {
     expect(listAdoptableBootedSimulators('iPhone 17 Pro')).toEqual([]);
   });
 
-  it('adopts only the booted simulators named in config', () => {
+  it('adopts only the booted simulators named in config, and Tapsmith\'s clones of them', () => {
     mockListSimulators([
       { udid: 'OTHER', name: 'iPhone 17', state: 'Booted' },
+      { udid: 'OTHER_CLONE', name: 'iPhone 17 (Tapsmith Worker 1)', state: 'Booted' },
+      { udid: 'MAX_CLONE', name: 'iPhone 17 Pro Max (Tapsmith Worker 1)', state: 'Booted' },
+      { udid: 'LOOKALIKE', name: 'iPhone 17 Pro (Tapsmith Worker 1) copy', state: 'Booted' },
       { udid: 'WANTED', name: 'iPhone 17 Pro', state: 'Booted' },
-      { udid: 'CLONE', name: 'iPhone 17 Pro (Tapsmith Worker 1)', state: 'Booted' },
+      { udid: 'CLONE', name: 'iPhone 17 Pro (Tapsmith Worker 12)', state: 'Booted' },
     ]);
 
-    expect(listAdoptableBootedSimulators('iPhone 17 Pro').map((s) => s.udid)).toEqual(['WANTED']);
+    expect(listAdoptableBootedSimulators('iPhone 17 Pro').map((s) => s.udid)).toEqual(['WANTED', 'CLONE']);
+  });
+
+  it('adopts booted clones while the configured simulator is shut down, keeping their runtime', () => {
+    // The clones anchor the runtime: provisioning then boots or clones only
+    // on that one, rather than any runtime with a same-named device.
+    mockListSimulators([
+      { udid: 'SOURCE', name: 'iPhone 17 Pro', state: 'Shutdown', runtime: 'iOS-26-1' },
+      { udid: 'CLONE', name: 'iPhone 17 Pro (Tapsmith Worker 1)', state: 'Booted', runtime: 'iOS-26-4' },
+    ]);
+
+    expect(listAdoptableBootedSimulators('iPhone 17 Pro').map((s) => s.udid)).toEqual(['CLONE']);
   });
 
   it('matches a configured UDID', () => {

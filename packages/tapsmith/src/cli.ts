@@ -1190,10 +1190,9 @@ async function provisionMultiWorkerDevices(
         });
       }
     }
-    // Only booted simulators the config names, on the primary's runtime: any
-    // other may be one the developer is using (PILOT-511). Tapsmith's own
-    // clones come back through `reusableUdids` below. No `simulator` (a
-    // physical primary) → nothing to adopt.
+    // Only booted simulators the config names and Tapsmith's clones of them,
+    // on the primary's runtime: any other may be one the developer is using
+    // (PILOT-511). No `simulator` (a physical primary) → nothing to adopt.
     const adoptable = config.simulator
       ? listAdoptableBootedSimulators(config.simulator, { compatibleWith: config.device })
       : [];

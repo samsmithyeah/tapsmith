@@ -88,12 +88,18 @@ export function listBootedSimulators(): SimulatorInfo[] {
   return listSimulators().filter((s) => s.state === 'Booted');
 }
 
+/** Whether `name` is one Tapsmith gives its clones of `source` (`<source> (Tapsmith Worker N)`). */
+function isTapsmithCloneOf(name: string, source: string): boolean {
+  const suffix = name.startsWith(`${source} (Tapsmith Worker `) ? name.slice(source.length) : '';
+  return /^ \(Tapsmith Worker \d+\)$/.test(suffix);
+}
+
 /**
  * The booted simulators a run may adopt for `simulator: <configured>`: those
- * whose name or UDID is the configured value (PILOT-511). Any other booted
- * simulator is left alone — it may be one the developer is using. Tapsmith's
- * own clones (`<name> (Tapsmith Worker N)`) never match here; callers reuse
- * them through the clone manifest (`cleanupStaleSimulators`).
+ * whose name or UDID is the configured value, and Tapsmith's own clones of it
+ * (`<configured> (Tapsmith Worker N)`, the names `provisionSimulators` gives
+ * them) (PILOT-511). Any other booted simulator is left alone — it may be one
+ * the developer is using.
  *
  * Only simulators on one iOS runtime are returned, because the agent's
  * xctestrun is OS-version-specific (one built for iOS 26.4 fails on 26.1):
@@ -106,7 +112,9 @@ export function listAdoptableBootedSimulators(
   opts: { among?: readonly string[]; compatibleWith?: string } = {},
 ): SimulatorInfo[] {
   const booted = listBootedSimulators();
-  let matching = booted.filter((s) => s.name === configured || s.udid === configured);
+  let matching = booted.filter((s) =>
+    s.name === configured || s.udid === configured || isTapsmithCloneOf(s.name, configured),
+  );
   if (opts.among) {
     const byUdid = new Map(matching.map((s) => [s.udid, s]));
     matching = opts.among.flatMap((udid) => {
