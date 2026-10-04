@@ -282,6 +282,10 @@ entry is `{ serial, model, state, isEmulator, platform, osVersion }`.
 
 Target a specific device by its serial number.
 
+Tapsmith's run paths claim a device before selecting it, and refuse a device that another running Tapsmith session holds
+(see [Several sessions on one machine](parallel-and-sharding.md#several-sessions-on-one-machine)). `setDevice`
+itself does not check claims: switching devices mid-test is up to the test.
+
 ```typescript
 await device.setDevice("emulator-5554");
 ```
@@ -2474,9 +2478,15 @@ The results:
   unpaired or has Developer Mode `disabled` (one line per problem). `developerMode` and `transport` pass through what devicectl reports, so treat a value not listed
   here as unknown. `notConnected` lists, as `{ udid, name }`, the devices devicectl only remembers (unplugged,
   out of Wi-Fi range, or paired with another Mac); they never affect `ok`, and `list-devices` leaves them out.
-- **`list-devices --json`**: `{ devices }`, each `{ ready, platform, serial, name, osLabel, blockers }` —
+- **`list-devices --json`**: `{ devices }`, each `{ ready, platform, serial, name, osLabel, blockers, inUseBy }` —
   `platform` is `android`, `android-emu`, `ios-sim` or `ios-device`; `osLabel` is like `iOS 18.1` or empty
-  when unknown; `blockers` are the fixes that would make it ready, empty when `ready`.
+  when unknown; `blockers` are the fixes that would make it ready, empty when `ready`. `inUseBy` is the
+  other running Tapsmith session that has claimed the device (see
+  [Several sessions on one machine](parallel-and-sharding.md#several-sessions-on-one-machine)), as
+  `{ command, pid, project, since, daemonAddress }`, or `null` when none has; `ready` does not take it into account.
+  `command` is like `tapsmith test --ui` or `tapsmith mcp-server`, `pid` is that session's root process, `project` the
+  directory it was started in, `since` the ISO time it claimed the device, and `daemonAddress` the daemon it drives the
+  device through, or `null` when unknown.
 - **`telemetry --json`** (every action): `{ enabled, reason?, debug, stateFile, anonymousId?, endpoint,
   configPath, configConsulted, docs }` — `reason` is `env`, `config` or `machine` when disabled; see
   [Telemetry](telemetry.md).
@@ -2763,7 +2773,7 @@ npx tapsmith create-avd --install-tools         # non-interactive bootstrap (CI)
 
 ### `tapsmith list-devices [--json]`
 
-Print a table of every device Tapsmith can target: Android (ADB), iOS simulators (simctl), and iOS physical devices (devicectl). Each row shows a one-line status (`Ready` or an imperative fix). An Android device adb lists but cannot use — unauthorized (the USB-debugging prompt was not accepted), offline, or `no permissions` (Linux without udev rules) — is listed as not ready with the same fix `tapsmith doctor` gives; Tapsmith never selects one for a test run. When a run finds no usable device, its error also names any attached device adb cannot use, with its adb state. `--json` prints `{ devices }`, or the [JSON error envelope](#json-output---json) when the daemon cannot be started or cannot list devices.
+Print a table of every device Tapsmith can target: Android (ADB), iOS simulators (simctl), and iOS physical devices (devicectl). Each row shows a one-line status (`Ready` or an imperative fix). An Android device adb lists but cannot use — unauthorized (the USB-debugging prompt was not accepted), offline, or `no permissions` (Linux without udev rules) — is listed as not ready with the same fix `tapsmith doctor` gives; Tapsmith never selects one for a test run. When a run finds no usable device, its error also names any attached device adb cannot use, with its adb state. A device another running Tapsmith session has claimed shows `In use by` that session's command and pid. `--json` prints `{ devices }`, or the [JSON error envelope](#json-output---json) when the daemon cannot be started or cannot list devices.
 
 ```bash
 npx tapsmith list-devices

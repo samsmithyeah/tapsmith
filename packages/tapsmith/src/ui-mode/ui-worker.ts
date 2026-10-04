@@ -33,6 +33,7 @@ import {
   recoverDeviceSessions,
   type DeviceSession,
 } from '../device-session.js';
+import { currentSession } from '../device-claims.js';
 import { createActionProgressMessenger } from '../action-progress-renderer.js';
 import { isAbortError } from '../abort.js';
 import type { AnyTraceEvent } from '../trace/types.js';
@@ -192,6 +193,7 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
     ],
     config,
     {
+      claimSession: currentSession(),
       label: `UI Worker ${workerId}`,
       launchPhase: 'UI worker startup launch',
       forceInstall: msg.forceInstall,

@@ -462,6 +462,36 @@ However, device isolation does not extend to your backend. If multiple workers m
 - **Per-worker backend environments.** If your backend supports it, point each worker at a separate test tenant or namespace.
 - **Idempotent tests.** Design tests so they succeed regardless of pre-existing state.
 
+### Several sessions on one machine
+
+Two Tapsmith sessions driving one device break each other: each restarts the other's agent and app, and the
+failures read as flaky tests ("hierarchy contains no elements", "Failed to connect to agent socket"). So every
+session records the devices it drives, and no other session takes them while it runs. A *session* is one
+`tapsmith test` (sequential, `--workers N`, `--watch` or `--ui`) or one `tapsmith mcp-server`. Its workers,
+watch re-runs, UI workers and an MCP server's `tapsmith_run_tests` runs are all part of it, and share its
+devices.
+
+- **Auto-picked devices** skip a device another session holds. Booted simulators and connected emulators that
+  are in use are passed over; when more devices are needed, provisioning boots, launches or clones others as it
+  would if the held ones were not there. Tapsmith's
+  reusable simulator clones are never reused or deleted while another session is using them.
+- **Pinned devices** (`--device`, `device` in the config or a project, a `use.devices` member) that another
+  session holds are refused, and the error names that session's command, process id and directory:
+
+  ```
+  Device emulator-5554 is in use by another Tapsmith session: `tapsmith test --ui` (pid 4242) in /work/app, since 10:41:03.
+  ```
+
+- **Daemons** another session is driving a device through are never adopted or repointed, including the one on
+  the default `localhost:50051` that a headless MCP server or a `tapsmith test` would otherwise connect to.
+- **`tapsmith list-devices`** shows which session holds each device (`inUseBy` in `--json`).
+
+A session's claims end when it exits, and a claim stands only while a process of that session that claimed it
+still runs: a session that crashed or was killed holds nothing, and its devices are free for the next run at
+once, with nothing to clean up. If a process outlives its session (a worker left running), the refusal names it. The claims live in `~/.tapsmith/claims/`, one file per device.
+They coordinate Tapsmith sessions only: an emulator you are using by hand, or a device another tool drives, is
+not protected by them.
+
 ### Reporter Considerations
 
 When running in parallel or with sharding, keep these reporter behaviors in mind:

@@ -16,11 +16,17 @@ vi.mock('node:child_process', async (importOriginal) => ({
 
 let waitForReady: () => Promise<boolean>;
 let ping: (address: string) => Promise<{ version: string; agentConnected?: boolean }>;
+let listDevices: (address: string) => Promise<{ devices: Array<{ serial: string; state: string }> }>;
+let startAgent: (address: string) => Promise<unknown>;
+let setDevice: (address: string) => Promise<{ success: boolean }>;
 vi.mock('../grpc-client.js', () => ({
   TapsmithGrpcClient: class {
     constructor(readonly address: string) {}
     waitForReady(): Promise<boolean> { return waitForReady(); }
     ping(): Promise<{ version: string; agentConnected?: boolean }> { return ping(this.address); }
+    listDevices(): Promise<{ devices: Array<{ serial: string; state: string }> }> { return listDevices(this.address); }
+    setDevice(): Promise<{ success: boolean }> { return setDevice(this.address); }
+    startAgent(): Promise<unknown> { return startAgent(this.address); }
     close(): void {}
   },
 }));
@@ -34,8 +40,9 @@ vi.mock('../port-utils.js', async (importOriginal) => ({
   pickFreePort: () => pickPort(),
 }));
 
-const { startDaemon, closeAllClients, ensureConnected, getAllDaemonAddresses } = await import('../mcp/connection.js');
+const { startDaemon, closeAllClients, ensureConnected, ensurePlatformTarget, getAllDaemonAddresses } = await import('../mcp/connection.js');
 const { mcpDaemonLogPath } = await import('../mcp/port-file.js');
+const { claimDevice, releaseSessionClaims } = await import('../device-claims.js');
 
 class FakeDaemon extends EventEmitter {
   pid: number | undefined = 99999;
@@ -68,6 +75,9 @@ beforeEach(() => {
   spawnMock.mockReset();
   pickPort = () => Promise.resolve(nextPort++);
   ping = () => Promise.resolve({ version: 'test', agentConnected: true });
+  listDevices = () => Promise.resolve({ devices: [] });
+  startAgent = () => Promise.resolve({});
+  setDevice = () => Promise.resolve({ success: true });
   stderr = '';
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
     stderr += String(chunk);
@@ -322,5 +332,130 @@ describe('startDaemon', () => {
     releasePort();
     expect(await starting).toBeNull();
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+});
+
+// PILOT-381: the default-address fallback adopted another worktree's daemon and
+// restarted that session's agent. A daemon another live session is driving its
+// device through is not a candidate.
+describe('daemons another session owns', () => {
+  const other = {
+    id: 'other-session', pid: process.pid, command: 'tapsmith test', project: '/elsewhere', startedAt: new Date().toISOString(),
+  };
+  afterEach(() => releaseSessionClaims(other.id));
+
+  it('is not adopted while that session drives its device through it: the session starts its own', async () => {
+    claimDevice('emulator-5554', other, { daemonAddress: 'localhost:50051' });
+    waitForReady = () => Promise.resolve(true);
+    listDevices = (address) => Promise.resolve({
+      devices: address === 'localhost:50051' ? [{ serial: 'emulator-5554', state: 'Active' }] : [],
+    });
+    spawnMock.mockImplementation(() => new FakeDaemon());
+
+    await ensureConnected();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(getAllDaemonAddresses()).not.toContain('50051');
+    expect(stderr).toContain('Ignoring localhost:50051 — another Tapsmith session is driving emulator-5554 through it');
+  });
+
+  it('is adopted when the daemon on that port is no longer driving the claimed device (a reused port)', async () => {
+    claimDevice('emulator-5554', other, { daemonAddress: 'localhost:50051' });
+    waitForReady = () => Promise.resolve(true);
+    listDevices = () => Promise.resolve({ devices: [{ serial: 'emulator-5554', state: 'Discovered' }] });
+    spawnMock.mockImplementation(() => new FakeDaemon());
+
+    await ensureConnected();
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(getAllDaemonAddresses()).toContain('localhost:50051');
+  });
+
+  it('refuses a pinned device another live session holds, naming it, before starting a daemon for it', async () => {
+    claimDevice('emulator-5554', { ...other, command: 'tapsmith test --ui' });
+    spawnMock.mockImplementation(() => new FakeDaemon());
+    // The session's own discovery daemon answers once spawned.
+    waitForReady = () => Promise.resolve(spawnMock.mock.calls.length > 0);
+
+    const config = {
+      platform: 'android', device: 'emulator-5554', package: 'com.x', timeout: 1000, retries: 0, screenshot: 'never',
+      testMatch: [], daemonAddress: 'localhost:50051', rootDir: '/p', outputDir: 'out', workers: 1, launchEmulators: false,
+    } as unknown as Parameters<typeof ensurePlatformTarget>[0];
+    await expect(ensurePlatformTarget(config)).rejects.toThrow(
+      /Device emulator-5554 is in use by another Tapsmith session: `tapsmith test --ui` \(pid \d+\) in \/elsewhere/,
+    );
+    // Only discovery's daemon: none was started for the refused pin.
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives the device back when its target cannot be prepared', async () => {
+    const { listDeviceClaims } = await import('../device-claims.js');
+    spawnMock.mockImplementation(() => new FakeDaemon());
+    waitForReady = () => Promise.resolve(spawnMock.mock.calls.length > 0);
+    listDevices = () => Promise.resolve({ devices: [{ serial: 'emulator-5560', state: 'Discovered', platform: 'android' } as never] });
+    setDevice = () => Promise.reject(new Error('selecting the device failed'));
+    const config = {
+      platform: 'android', device: 'emulator-5560', package: 'com.x', timeout: 1000, retries: 0, screenshot: 'never',
+      testMatch: [], daemonAddress: 'localhost:50051', rootDir: '/p', outputDir: 'out', workers: 1, launchEmulators: false,
+    } as unknown as Parameters<typeof ensurePlatformTarget>[0];
+    await expect(ensurePlatformTarget(config)).rejects.toThrow();
+    expect(listDeviceClaims().map((c) => c.device)).not.toContain('emulator-5560');
+  });
+
+  it('is not adopted when it is pointed at a device another session drives through a different daemon', async () => {
+    claimDevice('emulator-5554', other, { daemonAddress: 'localhost:50999' });
+    waitForReady = () => Promise.resolve(true);
+    listDevices = (address) => Promise.resolve({
+      devices: address === 'localhost:50051' ? [{ serial: 'emulator-5554', state: 'Active' }] : [],
+    });
+    spawnMock.mockImplementation(() => new FakeDaemon());
+
+    await ensureConnected();
+    expect(getAllDaemonAddresses()).not.toContain('50051');
+    expect(stderr).toContain('emulator-5554, which another Tapsmith session is driving');
+  });
+
+  it('claims the device an adopted daemon of its own is already pointed at', async () => {
+    const { listDeviceClaims, currentSession } = await import('../device-claims.js');
+    waitForReady = () => Promise.resolve(true);
+    listDevices = () => Promise.resolve({ devices: [{ serial: 'emulator-5570', state: 'Active' }] });
+    spawnMock.mockImplementation(() => new FakeDaemon());
+
+    await ensureConnected();
+    expect(getAllDaemonAddresses()).toContain('localhost:50051');
+    const claim = listDeviceClaims().find((c) => c.device === 'emulator-5570');
+    expect(claim?.session.id).toBe(currentSession().id);
+    // Given back with the connection.
+    closeAllClients();
+  });
+
+  it('gives back the device it claimed for a found daemon that then cannot be connected to', async () => {
+    const { listDeviceClaims } = await import('../device-claims.js');
+    waitForReady = () => Promise.resolve(true);
+    listDevices = (address) => Promise.resolve({
+      devices: address === 'localhost:50051' ? [{ serial: 'emulator-5580', state: 'Active' }] : [],
+    });
+    ping = (address) => (address === 'localhost:50051'
+      ? Promise.reject(new Error('14 UNAVAILABLE: Connection dropped'))
+      : Promise.resolve({ version: 'test', agentConnected: true }));
+    spawnMock.mockImplementation(() => new FakeDaemon());
+
+    await ensureConnected();
+    expect(getAllDaemonAddresses()).not.toContain('50051');
+    expect(listDeviceClaims().map((c) => c.device)).not.toContain('emulator-5580');
+  });
+
+  it('gives the device back when the agent fails to start on a daemon it already pools', async () => {
+    const { listDeviceClaims } = await import('../device-claims.js');
+    // A configured daemon on the default address, pointed at nothing yet.
+    waitForReady = () => Promise.resolve(true);
+    listDevices = () => Promise.resolve({ devices: [{ serial: 'emulator-5610', state: 'Discovered', platform: 'android' } as never] });
+    ping = () => Promise.resolve({ version: 'test', agentConnected: false });
+    startAgent = () => Promise.reject(new Error('agent never started'));
+    spawnMock.mockImplementation(() => new FakeDaemon());
+    const config = {
+      platform: 'android', device: 'emulator-5610', package: 'com.x', timeout: 1000, retries: 0, screenshot: 'never',
+      testMatch: [], daemonAddress: 'localhost:50051', rootDir: '/p', outputDir: 'out', workers: 1, launchEmulators: false,
+    } as unknown as Parameters<typeof ensurePlatformTarget>[0];
+    await expect(ensurePlatformTarget(config)).rejects.toThrow(/agent never started/);
+    expect(listDeviceClaims().map((c) => c.device)).not.toContain('emulator-5610');
   });
 });

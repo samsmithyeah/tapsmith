@@ -17,6 +17,7 @@ import { sharedDeviceGroup } from './project.js';
 import { findDaemonBin } from './daemon-bin.js';
 import { assignGroupMemberDevices, deviceGroupSize, resolveDeviceGroup, type DeviceGroupEntry } from './config.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
+import { claimDeviceOrThrow, claimUpTo, currentSession, heldDevicesNote, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { labelledMessage, withDetail } from './error-detail.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary, type DaemonOutputCapture, type DaemonStartFailed } from './daemon-start.js';
 import type { TestResult, SuiteResult } from './runner.js';
@@ -51,6 +52,7 @@ import {
   killAgentRunnersForSimulators,
   filterHealthySimulators,
   listAdoptableBootedSimulators,
+  listBootedSimulators,
   type ClonedSimulator,
 } from './ios-simulator.js';
 import { freeStaleAgentPort, findPidsOnPort } from './port-utils.js';
@@ -1173,8 +1175,12 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   for (let offset = 0; offset < maxFirstDaemonPortAttempts; offset++) {
     const candidateDaemonPort = baseDaemonPort + 1 + _portOffset + offset;
     const candidateAgentPort = baseAgentPort + 1 + _portOffset + offset;
-    freeStaleAgentPort(candidateAgentPort, reportFreedAgentPort);
+    // The agent port is freed only for a slot whose daemon port is free: a
+    // live daemon on the slot is another session's (or another bucket's), and
+    // the runner on its agent port is that session's live agent, not a stale
+    // one — killing it broke the other run mid-test (PILOT-381).
     if (await isPortAvailable(candidateDaemonPort)) {
+      freeStaleAgentPort(candidateAgentPort, reportFreedAgentPort);
       firstDaemonPort = candidateDaemonPort;
       firstAgentPort = candidateAgentPort;
       break;
@@ -1376,11 +1382,15 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           );
         }
       }
+      // Refused before any worker touches it when another session drives it.
+      claimDeviceOrThrow(deviceSerials[0], currentSession());
       launchProgress?.update('worker-devices', { state: 'running', detail: `physical iOS device ${deviceSerials[0]}` });
       if (!launchProgress) process.stderr.write(`${DIM}Physical iOS device: ${deviceSerials[0]}${RESET}\n`);
     } else if (fullyPinned) {
       // ─── Every device named outright ───
       deviceSerials = fullyPinned;
+      // Refused before any worker touches them when another session drives one.
+      for (const serial of fullyPinned) claimDeviceOrThrow(serial, currentSession());
       launchProgress?.update('worker-devices', { state: 'running', detail: `pinned ${fullyPinned.join(', ')}` });
     } else if (isIos && config.simulator) {
       // ─── iOS simulator discovery & provisioning ───
@@ -1444,8 +1454,12 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     } else {
       // ─── Android device discovery & provisioning ───
       const androidDevices = onlineDevices.filter((d) => d.platform !== 'ios');
+      // Devices another live Tapsmith session holds are skipped (PILOT-381),
+      // but stay "occupied" for the emulator launch below.
+      const unheldAndroid = withoutHeldDevices(androidDevices.map((d) => d.serial));
+      for (const claim of unheldAndroid.held) note(skippedHeldDeviceMessage(claim));
       const prefilteredOnline = prefilterDevicesForStrategy(
-        androidDevices.map((d) => d.serial),
+        unheldAndroid.free,
         deviceStrategy,
         config.avd,
       );
@@ -1518,12 +1532,22 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       throw new LaunchSetupError(
         isIos
           ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
+            // Booted ones other sessions hold are named, not reported missing.
+            + heldDevicesNote(withoutHeldDevices(
+              listBootedSimulators().filter((sim) => sim.name === config.simulator || sim.udid === config.simulator).map((sim) => sim.udid),
+            ).held)
           // adb's state now, not at discovery: provisioning may have changed it.
-          : noOnlineDeviceMessage(config, listAdbDevices()),
+          : noOnlineDeviceMessage(config, listAdbDevices())
+            + heldDevicesNote(withoutHeldDevices(listAdbDevices().filter((d) => d.state === 'device').map((d) => d.serial)).held),
       );
     }
 
     if (pinnedGroup) {
+      // A pinned member another session drives is refused by name, not left
+      // to surface as a device shortfall (PILOT-381).
+      for (const serial of [deviceGroup[0].device, ...pinnedMemberSerials]) {
+        if (serial) claimDeviceOrThrow(serial, currentSession());
+      }
       // A pinned group: its one worker holds the primary (from `config.device`
       // or the first unpinned device found), then the members in order — each
       // keeping its pin, the unpinned ones taking the next free device.
@@ -1542,6 +1566,11 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         ? [primary, ...members]
         : [primary, ...pinnedMemberSerials, ...deviceSerials.filter((s) => s !== primary && !pinnedMemberSerials.includes(s))];
     }
+    // Claimed as they are picked, and only as many as the workers use
+    // (PILOT-381): two sessions provisioning at once then divide the free
+    // devices instead of both taking the first ones (pinned ones were claimed
+    // above, and are this session's already).
+    deviceSerials = claimUpTo(deviceSerials, maxUsefulWorkers * groupSize).claimed;
     if (deviceSerials.length < groupSize) {
       failStep('worker-devices', `device group needs ${groupSize} device(s); ${deviceSerials.length} available`);
       throw new LaunchSetupError(
@@ -1621,8 +1650,9 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       const port = baseDaemonPort + 1 + _portOffset + k;
       const agentPort = baseAgentPort + 1 + _portOffset + k;
       if (reservedDaemonPorts.has(port)) continue;
-      freeStaleAgentPort(agentPort, reportFreedAgentPort);
+      // As for worker 0: only a free slot's agent port is cleared.
       if (await isPortAvailable(port)) {
+        freeStaleAgentPort(agentPort, reportFreedAgentPort);
         portPairs.push({ daemonPort: port, agentPort });
         reservedDaemonPorts.add(port);
       } else {

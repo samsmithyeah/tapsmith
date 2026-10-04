@@ -29,6 +29,7 @@ import {
   type DeviceSession,
 } from './device-session.js';
 import type { PreparedState, ResetCapabilities } from './app-reset.js';
+import { claimDeviceOrThrow, claimFirstFree, claimUpTo, currentSession, ensureClaimSession, devicesHeldByThisProcess, heldDevicesNote, releaseDeviceClaim, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { discoverTestFiles } from './test-file-discovery.js';
 import { resolveTsxBin } from './child-scripts.js';
@@ -380,6 +381,12 @@ async function ensureDaemonRunning(
   // the config. A listener that does not answer is a stale daemon: kill it and
   // reuse the port so the --platform flag is always the current one.
   let sharingWithLiveSession = false;
+  // The agent port the daemon forwards to (iOS: the port its runner listens
+  // on). The default 18700 is the live session's too when we share the
+  // machine with one, so ours takes a free port as well — the new daemon
+  // would otherwise find that session's runner on 18700 and (rightly) refuse
+  // to adopt it, or a second runner could not bind it (PILOT-381).
+  let agentPort: number | undefined;
   try {
     const probe = new TapsmithGrpcClient(address);
     const alive = await probe.waitForReady(1_000);
@@ -390,6 +397,9 @@ async function ensureDaemonRunning(
       const requestedPort = requestedAddress.split(':').pop() ?? port;
       address = `localhost:${freePort}`;
       port = String(freePort);
+      let freeAgentPort = await pickFreePort();
+      while (freeAgentPort === freePort) freeAgentPort = await pickFreePort();
+      agentPort = freeAgentPort;
       if (progress) progress.note(`port ${requestedPort} is in use by another Tapsmith session; starting on ${address}`);
       else console.log(dim(`Daemon port ${requestedPort} is in use by another Tapsmith session; starting on ${address}`));
     } else {
@@ -444,6 +454,7 @@ async function ensureDaemonRunning(
   // Start a fresh daemon
   const resolvedBin = process.env.TAPSMITH_DAEMON_BIN ?? daemonBin ?? findDaemonBin();
   const daemonArgs = ['--port', port];
+  if (agentPort !== undefined) daemonArgs.push('--agent-port', String(agentPort));
   if (platform) daemonArgs.push('--platform', platform);
   // `TAPSMITH_DAEMON_LOG=<path>` sends the daemon's stdout and stderr to a
   // file, for debugging daemon-side behaviour (MITM proxy pre-start,
@@ -539,8 +550,29 @@ interface SequentialDeviceState {
  * for a given effective config. Used by sequential mode to set up the
  * initial device and to switch devices between projects whose
  * `deviceSignature` differs.
+ *
+ * A setup that fails gives back the devices it claimed (PILOT-381): a session
+ * that goes on — a multi-target run without this target, a UI session — must
+ * not hold a device it is not driving.
  */
 async function setupSequentialDevice(
+  ...args: Parameters<typeof setupSequentialDeviceClaimed>
+): Promise<SequentialDeviceState> {
+  const session = currentSession();
+  // This process's holds, not the session's: another process of the session
+  // (an MCP server whose run_tests child this is) may claim meanwhile.
+  const heldBefore = devicesHeldByThisProcess(session);
+  try {
+    return await setupSequentialDeviceClaimed(...args);
+  } catch (err) {
+    for (const device of devicesHeldByThisProcess(session)) {
+      if (!heldBefore.has(device)) releaseDeviceClaim(device, session);
+    }
+    throw err;
+  }
+}
+
+async function setupSequentialDeviceClaimed(
   cfg: TapsmithConfig,
   forceInstall: boolean,
   signature: string,
@@ -554,7 +586,9 @@ async function setupSequentialDevice(
 
   if (!target.selectedSerial) {
     progress?.fail('primary-device', 'no online device found');
-    throw new Error(noOnlineDeviceMessage(cfg, listAdbDevices()));
+    // Devices that are there but held by other sessions are named: the user
+    // stops one, rather than looking for a device problem they do not have.
+    throw new Error(noOnlineDeviceMessage(cfg, listAdbDevices()) + heldDevicesNote(withoutHeldDevices(listConnectedDeviceSerials()).held));
   }
 
   cfg.device = target.selectedSerial;
@@ -673,6 +707,7 @@ async function setupSequentialDevice(
       { name: group[0].name, serial: deviceSerial, daemonAddress },
       cfg,
       {
+        claimSession: currentSession(),
         label: 'Device',
         client,
         forceInstall,
@@ -823,6 +858,9 @@ async function openGroupMembersOnFreshDaemons(
   const members = group.slice(1);
   const provisioned = await provisionGroupMemberDevices(cfg, group, progress);
   launchedEmulators.push(...provisioned.launched);
+  // Before `adb root` below: a member another session drives is refused
+  // without touching it (PILOT-381). openDeviceGroup re-claims them as its own.
+  for (const serial of provisioned.serials) claimDeviceOrThrow(serial, currentSession());
 
   const daemonBin = resolveDaemonBin(cfg);
   const traceConfig = resolveTraceConfig(cfg.trace);
@@ -876,6 +914,7 @@ async function openGroupMembersOnFreshDaemons(
   try {
 
     const sessions = await openDeviceGroup(specs, cfg, {
+      claimSession: currentSession(),
       label: 'Device',
       forceInstall,
       launchPhase: 'startup launch',
@@ -947,6 +986,10 @@ async function provisionGroupMemberDevices(
  */
 function teardownSequentialDevice(state: SequentialDeviceState): void {
   for (const member of state.sessions.slice(1)) closeDeviceSession(member);
+  // The run moves to another target: give its devices back (PILOT-381).
+  for (const serial of new Set([state.deviceSerial, ...state.sessions.map((s) => s.serial)])) {
+    releaseDeviceClaim(serial, currentSession());
+  }
   try { state.device.close(); } catch { /* already closed */ }
   try { state.client.close(); } catch { /* already closed */ }
   if (spawnedDaemonProcess) {
@@ -977,6 +1020,10 @@ async function ensureSequentialTargetDevice(
   // alone, which left a group pinning both members with its primary auto-picked.
   const pinned = primaryDevicePin(config);
   if (pinned) {
+    // Claimed before anything touches it (the health check may restart adb,
+    // network capture restarts adbd as root): a device another session drives
+    // is refused here, not after its run has been disturbed (PILOT-381).
+    claimDeviceOrThrow(pinned, currentSession());
     // If the device is an iOS simulator that's already booted, log reuse
     if (config.platform === 'ios') {
       const { listBootedSimulators } = await import('./ios-simulator.js');
@@ -1004,6 +1051,7 @@ async function ensureSequentialTargetDevice(
       try {
         const { resolvePhysicalIosDevice } = await import('./ios-device-resolve.js');
         const udid = resolvePhysicalIosDevice();
+        claimDeviceOrThrow(udid, currentSession());
         const message = `Auto-detected physical iOS device ${udid}.`;
         if (progress) progress.note(message);
         else process.stderr.write(`${DIM}${message}${RESET}\n`);
@@ -1028,8 +1076,15 @@ async function ensureSequentialTargetDevice(
     }
 
     // Check for already-booted simulators
+    // Not one another live Tapsmith session holds (PILOT-381):
+    // provisionSimulator below passes over those too.
+    // Claimed as it is picked, so a session starting at the same moment
+    // takes another one rather than this one.
     const booted = listBootedSimulators();
-    const matching = booted.find((s) => s.name === simulatorName || s.udid === simulatorName);
+    const matchingUdid = claimFirstFree(
+      booted.filter((s) => s.name === simulatorName || s.udid === simulatorName).map((s) => s.udid),
+    );
+    const matching = booted.find((s) => s.udid === matchingUdid);
     if (matching) {
       const message = `Reusing already-booted simulator ${matching.udid} (${matching.name}).`;
       if (progress) progress.update('primary-device', { state: 'running', detail: `reusing already-booted ${matching.name}` });
@@ -1041,6 +1096,7 @@ async function ensureSequentialTargetDevice(
     try {
       progress?.update('primary-device', { state: 'running', detail: `booting ${simulatorName}` });
       const { udid, bootComplete } = provisionSimulator(simulatorName);
+      claimDeviceOrThrow(udid, currentSession());
       // Installed now, while the simulator is still settling, rather than
       // right before the agent starts: on a hosted runner the first launch
       // of a just-installed app then pushed the agent past its startup bound.
@@ -1083,8 +1139,15 @@ async function ensureSequentialTargetDevice(
 
   const deviceStrategy = resolveDeviceStrategy(config);
   const onlineSerials = listConnectedDeviceSerials();
+  // Devices another live Tapsmith session holds are skipped, not taken
+  // (PILOT-381). They stay "occupied" for the emulator launch below.
+  const unheldOnline = withoutHeldDevices(onlineSerials);
+  for (const claim of unheldOnline.held) {
+    if (progress) progress.note(skippedHeldDeviceMessage(claim));
+    else process.stderr.write(`${DIM}${skippedHeldDeviceMessage(claim)}${RESET}\n`);
+  }
   const prefilteredOnline = prefilterDevicesForStrategy(
-    onlineSerials,
+    unheldOnline.free,
     deviceStrategy,
     config.avd,
   );
@@ -1103,8 +1166,11 @@ async function ensureSequentialTargetDevice(
     progress,
   );
 
-  if (selectedOnline.selectedSerials.length > 0) {
-    return { selectedSerial: selectedOnline.selectedSerials[0], launched: [] };
+  // Claimed as it is picked: a session starting at the same moment, which
+  // saw the same free devices, takes the next one instead of this one.
+  const pickedOnline = claimFirstFree(selectedOnline.selectedSerials);
+  if (pickedOnline) {
+    return { selectedSerial: pickedOnline, launched: [] };
   }
 
   if (!config.launchEmulators) {
@@ -1139,7 +1205,7 @@ async function ensureSequentialTargetDevice(
   warnSequentialSkippedDevices(selectedProvisioned.skippedDevices, progress);
 
   return {
-    selectedSerial: selectedProvisioned.selectedSerials[0],
+    selectedSerial: claimFirstFree(selectedProvisioned.selectedSerials),
     launched: provision.launched,
   };
 }
@@ -1172,6 +1238,8 @@ async function provisionMultiWorkerDevices(
   const wanted = opts?.wanted ?? config.workers;
   if (wanted <= 1) return { deviceSerials: undefined, launched, freshSerials };
   const pinned = (opts?.pinned ?? []).filter((s) => s !== config.device);
+  // A pinned member another session drives is refused by name, not dropped.
+  for (const serial of pinned) claimDeviceOrThrow(serial, currentSession());
   const rowProgress = opts?.reportProgress === false ? undefined : opts?.progress;
   rowProgress?.start('worker-devices', `preparing ${wanted} worker device(s)`);
 
@@ -1233,7 +1301,13 @@ async function provisionMultiWorkerDevices(
     }
   } else {
     const allConnected = listConnectedDeviceSerials();
-    const others = allConnected.filter((s) => s !== config.device && !pinned.includes(s));
+    // Never another live session's device (PILOT-381, PILOT-328).
+    const unheld = withoutHeldDevices(allConnected);
+    for (const claim of unheld.held) {
+      if (opts?.progress) opts.progress.note(skippedHeldDeviceMessage(claim));
+      else if (!opts?.quiet) process.stderr.write(`${DIM}${skippedHeldDeviceMessage(claim)}${RESET}\n`);
+    }
+    const others = unheld.free.filter((s) => s !== config.device && !pinned.includes(s));
     serials = [config.device!, ...pinned, ...others].filter(Boolean);
 
     if (serials.length < wanted && config.launchEmulators) {
@@ -1259,6 +1333,11 @@ async function provisionMultiWorkerDevices(
       serials = provision.allSerials;
     }
   }
+
+  // Claimed as they are picked, and only as many as wanted (PILOT-381): two
+  // sessions provisioning at once then divide the free devices instead of
+  // both taking the first ones, and the run holds nothing it will not use.
+  serials = claimUpTo(serials, wanted).claimed;
 
   if (serials.length < 2) {
     rowProgress?.skip('worker-devices', `${serials.length} device(s) available; using single-worker mode`);
@@ -1348,7 +1427,19 @@ interface PerProjectProvisionResult {
  * fixed worker count. Returns the device serials successfully provisioned
  * (may be fewer than requested if hardware constraints prevent it).
  */
+/**
+ * {@link provisionDevicesForBucketUnclaimed}, with the devices it hands back
+ * claimed as they are picked — no more than `desiredWorkers` of them, and none
+ * another session holds (PILOT-381).
+ */
 async function provisionDevicesForBucket(
+  ...args: Parameters<typeof provisionDevicesForBucketUnclaimed>
+): Promise<{ serials: string[]; launched: LaunchedEmulator[]; reusedSimulatorCount: number }> {
+  const provisioned = await provisionDevicesForBucketUnclaimed(...args);
+  return { ...provisioned, serials: claimUpTo(provisioned.serials, args[1]).claimed };
+}
+
+async function provisionDevicesForBucketUnclaimed(
   effectiveConfig: TapsmithConfig,
   desiredWorkers: number,
   progress?: LaunchProgressSink,
@@ -1363,6 +1454,11 @@ async function provisionDevicesForBucket(
   if (desiredWorkers <= 0) return { serials: [], launched: [], reusedSimulatorCount: 0 };
   const pinnedMembers = (pinnedGroup ?? []).flatMap((e) => (e.device ? [e.device] : []));
   if (pinnedGroup && pinnedMembers.length > 0) {
+    // A pinned member another session drives is refused by name, not left to
+    // surface as a device shortfall (PILOT-381).
+    for (const serial of [pinnedGroup[0].device, ...pinnedMembers]) {
+      if (serial) claimDeviceOrThrow(serial, currentSession());
+    }
     // A pinned group is exactly one worker: the primary (pinned or the first
     // device found), then the members in order — each keeping its pin, the
     // unpinned ones taking the next free device provisioned here. Nothing to
@@ -1378,7 +1474,7 @@ async function provisionDevicesForBucket(
       const pins = pinnedWorkerDevices(group, adb.filter((d) => d.state === 'device').map((d) => d.serial), isIos, adb)!;
       return { serials: pins, launched: [], reusedSimulatorCount: 0 };
     }
-    const pool = await provisionDevicesForBucket({ ...effectiveConfig, devices: undefined, device: undefined }, group.length, progress);
+    const pool = await provisionDevicesForBucketUnclaimed({ ...effectiveConfig, devices: undefined, device: undefined }, group.length, progress);
     const first = group[0].device ?? pool.serials.find((s) => !pinnedMembers.includes(s));
     const members = first ? assignGroupMemberDevices(group, first, pool.serials) : undefined;
     return {
@@ -1422,8 +1518,10 @@ async function provisionDevicesForBucket(
     }
 
     // Find any already-booted matching simulators (no primary required)
+    // Not one another live Tapsmith session holds (PILOT-381).
+    const heldElsewhere = new Set(withoutHeldDevices(listBootedSimulators().map((s) => s.udid)).held.map((c) => c.device));
     const booted = listBootedSimulators().filter(
-      (s) => s.name === effectiveConfig.simulator || s.udid === effectiveConfig.simulator,
+      (s) => (s.name === effectiveConfig.simulator || s.udid === effectiveConfig.simulator) && !heldElsewhere.has(s.udid),
     );
     const existing = booted.map((s) => s.udid).slice(0, desiredWorkers);
 
@@ -1456,8 +1554,15 @@ async function provisionDevicesForBucket(
   // Android
   const allConnected = listConnectedDeviceSerials();
   const deviceStrategy = resolveDeviceStrategy(effectiveConfig);
+  // Devices another live Tapsmith session holds are skipped (PILOT-381), but
+  // stay "occupied" for the emulator launch below.
+  const unheld = withoutHeldDevices(allConnected);
+  for (const claim of unheld.held) {
+    if (progress) progress.note(skippedHeldDeviceMessage(claim));
+    else process.stderr.write(`${DIM}${skippedHeldDeviceMessage(claim)}${RESET}\n`);
+  }
   const prefiltered = prefilterDevicesForStrategy(
-    allConnected,
+    unheld.free,
     deviceStrategy,
     effectiveConfig.avd,
   );
@@ -1582,7 +1687,9 @@ async function provisionPerProjectDevices(
     if (provisioned.serials.length === 0) {
       throw new Error(
         `Failed to provision any devices for bucket "${signature.split('|').slice(0, 2).join(' ')}".`
-        + (bucketEffective.platform === 'ios' ? '' : ` ${attachedDeviceAdvice(bucketEffective, listAdbDevices())}`),
+        + (bucketEffective.platform === 'ios' ? '' : ` ${attachedDeviceAdvice(bucketEffective, listAdbDevices())}`)
+        // Devices other sessions hold are named, not left to read as missing.
+        + (bucketEffective.platform === 'ios' ? '' : heldDevicesNote(withoutHeldDevices(listConnectedDeviceSerials()).held)),
       );
     }
     if (provisioned.serials.length < groupSize) {
@@ -1753,6 +1860,10 @@ async function main(): Promise<void> {
   // forked (the tsx re-exec, workers, watch/MCP run children all inherit it),
   // so every per-file event of this invocation shares one session (PILOT-330).
   ensureSessionEnv();
+  // Likewise the device-claim session (PILOT-381): every process this
+  // invocation forks claims devices as this one session, and this process's
+  // exit releases them.
+  ensureClaimSession(claimSessionCommand(process.argv.slice(2)));
 
   const code = await runCli(process.argv.slice(2), {
     handlers: cliHandlers,
@@ -1763,6 +1874,17 @@ async function main(): Promise<void> {
   });
   // A handler that set process.exitCode itself returns nothing: keep its code.
   if (code !== 0) process.exitCode = code;
+}
+
+/**
+ * How a session is named to other sessions it holds a device against:
+ * `tapsmith test --ui`, `tapsmith mcp-server`. The subcommand and the flags
+ * that say which kind of run it is — nothing else from the command line.
+ */
+function claimSessionCommand(argv: readonly string[]): string {
+  const subcommand = argv.find((a) => !a.startsWith('-'));
+  const modes = argv.filter((a) => a === '--ui' || a === '--watch' || a === '--workers' || a.startsWith('--workers='));
+  return ['tapsmith', ...(subcommand ? [subcommand] : []), ...modes.map((m) => (m.startsWith('--workers') ? '--workers' : m))].join(' ');
 }
 
 async function runTestCommand(args: TestCommandArgs): Promise<void> {

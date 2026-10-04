@@ -6,5 +6,7 @@ export default defineConfig({
     // the shared telemetry client inert so no unit test ever touches the
     // network. telemetry.test.ts builds its own client with an explicit env.
     env: { TAPSMITH_TELEMETRY: '0' },
+    // A device-claims registry per worker (see the file).
+    setupFiles: ['src/__tests__/setup-claims-dir.ts'],
   },
 });

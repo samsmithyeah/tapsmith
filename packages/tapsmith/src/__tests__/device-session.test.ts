@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { TapsmithConfig } from '../config.js';
 
 // The shared device-session module (PILOT-310): one implementation of
@@ -131,6 +134,24 @@ vi.mock('../agent-resolve.js', () => ({
 vi.mock('../session-preflight.js', () => mocks.preflight);
 
 const { openDeviceGroup, openDeviceSession, closeDeviceSession, recoverDeviceSessions, sessionsForRun, sessionsToPrepare, runDeviceCount } = await import('../device-session.js');
+const { CLAIMS_DIR_ENV, claimDevice } = await import('../device-claims.js');
+
+// Claims go to a throwaway registry, never the real `~/.tapsmith/claims`.
+const claimsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-session-claims-'));
+const previousClaimsDir = process.env[CLAIMS_DIR_ENV];
+process.env[CLAIMS_DIR_ENV] = claimsDir;
+afterAll(() => {
+  if (previousClaimsDir === undefined) delete process.env[CLAIMS_DIR_ENV];
+  else process.env[CLAIMS_DIR_ENV] = previousClaimsDir;
+  fs.rmSync(claimsDir, { recursive: true, force: true });
+});
+
+/** This test process's session. No start token, so liveness never shells out to `ps`. */
+const SESSION = {
+  id: 'this-session', pid: process.pid, command: 'tapsmith test', project: '/proj', startedAt: new Date().toISOString(),
+};
+/** Another live session (same pid is fine: liveness is by pid, identity by id). */
+const OTHER = { ...SESSION, id: 'other-session', command: 'tapsmith test --ui', project: '/elsewhere' };
 
 function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
   return {
@@ -142,6 +163,7 @@ function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
 }
 
 beforeEach(() => {
+  for (const f of fs.readdirSync(claimsDir)) fs.rmSync(path.join(claimsDir, f), { recursive: true, force: true });
   mocks.devices.length = 0;
   mocks.clients.length = 0;
   mocks.clientReady = true;
@@ -166,7 +188,7 @@ describe('openDeviceSession', () => {
     const session = await openDeviceSession(
       { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
       makeConfig(),
-      { label: 'Worker 0', launchPhase: 'worker startup launch', onProgress: (m) => progress.push(m) },
+      { claimSession: SESSION, label: 'Worker 0', launchPhase: 'worker startup launch', onProgress: (m) => progress.push(m) },
     );
 
     expect(session.serial).toBe('emulator-5554');
@@ -194,7 +216,7 @@ describe('openDeviceSession', () => {
     await openDeviceSession(
       { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
       makeConfig(),
-      { label: 'Worker 0' },
+      { claimSession: SESSION, label: 'Worker 0' },
     );
     expect(mocks.devices[0].installApk).toHaveBeenCalledWith('/proj/app.apk');
     expect(mocks.preflight.launchConfiguredApp).toHaveBeenCalledWith(expect.anything(), 'startup launch', { freshInstall: true });
@@ -205,7 +227,7 @@ describe('openDeviceSession', () => {
     await openDeviceSession(
       { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
       makeConfig(),
-      { label: 'Worker 0' },
+      { claimSession: SESSION, label: 'Worker 0' },
     );
     expect(mocks.devices[0].startAgent).toHaveBeenCalledTimes(2);
 
@@ -213,7 +235,7 @@ describe('openDeviceSession', () => {
     await expect(openDeviceSession(
       { name: 'device-1', serial: 'emulator-5556', daemonAddress: 'localhost:50053' },
       makeConfig(),
-      { label: 'Worker 1' },
+      { claimSession: SESSION, label: 'Worker 1' },
     )).rejects.toThrow(/^Worker 1 \(emulator-5556\): Failed to start agent: Failed to connect to agent socket/);
     // A failed open leaves nothing behind.
     expect(mocks.devices.at(-1)!._close).toHaveBeenCalledWith({ closeClient: false, releaseNetwork: true });
@@ -224,7 +246,7 @@ describe('openDeviceSession', () => {
     const session = await openDeviceSession(
       { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50051' },
       makeConfig(),
-      { label: 'Run', adopt: true, adoptVerify: false, seedCapabilities: { hooksDetected: true } },
+      { claimSession: SESSION, label: 'Run', adopt: true, adoptVerify: false, seedCapabilities: { hooksDetected: true } },
     );
     const device = mocks.devices[0];
     expect(device.installApk).not.toHaveBeenCalled();
@@ -242,7 +264,7 @@ describe('openDeviceSession', () => {
     await expect(openDeviceSession(
       { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50099' },
       makeConfig(),
-      { label: 'Worker 0' },
+      { claimSession: SESSION, label: 'Worker 0' },
     )).rejects.toThrow(/Worker 0 \(emulator-5554\): Failed to connect to daemon at localhost:50099/);
   });
 });
@@ -255,7 +277,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     await openDeviceSession(
       { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
       makeConfig(),
-      { label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
+      { claimSession: SESSION, label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
     );
     expect(seen).toEqual([
       ['install', 'start', 'checking app.apk'],
@@ -272,7 +294,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     await openDeviceSession(
       { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
       makeConfig({ apk: undefined, package: undefined }),
-      { label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
+      { claimSession: SESSION, label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
     );
     expect(seen).toEqual([
       ['install', 'skip', 'no Android APK configured'],
@@ -285,7 +307,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     await openDeviceSession(
       { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
       makeConfig(),
-      { label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
+      { claimSession: SESSION, label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
     );
     expect(seen[1]).toEqual(['install', 'complete', 'installed app.apk']);
   });
@@ -296,7 +318,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     await expect(openDeviceSession(
       { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
       makeConfig(),
-      { label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
+      { claimSession: SESSION, label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
     )).rejects.toThrow(/^Device \(emulator-5554\): Failed to start agent: /);
     expect(seen.at(-1)?.slice(0, 2)).toEqual(['agent', 'fail']);
   });
@@ -306,7 +328,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     const session = await openDeviceSession(
       { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
       makeConfig(),
-      { label: 'Device', client: client as never },
+      { claimSession: SESSION, label: 'Device', client: client as never },
     );
     expect(session.client).toBe(client);
     expect(mocks.clients).toHaveLength(0);
@@ -319,7 +341,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     await expect(openDeviceSession(
       { name: 'device-1', serial: 'emulator-5556', daemonAddress: 'localhost:50053' },
       makeConfig(),
-      { label: 'Device', client: client as never },
+      { claimSession: SESSION, label: 'Device', client: client as never },
     )).rejects.toThrow();
     expect(client.close).not.toHaveBeenCalled();
   });
@@ -330,7 +352,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     await openDeviceSession(
       { name: 'device-1', serial: 'SIM-1', daemonAddress: 'localhost:50052' },
       makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
-      { label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
+      { claimSession: SESSION, label: 'Device', onPhase: (p, s, d) => seen.push([p, s, d]) },
     );
     expect(mocks.simInstalls).toBe(1);
     expect(seen).toContainEqual(['install', 'complete', 'installed App.app']);
@@ -351,7 +373,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     await openDeviceSession(
       { name: 'device-1', serial: 'SIM-1', daemonAddress: 'localhost:50052' },
       makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
-      { label: 'Device', appInstalledFresh: true, onPhase: (p, s, d) => seen.push([p, s, d]) },
+      { claimSession: SESSION, label: 'Device', appInstalledFresh: true, onPhase: (p, s, d) => seen.push([p, s, d]) },
     );
     expect(mocks.simInstalls).toBe(0);
     expect(isAppInstalled).not.toHaveBeenCalled();
@@ -378,7 +400,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
       await expect(openDeviceSession(
         { name: 'device-1', serial: 'SIM-1', daemonAddress: 'localhost:50052' },
         makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
-        { label: 'Device' },
+        { claimSession: SESSION, label: 'Device' },
       )).rejects.toThrow('Failed to install iOS app: simctl install: device is locked');
       await new Promise((r) => setTimeout(r, 10));
     } finally {
@@ -396,7 +418,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     await expect(openDeviceSession(
       { name: 'device-1', serial: 'GONE-1', daemonAddress: 'localhost:50052' },
       makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
-      { label: 'Device' },
+      { claimSession: SESSION, label: 'Device' },
     )).rejects.toThrow(/Old iPhone \(GONE-1\) is not connected/);
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(mocks.devices[0].setDevice).toHaveBeenCalledTimes(1);
@@ -420,7 +442,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     await expect(openDeviceSession(
       { name: 'device-1', serial: 'GONE-2', daemonAddress: 'localhost:50052' },
       makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
-      { label: 'Device' },
+      { claimSession: SESSION, label: 'Device' },
     )).rejects.toThrow(/is not connected/);
     expect(calls).toBe(2);
   }, 10_000);
@@ -434,7 +456,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     await expect(openDeviceSession(
       { name: 'device-1', serial: 'PHYS-GONE', daemonAddress: 'localhost:50052' },
       makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
-      { label: 'Device' },
+      { claimSession: SESSION, label: 'Device' },
     )).rejects.toThrow(/PHYS-GONE\) is not connected/);
     // One retry inside the grace, then it gives up — not the 180 s budget.
     expect(mocks.devices[0].setDevice).toHaveBeenCalledTimes(2);
@@ -464,7 +486,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     const session = await openDeviceSession(
       { name: 'device-1', serial: 'PHYS-BACK', daemonAddress: 'localhost:50052' },
       makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
-      { label: 'Device' },
+      { claimSession: SESSION, label: 'Device' },
     );
     expect(session.serial).toBe('PHYS-BACK');
     expect(mocks.devices[0].setDevice).toHaveBeenCalledTimes(2);
@@ -475,7 +497,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     await expect(openDeviceSession(
       { name: 'device-1', serial: 'PHYS-1', daemonAddress: 'localhost:50052' },
       makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app' }),
-      { label: 'Device' },
+      { claimSession: SESSION, label: 'Device' },
     )).rejects.toThrow(/No device xctestrun found under ios-agent\/.build-device/);
     expect(mocks.execs.some((e) => e[0] === 'xcrun')).toBe(false);
   });
@@ -489,7 +511,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
       makeConfig({ platform: 'ios', apk: undefined, app: './Build/App.app', ...over });
 
     it('refuses `iosXctestrun`, naming the path resolved against rootDir', async () => {
-      await expect(openDeviceSession(physical, iosConfig({ iosXctestrun: 'gone/Agent.xctestrun' }), { label: 'Device' }))
+      await expect(openDeviceSession(physical, iosConfig({ iosXctestrun: 'gone/Agent.xctestrun' }), { claimSession: SESSION, label: 'Device' }))
         .rejects.toThrow(/The xctestrun set by `iosXctestrun` does not exist: \/proj\/gone\/Agent\.xctestrun/);
       expect(mocks.devices[0].startAgent).not.toHaveBeenCalled();
     });
@@ -501,7 +523,7 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
         await expect(openDeviceSession(
           { name: 'device-1', serial: 'SIM-1', daemonAddress: 'localhost:50052' },
           iosConfig({ simulator: 'iPhone 16' }),
-          { label: 'Device' },
+          { claimSession: SESSION, label: 'Device' },
         )).rejects.toThrow(/set by TAPSMITH_IOS_XCTESTRUN does not exist: \/nowhere\/Agent\.xctestrun.*unset it/);
       } finally {
         if (saved === undefined) delete process.env.TAPSMITH_IOS_XCTESTRUN;
@@ -512,13 +534,13 @@ describe('openDeviceSession phases (the sequential CLI\'s step rows)', () => {
     it('says an upgrade removed it when the path is in the npm agent directory', async () => {
       const os = await import('node:os');
       const gone = `${os.homedir()}/.tapsmith/ios-agent/.build-device/Build/Products/Gone_iphoneos-arm64.xctestrun`;
-      await expect(openDeviceSession(physical, iosConfig({ iosXctestrun: gone }), { label: 'Device' }))
+      await expect(openDeviceSession(physical, iosConfig({ iosXctestrun: gone }), { claimSession: SESSION, label: 'Device' }))
         .rejects.toThrow(/does not exist: ~\/\.tapsmith\/ios-agent\/.*Upgrading Tapsmith replaces.*tapsmith ios build-agent/);
     });
 
     it('does not check an adopting session, whose agent is already running', async () => {
       await openDeviceSession(physical, iosConfig({ iosXctestrun: 'gone/Agent.xctestrun' }), {
-        label: 'Run', adopt: true, adoptVerify: false, seedCapabilities: { hooksDetected: true },
+        claimSession: SESSION, label: 'Run', adopt: true, adoptVerify: false, seedCapabilities: { hooksDetected: true },
       });
     });
   });
@@ -532,7 +554,7 @@ describe('openDeviceGroup', () => {
         { name: 'bob', serial: 'emulator-5556', daemonAddress: 'localhost:50053', freshDevice: true },
       ],
       makeConfig(),
-      { label: 'Worker 0' },
+      { claimSession: SESSION, label: 'Worker 0' },
     );
     expect(sessions.map((s) => [s.name, s.serial])).toEqual([['alice', 'emulator-5554'], ['bob', 'emulator-5556']]);
     expect(mocks.devices[0]._traceDeviceId).toBe('alice');
@@ -555,7 +577,7 @@ describe('openDeviceGroup', () => {
         { name: 'bob', serial: 'PHYS-1', daemonAddress: 'localhost:50053' },
       ],
       makeConfig({ platform: 'ios', apk: undefined, simulator: 'iPhone 16' }),
-      { label: 'Worker 0' },
+      { claimSession: SESSION, label: 'Worker 0' },
     )).rejects.toThrow(/cannot mix iOS simulators and physical devices.*bob \(PHYS-1\) is a physical device.*alice \(SIM-1\) is a simulator/);
     expect(mocks.devices).toHaveLength(0);
   });
@@ -568,7 +590,7 @@ describe('openDeviceGroup', () => {
         { name: 'bob', serial: 'emulator-5556', daemonAddress: 'localhost:50053' },
       ],
       makeConfig(),
-      { label: 'Worker 0' },
+      { claimSession: SESSION, label: 'Worker 0' },
     )).rejects.toThrow(/Failed to connect to agent socket/);
     for (const device of mocks.devices) expect(device._close).toHaveBeenCalled();
   });
@@ -578,14 +600,14 @@ describe('openDeviceGroup', () => {
     await openDeviceGroup(
       [{ name: 'alice', serial: 'A', daemonAddress: 'localhost:1' }, { name: 'bob', serial: 'B', daemonAddress: 'localhost:2' }],
       makeConfig(),
-      { label: 'Worker 0', onProgress: (m) => lines.push(m) },
+      { claimSession: SESSION, label: 'Worker 0', onProgress: (m) => lines.push(m) },
     );
     expect(lines.some((l) => l.startsWith('[bob] '))).toBe(true);
     lines.length = 0;
     await openDeviceGroup(
       [{ name: 'device-1', serial: 'A', daemonAddress: 'localhost:1' }],
       makeConfig(),
-      { label: 'Worker 0', onProgress: (m) => lines.push(m) },
+      { claimSession: SESSION, label: 'Worker 0', onProgress: (m) => lines.push(m) },
     );
     expect(lines.every((l) => !l.startsWith('['))).toBe(true);
   });
@@ -674,7 +696,7 @@ describe('recovery and teardown', () => {
     const sessions = await openDeviceGroup(
       [{ name: 'alice', serial: 'A', daemonAddress: 'localhost:1' }, { name: 'bob', serial: 'B', daemonAddress: 'localhost:2' }],
       makeConfig(),
-      { label: 'Worker 0' },
+      { claimSession: SESSION, label: 'Worker 0' },
     );
     for (const s of sessions) s.prepared = undefined;
     mocks.preflight.launchConfiguredApp.mockClear();
@@ -688,7 +710,7 @@ describe('recovery and teardown', () => {
     const session = await openDeviceSession(
       { name: 'device-1', serial: 'A', daemonAddress: 'localhost:1' },
       makeConfig({ platform: 'ios', apk: undefined }),
-      { label: 'Worker 0', daemonProcess: daemon as never },
+      { claimSession: SESSION, label: 'Worker 0', daemonProcess: daemon as never },
     );
     await closeDeviceSession(session);
     await closeDeviceSession(session);
@@ -705,7 +727,7 @@ describe('recovery and teardown', () => {
     const session = await openDeviceSession(
       { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50051' },
       makeConfig(),
-      { label: 'Run', adopt: true, adoptVerify: false },
+      { claimSession: SESSION, label: 'Run', adopt: true, adoptVerify: false },
     );
     const device = mocks.devices[0];
     device._close.mockImplementation(async () => {
@@ -717,5 +739,145 @@ describe('recovery and teardown', () => {
     expect(device._close).toHaveBeenCalledWith({ closeClient: false, releaseNetwork: false });
     expect(closeSettled).toBe(true);
     expect(mocks.clients[0].close).toHaveBeenCalled();
+  });
+});
+
+describe('device claims (PILOT-381)', () => {
+  it('claims the device for the session before selecting it', async () => {
+    await openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Worker 0' },
+    );
+    const { listDeviceClaims } = await import('../device-claims.js');
+    expect(listDeviceClaims()).toEqual([
+      expect.objectContaining({ device: 'emulator-5554', daemonAddress: 'localhost:50052', live: true }),
+    ]);
+  });
+
+  it('refuses a device another live session holds, naming the holder, without selecting it', async () => {
+    claimDevice('emulator-5554', OTHER);
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Worker 0' },
+    )).rejects.toThrow(/Worker 0 \(emulator-5554\): Device emulator-5554 is in use by another Tapsmith session: `tapsmith test --ui`/);
+    expect(mocks.devices[0].setDevice).not.toHaveBeenCalled();
+  });
+
+  it('opens a device the same session already holds (a respawned worker, a watch re-run)', async () => {
+    claimDevice('emulator-5554', SESSION);
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Worker 0' },
+    )).resolves.toBeDefined();
+  });
+
+  it('gives back the claim when the open fails, so the session does not hold a device it never drove', async () => {
+    mocks.failAgentFor.add('emulator-5554');
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Worker 0' },
+    )).rejects.toThrow();
+    const { listDeviceClaims } = await import('../device-claims.js');
+    expect(listDeviceClaims()).toEqual([]);
+  });
+
+  it('gives back a claim the session made earlier (the CLI\'s pick) when the open of that device fails', async () => {
+    claimDevice('emulator-5554', SESSION);
+    mocks.failAgentFor.add('emulator-5554');
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Device' },
+    )).rejects.toThrow();
+    const { listDeviceClaims } = await import('../device-claims.js');
+    expect(listDeviceClaims()).toEqual([]);
+  });
+
+  it('keeps a claim another process of the session still holds when this open fails (an MCP server\'s run_tests child)', async () => {
+    fs.writeFileSync(path.join(claimsDir, 'emulator-5554.json'), JSON.stringify({
+      device: 'emulator-5554', session: SESSION, claimantPid: process.ppid, holders: [{ pid: process.ppid }],
+      claimedAt: new Date().toISOString(),
+    }));
+    mocks.failAgentFor.add('emulator-5554');
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Device' },
+    )).rejects.toThrow();
+    const { listDeviceClaims } = await import('../device-claims.js');
+    expect(listDeviceClaims().map((c) => [c.device, c.holders?.map((h) => h.pid)])).toEqual([['emulator-5554', [process.ppid]]]);
+  });
+
+  it('keeps the claim when an adopting open fails (a watch re-run of a device the session goes on driving)', async () => {
+    claimDevice('emulator-5554', SESSION, { daemonAddress: 'localhost:50052' });
+    mocks.preflight.ensureSessionReady.mockRejectedValueOnce(new Error('agent gone'));
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Run', adopt: true },
+    )).rejects.toThrow();
+    const { listDeviceClaims } = await import('../device-claims.js');
+    expect(listDeviceClaims().map((c) => c.device)).toEqual(['emulator-5554']);
+  });
+
+  it('gives back the members it claimed when a later member is refused', async () => {
+    claimDevice('emulator-5556', OTHER);
+    await expect(openDeviceGroup(
+      [
+        { name: 'alice', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+        { name: 'bob', serial: 'emulator-5556', daemonAddress: 'localhost:50053' },
+      ],
+      makeConfig(),
+      { claimSession: SESSION, label: 'Worker 0' },
+    )).rejects.toThrow(/emulator-5556 is in use/);
+    const { listDeviceClaims } = await import('../device-claims.js');
+    expect(listDeviceClaims().map((c) => [c.device, c.session.id])).toEqual([['emulator-5556', 'other-session']]);
+  });
+
+  it('refuses a group before resolving agent artifacts when any member is held', async () => {
+    claimDevice('emulator-5556', OTHER);
+    await expect(openDeviceGroup(
+      [
+        { name: 'alice', serial: 'emulator-5554', daemonAddress: 'localhost:50052' },
+        { name: 'bob', serial: 'emulator-5556', daemonAddress: 'localhost:50053' },
+      ],
+      makeConfig(),
+      { claimSession: SESSION, label: 'Worker 0' },
+    )).rejects.toThrow(/emulator-5556 is in use by another Tapsmith session/);
+    expect(mocks.devices).toHaveLength(0);
+  });
+
+  it("refuses to select anything on another session's daemon while it drives that session's device", async () => {
+    claimDevice('emulator-5554', OTHER, { daemonAddress: 'localhost:50051' });
+    const client = {
+      waitForReady: vi.fn(async () => true),
+      close: vi.fn(),
+      listDevices: vi.fn(async () => ({ devices: [{ serial: 'emulator-5554', state: 'Active' }] })),
+    };
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5556', daemonAddress: '127.0.0.1:50051' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Device', client: client as never },
+    )).rejects.toThrow(/The Tapsmith daemon at 127\.0\.0\.1:50051 belongs to another session/);
+    expect(mocks.devices[0].setDevice).not.toHaveBeenCalled();
+  });
+
+  it('uses a daemon on a port another session once used when that daemon is not driving its device', async () => {
+    // The other session's daemon died and an unrelated, fresh one took the port.
+    claimDevice('emulator-5554', OTHER, { daemonAddress: 'localhost:50051' });
+    const client = {
+      waitForReady: vi.fn(async () => true),
+      close: vi.fn(),
+      listDevices: vi.fn(async () => ({ devices: [{ serial: 'emulator-5554', state: 'Discovered' }] })),
+    };
+    await expect(openDeviceSession(
+      { name: 'device-1', serial: 'emulator-5556', daemonAddress: 'localhost:50051' },
+      makeConfig(),
+      { claimSession: SESSION, label: 'Device', client: client as never },
+    )).resolves.toBeDefined();
   });
 });

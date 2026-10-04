@@ -35,6 +35,7 @@ import {
 import { satisfies, type AppResetPolicy, type PreparedState, type ResetCapabilities } from './app-reset.js';
 import { findDaemonBin } from './daemon-bin.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary, type DaemonStartFailed, type DaemonStartOutcome } from './daemon-start.js';
+import { DaemonClaimedError, claimDeviceOrThrow, daemonDriverElsewhere, releaseDeviceClaim, type SessionIdentity } from './device-claims.js';
 
 // ─── Types ───
 
@@ -105,6 +106,13 @@ export type DeviceSessionPhaseState = 'start' | 'complete' | 'skip' | 'fail'
 export interface OpenDeviceSessionOptions {
   /** Prefix for error messages and preflight labels, e.g. `Worker 0`. */
   label: string
+  /**
+   * The Tapsmith session this device is opened for (`currentSession()`), which
+   * claims it in the machine-wide registry before selecting it (PILOT-381). A
+   * device or daemon another live session holds is refused, naming the holder.
+   * Required so an embedder cannot open a device without claiming it.
+   */
+  claimSession: SessionIdentity
   onProgress?: (message: string) => void
   /**
    * Step-level progress for embedders with a step UI (the sequential CLI):
@@ -510,6 +518,28 @@ async function prelaunchSimulatorApp(config: TapsmithConfig, serial: string): Pr
 // ─── Session lifecycle ───
 
 /**
+ * Claim `spec.serial` for `session`, refusing when another live session holds
+ * the device, or drives a device through this very daemon.
+ *
+ * The daemon check compares the daemon's *active* device with the other
+ * session's claim: an address alone is not proof, since a port a dead daemon
+ * left behind can be reused by an unrelated, freshly started one.
+ */
+async function claimForSession(
+  client: TapsmithGrpcClient,
+  spec: DeviceSessionSpec,
+  session: SessionIdentity,
+): Promise<void> {
+  const daemonHolder = await daemonDriverElsewhere(
+    spec.daemonAddress,
+    () => client.listDevices().then((res) => res.devices.find((d) => d.state === 'Active')?.serial),
+    session,
+  );
+  if (daemonHolder) throw new DaemonClaimedError(spec.daemonAddress, daemonHolder);
+  claimDeviceOrThrow(spec.serial, session, { daemonAddress: spec.daemonAddress });
+}
+
+/**
  * Open a session on one device: connect to its daemon, select the device,
  * wake it, install the app, start the agent and cold-launch (or, with
  * `adopt`, verify what the daemon already holds). Throws with the session
@@ -563,7 +593,20 @@ export async function openDeviceSession(
     adopted: !!opts.adopt,
   };
 
+  // Whether this open holds the session's claim on the device. A failed open
+  // gives back this process's hold, so a long-lived session (UI, watch, an MCP
+  // server) does not go on holding a device it never got to drive. The claim
+  // itself ends only if no other process of the session holds it: a device
+  // the session's root provisioned for a worker stays the session's while it
+  // lives, since that worker may be respawned onto it. Not an adopting open: the device
+  // is one the session set up and goes on driving elsewhere (a watch re-run
+  // child, a UI worker adopting the primary), and its failure here says
+  // nothing about that.
+  let claimed = false;
   try {
+    progress(`claiming device ${spec.serial}`);
+    await claimForSession(client, spec, opts.claimSession);
+    claimed = true;
     progress(`selecting device ${spec.serial}`);
     if (opts.refreshDeviceList) await device.listDevices();
     let unreachableSince: number | undefined;
@@ -717,6 +760,7 @@ export async function openDeviceSession(
     return session;
   } catch (err) {
     await closeDeviceSession(session);
+    if (claimed && !opts.adopt) releaseDeviceClaim(spec.serial, opts.claimSession);
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(message.startsWith(label) ? message : `${label}: ${message}`);
   }
@@ -736,6 +780,30 @@ export async function openDeviceGroup(
   },
 ): Promise<DeviceSession[]> {
   if (specs.length === 0) return [];
+  // Claimed before anything slow (the artifact resolution below may build the
+  // simulator agent): a device another session holds is refused up front.
+  // Without a daemon address — each member's open records it once its daemon
+  // has passed the ownership check. Given back if the group does not open (a
+  // group is atomic, and so is what it holds), except for adopting members:
+  // see openDeviceSession.
+  const claimedHere: string[] = [];
+  try {
+    for (const spec of specs) {
+      claimDeviceOrThrow(spec.serial, opts.claimSession);
+      if (!spec.adopt) claimedHere.push(spec.serial);
+    }
+    return await openClaimedDeviceGroup(specs, config, opts);
+  } catch (err) {
+    for (const serial of claimedHere) releaseDeviceClaim(serial, opts.claimSession);
+    throw err;
+  }
+}
+
+async function openClaimedDeviceGroup(
+  specs: Parameters<typeof openDeviceGroup>[0],
+  config: TapsmithConfig,
+  opts: Parameters<typeof openDeviceGroup>[2],
+): Promise<DeviceSession[]> {
   // The artifacts are resolved once, from the first member, and shared: on
   // iOS the simulator and device agents are different builds, so a group
   // mixing the two would hand one kind the other's xctestrun and fail deep

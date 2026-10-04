@@ -23,6 +23,7 @@ import {
   type RunFileUseOptions,
 } from './worker-protocol.js';
 import { closeDeviceSession, consumePrepared, openDeviceGroup, sessionsForRun } from './device-session.js';
+import { currentSession } from './device-claims.js';
 
 // ─── IPC protocol ───
 
@@ -180,7 +181,7 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
       })),
     ],
     config,
-    { label, adoptVerify: !config.package, connectTimeoutMs: 5_000 },
+    { claimSession: currentSession(), label, adoptVerify: !config.package, connectTimeoutMs: 5_000 },
   );
 
   // Created BEFORE preflight so a stop that lands during wake/unlock/app-reset
