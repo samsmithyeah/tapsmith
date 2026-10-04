@@ -31,8 +31,7 @@ when configured with `launchEmulators` and `avd`.
 Tapsmith manages iOS simulators automatically. Set the `simulator` config option to
 the simulator to boot (for example `simulator: "iPhone 17"`; `xcrun simctl list devices`
 lists the names). There is no default: without `simulator` (or `device`), Tapsmith
-looks for a single paired physical iPhone instead, and stops with "No simulator
-specified" when there isn't one.
+looks for a single paired physical iPhone instead, and the run fails before any test starts when there isn't one.
 
 For **physical iOS devices**, additional prerequisites apply (libimobiledevice,
 Apple Developer account, device pairing). See [iOS physical devices](./ios-physical-devices.md) for the full walkthrough.
