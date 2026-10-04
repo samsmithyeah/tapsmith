@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { androidEmulatorCaptureLine, avdPickerChoices, validateBuildPath, generateConfig, generatedProjects, generateExampleTest, runInit } from '../init.js';
+import { androidEmulatorCaptureLine, avdPickerChoices, normalizeTypedPath, validateBuildPath, generateConfig, generatedProjects, generateExampleTest, runInit } from '../init.js';
 import type { AndroidConfig, IosConfig, Platform } from '../init.js';
 import { platformlessIosFields } from '../doctor.js';
 import { _internal } from '../runner.js';
@@ -402,9 +402,36 @@ describe('validateBuildPath() (PILOT-513)', () => {
     expect(validateBuildPath('./out/Release-iphoneos/MyApp.app', 'device-app', tmp)).toBe(true);
   });
 
+  it('accepts a path the way a shell reads it: quoted, backslash-escaped or under ~', () => {
+    const app = path.join(tmp, 'out', 'Debug-iphonesimulator', 'My App.app');
+    expect(validateBuildPath(`'${app}'`, 'simulator-app', tmp)).toBe(true);
+    expect(validateBuildPath(`"${app}"`, 'simulator-app', tmp)).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(validateBuildPath(app.replace(/ /g, '\\ '), 'simulator-app', tmp)).toBe(true);
+    }
+    expect(validateBuildPath('~/definitely-not-here-pilot-513.apk', 'apk', tmp)).toMatch(/^.*definitely-not-here-pilot-513\.apk does not exist/);
+  });
+
   it('still refuses a simulator build for a physical device', () => {
     expect(validateBuildPath('./out/Debug-iphonesimulator/My App.app', 'device-app', tmp))
       .toBe('This looks like a simulator build — physical devices need an iphoneos build');
+  });
+});
+
+describe('normalizeTypedPath() (PILOT-513)', () => {
+  it('expands a leading ~ to the home directory', () => {
+    expect(normalizeTypedPath(' ~/builds/app.apk ')).toBe(path.join(os.homedir(), 'builds', 'app.apk'));
+    expect(normalizeTypedPath('~')).toBe(os.homedir());
+    expect(normalizeTypedPath('./~/app.apk')).toBe('./~/app.apk');
+  });
+
+  it('drops one pair of surrounding quotes, keeping what is inside as typed', () => {
+    expect(normalizeTypedPath('"/a/My App.app"')).toBe('/a/My App.app');
+    expect(normalizeTypedPath("'/a/My App.app'")).toBe('/a/My App.app');
+  });
+
+  it.skipIf(process.platform === 'win32')('unescapes a path dragged into a terminal', () => {
+    expect(normalizeTypedPath('/a/My\\ App\\ \\(1\\).app')).toBe('/a/My App (1).app');
   });
 });
 

@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { EnvScan } from '../env-scan.js';
 import { stripAnsi } from '../cli-json.js';
 
@@ -171,8 +174,27 @@ describe('configureAndroid() build detection (PILOT-513)', () => {
 
     const out = logged.join('\n');
     expect(out).toMatch(/ADB not found/);
-    expect(out).toMatch(/platform-tools/);
-    expect(out).toMatch(/PATH/);
+    expect(out).toContain('Install Android platform-tools');
+  });
+
+  it('names the installed platform-tools directory when adb is under ANDROID_HOME but not on PATH', async () => {
+    const sdk = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-sdk-'));
+    const platformTools = path.join(sdk, 'platform-tools');
+    fs.mkdirSync(platformTools);
+    fs.writeFileSync(path.join(platformTools, process.platform === 'win32' ? 'adb.exe' : 'adb'), '');
+    apkCandidates = [DEBUG_APK];
+    packages.set(DEBUG_APK, 'com.acme.app');
+    script([[/Where is your Android APK/, DEBUG_APK]]);
+    try {
+      await configureAndroid({ ...env, adbVersion: undefined, androidHome: sdk });
+    } finally {
+      fs.rmSync(sdk, { recursive: true, force: true });
+    }
+
+    const out = logged.join('\n');
+    expect(out).toContain(`adb is in ${platformTools} but not on PATH`);
+    expect(out).toContain(`export PATH="${platformTools}:$PATH"`);
+    expect(out).not.toMatch(/Install Android platform-tools/);
   });
 
   it('says nothing about ADB when it is present', async () => {

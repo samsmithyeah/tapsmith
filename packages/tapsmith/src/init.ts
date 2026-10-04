@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import Enquirer from 'enquirer';
 import figlet from 'figlet';
@@ -85,12 +86,26 @@ async function ask<T>(question: Record<string, unknown>): Promise<T> {
 export type BuildKind = 'apk' | 'simulator-app' | 'device-app';
 
 /**
+ * A typed path as the shell would read it: trimmed, one pair of surrounding
+ * quotes dropped, backslash-escaped characters unescaped (a path dragged into
+ * a macOS terminal arrives as `/a/My\\ App.app`) and a leading `~` expanded.
+ */
+export function normalizeTypedPath(val: string): string {
+  let p = val.trim();
+  if (p.length >= 2 && (p[0] === '"' || p[0] === "'") && p[p.length - 1] === p[0]) p = p.slice(1, -1);
+  else if (process.platform !== 'win32') p = p.replace(/\\(.)/g, '$1');
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+/**
  * Validate a typed build path at the prompt: it must exist, an APK as a
  * file and an `.app` bundle as a directory, relative paths resolved against
  * the project. A device build must not be a simulator build.
  */
 export function validateBuildPath(val: string, kind: BuildKind, cwd: string = process.cwd()): true | string {
-  const p = val.trim();
+  const p = normalizeTypedPath(val);
   if (p.length === 0) {
     return kind === 'apk' ? 'APK path is required' : kind === 'simulator-app' ? '.app path is required' : 'Device app path is required';
   }
@@ -125,7 +140,7 @@ async function askBuildPath(opts: {
   const validate = (val: string): true | string => validateBuildPath(val, opts.kind);
   if (opts.candidates.length === 0) {
     console.log(dim(`  ${opts.noneFound}`));
-    return (await ask<string>({ type: 'input', message: opts.message, validate })).trim();
+    return normalizeTypedPath(await ask<string>({ type: 'input', message: opts.message, validate }));
   }
   const picked = await ask<string>({
     type: 'select',
@@ -136,7 +151,7 @@ async function askBuildPath(opts: {
     ],
   });
   if (picked !== OTHER_PATH) return picked;
-  return (await ask<string>({ type: 'input', message: opts.typeMessage, validate })).trim();
+  return normalizeTypedPath(await ask<string>({ type: 'input', message: opts.typeMessage, validate }));
 }
 
 /** Debug APKs first (the build `init --yes` prefers), then the rest. */
@@ -299,7 +314,7 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
       kind: 'simulator-app',
       message: 'Where is your iOS .app bundle? (simulator build)',
       candidates: findIosAppCandidates(process.cwd()),
-      noneFound: 'No simulator build (.app) found under ios/ — build one first (xcodebuild -sdk iphonesimulator), or enter its path.',
+      noneFound: 'No simulator build (.app) found under ios/ — build one first (xcodebuild -sdk iphonesimulator -derivedDataPath ios/build), or enter its path.',
       typeMessage: 'Path to your simulator build (.app):',
     });
     simBundleId = detectBundleId(appPath);
@@ -389,7 +404,7 @@ export async function configureIos(env: EnvScan): Promise<IosConfig> {
       kind: 'device-app',
       message: 'Where is your device build .app? (must be an iphoneos build, not simulator)',
       candidates: findIosDeviceAppCandidates(process.cwd()),
-      noneFound: 'No device build (.app) found under ios/ — build one for iphoneos first (see docs/ios-physical-devices.md), or enter its path.',
+      noneFound: 'No device build (.app) found under ios/ — build one for iphoneos first (see https://tapsmith.dev/platform/ios-physical-devices/), or enter its path.',
       typeMessage: 'Path to your device build (iphoneos .app):',
     });
     deviceBundleIdRead = detectBundleId(deviceAppPath);
