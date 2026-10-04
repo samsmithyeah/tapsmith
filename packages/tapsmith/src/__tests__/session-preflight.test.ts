@@ -84,7 +84,10 @@ describe('session-preflight', () => {
     const ctx = makeContext();
     await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
     expect(ctx.client.ping).toHaveBeenCalledTimes(1);
-    expect(ctx.device.waitForIdle).toHaveBeenCalledWith(5_000);
+    // A short settle, not a long one: this runs before every test, and on a
+    // screen that never goes idle the Android agent waits the whole budget
+    // (PILOT-509).
+    expect(ctx.device.waitForIdle).toHaveBeenCalledWith(1_000);
   });
 
   it('emits sessionReady progress events around the readiness check (PILOT-232)', async () => {

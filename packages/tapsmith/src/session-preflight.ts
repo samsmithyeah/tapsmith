@@ -206,6 +206,14 @@ interface BlockingDialogTally {
 }
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000;
+/**
+ * Settle budget for the Android readiness check's idle wait. The check runs
+ * before every test, and on a screen that never goes idle (a looping
+ * animation, a spinner) the agent's idle wait holds for the whole budget — so
+ * this is per-test overhead, not a ceiling that is rarely reached (PILOT-509).
+ * Readiness itself is established by the hierarchy polls that follow.
+ */
+const READY_SETTLE_IDLE_MS = 1_000;
 const DEFAULT_MAX_ATTEMPTS = 3;
 /**
  * Backoff before each recovery attempt. A transient agent-connection drop
@@ -811,7 +819,7 @@ async function verifySession(
     return;
   }
 
-  await ctx.device.waitForIdle(DEFAULT_READY_TIMEOUT_MS);
+  await ctx.device.waitForIdle(READY_SETTLE_IDLE_MS);
 
   let hierarchy = await waitForHierarchy(ctx.client);
   while (await clearBlockingDialog(ctx, hierarchy.hierarchyXml, dialogs)) {

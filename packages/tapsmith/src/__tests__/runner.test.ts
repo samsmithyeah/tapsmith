@@ -323,6 +323,44 @@ describe('runner execution', () => {
     expect(seenPlatforms).toEqual(['ios']);
   });
 
+  it('settles the device before each test with a short idle budget, not the test timeout (PILOT-509)', async () => {
+    // On a screen that never goes idle (a looping animation, a spinner) the
+    // Android agent blocks for the whole budget it is given. With the config
+    // timeout (30s here) every test started 30s late, silently.
+    const mockDevice = { waitForIdle: vi.fn(async (_timeoutMs?: number) => {}) };
+
+    pushContext();
+    tapsmithTest('first', async () => {});
+    tapsmithTest('second', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ timeout: 30_000 }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner idle-wait mock
+      devices: [{ name: 'device-1', device: mockDevice as any }],
+    }));
+
+    expect(result.tests.map((t) => t.status)).toEqual(['passed', 'passed']);
+    expect(mockDevice.waitForIdle.mock.calls).toEqual([[1_000], [1_000]]);
+  });
+
+  it('starts the test when the pre-test idle wait fails', async () => {
+    const mockDevice = { waitForIdle: vi.fn(async () => { throw new Error('idle timed out'); }) };
+    let ran = false;
+
+    pushContext();
+    tapsmithTest('runs anyway', async () => { ran = true; });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner idle-wait mock
+      devices: [{ name: 'device-1', device: mockDevice as any }],
+    }));
+
+    expect(result.tests[0].status).toBe('passed');
+    expect(ran).toBe(true);
+  });
+
   it('passes custom fixtures from test.extend() to beforeEach hooks', async () => {
     const seenValues: string[] = [];
     const mockDevice = { waitForIdle: vi.fn(async () => {}) };
