@@ -124,6 +124,7 @@ The wizard walks through these steps:
 7. **Config** — writes `tapsmith.config.ts` with the app, its `package` and, for iOS, `platform: 'ios'` and the simulator
 8. **Example test** — optionally creates `tests/example.test.ts`
 9. **AGENTS.md** — optionally adds a Tapsmith section to `AGENTS.md` for AI coding agents
+10. **Install** — if the project doesn't have Tapsmith yet (you ran `npx tapsmith init` before installing it), offers to install it with your package manager (`npm i -D tapsmith`, `yarn add -D tapsmith`, …), since the config and example test import it. Decline and the command is the first of the next steps
 
 The wizard does not ask about workers; see [Parallel runs](#parallel-runs) to add them.
 

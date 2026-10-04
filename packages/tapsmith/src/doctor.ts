@@ -793,7 +793,7 @@ export function configLoadFailure(err: unknown): { message: string; hint: string
   // (PILOT-551): the fix is the install, not the config.
   if (isTapsmithNotInstalledError(err)) {
     return {
-      message: `tapsmith isn't installed in this project (${err.configPath} imports it)`,
+      message: `Tapsmith isn't installed in this project (${err.configPath} imports it)`,
       hint: `Run: ${err.installCommand.display}`,
     };
   }

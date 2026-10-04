@@ -1045,7 +1045,7 @@ export class TapsmithNotInstalledError extends Error {
   // No parameter properties: Node's type stripping cannot run them.
   constructor(configPath: string, installCommand: InstallCommand, cause: unknown) {
     super(
-      `Failed to load config file ${configPath}: tapsmith isn't installed in this project. Run \`${installCommand.display}\`.`,
+      `Failed to load config file ${configPath}: Tapsmith isn't installed in this project. Run \`${installCommand.display}\`.`,
       { cause },
     );
     this.name = 'TapsmithNotInstalledError';

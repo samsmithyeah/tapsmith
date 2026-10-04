@@ -2119,7 +2119,7 @@ correct device.
 
 ### `loadConfig(dir?: string, configFile?: string): Promise<TapsmithConfig>`
 
-With `configFile`, load that file (resolved against `dir`); a missing one rejects with `Config file not found: <path>`. Otherwise, load configuration from the first of `tapsmith.config.ts`, `tapsmith.config.js` and `tapsmith.config.mjs` that exists in `dir` (default: the working directory). Falls back to defaults only if none exists: when the file exists but cannot be imported, the promise rejects with `Failed to load config file <path>: <reason>`, the import error as its `cause`, rather than trying the next candidate. TypeScript configs load without a TypeScript loader in the calling process. This is used internally by the CLI.
+With `configFile`, load that file (resolved against `dir`); a missing one rejects with `Config file not found: <path>`. Otherwise, load configuration from the first of `tapsmith.config.ts`, `tapsmith.config.js` and `tapsmith.config.mjs` that exists in `dir` (default: the working directory). Falls back to defaults only if none exists: when the file exists but cannot be imported, the promise rejects with `Failed to load config file <path>: <reason>`, the import error as its `cause`, rather than trying the next candidate. When the import failed because the config imports `tapsmith` and the project does not have it, the reason reads ``Tapsmith isn't installed in this project. Run `npm i -D tapsmith`.`` (the command follows the project's package manager), and the error's `code` is `TAPSMITH_NOT_INSTALLED`. TypeScript configs load without a TypeScript loader in the calling process. This is used internally by the CLI.
 
 ---
 
@@ -2462,7 +2462,9 @@ removing one, or changing what it means, is a breaking change.
 The results:
 
 - **`init --yes --json`**: `{ configPath, filesCreated, warnings, nextSteps }` — the config file written, every
-  file created, warnings (strings) and next steps (strings).
+  file created, warnings (strings) and next steps (strings). When the project cannot resolve `tapsmith`, which the
+  config and example test import, the first next step is the install command for its package manager (`--yes` never
+  runs it) and a warning says so.
 - **`verify --json`**: `{ ok, passed, failed, skipped, duration, failures, testFile }` — counts, `duration` in
   milliseconds, `failures` as `{ fullName, error, screenshotPath? }`, and the test file run, relative to the
   config's `rootDir`.
@@ -2684,7 +2686,7 @@ npx tapsmith test --reporter json     # writes tapsmith-results/results.json
 
 ### `tapsmith init [options]`
 
-Set up a project. With no options, in a terminal, it runs the interactive wizard: it detects your environment (ADB, Xcode, simulators, emulators), offers the app builds it finds under `android/` and `ios/` (a typed path must exist), walks you through platform and app configuration, and generates a `tapsmith.config.ts`, an example test and an `AGENTS.md` section.
+Set up a project. With no options, in a terminal, it runs the interactive wizard: it detects your environment (ADB, Xcode, simulators, emulators), offers the app builds it finds under `android/` and `ios/` (a typed path must exist), walks you through platform and app configuration, and generates a `tapsmith.config.ts`, an example test and an `AGENTS.md` section. Run outside a project that has Tapsmith installed (`npx tapsmith init` before `npm i -D tapsmith`, or a global install), it offers to install it with the project's package manager, since the files it writes import `tapsmith`; declined, it prints the command as the first next step.
 
 Pass `--yes` or any setup flag below (every flag but `--json`) to run non-interactively instead, for scripts and AI agents: anything not given is auto-detected, and a choice that cannot be made (two APKs, say) exits 1 naming the candidates and the flag that picks one. `--json` only changes the output, so an agent passes `--yes --json`. Without a terminal and without `--yes` or a setup flag, `init` exits 1 rather than waiting for input. iOS physical devices need the interactive wizard, for its code-signing preflight.
 

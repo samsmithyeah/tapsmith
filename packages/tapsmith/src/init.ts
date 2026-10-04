@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import Enquirer from 'enquirer';
 import figlet from 'figlet';
 import { tryExec, scanEnvironment, type EnvScan, type SimulatorInfo } from './env-scan.js';
@@ -17,6 +18,7 @@ import { androidSdkRoots } from './emulator.js';
 import type { InitCommandOptions } from './cli-program.js';
 import { formatJson, jsonError } from './cli-json.js';
 import { avdCaptureSupport, avdCaptureWarning, noAvdsListedMessage, type AvdImageInfo } from './avd-images.js';
+import { isTapsmithResolvableFrom, tapsmithInstallCommand, type InstallCommand } from './config.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -548,6 +550,59 @@ export async function initSimulatorAgent(): Promise<{ status: 'present' | 'built
   }
 }
 
+// ─── Installing Tapsmith in the project (PILOT-551) ───
+
+/** Runs an install with the user's terminal attached: true, or why it failed. */
+function runInstallCommand(install: InstallCommand, cwd: string): true | string {
+  const result = spawnSync(install.command, install.args, {
+    cwd,
+    stdio: 'inherit',
+    // npm, yarn and pnpm are .cmd shims on Windows, which only a shell runs.
+    shell: process.platform === 'win32',
+  });
+  if (result.error) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' ? `${install.command} was not found on PATH` : result.error.message;
+  }
+  if (result.status !== 0) {
+    return result.signal ? `${install.command} was killed by ${result.signal}` : `${install.command} exited with code ${result.status}`;
+  }
+  return true;
+}
+
+/**
+ * `npx tapsmith init` and a global install run from outside the project, but
+ * the config and example test import `tapsmith`. When the project cannot
+ * resolve it, offer the project's package manager's install and run it.
+ * Returns the command still to run (declined, failed, or not offered because
+ * there is no package.json here — npm would install into whichever ancestor
+ * has one), or undefined when Tapsmith is in place.
+ */
+export async function offerTapsmithInstall(
+  cwd: string,
+  run: (install: InstallCommand, cwd: string) => true | string = runInstallCommand,
+): Promise<string | undefined> {
+  if (isTapsmithResolvableFrom(cwd)) return undefined;
+  const install = await tapsmithInstallCommand(cwd);
+  if (!fs.existsSync(path.join(cwd, 'package.json'))) return install.display;
+
+  const go = await ask<boolean>({
+    type: 'confirm',
+    message: `Tapsmith isn't installed in this project, and the config imports it. Install it now (${install.display})?`,
+    initial: true,
+  });
+  if (!go) return install.display;
+
+  console.log(dim(`  Running ${install.display}...`));
+  const result = run(install, cwd);
+  if (result !== true) {
+    console.log(`  ${YELLOW}⚠${RESET} Could not install Tapsmith: ${result}`);
+    return install.display;
+  }
+  console.log(`  ${green('✓')} Tapsmith installed`);
+  return undefined;
+}
+
 // ─── Config generation ───
 
 /**
@@ -760,7 +815,9 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
         }
       }
 
-      const result = executeInitPlan(plan, parsed);
+      const cwd = process.cwd();
+      const missingTapsmith = isTapsmithResolvableFrom(cwd) ? undefined : await tapsmithInstallCommand(cwd);
+      const result = executeInitPlan(plan, parsed, cwd, missingTapsmith);
 
       if (parsed.json) {
         process.stdout.write(formatJson(result));
@@ -937,11 +994,15 @@ async function runInitInner(): Promise<void> {
     console.log(`  ${green('✓')} AGENTS.md updated`);
   }
 
+  // Step 8.6: Tapsmith itself, which the config and test import (PILOT-551)
+  const installStep = await offerTapsmithInstall(process.cwd());
+
   // Step 9: Next steps
   console.log();
   console.log(`  ${bold('Next steps')}`);
   const projects = generatedProjects(selectedPlatforms, iosConfig);
   const steps: Array<[string, string]> = [
+    ...(installStep ? [['Install Tapsmith', installStep] as [string, string]] : []),
     ['Run your tests', 'npx tapsmith test'],
     ['List devices', 'npx tapsmith list-devices'],
     ['Health check', 'npx tapsmith doctor'],

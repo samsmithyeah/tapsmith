@@ -444,7 +444,7 @@ describe('configLoadFailure', () => {
       new Error("Cannot find module 'tapsmith'"),
     );
     const failure = configLoadFailure(err);
-    expect(failure.message).toBe("tapsmith isn't installed in this project (/p/tapsmith.config.ts imports it)");
+    expect(failure.message).toBe("Tapsmith isn't installed in this project (/p/tapsmith.config.ts imports it)");
     expect(failure.hint).toBe('Run: pnpm add -D tapsmith');
   });
 

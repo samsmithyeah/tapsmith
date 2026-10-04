@@ -287,7 +287,7 @@ describe('loadConfig rootDir anchoring', () => {
         const file = path.join(root, 'tapsmith.config.ts');
         fs.writeFileSync(file, CONFIG, 'utf-8');
         const out = load();
-        expect(out.error).toBe(`Failed to load config file ${file}: tapsmith isn't installed in this project. Run \`npm i -D tapsmith\`.`);
+        expect(out.error).toBe(`Failed to load config file ${file}: Tapsmith isn't installed in this project. Run \`npm i -D tapsmith\`.`);
         expect(out.code).toBe('TAPSMITH_NOT_INSTALLED');
         // Node's own error stays reachable for anyone debugging.
         expect(out.cause).toMatch(/Cannot find (module|package) 'tapsmith'/);
