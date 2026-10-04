@@ -278,7 +278,7 @@ Returns a hierarchical tree showing:
 A file that fails to load (a missing import, a syntax error) has no tests to
 list, so it is reported separately at the end of the tree as a warning with the
 reason. The tree is only complete when no warning is shown. Running such a file
-reports one failed result, `Failed to load test file`, carrying the load error;
+reports one failed result, `<file name> — failed to load`, carrying the load error;
 the other files in the run still run.
 
 #### `tapsmith_list_results`

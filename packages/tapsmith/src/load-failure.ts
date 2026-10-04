@@ -1,7 +1,7 @@
 /**
  * Test files that fail to load (PILOT-545).
  *
- * Such a file reports one failed result, titled {@link FILE_LOAD_FAILURE_TITLE},
+ * Such a file reports one failed result, titled by {@link fileLoadFailureTitle},
  * in place of its tests.
  *
  * ## Pointing a "module not found" error at the import that asked for it
@@ -21,10 +21,15 @@ import type { TestTreeNode } from './ui-mode/ui-protocol.js';
 
 /**
  * Title of the single failed result a test file that cannot be loaded reports
- * in place of its tests. Shared with UI mode, whose tree shows the same row
- * for a file whose discovery failed, so a run's result lands on it.
+ * in place of its tests. It names the file, as the run's other synthetic
+ * whole-file results do, because several reporters (line, dot, GitHub, JUnit)
+ * print a result's title without its path. Shared with UI mode, whose tree
+ * shows the same row for a file whose discovery failed, so a run's result
+ * lands on it.
  */
-export const FILE_LOAD_FAILURE_TITLE = 'Failed to load test file';
+export function fileLoadFailureTitle(filePath: string): string {
+  return `${path.basename(filePath)} — failed to load`;
+}
 
 /**
  * UI mode's tree node for a file whose discovery failed to load it: the file,
@@ -33,6 +38,7 @@ export const FILE_LOAD_FAILURE_TITLE = 'Failed to load test file';
  * stderr, and a run's result for it had no row to land on.
  */
 export function loadFailureTreeNode(filePath: string, error: string): TestTreeNode {
+  const title = fileLoadFailureTitle(filePath);
   return {
     id: filePath,
     type: 'file',
@@ -41,15 +47,34 @@ export function loadFailureTreeNode(filePath: string, error: string): TestTreeNo
     fullName: path.basename(filePath),
     status: 'idle',
     children: [{
-      id: `${filePath}::${FILE_LOAD_FAILURE_TITLE}`,
+      id: `${filePath}::${title}`,
       type: 'test',
-      name: FILE_LOAD_FAILURE_TITLE,
+      name: title,
       filePath,
-      fullName: FILE_LOAD_FAILURE_TITLE,
+      fullName: title,
       status: 'failed',
       error,
     }],
   };
+}
+
+/**
+ * The tree without the files that failed to load, for MCP's `getTestTree`.
+ * UI mode keeps such a file in its own tree as a failed row, but that row is
+ * not a test: MCP reports these files through `getDiscoveryErrors` instead,
+ * as the headless dispatcher does, so listing the row as well would offer an
+ * agent a test name that names no test and put a phantom "not run" test on
+ * the suite board.
+ */
+export function withoutLoadFailedFiles<T extends { type: string; filePath: string; children?: T[] }>(
+  nodes: T[],
+  loadFailed: ReadonlySet<string> | ReadonlyMap<string, unknown>,
+): T[] {
+  return nodes
+    .filter((n) => !(n.type === 'file' && loadFailed.has(n.filePath)))
+    .map((n) => (n.type === 'project' && n.children
+      ? { ...n, children: withoutLoadFailedFiles(n.children, loadFailed) }
+      : n));
 }
 
 interface MissingImport {

@@ -2360,7 +2360,7 @@ interface TestResult {
 
 A test file that fails to load — a missing module, an error thrown while it is
 imported or inside a `describe()` callback — reports a single failed result in
-place of its tests: `name` and `fullName` are `"Failed to load test file"`,
+place of its tests: `name` and `fullName` are `"<file name> — failed to load"` (e.g. `"login.test.ts — failed to load"`),
 `fileLevelFailure` is `true`, `filePath` names the file, and `error` is the load
 error. None of the file's tests run; every other file still does, and the run
 counts it as a failure.

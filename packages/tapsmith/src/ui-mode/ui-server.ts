@@ -23,7 +23,7 @@ import { McpEventEmitter } from '../mcp/events.js';
 import { McpSessionRouter } from '../mcp/http-session-router.js';
 import { configureMcpConnection } from '../mcp/connection.js';
 import { matchRequestedFiles, fileFailureEntry } from '../mcp/headless-dispatcher.js';
-import { loadFailureTreeNode } from '../load-failure.js';
+import { loadFailureTreeNode, withoutLoadFailedFiles } from '../load-failure.js';
 import { pickResolvedDeviceName } from '../mcp/tools/device-target.js';
 
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
@@ -1151,7 +1151,9 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     getTestFiles: () => ctx.testFiles,
     resolveRequestedFiles: (files) => resolveRequested(files),
     getProjects: () => realProjects().map((p) => p.name),
-    getTestTree: () => testTree.map(toTreeEntry),
+    // Files that failed to load are reported by getDiscoveryErrors, not as
+    // a test row (PILOT-545).
+    getTestTree: () => withoutLoadFailedFiles(testTree, discoveryErrors).map(toTreeEntry),
     getDiscoveryErrors: (): DiscoveryError[] =>
       [...discoveryErrors].map(([filePath, error]) => ({ filePath, error })),
     getSessionInfo: (): SessionInfo => {

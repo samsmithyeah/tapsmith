@@ -23,7 +23,7 @@ const brotliDecompress = promisify(zlib.brotliDecompress);
 import type { TapsmithConfig, Platform, UseOptions } from './config.js';
 import type { Device } from './device.js';
 import type { TapsmithReporter } from './reporter.js';
-import { FILE_LOAD_FAILURE_TITLE, withMissingImportFrame } from './load-failure.js';
+import { fileLoadFailureTitle, withMissingImportFrame } from './load-failure.js';
 import { APIRequestContext } from './api-request.js';
 import { flushSoftErrors } from './expect.js';
 import { FixtureRegistry, resolveFixtures, fixtureParameterNames, functionHasParameters, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
@@ -411,7 +411,7 @@ export interface TestResult {
    * True when this result stands for a whole file rather than a test in it —
    * the file failed to load (a missing module, an error thrown at import), so
    * none of its tests could be registered or run (PILOT-545). Its `name` and
-   * `fullName` are {@link FILE_LOAD_FAILURE_TITLE}; `filePath` names the file.
+   * `fullName` are `<file name> — failed to load`; `filePath` names the file.
    */
   fileLevelFailure?: boolean;
 }
@@ -3001,9 +3001,10 @@ export function fileLevelFailureResult(
   err: unknown,
 ): TestResult {
   const error = err instanceof Error ? err : new Error(String(err));
+  const title = fileLoadFailureTitle(opts.testFilePath ?? '');
   return {
-    name: FILE_LOAD_FAILURE_TITLE,
-    fullName: FILE_LOAD_FAILURE_TITLE,
+    name: title,
+    fullName: title,
     status: 'failed',
     durationMs: 0,
     error: withMissingImportFrame(error),

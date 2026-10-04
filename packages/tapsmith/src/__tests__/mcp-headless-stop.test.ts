@@ -468,7 +468,7 @@ describe('a file that failed to load (PILOT-545)', () => {
     await untilRunning(child);
 
     const loadFailure = {
-      ...testEnd('Failed to load test file', 'failed', 0, "Cannot find module '../helpers/login'").result,
+      ...testEnd('a-broken.test.ts — failed to load', 'failed', 0, "Cannot find module '../helpers/login'").result,
       fileLevelFailure: true,
     };
     child.emit('message', { type: 'test-end', result: loadFailure });
@@ -476,7 +476,7 @@ describe('a file that failed to load (PILOT-545)', () => {
 
     const result = await run;
     expect(result.failed).toBe(1);
-    const entry = dispatcher.getResults().find((r) => r.fullName === 'Failed to load test file');
+    const entry = dispatcher.getResults().find((r) => r.fullName === 'a-broken.test.ts — failed to load');
     expect(entry).toMatchObject({ status: 'failed', fileLevelFailure: true });
     expect(entry?.error).toContain('Cannot find module');
   });

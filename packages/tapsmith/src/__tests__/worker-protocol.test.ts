@@ -38,7 +38,7 @@ describe('worker-protocol serialization', () => {
     });
 
     it('round-trips the file-level failure flag (PILOT-545)', () => {
-      const result: TestResult = { name: 'Failed to load test file', fullName: 'Failed to load test file', status: 'failed', durationMs: 0, error: new Error('Cannot find module'), fileLevelFailure: true };
+      const result: TestResult = { name: 'a-broken.test.ts — failed to load', fullName: 'a-broken.test.ts — failed to load', status: 'failed', durationMs: 0, error: new Error('Cannot find module'), fileLevelFailure: true };
       expect(deserializeTestResult(serializeTestResult(result, 0)).fileLevelFailure).toBe(true);
       expect(serializeTestResult({ ...result, fileLevelFailure: undefined }, 0)).not.toHaveProperty('fileLevelFailure');
     });

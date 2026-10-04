@@ -11,7 +11,7 @@ import {
   type TestResult,
 } from '../runner.js';
 import type { TapsmithConfig } from '../config.js';
-import { FILE_LOAD_FAILURE_TITLE } from '../load-failure.js';
+
 import { extractStack } from '../trace/trace-collector.js';
 
 // PILOT-545: a test file whose import throws (a missing module, a TypeError at
@@ -75,8 +75,10 @@ describe('runTestFile — a file that fails to load (PILOT-545)', () => {
     expect(results).toHaveLength(1);
     const [result] = results;
     expect(result.status).toBe('failed');
-    expect(result.name).toBe(FILE_LOAD_FAILURE_TITLE);
-    expect(result.fullName).toBe(FILE_LOAD_FAILURE_TITLE);
+    // Named after the file: line, dot, GitHub and JUnit reporters print the
+    // title without the path.
+    expect(result.name).toBe('a-broken.test.mjs — failed to load');
+    expect(result.fullName).toBe('a-broken.test.mjs — failed to load');
     expect(result.fileLevelFailure).toBe(true);
     expect(result.filePath).toBe(filePath);
     expect(result.project).toBe('android');
@@ -105,7 +107,7 @@ describe('runTestFile — a file that fails to load (PILOT-545)', () => {
     try {
       const suite = await runTestFile(pathToFileURL(filePath).href, makeOpts());
       const results = collectResults(suite);
-      expect(results.map((r) => [r.fullName, r.status])).toEqual([[FILE_LOAD_FAILURE_TITLE, 'failed']]);
+      expect(results.map((r) => [r.fullName, r.status])).toEqual([['b-typeerror.test.mjs — failed to load', 'failed']]);
       expect(results[0].error).toBeInstanceOf(TypeError);
       expect(ran).toEqual([]);
     } finally {
@@ -132,7 +134,7 @@ describe('runTestFile — a file that fails to load (PILOT-545)', () => {
     const brokenSuite = await runTestFile(pathToFileURL(broken).href, makeOpts());
     const fineSuite = await runTestFile(pathToFileURL(fine).href, makeOpts());
 
-    expect(collectResults(brokenSuite).map((r) => [r.fullName, r.status])).toEqual([[FILE_LOAD_FAILURE_TITLE, 'failed']]);
+    expect(collectResults(brokenSuite).map((r) => [r.fullName, r.status])).toEqual([['a-broken.test.mjs — failed to load', 'failed']]);
     expect(collectResults(fineSuite).map((r) => [r.fullName, r.status])).toEqual([['fine', 'passed']]);
     expect(collectResults(fineSuite)[0].fileLevelFailure).toBeUndefined();
   });

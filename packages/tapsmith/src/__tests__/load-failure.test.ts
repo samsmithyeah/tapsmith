@@ -4,8 +4,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { FILE_LOAD_FAILURE_TITLE, loadFailureTreeNode, parseMissingImport, withMissingImportFrame } from '../load-failure.js';
+import { fileLoadFailureTitle, loadFailureTreeNode, withoutLoadFailedFiles, parseMissingImport, withMissingImportFrame } from '../load-failure.js';
 import { extractStack } from '../trace/trace-collector.js';
+import type { TestTreeNode } from '../ui-mode/ui-protocol.js';
 import { formatError } from '../reporters/base.js';
 
 // PILOT-545: a missing-module error's stack holds only resolver frames, so the
@@ -128,14 +129,39 @@ describe('loadFailureTreeNode', () => {
       children: [{
         // Same id scheme and fullName as a discovered test, so the runner's
         // load-failure result for this file lands on this row.
-        id: `/repo/tests/a-broken.test.ts::${FILE_LOAD_FAILURE_TITLE}`,
+        id: '/repo/tests/a-broken.test.ts::a-broken.test.ts — failed to load',
         type: 'test',
-        name: FILE_LOAD_FAILURE_TITLE,
+        name: 'a-broken.test.ts — failed to load',
         filePath: '/repo/tests/a-broken.test.ts',
-        fullName: FILE_LOAD_FAILURE_TITLE,
+        fullName: 'a-broken.test.ts — failed to load',
         status: 'failed',
         error: "Cannot find module '../helpers/login'",
       }],
     });
+  });
+});
+
+describe('fileLoadFailureTitle', () => {
+  it('names the file, so reporters that print only the title still say which file failed', () => {
+    expect(fileLoadFailureTitle('/repo/tests/a-broken.test.ts')).toBe('a-broken.test.ts — failed to load');
+  });
+});
+
+describe('withoutLoadFailedFiles', () => {
+  const node = (type: TestTreeNode['type'], filePath: string, children?: TestTreeNode[]): TestTreeNode => ({
+    id: `${type}:${filePath}`, type, name: filePath, filePath, fullName: filePath, status: 'idle', ...(children ? { children } : {}),
+  });
+  const ok = node('file', '/r/ok.test.ts', [node('test', '/r/ok.test.ts')]);
+  const broken = loadFailureTreeNode('/r/broken.test.ts', 'boom');
+
+  it('drops a file that failed to load, at the top level and under a project', () => {
+    const failed = new Map([['/r/broken.test.ts', 'boom']]);
+    expect(withoutLoadFailedFiles([ok, broken], failed)).toEqual([ok]);
+    const project = node('project', '', [ok, broken]);
+    expect(withoutLoadFailedFiles([project], failed)).toEqual([{ ...project, children: [ok] }]);
+  });
+
+  it('keeps every file when none failed', () => {
+    expect(withoutLoadFailedFiles([ok, broken], new Map())).toEqual([ok, broken]);
   });
 });
