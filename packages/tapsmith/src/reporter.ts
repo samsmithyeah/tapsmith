@@ -197,9 +197,8 @@ function isSingleTuple(config: ReporterConfig): boolean {
     Array.isArray(config) &&
     config.length === 2 &&
     typeof config[0] === 'string' &&
-    typeof config[1] === 'object' &&
-    config[1] !== null &&
-    !Array.isArray(config[1])
+    // `['html', CI ? { open: 'never' } : undefined]`: options left to the reporter's defaults.
+    (config[1] === undefined || (typeof config[1] === 'object' && config[1] !== null && !Array.isArray(config[1])))
   );
 }
 

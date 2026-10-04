@@ -374,21 +374,23 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     const { json } = await doctorJson();
     const rows = json.checks.filter((c) => c.id === 'config-load');
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.label).toMatch(/project a:.*project b:/);
+    // Caught at load since PILOT-552, every problem listed in the one error.
+    expect(rows[0]!.label).toMatch(/projects\[0\]\.use\.emulatorLaunchOptions[\s\S]*projects\[1\]\.use\.emulatorLaunchOptions/);
   });
 
-  it('a malformed apk value is a warning row, not a crash', async () => {
+  it('a malformed apk value is a config-load failure, not a crash', async () => {
     withAdb();
     writeConfig("export default { projects: [{ name: 'a', use: { apk: 123 } }] }\n");
     const { json } = await doctorJson();
-    expect(check(json, 'app-apk')).toMatchObject({ status: 'warn', label: 'Could not check app APK path' });
+    // Refused at load since PILOT-552.
+    expect(check(json, 'config-load')).toMatchObject({ status: 'fail', label: expect.stringContaining('projects[0].use.apk must be a string (got 123)') });
   });
 
   it('a project option the per-project merge rejects is a config-load failure, not a crash', async () => {
     withAdb();
     writeConfig("export default { projects: [{ name: 'a', use: { platform: 'android', emulatorLaunchOptions: { headless: true } } }] }\n");
     const { code, json } = await doctorJson();
-    expect(check(json, 'config-load')).toMatchObject({ status: 'fail', label: expect.stringContaining('project a') });
+    expect(check(json, 'config-load')).toMatchObject({ status: 'fail', label: expect.stringContaining('projects[0].use.emulatorLaunchOptions') });
     expect(ids(json)).toContain('adb');
     expect(code).toBe(1);
   });

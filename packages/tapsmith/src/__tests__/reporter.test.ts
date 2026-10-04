@@ -247,6 +247,13 @@ describe('ReporterDispatcher', () => {
 // ─── createReporters ───
 
 describe('createReporters', () => {
+  // `reporter: ['html', CI ? { open: 'never' } : undefined]` — config
+  // validation accepts it (PILOT-552), so it must create the reporter.
+  it('creates a single [name, undefined] tuple with the reporter\'s default options', async () => {
+    const reporters = await createReporters(['dot', undefined] as unknown as TapsmithConfig['reporter']);
+    expect(reporters.map((r) => r.constructor.name)).toEqual(['DotReporter']);
+  });
+
   it('creates a list reporter by default when not in CI', async () => {
     const origCI = process.env.CI;
     delete process.env.CI;

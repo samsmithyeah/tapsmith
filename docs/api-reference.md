@@ -2019,7 +2019,7 @@ This gives full visibility into test-level API calls alongside device interactio
 
 ### `defineConfig(overrides?: Partial<TapsmithConfig>): TapsmithConfig`
 
-Create a Tapsmith configuration by merging overrides with defaults. Used in `tapsmith.config.ts`.
+Create a Tapsmith configuration by merging overrides with defaults. Used in `tapsmith.config.ts`. Throws an error with `code` `TAPSMITH_INVALID_CONFIG` listing every problem when an override is unknown, of the wrong type or outside its allowed values; `loadConfig` reports it with the config file's path.
 
 ```typescript
 import { defineConfig } from "tapsmith";
@@ -2119,7 +2119,7 @@ correct device.
 
 ### `loadConfig(dir?: string, configFile?: string): Promise<TapsmithConfig>`
 
-With `configFile`, load that file (resolved against `dir`); a missing one rejects with `Config file not found: <path>`. Otherwise, load configuration from the first of `tapsmith.config.ts`, `tapsmith.config.js` and `tapsmith.config.mjs` that exists in `dir` (default: the working directory). Falls back to defaults only if none exists: when the file exists but cannot be imported, the promise rejects with `Failed to load config file <path>: <reason>`, the import error as its `cause`, rather than trying the next candidate. When the import failed because the config imports `tapsmith` and the project does not have it, the reason reads ``Tapsmith isn't installed in this project. Run `npm i -D tapsmith`.`` (the command follows the project's package manager), and the error's `code` is `TAPSMITH_NOT_INSTALLED`. TypeScript configs load without a TypeScript loader in the calling process. This is used internally by the CLI.
+With `configFile`, load that file (resolved against `dir`); a missing one rejects with `Config file not found: <path>`. Otherwise, load configuration from the first of `tapsmith.config.ts`, `tapsmith.config.js` and `tapsmith.config.mjs` that exists in `dir` (default: the working directory). Falls back to defaults only if none exists: when the file exists but cannot be imported, the promise rejects with `Failed to load config file <path>: <reason>`, the import error as its `cause`, rather than trying the next candidate. When the import failed because the config imports `tapsmith` and the project does not have it, the reason reads ``Tapsmith isn't installed in this project. Run `npm i -D tapsmith`.`` (the command follows the project's package manager), and the error's `code` is `TAPSMITH_NOT_INSTALLED`. A config that loads but is invalid (no default export, an unknown key, a value of the wrong type or outside its allowed values, at the root, in a project or in a project's `use`) rejects with ``Invalid config file <path>: <problem>`` (one problem per line when there are several) and `code` `TAPSMITH_INVALID_CONFIG`. TypeScript configs load without a TypeScript loader in the calling process. This is used internally by the CLI.
 
 ---
 
@@ -3038,14 +3038,12 @@ element and a download link in each test's detail panel.
 import { defineConfig } from 'tapsmith'
 
 export default defineConfig({
-  use: {
-    video: 'retain-on-failure', // mode shorthand
-    // — or —
-    video: {
-      mode: 'on',
-      size: { width: 1280, height: 720 }, // Android only
-    },
-  },
+  video: 'retain-on-failure', // mode shorthand
+  // — or —
+  // video: {
+  //   mode: 'on',
+  //   size: { width: 1280, height: 720 }, // Android only
+  // },
 })
 ```
 
