@@ -1178,7 +1178,7 @@ async function provisionMultiWorkerDevices(
   let serials: string[];
   let reusedSimulatorCount = 0;
   if (config.platform === 'ios') {
-    const { listCompatibleBootedSimulators, provisionSimulators, cleanupStaleSimulators } = await import('./ios-simulator.js');
+    const { listAdoptableBootedSimulators, provisionSimulators, cleanupStaleSimulators } = await import('./ios-simulator.js');
     let reusableUdids: string[] = [];
     if (config.simulator) {
       const staleResult = cleanupStaleSimulators(config.simulator);
@@ -1190,8 +1190,13 @@ async function provisionMultiWorkerDevices(
         });
       }
     }
-    const compatible = listCompatibleBootedSimulators(config.device!);
-    const others = compatible
+    // Only booted simulators the config names and Tapsmith's clones of them,
+    // on the primary's runtime: any other may be one the developer is using
+    // (PILOT-511). No `simulator` (a physical primary) → nothing to adopt.
+    const adoptable = config.simulator
+      ? listAdoptableBootedSimulators(config.simulator, { compatibleWith: config.device })
+      : [];
+    const others = adoptable
       .filter((s) => s.udid !== config.device && !pinned.includes(s.udid))
       .slice(0, Math.max(0, wanted - 1 - pinned.length));
     if (others.length > 0) {
@@ -1199,11 +1204,11 @@ async function provisionMultiWorkerDevices(
       if (opts?.progress) {
         opts.progress.update('worker-devices', {
           state: 'running',
-          detail: `reusing ${others.length} booted simulator(s) from previous run`,
+          detail: `reusing ${others.length} already-booted ${config.simulator} simulator(s)`,
         });
       } else {
         for (const sim of others) {
-          process.stderr.write(`${DIM}Reusing simulator ${sim.udid} (${sim.name}) from previous run.${RESET}\n`);
+          process.stderr.write(`${DIM}Reusing already-booted simulator ${sim.udid} (${sim.name}).${RESET}\n`);
         }
       }
     }

@@ -80,6 +80,8 @@ export default defineConfig({
 
 Tapsmith creates clones of the specified simulator device type for each worker beyond the first. These clones are managed automatically -- they are created at the start of the run and cleaned up afterward.
 
+Workers use only simulators that match `simulator` (by name or UDID) and Tapsmith's own clones of it. A booted simulator with any other name is left alone, even when it runs the same iOS version.
+
 No additional setup is required beyond having Xcode installed with the target simulator runtime available.
 
 ### Worker Output
