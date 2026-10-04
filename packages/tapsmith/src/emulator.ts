@@ -1258,6 +1258,15 @@ export function resolveEmulatorLaunchSettings(
 }
 
 /**
+ * Flags that keep the emulator from stopping at a prompt nobody will answer
+ * (PILOT-512). After any earlier emulator crash on the machine (its crash
+ * database is shared by every project), the next launch otherwise opens a modal
+ * crash-report consent dialog and never boots; and the emulator warns that its
+ * metrics notice will become a one-time blocking prompt.
+ */
+const NO_BLOCKING_PROMPT_FLAGS = ['-crash-report-mode', 'never', '-no-metrics'] as const;
+
+/**
  * The exact argv `launchEmulator` passes to the `emulator` binary.
  *
  * - **Headless** (`headless: true`, and always in CI): no window, SwiftShader,
@@ -1268,6 +1277,9 @@ export function resolveEmulatorLaunchSettings(
  *   it matches the renderer its snapshot was saved with — normally the host
  *   GPU) and a quick-boot from the AVD's default snapshot. `-read-only` means nothing
  *   is saved back to the AVD (`-no-snapshot-save` says so explicitly).
+ *
+ * Both profiles answer no crash-report or metrics prompt
+ * (`NO_BLOCKING_PROMPT_FLAGS`), and user args come last.
  */
 export function emulatorLaunchArgs(
   avd: string,
@@ -1281,6 +1293,7 @@ export function emulatorLaunchArgs(
     '-avd', avd,
     '-port', String(port),
     ...TAPSMITH_EMULATOR_IDENTITY_FLAGS,
+    ...NO_BLOCKING_PROMPT_FLAGS,
     ...profile,
     ...settings.args,
   ];
@@ -1383,6 +1396,46 @@ const WRITABLE_INSTANCE_RUNNING = /^(?:ERROR|FATAL)\b.*another emulator instance
 /** How many lines of the emulator's output an early-exit message quotes. */
 const EXIT_OUTPUT_LINES = 3;
 
+/** The non-empty lines of an emulator log. */
+function logLines(log: string): string[] {
+  return log.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+}
+
+/** The `INFO         | ` prefix of a line the emulator logs itself. */
+const LOG_LEVEL_PREFIX = /^[A-Z_]+\s*\|\s*/;
+
+/** The last few log lines, without their `LEVEL |` prefix or a trailing full stop. */
+function quoteLogLines(lines: readonly string[]): string[] {
+  return lines.slice(-EXIT_OUTPUT_LINES).map((line) => line.replace(LOG_LEVEL_PREFIX, '').replace(/\.+$/, ''));
+}
+
+/**
+ * A launched emulator still running, but not booted within the boot timeout,
+ * with the emulator's last output and where the rest of it is (PILOT-512): a
+ * launch stuck at a prompt says so in its log, and nowhere else.
+ */
+export function describeBootTimeout(
+  timeout: EmulatorBootTimeoutError,
+  emu: { logPath: string | undefined },
+  readLog: (file: string) => string = (file) => fs.readFileSync(file, 'utf-8'),
+): string {
+  const base = timeout.message.replace(/\.$/, '');
+  if (emu.logPath === undefined) return `${base}.`;
+  let quoted: string[] = [];
+  try {
+    const lines = logLines(readLog(emu.logPath));
+    // The emulator's own lines (`INFO | …`), not what it dumps between them:
+    // a launch stuck at the crash-report dialog prints the pending report's
+    // annotations after the line that says so.
+    const own = lines.filter((line) => LOG_LEVEL_PREFIX.test(line));
+    quoted = quoteLogLines(own.length > 0 ? own : lines);
+  } catch {
+    // The log has gone: name where it was.
+  }
+  const detail = quoted.length > 0 ? ` Its last output: ${quoted.join(' / ')}.` : '';
+  return `${base}.${detail} Full output: ${emu.logPath}`;
+}
+
 /**
  * Why a launched emulator failed to boot, from how its process ended and
  * what it wrote to its log (PILOT-417) — so the user sees the emulator's own
@@ -1409,10 +1462,9 @@ export function describeEmulatorExit(
       + 'and the emulator will not start a second instance beside it. '
       + 'Close that emulator, or point `avd` at another AVD.';
   }
-  const lines = log.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+  const lines = logLines(log);
   const errors = lines.filter((line) => /^(ERROR|FATAL)\b/.test(line));
-  const quoted = (errors.length > 0 ? errors : lines).slice(-EXIT_OUTPUT_LINES)
-    .map((line) => line.replace(/^[A-Z_]+\s*\|\s*/, '').replace(/\.+$/, ''));
+  const quoted = quoteLogLines(errors.length > 0 ? errors : lines);
   const how = exit.code !== null ? `exit code ${exit.code}` : `signal ${exit.signal ?? 'unknown'}`;
   const detail = quoted.length > 0 ? `: ${quoted.join(' / ')}` : '';
   const where = emu.logPath !== undefined ? ` Full output: ${emu.logPath}` : '';
@@ -1658,6 +1710,9 @@ const execFileAsync = promisify(execFile);
 /** Thrown by `waitForBoot` when its `signal` aborts the wait. */
 class BootWaitAborted extends Error {}
 
+/** Thrown by `waitForBoot` when the emulator has not booted within its timeout. */
+export class EmulatorBootTimeoutError extends Error {}
+
 /**
  * Wait for an emulator to finish booting.
  * Polls `adb -s <serial> shell getprop sys.boot_completed` until it returns "1".
@@ -1710,7 +1765,7 @@ export async function waitForBoot(
     await sleep(pollInterval);
   }
 
-  throw new Error(`Emulator ${serial} did not boot within ${timeoutMs / 1000}s`);
+  throw new EmulatorBootTimeoutError(`Emulator ${serial} did not boot within ${timeoutMs / 1000}s`);
 }
 
 export async function waitForDeviceStability(
@@ -1814,6 +1869,62 @@ export function killEmulator(serial: string): void {
   }
 }
 
+/** How long each signal gets to stop a failed launch before the next. */
+const STOP_GRACE_MS = 5_000;
+const STOP_POLL_MS = 100;
+
+interface StopLaunchedEmulatorDeps {
+  sleep: (ms: number) => Promise<void>
+  /** How long SIGTERM, then SIGKILL, gets to take effect. */
+  graceMs: number
+}
+
+/**
+ * Stop an emulator process this process launched, whose launch failed
+ * (PILOT-512): SIGTERM, then SIGKILL if it is still running after a grace
+ * period. An emulator showing a modal dialog ignores SIGTERM.
+ *
+ * Only the spawned process is signalled, through its `ChildProcess` — which
+ * does nothing once it has exited, so a PID the system has since reused is
+ * never touched. (The `emulator` launcher exec's qemu, so that process is the
+ * emulator.) Not its process group: that may hold helpers other emulators share.
+ *
+ * Resolves `true` once it has exited, `false` if it survived SIGKILL — the
+ * caller must then keep it recorded, not forget it.
+ */
+export async function stopLaunchedEmulator(
+  emu: Pick<LaunchedEmulator, 'process'>,
+  deps: Partial<StopLaunchedEmulatorDeps> = {},
+): Promise<boolean> {
+  const wait = deps.sleep ?? sleep;
+  const graceMs = deps.graceMs ?? STOP_GRACE_MS;
+  const proc = emu.process;
+  const exited = () => proc.exitCode !== null || proc.signalCode !== null;
+  // Never spawned, or already gone: nothing to stop.
+  if (proc.pid === undefined || exited()) return true;
+
+  const stoppedWithin = async (ms: number): Promise<boolean> => {
+    const deadline = Date.now() + ms;
+    while (!exited()) {
+      if (Date.now() >= deadline) return false;
+      await wait(STOP_POLL_MS);
+    }
+    return true;
+  };
+  const send = (sig: NodeJS.Signals) => {
+    try {
+      proc.kill(sig);
+    } catch {
+      // Exited in the meantime.
+    }
+  };
+
+  send('SIGTERM');
+  if (await stoppedWithin(graceMs)) return true;
+  send('SIGKILL');
+  return stoppedWithin(graceMs);
+}
+
 /**
  * Wait for killed emulator serials to disappear from `adb devices`.
  *
@@ -1867,6 +1978,8 @@ interface ProvisionDeps {
     signal?: AbortSignal,
   ) => Promise<DeviceHealthResult>
   killEmulator: (serial: string) => void
+  /** Stops a failed launch's process; `false` when it survived (`stopLaunchedEmulator`). */
+  stopLaunchedEmulator: (emu: LaunchedEmulator) => Promise<boolean>
   findEmulatorPid: (serial: string) => number | undefined
   reserveEmulatorPort: (usedPorts: ReadonlySet<number>) => Promise<PortReservation>
   /** Settles once a just-spawned emulator has started up (or will not). */
@@ -1932,6 +2045,7 @@ export async function provisionEmulators(opts: {
     probeDeviceHealth: deps.probeDeviceHealth ?? probeDeviceHealth,
     waitForDeviceStability: deps.waitForDeviceStability ?? waitForDeviceStability,
     killEmulator: deps.killEmulator ?? killEmulator,
+    stopLaunchedEmulator: deps.stopLaunchedEmulator ?? ((emu) => stopLaunchedEmulator(emu)),
     findEmulatorPid: deps.findEmulatorPid ?? findEmulatorPid,
     reserveEmulatorPort: deps.reserveEmulatorPort ?? reserveEmulatorPort,
     waitForEmulatorStartup: deps.waitForEmulatorStartup ?? waitForEmulatorStartup,
@@ -2101,22 +2215,32 @@ export async function provisionEmulators(opts: {
       } catch (err) {
         if (emu === undefined) throw err;
         badAvds.add(candidateAvd);
-        const message = err instanceof Error ? err.message : String(err);
+        const message = err instanceof EmulatorBootTimeoutError
+          ? describeBootTimeout(err, emu)
+          : err instanceof Error ? err.message : String(err);
         logProgress(
           `Skipping launched emulator ${emu.serial} (${candidateAvd}): ${message.replace(/\.$/, '')}.`,
           'warning',
         );
         // A process that already ended holds nothing to stop — and its port
         // may be someone else's by now, so never kill by serial then.
+        let stopped = true;
         if (!(err instanceof EmulatorExitedError)) {
           resolvedDeps.killEmulator(emu.serial);
-          try {
-            emu.process.kill();
-          } catch {
-            // Already dead
-          }
+          stopped = await resolvedDeps.stopLaunchedEmulator(emu);
         }
-        unrecordLaunchedEmulators([emu]);
+        if (stopped) {
+          unrecordLaunchedEmulators([emu]);
+        } else {
+          // Never left running untracked (PILOT-512): its record stays for a
+          // later run's reclaim to judge.
+          const pid = emu.process.pid;
+          logProgress(
+            `Emulator ${emu.serial} (PID ${pid}) did not exit even after SIGKILL, following its failed launch. `
+            + 'It stays in Tapsmith\'s emulator record rather than running untracked.',
+            'warning',
+          );
+        }
       } finally {
         booting = false;
         stopWaiting.abort();

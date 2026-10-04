@@ -457,7 +457,14 @@ The emulator's output goes to a log file of its own in the system temp directory
 the launch. If the emulator exits while it is booting, the run reports why straight away,
 instead of waiting for the boot timeout. The most common case is an AVD that is already
 open writable, from Android Studio for example: the emulator will not start a read-only
-instance beside it, so close that emulator or point `avd` at another AVD.
+instance beside it, so close that emulator or point `avd` at another AVD. If it is still
+running but has not booted by the timeout, the run quotes the last lines of that log and
+gives its path, then stops the emulator (SIGTERM, then SIGKILL). An emulator that will not
+exit even then stays in Tapsmith's record of the emulators it launched, so it is never left
+running untracked.
+
+Tapsmith launches every emulator with `-crash-report-mode never` and `-no-metrics`, so the
+emulator never waits on a crash-report or metrics prompt that nobody will answer.
 
 When Tapsmith launches an emulator, and again at the end of the run, it says that the
 emulator stays running for the next run and gives the command to stop it, such as
