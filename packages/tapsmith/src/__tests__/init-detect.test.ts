@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { parseAapt2Badging, findApkCandidates, findIosAppCandidates, preferDebugApk } from '../init-detect.js';
+import { parseAapt2Badging, findApkCandidates, findIosAppCandidates, findIosDeviceAppCandidates, preferDebugApk } from '../init-detect.js';
 
 describe('parseAapt2Badging()', () => {
   it('extracts the package name', () => {
@@ -77,6 +77,21 @@ describe('findIosAppCandidates()', () => {
       const found = findIosAppCandidates(tmp);
       expect(found).toHaveLength(1);
       expect(found[0]).toContain('MyApp.app');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('findIosDeviceAppCandidates() (PILOT-513)', () => {
+  it('finds device (iphoneos) .app bundles and leaves simulator builds out', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-detect-'));
+    const products = path.join(tmp, 'ios', 'build', 'Build', 'Products');
+    fs.mkdirSync(path.join(products, 'Release-iphoneos', 'MyApp.app'), { recursive: true });
+    fs.mkdirSync(path.join(products, 'Debug-iphonesimulator', 'MyApp.app'), { recursive: true });
+    try {
+      expect(findIosDeviceAppCandidates(tmp)).toEqual(['ios/build/Build/Products/Release-iphoneos/MyApp.app']);
+      expect(findIosAppCandidates(tmp)).toEqual(['ios/build/Build/Products/Debug-iphonesimulator/MyApp.app']);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

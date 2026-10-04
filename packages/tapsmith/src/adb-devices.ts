@@ -7,6 +7,11 @@
  * Dependency-free on purpose: the MCP server and the runner import it.
  */
 
+// ─── ADB itself ───
+
+/** The fix for adb missing from PATH (the daemon runs `adb` from PATH). Shared by `doctor` and `init`. */
+export const ADB_FIX = 'Install Android platform-tools (Android Studio → SDK Manager → SDK Tools) and add its platform-tools directory to PATH';
+
 // ─── ADB device listing ───
 
 export interface AdbDevice {

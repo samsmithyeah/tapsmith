@@ -18,7 +18,7 @@ import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { formatJson, jsonError, stripAnsi, type JsonCheck } from './cli-json.js';
 import { avdCaptureSupport, captureAvdFix, scanAvdImageTags, type AvdImageInfo } from './avd-images.js';
 import { parseSimctlDevicesJson, tryExec } from './env-scan.js';
-import { androidUnusableDeviceFix, parseAdbDevicesOutput, type AdbDevice } from './adb-devices.js';
+import { ADB_FIX, androidUnusableDeviceFix, parseAdbDevicesOutput, type AdbDevice } from './adb-devices.js';
 import type { TapsmithConfig } from './config.js';
 import { emulatorNotFoundMessage, resolveEmulatorBinary, type EmulatorBinary } from './emulator.js';
 
@@ -196,8 +196,6 @@ function checkConfigFile(report: Reporter, configFile: string | undefined, findC
 }
 
 // ─── Android checks ───
-
-const ADB_FIX = 'Install Android platform-tools (Android Studio → SDK Manager → SDK Tools) and add its platform-tools directory to PATH';
 
 /** Passes with the version, or reports the missing adb (see `planPlatforms`) and returns false. */
 function checkAdb(report: Reporter, required: boolean, targeted: boolean): boolean {

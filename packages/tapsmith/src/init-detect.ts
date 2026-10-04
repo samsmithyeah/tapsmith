@@ -1,5 +1,6 @@
 /**
- * Auto-detection helpers for non-interactive `tapsmith init --yes`.
+ * Build and id detection for `tapsmith init`: `--yes` picks from it, and the
+ * interactive wizard offers it.
  * Pure parsers are separated from exec wrappers for testability.
  */
 
@@ -63,12 +64,21 @@ export function detectAndroidPackage(apkPath: string): string | undefined {
 
 // ─── iOS ───
 
-/** Returns project-relative simulator .app bundle paths. */
-export function findIosAppCandidates(cwd: string): string[] {
-  return globSync('ios/**/*-iphonesimulator/*.app', {
+function findIosBuilds(cwd: string, sdk: 'iphonesimulator' | 'iphoneos'): string[] {
+  return globSync(`ios/**/*-${sdk}/*.app`, {
     cwd,
     ignore: ['**/node_modules/**'],
   }).sort();
+}
+
+/** Returns project-relative simulator .app bundle paths. */
+export function findIosAppCandidates(cwd: string): string[] {
+  return findIosBuilds(cwd, 'iphonesimulator');
+}
+
+/** Returns project-relative device (iphoneos) .app bundle paths. */
+export function findIosDeviceAppCandidates(cwd: string): string[] {
+  return findIosBuilds(cwd, 'iphoneos');
 }
 
 export function detectIosBundleId(appPath: string): string | undefined {
