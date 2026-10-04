@@ -96,10 +96,10 @@ cd ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp \
 **Expo** projects have no `android/` or `ios/` folder until you generate them:
 
 - `npx expo prebuild` generates the native projects; then build them with the commands above.
-- `npx expo run:android --variant release` and `npx expo run:ios --configuration Release` generate, build and install in one step, leaving the build in the same `android/…/outputs/apk/` and `ios/build/…` locations.
+- `npx expo run:android --variant release` generates, builds and installs in one step, leaving the APK in `android/app/build/outputs/apk/release/`. `npx expo run:ios --configuration Release` does the same for iOS, but builds into Xcode's default DerivedData folder (the path above), where `tapsmith init` does not look: enter that path, or build with the `xcodebuild … -derivedDataPath build` command above after `expo prebuild`.
 - With EAS, use a build profile that produces simulator and installable builds, for example `"e2e": { "ios": { "simulator": true }, "android": { "buildType": "apk" } }` in `eas.json`, then `eas build --profile e2e --platform ios --local` (or download the build). An iOS simulator build arrives as a `.tar.gz`; extract it and point `app` at the `.app` inside.
 
-If the app mounts [`@tapsmith/react-native`](warm-reset.md), a Release build made for tests needs `EXPO_PUBLIC_TAPSMITH_HOOKS=1` set at build time to include the reset hooks.
+If the app mounts [`@tapsmith/react-native`](warm-reset.md), its reset hooks are on in Debug builds but compiled out of Release builds unless you turn them on for your test build. In an Expo project, set `EXPO_PUBLIC_TAPSMITH_HOOKS=1` at build time (Expo inlines `EXPO_PUBLIC_*` variables into the bundle). A bare React Native app does not inline that variable, so pass the hooks' `enabled` prop from a build-time flag of your own instead.
 
 ## Quick Setup (Recommended)
 

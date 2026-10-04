@@ -1074,9 +1074,10 @@ export class Device {
    * `Route` object that can `abort()`, `continue()`, `fulfill()`, or `fetch()`
    * the request.
    *
-   * Requires network tracing to be enabled (`trace` mode is not `'off'` and
-   * `network` is `true`, which is the default). Without it, the MITM proxy
-   * is not active and route handlers will never fire.
+   * Requires the network proxy, which the runner starts for a test whose
+   * trace records network traffic (`trace` records the attempt and `network`
+   * is `true`, the default). Without it route handlers never fire, and the
+   * runner warns at the end of the test (PILOT-517).
    */
   async route(
     url: string | RegExp | ((url: URL) => boolean),
