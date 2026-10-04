@@ -23,7 +23,7 @@ import { McpEventEmitter } from '../mcp/events.js';
 import { McpSessionRouter } from '../mcp/http-session-router.js';
 import { configureMcpConnection } from '../mcp/connection.js';
 import { matchRequestedFiles, fileFailureEntry } from '../mcp/headless-dispatcher.js';
-import { loadFailureFollowUp, loadFailureTreeNode, runFilterForFile, withoutLoadFailedFiles } from '../load-failure.js';
+import { isLoadFailureNode, loadFailureFollowUp, loadFailureTreeNode, runFilterForFile, withoutLoadFailedFiles } from '../load-failure.js';
 import { pickResolvedDeviceName } from '../mcp/tools/device-target.js';
 
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
@@ -1345,6 +1345,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
 
         if (response.type === 'discover-result') {
           discoveryErrors.delete(filePath);
+          // The file loads now: an earlier run's load failure is stale.
+          dropLoadFailureResults(filePath, undefined);
           resolve(response.tree);
         } else {
           console.error(`Discovery error for ${filePath}: ${response.error.message}`);
@@ -1531,7 +1533,11 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
    * helper it imports can break or be fixed without the tree knowing.
    */
   function reconcileLoadFailureRow(filePath: string, results: ReadonlyArray<ReturnType<typeof deserializeTestResult>>): void {
-    const followUp = loadFailureFollowUp(results, discoveryErrors.get(filePath));
+    // Only a load-failure row counts as "shown": a discovery that crashed
+    // without reporting leaves an error but no node, and re-discovering would
+    // crash again and drop the file from the run list.
+    const shown = isLoadFailureNode(discoveredFileNodes.get(filePath)) ? discoveryErrors.get(filePath) : undefined;
+    const followUp = loadFailureFollowUp(results, shown);
     if (!followUp) return;
     if ('rediscover' in followUp) {
       scheduleDiscovery(filePath);

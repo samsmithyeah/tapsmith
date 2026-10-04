@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { fileLoadFailureTitle, loadErrorForReport, loadFailureFollowUp, loadFailureTreeNode, runFilterForFile, withoutLoadFailedFiles, parseMissingImport, withMissingImportFrame } from '../load-failure.js';
+import { fileLoadFailureTitle, isLoadFailureNode, loadErrorForReport, loadFailureFollowUp, loadFailureTreeNode, runFilterForFile, withoutLoadFailedFiles, parseMissingImport, withMissingImportFrame } from '../load-failure.js';
 import { extractStack } from '../trace/trace-collector.js';
 import type { TestTreeNode } from '../ui-mode/ui-protocol.js';
 import { formatError } from '../reporters/base.js';
@@ -228,5 +228,16 @@ describe('loadErrorForReport', () => {
     const report = loadErrorForReport(err);
     expect(report).toBeInstanceOf(TypeError);
     expect((report as Error & { code?: string }).code).toBe('X');
+  });
+});
+
+describe('isLoadFailureNode', () => {
+  it('recognises the load-failure file node, and only that', () => {
+    expect(isLoadFailureNode(loadFailureTreeNode('/r/a.test.ts', 'boom'))).toBe(true);
+    expect(isLoadFailureNode(undefined)).toBe(false);
+    expect(isLoadFailureNode({
+      id: '/r/a.test.ts', type: 'file', name: 'a.test.ts', filePath: '/r/a.test.ts', fullName: 'a.test.ts', status: 'idle',
+      children: [{ id: '/r/a.test.ts::works', type: 'test', name: 'works', filePath: '/r/a.test.ts', fullName: 'works', status: 'idle' }],
+    })).toBe(false);
   });
 });

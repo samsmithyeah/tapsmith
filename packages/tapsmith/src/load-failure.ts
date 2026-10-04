@@ -59,6 +59,17 @@ export function loadFailureTreeNode(filePath: string, error: string): TestTreeNo
 }
 
 /**
+ * Whether UI mode's tree node for a file is its load-failure node — as opposed
+ * to a discovered file, or no node at all (a discovery process that crashed
+ * without reporting, which leaves an error but no node).
+ */
+export function isLoadFailureNode(node: TestTreeNode | undefined): boolean {
+  return node?.type === 'file'
+    && node.children?.length === 1
+    && node.children[0].fullName === fileLoadFailureTitle(node.filePath);
+}
+
+/**
  * The tree without the files that failed to load, for MCP's `getTestTree`.
  * UI mode keeps such a file in its own tree as a failed row, but that row is
  * not a test: MCP reports these files through `getDiscoveryErrors` instead,
