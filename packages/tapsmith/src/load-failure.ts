@@ -77,6 +77,39 @@ export function withoutLoadFailedFiles<T extends { type: string; filePath: strin
       : n));
 }
 
+/**
+ * What UI mode does to its tree after a file run, given the run's results and
+ * the load error the tree currently shows for the file (if any).
+ *
+ * The tree learns a file fails to load from discovery, but a test file is only
+ * re-discovered when it changes itself: a helper it imports can break, or be
+ * fixed, without that. So the run is the other source of truth —
+ * - a load failure the row does not already show → show it (the helper broke);
+ * - real results for a file shown as failed to load → re-discover it (the
+ *   helper was fixed), bringing its tests back.
+ */
+export function loadFailureFollowUp(
+  results: ReadonlyArray<{ status: string; error?: Error; fileLevelFailure?: boolean }>,
+  shownError: string | undefined,
+): { show: string } | { rediscover: true } | undefined {
+  const loadFailure = results.find((r) => r.fileLevelFailure);
+  if (loadFailure) {
+    const message = loadFailure.error?.message ?? 'Failed to load';
+    return message === shownError ? undefined : { show: message };
+  }
+  if (shownError !== undefined && results.length > 0) return { rediscover: true };
+  return undefined;
+}
+
+/**
+ * The test filter to run a file with in UI mode. Running a file's load-failure
+ * row runs the whole file: the row names no test, and as a filter it would
+ * skip every real test once the file loads again.
+ */
+export function runFilterForFile(filePath: string, testFilter: string | undefined): string | undefined {
+  return testFilter === fileLoadFailureTitle(filePath) ? undefined : testFilter;
+}
+
 interface MissingImport {
   /** The specifier as written (tsx, Vite) or as resolved to a path (Node ESM). */
   specifier: string

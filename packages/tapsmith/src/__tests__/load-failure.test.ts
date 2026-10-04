@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { fileLoadFailureTitle, loadFailureTreeNode, withoutLoadFailedFiles, parseMissingImport, withMissingImportFrame } from '../load-failure.js';
+import { fileLoadFailureTitle, loadFailureFollowUp, loadFailureTreeNode, runFilterForFile, withoutLoadFailedFiles, parseMissingImport, withMissingImportFrame } from '../load-failure.js';
 import { extractStack } from '../trace/trace-collector.js';
 import type { TestTreeNode } from '../ui-mode/ui-protocol.js';
 import { formatError } from '../reporters/base.js';
@@ -163,5 +163,43 @@ describe('withoutLoadFailedFiles', () => {
 
   it('keeps every file when none failed', () => {
     expect(withoutLoadFailedFiles([ok, broken], new Map())).toEqual([ok, broken]);
+  });
+});
+
+describe('loadFailureFollowUp (UI mode, after a file run)', () => {
+  const failed = (message: string) => ({ status: 'failed' as const, error: new Error(message), fileLevelFailure: true });
+  const passed = { status: 'passed' as const };
+
+  it('shows a load failure the tree does not show yet — a helper broke after discovery', () => {
+    expect(loadFailureFollowUp([failed('boom')], undefined)).toEqual({ show: 'boom' });
+  });
+
+  it('shows a newer load error than the one on the row', () => {
+    expect(loadFailureFollowUp([failed('second')], 'first')).toEqual({ show: 'second' });
+  });
+
+  it('does nothing when the row already shows this error', () => {
+    expect(loadFailureFollowUp([failed('boom')], 'boom')).toBeUndefined();
+  });
+
+  it('rediscovers a file shown as failed to load once it runs for real — its helper was fixed', () => {
+    expect(loadFailureFollowUp([passed], 'boom')).toEqual({ rediscover: true });
+  });
+
+  it('leaves a healthy file, and a run that reported nothing, alone', () => {
+    expect(loadFailureFollowUp([passed], undefined)).toBeUndefined();
+    expect(loadFailureFollowUp([], 'boom')).toBeUndefined();
+  });
+});
+
+describe('runFilterForFile', () => {
+  it('runs the whole file when the filter is its load-failure row', () => {
+    expect(runFilterForFile('/r/a.test.ts', 'a.test.ts — failed to load')).toBeUndefined();
+  });
+
+  it('keeps any other filter', () => {
+    expect(runFilterForFile('/r/a.test.ts', 'login works')).toBe('login works');
+    expect(runFilterForFile('/r/a.test.ts', undefined)).toBeUndefined();
+    expect(runFilterForFile('/r/b.test.ts', 'a.test.ts — failed to load')).toBe('a.test.ts — failed to load');
   });
 });

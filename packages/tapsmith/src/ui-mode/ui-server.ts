@@ -23,7 +23,7 @@ import { McpEventEmitter } from '../mcp/events.js';
 import { McpSessionRouter } from '../mcp/http-session-router.js';
 import { configureMcpConnection } from '../mcp/connection.js';
 import { matchRequestedFiles, fileFailureEntry } from '../mcp/headless-dispatcher.js';
-import { loadFailureTreeNode, withoutLoadFailedFiles } from '../load-failure.js';
+import { loadFailureFollowUp, loadFailureTreeNode, runFilterForFile, withoutLoadFailedFiles } from '../load-failure.js';
 import { pickResolvedDeviceName } from '../mcp/tools/device-target.js';
 
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo, DiscoveryError, DeviceTarget } from '../mcp/index.js';
@@ -1349,6 +1349,9 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
         } else {
           console.error(`Discovery error for ${filePath}: ${response.error.message}`);
           discoveryErrors.set(filePath, response.error.message);
+          // An earlier run's different load error would be replayed over
+          // this newer one when the tree is re-broadcast.
+          dropLoadFailureResults(filePath, undefined, response.error.message);
           // The file failed to load: keep it in the tree as one failed row
           // carrying the error, where a run's load-failure result lands too
           // (PILOT-545), rather than letting it vanish.
@@ -1486,6 +1489,8 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
   ): void {
     if (status === 'failed') failedFiles.add(filePath);
 
+    // A real result proves the file loads: its stored load failure is stale.
+    if (!fileLevelFailure) dropLoadFailureResults(filePath, projectName);
     const key = resultEntryKey({ projectName, filePath, fullName });
     testResults.set(key, {
       fullName, filePath, status, duration, error, tracePath, videoPath, projectName, workerId,
@@ -1507,6 +1512,36 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
       workerId,
       projectName,
     });
+  }
+
+  /** Forget the file's stored load-failure results (all of them, or only ones whose error differs from `keepError`). */
+  function dropLoadFailureResults(filePath: string, projectName: string | undefined, keepError?: string): void {
+    for (const [key, entry] of testResults) {
+      if (entry.fileLevelFailure && entry.filePath === filePath
+        && (projectName === undefined || entry.projectName === projectName)
+        && (keepError === undefined || entry.error !== keepError)) {
+        testResults.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Keep the tree's load-failure row in step with what a run of the file found
+   * (PILOT-545). A test file is only re-discovered when it changes itself, so a
+   * helper it imports can break or be fixed without the tree knowing.
+   */
+  function reconcileLoadFailureRow(filePath: string, results: ReadonlyArray<ReturnType<typeof deserializeTestResult>>): void {
+    const followUp = loadFailureFollowUp(results, discoveryErrors.get(filePath));
+    if (!followUp) return;
+    if ('rediscover' in followUp) {
+      scheduleDiscovery(filePath);
+      return;
+    }
+    discoveryErrors.set(filePath, followUp.show);
+    discoveredFileNodes.set(filePath, loadFailureTreeNode(filePath, followUp.show));
+    rebuildTestTreeFromDiscoveredFiles();
+    broadcastTestTreeWithCurrentState();
+    broadcast({ type: 'error', message: `Failed to load ${path.basename(filePath)}: ${followUp.show}` });
   }
 
   /**
@@ -2811,6 +2846,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
                 }
               }
 
+              reconcileLoadFailureRow(msg.filePath, results);
               broadcastFileStatus(msg.filePath, 'done', worker.currentFile?.projectName);
               lastProgressByWorker.delete(worker.id);
               broadcast({ type: 'run-progress', workerId: worker.id });
@@ -3330,7 +3366,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
   async function runFile(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<TestRunResult> {
     await ensureWorkersReady();
     if (!useParallel()) return reportNoWorkers();
-    return runFileParallel(filePath, testFilter, explicitProjectName);
+    return runFileParallel(filePath, runFilterForFile(filePath, testFilter), explicitProjectName);
   }
 
   /** Parallel-mode batch dispatch: send multiple TaggedFile entries to
