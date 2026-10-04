@@ -268,13 +268,17 @@ function processIsLive(ref: ProcessRef): boolean {
 }
 
 /**
- * Whether a claim still stands: its session's root runs, or a process of the
- * session still holds it. The second keeps a run's claims standing when only
- * its root went — the CLI's outer process killed while the tsx child it
- * re-executed still drives the device.
+ * Whether a claim still stands: a process of the session that claimed it is
+ * still running. Not the session's root as such — an MCP server whose
+ * `run_tests` child claimed devices for its run must not hold them once the
+ * run is over, and a CLI whose outer process was killed must keep the claims
+ * its tsx child still drives. A claim without holders (none is written so
+ * today) falls back to the root.
  */
 function claimIsLive(claim: DeviceClaim): boolean {
-  return processIsLive(claim.session) || (claim.holders ?? []).some(processIsLive);
+  return claim.holders && claim.holders.length > 0
+    ? claim.holders.some(processIsLive)
+    : processIsLive(claim.session);
 }
 
 let ownRef: ProcessRef | undefined;
@@ -465,18 +469,23 @@ export function listDeviceClaims(opts: ClaimOptions = {}): ListedDeviceClaim[] {
   } catch {
     return [];
   }
-  // Roots are shared by every claim of a session: judge each once.
-  const rootLive = new Map<string, boolean>();
+  // Holders recur across a session's claims: judge each process once.
+  const seen = new Map<string, boolean>();
+  const live = (ref: ProcessRef): boolean => {
+    const key = `${ref.pid}:${ref.startToken ?? ''}`;
+    let alive = seen.get(key);
+    if (alive === undefined) {
+      alive = processIsLive(ref);
+      seen.set(key, alive);
+    }
+    return alive;
+  };
   const claims: ListedDeviceClaim[] = [];
   for (const f of files) {
     const claim = readClaim(path.join(dir, f));
     if (!claim) continue;
-    let root = rootLive.get(claim.session.id);
-    if (root === undefined) {
-      root = processIsLive(claim.session);
-      rootLive.set(claim.session.id, root);
-    }
-    claims.push({ ...claim, live: root || (claim.holders ?? []).some(processIsLive) });
+    const isLive = claim.holders && claim.holders.length > 0 ? claim.holders.some(live) : live(claim.session);
+    claims.push({ ...claim, live: isLive });
   }
   return claims.sort((a, b) => a.device.localeCompare(b.device));
 }

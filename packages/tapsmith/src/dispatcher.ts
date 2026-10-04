@@ -52,6 +52,7 @@ import {
   killAgentRunnersForSimulators,
   filterHealthySimulators,
   listAdoptableBootedSimulators,
+  listBootedSimulators,
   type ClonedSimulator,
 } from './ios-simulator.js';
 import { freeStaleAgentPort, findPidsOnPort } from './port-utils.js';
@@ -1174,8 +1175,12 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   for (let offset = 0; offset < maxFirstDaemonPortAttempts; offset++) {
     const candidateDaemonPort = baseDaemonPort + 1 + _portOffset + offset;
     const candidateAgentPort = baseAgentPort + 1 + _portOffset + offset;
-    freeStaleAgentPort(candidateAgentPort, reportFreedAgentPort);
+    // The agent port is freed only for a slot whose daemon port is free: a
+    // live daemon on the slot is another session's (or another bucket's), and
+    // the runner on its agent port is that session's live agent, not a stale
+    // one — killing it broke the other run mid-test (PILOT-381).
     if (await isPortAvailable(candidateDaemonPort)) {
+      freeStaleAgentPort(candidateAgentPort, reportFreedAgentPort);
       firstDaemonPort = candidateDaemonPort;
       firstAgentPort = candidateAgentPort;
       break;
@@ -1527,6 +1532,10 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       throw new LaunchSetupError(
         isIos
           ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
+            // Booted ones other sessions hold are named, not reported missing.
+            + heldDevicesNote(withoutHeldDevices(
+              listBootedSimulators().filter((sim) => sim.name === config.simulator || sim.udid === config.simulator).map((sim) => sim.udid),
+            ).held)
           // adb's state now, not at discovery: provisioning may have changed it.
           : noOnlineDeviceMessage(config, listAdbDevices())
             + heldDevicesNote(withoutHeldDevices(listAdbDevices().filter((d) => d.state === 'device').map((d) => d.serial)).held),
@@ -1641,8 +1650,9 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       const port = baseDaemonPort + 1 + _portOffset + k;
       const agentPort = baseAgentPort + 1 + _portOffset + k;
       if (reservedDaemonPorts.has(port)) continue;
-      freeStaleAgentPort(agentPort, reportFreedAgentPort);
+      // As for worker 0: only a free slot's agent port is cleared.
       if (await isPortAvailable(port)) {
+        freeStaleAgentPort(agentPort, reportFreedAgentPort);
         portPairs.push({ daemonPort: port, agentPort });
         reservedDaemonPorts.add(port);
       } else {

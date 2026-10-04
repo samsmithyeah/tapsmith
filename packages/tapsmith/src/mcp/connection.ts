@@ -594,6 +594,16 @@ export function discoverySelectsDevice(opts: { uiMode: boolean }): boolean {
 let _discoveryFailures: string[] = [];
 
 /**
+ * Give back this process's hold on `device` (PILOT-381). Never in the UI
+ * server, whose MCP endpoint runs in the very process that provisioned the UI
+ * session's devices: its hold is the UI session's, and lasts as long as it.
+ */
+function giveBack(device: string): void {
+  if (_uiMode) return;
+  releaseDeviceClaim(device, currentSession());
+}
+
+/**
  * Drop the daemons another live Tapsmith session is driving a device through
  * (PILOT-381). Adopting one — the default `localhost:50051` fallback found
  * another worktree's daemon this way — let this session restart that session's
@@ -629,8 +639,10 @@ async function withoutOtherSessionsDaemons<T extends { client: TapsmithGrpcClien
     };
     const holder = await daemonDriverElsewhere(daemon.address, activeDevice, session);
     if (holder) return drop(`another Tapsmith session is driving ${holder.device} through it`);
-    // UI workers' and peers' devices are their owners' to claim.
-    if (!isOurs(daemon.source)) return daemon;
+    // UI workers' and peers' devices are their owners' to claim. A daemon
+    // already pooled is re-listed by every discovery: what it serves was
+    // claimed (or deliberately given back) when it was prepared.
+    if (!isOurs(daemon.source) || _connections.some((c) => c.address === daemon.address)) return daemon;
     const device = await activeDevice();
     if (!device) return daemon;
     const claim = claimDevice(device, session, { daemonAddress: daemon.address });
@@ -806,7 +818,7 @@ async function discover(): Promise<void> {
         _discoveryFailures.push(`Could not connect to the daemon at ${address}: ${msg}`);
         client.close();
         // Not adopted after all: give back the device discovery claimed for it.
-        if (claimedDevice) releaseDeviceClaim(claimedDevice, currentSession());
+        if (claimedDevice) giveBack(claimedDevice);
         return null;
       }
     }));
@@ -1599,7 +1611,7 @@ async function prepareTarget(
   // to it and will prepare it again, so it stays the session's.
   const alreadyServed = conn.preparedDevice === serial || conn.claimedDevice === serial;
   const releaseOnFailure = (): void => {
-    if (!alreadyServed) releaseDeviceClaim(serial, currentSession());
+    if (!alreadyServed) giveBack(serial);
   };
   try {
     await setDeviceExplained(conn.client, serial);
@@ -1614,7 +1626,7 @@ async function prepareTarget(
   if (repointed && previous && previous !== serial) {
     conn.claimedDevice = undefined;
     const stillServed = _connections.some((c) => c !== conn && (c.preparedDevice === previous || c.claimedDevice === previous));
-    if (!stillServed) releaseDeviceClaim(previous, currentSession());
+    if (!stillServed) giveBack(previous);
   }
   // Record the move before starting the agent: `setDevice` has already
   // happened, so if the agent start throws, the next claim must still see this
@@ -2132,7 +2144,7 @@ function removeConnection(conn: DaemonConnection): void {
   if (conn.source !== 'ui') {
     for (const device of new Set([conn.preparedDevice, conn.claimedDevice])) {
       if (device && !_connections.some((c) => c.preparedDevice === device || c.claimedDevice === device)) {
-        releaseDeviceClaim(device, currentSession());
+        giveBack(device);
       }
     }
   }
@@ -2173,7 +2185,7 @@ async function setDeviceAndAgent(
     await startAgentFromConfig(client, config, { serial });
   } catch (err) {
     // The caller drops this daemon: give back the device it never drove.
-    releaseDeviceClaim(serial, currentSession());
+    giveBack(serial);
     throw err;
   }
   return serial;

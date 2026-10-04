@@ -107,6 +107,12 @@ describe('device claims', () => {
     expect(listDeviceClaims({ env })[0].live).toBe(true);
   });
 
+  it('ends a claim whose holders have all exited though the session\'s root still runs (an MCP server\'s finished run_tests child)', () => {
+    writeHeldBy('emulator-5556', session({ pid: process.pid }), [{ pid: deadPid() }]);
+    expect(listDeviceClaims({ env })[0].live).toBe(false);
+    expect(claimDevice('emulator-5556', session(), { env }).ok).toBe(true);
+  });
+
   it('lists the devices this process holds, not every device of its session', () => {
     const me = session();
     claimDevice('mine', me, { env });
