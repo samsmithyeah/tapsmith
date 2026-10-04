@@ -239,4 +239,18 @@ describe('getByRole name matching in the playground (PILOT-549)', () => {
     expect(result[0].code).toBe('device.getByRole("button", { name: "SHOW OVERLAY", exact: true })');
     expect(result[0].label).not.toContain('matches');
   });
+
+  it('matches any name source, as the agents do, not just the first', () => {
+    const draft = makeNode('android.widget.Button', { class: 'android.widget.Button', 'content-desc': 'Draft', text: 'Save draft', bounds: '[0,0][100,50]' });
+    const save = makeNode('android.widget.Button', { class: 'android.widget.Button', 'content-desc': 'Save', bounds: '[0,60][100,110]' });
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [draft, save])];
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("button", { name: "Save" })')!)).toEqual([draft, save]);
+  });
+
+  it("compares an EditText's typed value whole, but its hint by substring", () => {
+    const notes = makeNode('android.widget.EditText', { class: 'android.widget.EditText', text: 'email me later', hint: 'Notes', bounds: '[0,0][100,50]' });
+    const empty = makeNode('android.widget.EditText', { class: 'android.widget.EditText', text: 'Email address', hint: 'Email address', bounds: '[0,60][100,110]' });
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [notes, empty])];
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("textfield", { name: "email" })')!)).toEqual([empty]);
+  });
 });

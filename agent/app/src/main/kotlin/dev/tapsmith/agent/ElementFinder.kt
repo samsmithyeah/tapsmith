@@ -1006,11 +1006,17 @@ class ElementFinder(private val device: UiDevice) {
         name: String,
         exact: Boolean,
     ): Boolean {
-        val isEditText = EDIT_TEXT_HINT_CLASS_PATTERN.matcher(obj.className ?: "").matches()
+        val text = obj.text
+        // An empty EditText reports its hint as its text; that hint is a
+        // name, not a typed value.
+        val textIsValue =
+            text != null &&
+                EDIT_TEXT_HINT_CLASS_PATTERN.matcher(obj.className ?: "").matches() &&
+                text.toString() != extractHint(obj)
         return TextMatch.accessibleNameMatches(
             contentDescription = obj.contentDescription,
-            text = obj.text,
-            isEditable = isEditText,
+            text = text,
+            textIsValue = textIsValue,
             descendantText = { collectDescendantText(obj) },
             name = name,
             exact = exact,

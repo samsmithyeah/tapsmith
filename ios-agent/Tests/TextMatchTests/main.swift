@@ -98,6 +98,20 @@ expect("name exact pattern: child label", matches(ex, "Intro, Sign In"))
 expect("name exact pattern: case-sensitive", !matches(ex, "SIGN IN"))
 expect("name exact pattern: not a partial", !matches(ex, "Sign In now"))
 
+// Re-resolution groups for role+name matches (PILOT-549): rows sharing a
+// testID but not a label, or sharing a label across type scopes, are counted
+// separately, because the live query narrows by both.
+let rowA = QueryIndex.roleNameKey(elementTypeRaw: 46, typeIsSpecific: false, identifier: "row", label: "Item 1")
+let rowB = QueryIndex.roleNameKey(elementTypeRaw: 46, typeIsSpecific: false, identifier: "row", label: "Item 2")
+expect("same id, different labels: separate groups", QueryIndex.occurrenceIndices([rowA, rowB]) == [0, 0])
+let otherSave = QueryIndex.roleNameKey(elementTypeRaw: 46, typeIsSpecific: false, identifier: "", label: "Save")
+let buttonSave = QueryIndex.roleNameKey(elementTypeRaw: 9, typeIsSpecific: true, identifier: "", label: "Save")
+expect("same label, different type scope: separate groups",
+       QueryIndex.occurrenceIndices([otherSave, buttonSave, otherSave]) == [0, 0, 1])
+expect("specific types key by type",
+       QueryIndex.roleNameKey(elementTypeRaw: 9, typeIsSpecific: true, identifier: "", label: "x")
+           != QueryIndex.roleNameKey(elementTypeRaw: 10, typeIsSpecific: true, identifier: "", label: "x"))
+
 if failures > 0 {
     print("\(failures) failure(s)")
     exit(1)

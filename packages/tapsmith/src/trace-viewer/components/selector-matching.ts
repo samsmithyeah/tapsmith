@@ -219,6 +219,30 @@ function normalizeWhitespace(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * Whether a node's accessible name matches a getByRole `name` the way the
+ * agents match it (PILOT-549): any of its name sources — Android
+ * content-desc and text, iOS label and title — case-insensitively by
+ * substring, or whole and case-sensitively with `exact`. An Android
+ * EditText's text is its typed value unless it equals the hint (an empty
+ * field reports its hint as text), and a typed value is only compared whole.
+ */
+function roleNameMatches(node: HierarchyNode, name: string, exact: boolean): boolean {
+  const query = normalizeWhitespace(name);
+  const matches = (actual: string | undefined, wholeOnly: boolean): boolean => {
+    if (actual === undefined || actual === '') return false;
+    const value = normalizeWhitespace(actual);
+    return wholeOnly ? value === query : value.toLowerCase().includes(query.toLowerCase());
+  };
+  const text = node.attributes.get('text');
+  const textIsValue = text !== undefined && /EditText/.test(node.attributes.get('class') ?? '')
+    && text !== node.attributes.get('hint');
+  return matches(node.attributes.get('content-desc'), exact)
+    || matches(node.attributes.get('label'), exact)
+    || matches(node.attributes.get('title'), exact)
+    || matches(text, exact || textIsValue);
+}
+
 function isWebViewNode(node: HierarchyNode): boolean {
   return node.attributes.get('webview') === 'true';
 }
@@ -258,11 +282,7 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
     case 'role': {
       const role = getNodeRole(node);
       if (role !== selector.value) return false;
-      if (selector.name) {
-        const actual = normalizeWhitespace(getNodeAccessibleName(node));
-        const query = normalizeWhitespace(selector.name);
-        return selector.exact ? actual === query : actual.toLowerCase().includes(query.toLowerCase());
-      }
+      if (selector.name) return roleNameMatches(node, selector.name, selector.exact === true);
       return true;
     }
     default:

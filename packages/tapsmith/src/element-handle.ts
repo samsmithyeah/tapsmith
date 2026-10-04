@@ -444,11 +444,12 @@ function suggestSelectorFor(el: ElementInfo): string | undefined {
   const name = el.contentDescription || el.text;
   // Static text elements read better as getByText; real widgets as getByRole.
   if (el.role && el.role !== 'text' && name) {
-    // Role names match by substring unless exact (PILOT-549), so pin the
-    // whole name — a truncated name can only be a substring.
-    const shown = truncateText(name, 60);
-    const exact = shown === name ? ', exact: true' : '';
-    return `device.getByRole("${el.role}", { name: "${escapeForSelector(shown)}"${exact} })`;
+    // Role names match by substring unless exact (PILOT-549): pin a short
+    // name whole; a long one is suggested as its leading part (no ellipsis,
+    // which the name doesn't contain), still a valid substring locator.
+    const exact = name.length <= 60;
+    const shown = exact ? name : name.slice(0, 60);
+    return `device.getByRole("${el.role}", { name: "${escapeForSelector(shown)}"${exact ? ', exact: true' : ''} })`;
   }
   if (el.text) {
     return `device.getByText("${escapeForSelector(truncateText(el.text, 60))}", { exact: true })`;

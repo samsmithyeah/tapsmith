@@ -113,3 +113,25 @@ enum TextMatch {
             .joined(separator: "\(wsClass)+")
     }
 }
+
+/// Positional bookkeeping for re-resolving a role+name snapshot match through
+/// a live XCUIElement query (PILOT-549). That query finds the match again by
+/// its exact label (and identifier, when it has one), scoped to its element
+/// type when the type is specific, so the match's index must count only the
+/// matches the same query would return — its re-resolution group.
+enum QueryIndex {
+    /// The group key: scope type (0 = any), identifier and exact label.
+    static func roleNameKey(elementTypeRaw: UInt, typeIsSpecific: Bool, identifier: String, label: String) -> String {
+        "\(typeIsSpecific ? elementTypeRaw : 0)\u{1}\(identifier)\u{1}\(label)"
+    }
+
+    /// Each key's occurrence index among the keys before it that are equal.
+    static func occurrenceIndices(_ keys: [String]) -> [Int] {
+        var seen: [String: Int] = [:]
+        return keys.map { key in
+            let n = seen[key, default: 0]
+            seen[key] = n + 1
+            return n
+        }
+    }
+}

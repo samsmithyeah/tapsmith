@@ -178,15 +178,18 @@ class SnapshotElementFinder {
             idSeen[id] = n + 1
             return n
         }
-        // Each match's index among the matches sharing its exact label, for
-        // re-resolving a role+name match by that label (see cacheQueryElement).
-        var labelSeen: [String: Int] = [:]
-        let labelIndices: [Int] = matches.map { (nodeDict, _) in
-            let label = nodeDict["label"] as? String ?? ""
-            let n = labelSeen[label, default: 0]
-            labelSeen[label] = n + 1
-            return n
-        }
+        // Each match's index within its role+name re-resolution group — the
+        // matches the live query in cacheQueryElement would return.
+        let labelIndices = QueryIndex.occurrenceIndices(matches.map { (nodeDict, _) in
+            let raw = parseUInt(nodeDict["elementType"]) ?? 0
+            let type = XCUIElement.ElementType(rawValue: raw)
+            return QueryIndex.roleNameKey(
+                elementTypeRaw: raw,
+                typeIsSpecific: type != nil && type != .other && type != .any,
+                identifier: nodeDict["identifier"] as? String ?? "",
+                label: nodeDict["label"] as? String ?? ""
+            )
+        })
 
         let results = matches.enumerated().map { (matchIndex, match) in
             let (nodeDict, frame) = match
@@ -1325,12 +1328,17 @@ class SnapshotElementFinder {
             // The name is a case-insensitive substring by default (PILOT-549),
             // so a name query would also match unrelated earlier labels that
             // merely contain it (a header above the button) and shift the
-            // positional index. Re-resolve by the matched node's own label,
-            // indexed among the matches that share it.
+            // positional index. Re-resolve by the matched node's own label
+            // (and identifier), indexed within that re-resolution group
+            // (QueryIndex.roleNameKey mirrors this query's scope).
             let nodeLabel = snapshotNode?["label"] as? String ?? ""
             if !nodeLabel.isEmpty {
-                let base = labelQuery(NSPredicate(format: "label == %@", nodeLabel))
-                element = nodeIdentifier.isEmpty ? base.element(boundBy: labelIndex) : resolve(base)
+                var predicates = [NSPredicate(format: "label == %@", nodeLabel)]
+                if !nodeIdentifier.isEmpty {
+                    predicates.append(NSPredicate(format: "identifier == %@", nodeIdentifier))
+                }
+                element = labelQuery(NSCompoundPredicate(andPredicateWithSubpredicates: predicates))
+                    .element(boundBy: labelIndex)
             } else {
                 element = resolve(labelQuery(
                     NSPredicate(format: "label MATCHES %@", TextMatch.nameQueryPattern(name, exact: selector.nameExact))
