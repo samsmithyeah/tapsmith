@@ -1019,18 +1019,25 @@ class SnapshotElementFinder {
         // "Forgot password?" → iOS label is "Forgot password" but test expects
         // "Forgot password?". We match if one is a prefix of the other and
         // the difference is only punctuation.
+        //
+        // Text and name comparisons are whitespace-normalized like Playwright
+        // (PILOT-510): a non-breaking space or line break in the label matches
+        // a plain space in the query.
         if let text = selector.text {
-            let exactMatch = label == text || title == text || value == text
+            let exactMatch = TextMatch.equals(label, text) || TextMatch.equals(title, text)
+                || TextMatch.equals(value, text)
             let containsAsChild = !exactMatch
-                && (containsChildText(label, childText: text) || containsChildText(title, childText: text))
+                && (TextMatch.containsChildText(label, childText: text)
+                    || TextMatch.containsChildText(title, childText: text))
             let punctuationMatch = !exactMatch && !containsAsChild
-                && matchesIgnoringTrailingPunctuation(label, text)
+                && matchesIgnoringTrailingPunctuation(TextMatch.normalize(label), TextMatch.normalize(text))
             if !exactMatch && !containsAsChild && !punctuationMatch { return false }
         }
 
         // TextContains selector
         if let textContains = selector.textContains {
-            if !label.contains(textContains) && !title.contains(textContains) && !value.contains(textContains) {
+            if !TextMatch.contains(label, textContains) && !TextMatch.contains(title, textContains)
+                && !TextMatch.contains(value, textContains) {
                 return false
             }
         }
@@ -1074,9 +1081,10 @@ class SnapshotElementFinder {
 
             // Filter by name if provided
             if let name = selector.name {
-                let exactMatch = label == name || title == name
+                let exactMatch = TextMatch.equals(label, name) || TextMatch.equals(title, name)
                 let containsAsChild = !exactMatch
-                    && (containsChildText(label, childText: name) || containsChildText(title, childText: name))
+                    && (TextMatch.containsChildText(label, childText: name)
+                        || TextMatch.containsChildText(title, childText: name))
                 if !exactMatch && !containsAsChild { return false }
             }
         }
@@ -1134,7 +1142,7 @@ class SnapshotElementFinder {
                 .checkBox, .radioButton,
             ]
             if !inputTypes.contains(elType) { return false }
-            if label != labelSelector && title != labelSelector { return false }
+            if !TextMatch.equals(label, labelSelector) && !TextMatch.equals(title, labelSelector) { return false }
         }
 
         // Must have at least one positive match criterion
@@ -1286,19 +1294,21 @@ class SnapshotElementFinder {
                 .matching(NSPredicate(format: "identifier == %@", id))
                 .element(boundBy: matchIndex)
         } else if let text = selector.text {
-            element = resolve(labelQuery(concatenatedLabelPredicate(text)))
+            element = resolve(labelQuery(normalizedConcatenatedLabelPredicate(text)))
         } else if let textContains = selector.textContains {
-            // Mirror the snapshot walk's substring match (label/title/value).
+            // Mirror the snapshot walk's substring match (label/title/value),
+            // whitespace-normalized.
+            let pattern = TextMatch.containsPattern(textContains)
             let predicate = NSPredicate(
-                format: "label CONTAINS %@ OR title CONTAINS %@ OR value CONTAINS %@",
-                textContains, textContains, textContains
+                format: "label MATCHES %@ OR title MATCHES %@ OR value MATCHES %@",
+                pattern, pattern, pattern
             )
             element = resolve(labelQuery(predicate))
         } else if let contentDesc = selector.contentDesc {
             element = resolve(labelQuery(concatenatedLabelPredicate(contentDesc)))
         } else if selector.role != nil, let name = selector.name {
             // Role + name: e.g. role("button", "Sign in")
-            element = resolve(labelQuery(concatenatedLabelPredicate(name)))
+            element = resolve(labelQuery(normalizedConcatenatedLabelPredicate(name)))
         } else if let role = selector.role {
             // Role-only: match by type.
             if let types = try? RoleMapping.elementTypes(for: role), let firstType = types.first {
@@ -1326,6 +1336,12 @@ class SnapshotElementFinder {
             NSPredicate(format: "label ENDSWITH %@", ", " + value),
             NSPredicate(format: "label CONTAINS %@", ", " + value + ", "),
         ])
+    }
+
+    /// `concatenatedLabelPredicate` with whitespace normalized (PILOT-510), for
+    /// the selectors the snapshot walk compares normalized (text, role name).
+    private func normalizedConcatenatedLabelPredicate(_ value: String) -> NSPredicate {
+        NSPredicate(format: "label MATCHES %@", TextMatch.concatenatedLabelPattern(value))
     }
 
     // MARK: - Helpers
