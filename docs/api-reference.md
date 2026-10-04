@@ -282,7 +282,7 @@ entry is `{ serial, model, state, isEmulator, platform, osVersion }`.
 
 Target a specific device by its serial number.
 
-Tapsmith's run paths claim a device before selecting it, and refuse one another running Tapsmith session holds
+Tapsmith's run paths claim a device before selecting it, and refuse a device that another running Tapsmith session holds
 (see [Several sessions on one machine](parallel-and-sharding.md#several-sessions-on-one-machine)). `setDevice`
 itself does not check claims: switching devices mid-test is up to the test.
 
