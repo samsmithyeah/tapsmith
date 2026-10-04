@@ -50,6 +50,9 @@ import {
   listAdbDevices,
   reserveEmulatorPort,
   emulatorsBootingThisProcess,
+  stopLaunchedEmulator,
+  describeBootTimeout,
+  EmulatorBootTimeoutError,
   EMULATOR_BOOT_TIMEOUT_MS,
 } from '../emulator.js';
 import lockfile from 'proper-lockfile';
@@ -1269,6 +1272,24 @@ function makePermissiveExec(responses: Record<string, string | Error>) {
   }) as unknown as typeof import('node:child_process').execFileSync;
 }
 
+/**
+ * A spawned process's stand-in: no real PID, so nothing on the host is ever
+ * signalled. It ends on the first signal it obeys, as a `ChildProcess` does.
+ */
+function fakeChildProcess(obeys: ReadonlyArray<NodeJS.Signals> = ['SIGTERM', 'SIGKILL']) {
+  const proc = {
+    pid: 4242 as number | undefined,
+    exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
+    kill: vi.fn((sig: NodeJS.Signals = 'SIGTERM') => {
+      if (proc.exitCode !== null || proc.signalCode !== null) return false;
+      if (obeys.includes(sig)) proc.signalCode = sig;
+      return true;
+    }),
+  };
+  return proc;
+}
+
 function makeLaunchedEmulator(
   avd: string,
   port: number,
@@ -1281,9 +1302,7 @@ function makeLaunchedEmulator(
     headless: true,
     logPath: path.join(os.tmpdir(), `tapsmith-emulator-${port}.log`),
     exited,
-    process: {
-      kill: vi.fn(),
-    },
+    process: fakeChildProcess(),
   } as unknown as import('../emulator.js').LaunchedEmulator;
 }
 
@@ -1434,9 +1453,10 @@ describe('resolveEmulatorLaunchSettings', () => {
 });
 
 describe('emulatorLaunchArgs profiles', () => {
-  it('keeps the headless profile exactly as CI has always run it', () => {
+  it('runs headless with no window, a software GPU and a cold boot', () => {
     expect(emulatorLaunchArgs('Pixel', 5554, { headless: true, args: [] })).toEqual([
       '-avd', 'Pixel', '-port', '5554', '-read-only',
+      '-crash-report-mode', 'never', '-no-metrics',
       '-no-snapshot-load', '-no-snapshot-save', '-no-boot-anim', '-no-audio',
       '-gpu', 'swiftshader_indirect', '-no-window',
     ]);
@@ -1446,11 +1466,22 @@ describe('emulatorLaunchArgs profiles', () => {
     const args = emulatorLaunchArgs('Pixel', 5554, { headless: false, args: [] });
     expect(args).toEqual([
       '-avd', 'Pixel', '-port', '5554', '-read-only',
+      '-crash-report-mode', 'never', '-no-metrics',
       '-no-snapshot-save', '-no-boot-anim', '-no-audio',
     ]);
     expect(args).not.toContain('-gpu');
     expect(args).not.toContain('-no-window');
     expect(args).not.toContain('-no-snapshot-load');
+  });
+
+  it('never stops at a crash-report consent dialog or a metrics prompt, in either profile (PILOT-512)', () => {
+    // An earlier emulator crash anywhere on the machine otherwise opens a modal
+    // consent dialog at the next launch, which then never boots.
+    for (const headless of [true, false]) {
+      const args = emulatorLaunchArgs('Pixel', 5554, { headless, args: [] });
+      expect(args[args.indexOf('-crash-report-mode') + 1]).toBe('never');
+      expect(args).toContain('-no-metrics');
+    }
   });
 
   it('appends the user args after Tapsmith’s own', () => {
@@ -1540,6 +1571,84 @@ describe('launchEmulator process and early exit', () => {
   });
 });
 
+describe('describeBootTimeout (PILOT-512)', () => {
+  const timeout = new EmulatorBootTimeoutError('Emulator emulator-5554 did not boot within 120s');
+
+  it('quotes the last lines of the emulator output and names the log', () => {
+    const log = [
+      'INFO         | Android emulator version 36.6.11.0',
+      'WARNING      | Metrics will turn into a one-time blocking prompt',
+      '',
+      'INFO         | Showing crashdialog to get consent.',
+      '',
+    ].join('\n');
+    expect(describeBootTimeout(timeout, { logPath: '/tmp/tapsmith-emulator-5554-1-1.log' }, () => log)).toBe(
+      'Emulator emulator-5554 did not boot within 120s. Its last output: Android emulator version 36.6.11.0 / '
+      + 'Metrics will turn into a one-time blocking prompt / Showing crashdialog to get consent. '
+      + 'Full output: /tmp/tapsmith-emulator-5554-1-1.log',
+    );
+  });
+
+  it('quotes the emulator’s own log lines, not a crash report it dumps after them', () => {
+    // A launch stuck at the crash-report consent dialog prints the pending
+    // report's annotations after its own line, unprefixed (emulator 36.6).
+    const log = [
+      'INFO         | Crash report mode parameter is set to \'ask\'',
+      'INFO         | Showing crashdialog to get consent.',
+      '  module_list[0].crashpad_annotations["hw.lcd.height"] (type = 1) = 2400',
+      'supportsPrivateData = 1',
+      '  module_list[0].crashpad_annotations["command_line"] (type = 1) = -avd Pixel',
+    ].join('\n');
+    expect(describeBootTimeout(timeout, { logPath: '/tmp/x.log' }, () => log)).toBe(
+      'Emulator emulator-5554 did not boot within 120s. Its last output: Crash report mode parameter is set to \'ask\' / '
+      + 'Showing crashdialog to get consent. Full output: /tmp/x.log',
+    );
+  });
+
+  it('names the log alone when it is empty', () => {
+    expect(describeBootTimeout(timeout, { logPath: '/tmp/x.log' }, () => '\n'))
+      .toBe('Emulator emulator-5554 did not boot within 120s. Full output: /tmp/x.log');
+  });
+
+  it('says only the timeout when there is no log', () => {
+    expect(describeBootTimeout(timeout, { logPath: undefined }, () => { throw new Error('unread'); }))
+      .toBe('Emulator emulator-5554 did not boot within 120s.');
+    expect(describeBootTimeout(timeout, { logPath: '/gone.log' }, () => { throw new Error('ENOENT'); }))
+      .toBe('Emulator emulator-5554 did not boot within 120s. Full output: /gone.log');
+  });
+
+  it('is what a launch that never boots warns with', async () => {
+    const warnings: string[] = [];
+    const emu = makeLaunchedEmulator('Pixel', 5554);
+    fs.writeFileSync(emu.logPath!, 'INFO         | Showing crashdialog to get consent.\n');
+    try {
+      await provisionEmulators(
+        {
+          existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined,
+          onProgress: (message, level) => { if (level === 'warning') warnings.push(message); },
+        },
+        {
+          ...unprobedPorts,
+          resolveEmulatorBinary: foundEmulator,
+          listAdbDevices: () => [],
+          listAvds: () => ['Pixel'],
+          getRunningAvdName: () => undefined,
+          launchEmulator: () => emu,
+          waitForBoot: async () => { throw timeout; },
+          probeDeviceHealth: (serial) => ({ serial, healthy: true }),
+          waitForDeviceStability: async (serial) => ({ serial, healthy: true }),
+          killEmulator: vi.fn(),
+          stopLaunchedEmulator: async () => true,
+        },
+      );
+    } finally {
+      fs.rmSync(emu.logPath!, { force: true });
+    }
+    expect(warnings[0]).toBe('Skipping launched emulator emulator-5554 (Pixel): Emulator emulator-5554 did not boot within 120s. '
+      + `Its last output: Showing crashdialog to get consent. Full output: ${emu.logPath}.`);
+  });
+});
+
 describe('describeEmulatorExit', () => {
   const emu = { avd: 'Pixel', logPath: '/tmp/tapsmith-emulator-5554.log' };
   const bin = { command: '/sdk/emulator/emulator', found: true, tried: ['/sdk/emulator/emulator'] };
@@ -1591,6 +1700,81 @@ describe('provisionEmulators launch failures', () => {
     probeDeviceHealth: (serial: string) => ({ serial, healthy: true }),
     waitForDeviceStability: async (serial: string) => ({ serial, healthy: true }),
   };
+
+  // ─── A launch that never boots is stopped, or stays recorded (PILOT-512) ───
+
+  const readManifestEntries = (): Array<{ serial: string, pid: number }> => {
+    try { return JSON.parse(fs.readFileSync(manifestFile, 'utf-8')); } catch { return []; }
+  };
+  const withPid = (emu: import('../emulator.js').LaunchedEmulator, pid: number) => {
+    (emu.process as unknown as { pid: number }).pid = pid;
+    return emu;
+  };
+
+  it('stops an emulator whose boot timed out and drops its record', async () => {
+    try { fs.unlinkSync(manifestFile); } catch { /* ok */ }
+    const emu = withPid(makeLaunchedEmulator('Pixel', 5554), 4242);
+    const stop = vi.fn(async () => true);
+    const result = await provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      {
+        ...base,
+        resolveEmulatorBinary: foundEmulator,
+        launchEmulator: () => emu,
+        waitForBoot: async () => { throw new Error('Emulator emulator-5554 did not boot within 120s'); },
+        killEmulator: vi.fn(),
+        stopLaunchedEmulator: stop,
+      },
+    );
+    expect(result.launched).toEqual([]);
+    expect(stop).toHaveBeenCalledWith(emu);
+    expect(readManifestEntries()).toEqual([]);
+  });
+
+  it('keeps an emulator it could not stop recorded, and says how to stop it', async () => {
+    try { fs.unlinkSync(manifestFile); } catch { /* ok */ }
+    const warnings: string[] = [];
+    const emu = withPid(makeLaunchedEmulator('Pixel', 5554), 4242);
+    const result = await provisionEmulators(
+      {
+        existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined,
+        onProgress: (message, level) => { if (level === 'warning') warnings.push(message); },
+      },
+      {
+        ...base,
+        resolveEmulatorBinary: foundEmulator,
+        launchEmulator: () => emu,
+        waitForBoot: async () => { throw new Error('Emulator emulator-5554 did not boot within 120s'); },
+        killEmulator: vi.fn(),
+        stopLaunchedEmulator: async () => false,
+      },
+    );
+    expect(result.launched).toEqual([]);
+    // Recorded, so the next run stops it once this one has gone.
+    expect(readManifestEntries().map((entry) => [entry.serial, entry.pid])).toEqual([['emulator-5554', 4242]]);
+    expect(warnings).toContain('Emulator emulator-5554 (PID 4242) did not exit even after SIGKILL, following its failed launch. '
+      + 'It stays in Tapsmith\'s emulator record rather than running untracked.');
+    try { fs.unlinkSync(manifestFile); } catch { /* ok */ }
+  });
+
+  it('does not try to stop an emulator that already exited during boot', async () => {
+    const stop = vi.fn(async () => true);
+    const emu = makeLaunchedEmulator('Pixel', 5554, Promise.resolve({ kind: 'exited', code: 1, signal: null }));
+    await provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
+      {
+        ...base,
+        resolveEmulatorBinary: foundEmulator,
+        launchEmulator: () => emu,
+        waitForBoot: (_serial, _timeout, signal) => new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+        killEmulator: vi.fn(),
+        stopLaunchedEmulator: stop,
+      },
+    );
+    expect(stop).not.toHaveBeenCalled();
+  });
 
   it('stops before listing AVDs when the emulator binary is not found', async () => {
     const listAvds = vi.fn(() => ['Pixel']);
@@ -2046,6 +2230,7 @@ describe('provisionEmulators boots emulators side by side', () => {
     probeDeviceHealth: (serial: string) => ({ serial, healthy: true }),
     waitForDeviceStability: async (serial: string) => ({ serial, healthy: true }),
     killEmulator: vi.fn(),
+    stopLaunchedEmulator: async () => true,
   };
 
   /** A boot wait that finishes only when the test says so, counting how many are in flight. */
@@ -2207,7 +2392,7 @@ describe('provisionEmulators boots emulators side by side', () => {
     const boots = controlledBoots();
     const provision = provisionEmulators(
       { existingSerials: [], workers: 3, avd: 'Pixel', launchOptions: undefined, onProgress: () => undefined },
-      { ...base, launchConcurrency: 3, launchEmulator: (avd, port) => ({ ...makeLaunchedEmulator(avd, port), process: { pid: port * 10, kill: vi.fn() } } as unknown as import('../emulator.js').LaunchedEmulator), waitForBoot: boots.waitForBoot },
+      { ...base, launchConcurrency: 3, launchEmulator: (avd, port) => ({ ...makeLaunchedEmulator(avd, port), process: Object.assign(fakeChildProcess(), { pid: port * 10 }) } as unknown as import('../emulator.js').LaunchedEmulator), waitForBoot: boots.waitForBoot },
     );
     await boots.untilStarted(3);
     boots.pending.get('emulator-5554')!.resolve();
@@ -2303,5 +2488,51 @@ describe('provisionEmulators boots emulators side by side', () => {
     expect(new Set(logs).size).toBe(2);
     // Each log holds its own launch's output: the -port value the script echoes.
     expect(launches.map((emu) => fs.readFileSync(emu.logPath!, 'utf-8').trim())).toEqual(launches.map((emu) => String(emu.port)));
+  });
+});
+
+describe('stopLaunchedEmulator (PILOT-512)', () => {
+  const emuWith = (proc: ReturnType<typeof fakeChildProcess>) =>
+    ({ process: proc }) as unknown as import('../emulator.js').LaunchedEmulator;
+  const instant = { sleep: async () => undefined, graceMs: 0 };
+
+  it('stops a process that obeys SIGTERM without escalating', async () => {
+    const proc = fakeChildProcess(['SIGTERM']);
+    expect(await stopLaunchedEmulator(emuWith(proc), instant)).toBe(true);
+    expect(proc.kill.mock.calls).toEqual([['SIGTERM']]);
+  });
+
+  it('escalates to SIGKILL when SIGTERM is ignored (a modal dialog, for one)', async () => {
+    const proc = fakeChildProcess(['SIGKILL']);
+    expect(await stopLaunchedEmulator(emuWith(proc), instant)).toBe(true);
+    expect(proc.kill.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']]);
+  });
+
+  it('reports a process that survives SIGKILL as not stopped', async () => {
+    expect(await stopLaunchedEmulator(emuWith(fakeChildProcess([])), instant)).toBe(false);
+  });
+
+  it('signals nothing once the process has exited, nor when it never got a PID', async () => {
+    const exited = fakeChildProcess();
+    exited.exitCode = 0;
+    expect(await stopLaunchedEmulator(emuWith(exited), instant)).toBe(true);
+    expect(exited.kill).not.toHaveBeenCalled();
+    const unspawned = fakeChildProcess();
+    unspawned.pid = undefined;
+    expect(await stopLaunchedEmulator(emuWith(unspawned), instant)).toBe(true);
+    expect(unspawned.kill).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === 'win32')('kills a real detached process that ignores SIGTERM', async () => {
+    const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); process.stdout.write('ready'); setInterval(() => {}, 1000);"], {
+      detached: true, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    await new Promise<void>((resolve) => child.stdout!.once('data', () => resolve()));
+    try {
+      expect(await stopLaunchedEmulator({ process: child }, { graceMs: 500 })).toBe(true);
+      expect(child.signalCode).toBe('SIGKILL');
+    } finally {
+      child.kill('SIGKILL');
+    }
   });
 });
