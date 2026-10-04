@@ -23,7 +23,7 @@ claude mcp add tapsmith --transport http http://localhost:9274/mcp
 Codex CLI:
 
 ```bash
-codex mcp add tapsmith http://localhost:9274/mcp
+codex mcp add tapsmith --url http://localhost:9274/mcp
 ```
 
 Generic MCP config:

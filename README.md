@@ -21,7 +21,7 @@ test("user can log in", async ({ device }) => {
 - **Auto-waiting** -- every action waits for the element to be visible, enabled, and stable. No manual sleeps.
 - **Accessible locators** -- find elements by role, text, label, placeholder, and description. An ESLint plugin steers you toward best practices.
 - **Trace viewer** -- step-by-step replay of every action with before/after screenshots, view hierarchy, console output, and network requests.
-- **Network interception** -- Playwright-style `device.route()` to mock, modify, or abort HTTP/HTTPS requests that trust Tapsmith's MITM CA, with passthrough markers for configured hosts and detected h2/gRPC cert rejects.
+- **Network interception** -- Playwright-style `device.route()` to mock, modify, or abort HTTP/HTTPS requests that trust Tapsmith's MITM CA, with passthrough markers for configured hosts and detected h2/gRPC cert rejects. Routes run on the network proxy, which Tapsmith starts for tests whose trace records network traffic, so turn tracing on (`trace: "retain-on-failure"`) to use them -- see [Network prerequisites](docs/network.md#prerequisites).
 - **Video recording** -- continuous MP4 capture of the device screen, retained on failure or always.
 - **Parallel execution** -- run tests across multiple devices with work-stealing distribution. Tapsmith auto-provisions emulators and simulators.
 - **WebView testing** -- test hybrid apps by switching between native and WebView contexts with CSS selector-based interaction.
@@ -49,7 +49,9 @@ The TypeScript SDK communicates with a Rust daemon over gRPC. The daemon manages
 npm install tapsmith
 ```
 
-### 2. Set up
+### 2. Build your app and set up
+
+Tapsmith tests a build of your app: an `.apk` for Android, a simulator `.app` for iOS. See [Build the app under test](docs/getting-started.md#build-the-app-under-test) (including React Native and Expo, where a Debug build needs Metro running).
 
 The interactive wizard detects your environment and generates a config file:
 
@@ -64,19 +66,22 @@ import { defineConfig } from "tapsmith";
 
 export default defineConfig({
   // Android
-  apk: "./app/build/outputs/apk/debug/app-debug.apk",
-  package: "com.example.myapp",
+  apk: "./android/app/build/outputs/apk/debug/app-debug.apk",
+  package: "com.example.myapp", // needed to launch and reset the app
 
-  // Or iOS
-  // app: "./build/MyApp.app",
+  // Or iOS (`platform` and `simulator` are required for simulator runs)
+  // platform: "ios",
+  // app: "./ios/build/Build/Products/Debug-iphonesimulator/MyApp.app",
   // package: "com.example.myapp",
+  // simulator: "iPhone 17",
 });
 ```
 
-Verify your setup:
+Check your environment, then prove the whole loop (daemon, device, app install, one real test) works:
 
 ```bash
 npx tapsmith doctor
+npx tapsmith verify
 ```
 
 ### 3. Write a test

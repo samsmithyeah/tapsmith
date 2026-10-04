@@ -167,7 +167,7 @@ export function resolveInitPlan(
       const candidates = prefer(detect.findApkCandidates(cwd));
       if (candidates.length === 0) {
         throw new InitError('NO_APK', 'No Android APK found under android/**/build/outputs/apk/', {
-          fix: 'Build your app (e.g. cd android && ./gradlew assembleDebug), or pass --apk <path>',
+          fix: 'Build your app (e.g. cd android && ./gradlew assembleDebug; a React Native Debug build also needs Metro running, see https://tapsmith.dev/getting-started/#build-the-app-under-test), or pass --apk <path>',
         });
       }
       if (candidates.length > 1) {
@@ -227,7 +227,7 @@ export function resolveInitPlan(
       const candidates = detect.findIosAppCandidates(cwd);
       if (candidates.length === 0) {
         throw new InitError('NO_IOS_APP', 'No simulator .app bundle found under ios/', {
-          fix: 'Build your app for the simulator (in ios/: xcodebuild -workspace <App>.xcworkspace -scheme <App> -sdk iphonesimulator -derivedDataPath build), or pass --app <path>',
+          fix: 'Build your app for the simulator (in ios/: xcodebuild -workspace <App>.xcworkspace -scheme <App> -sdk iphonesimulator -derivedDataPath build; see https://tapsmith.dev/getting-started/#build-the-app-under-test), or pass --app <path>',
         });
       }
       if (candidates.length > 1) {

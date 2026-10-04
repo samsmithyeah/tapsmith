@@ -11,6 +11,7 @@ import { defineConfig } from "tapsmith";
 
 export default defineConfig({
   apk: "./app/build/outputs/apk/debug/app-debug.apk",
+  package: "com.example.myapp",
 });
 ```
 
@@ -21,8 +22,10 @@ error, an import that does not resolve, an exception at the top level), the comm
 error and the file's path; it never falls back to another candidate or to the defaults. The
 defaults apply only when no config file exists.
 
-For clean emulators or CI devices, `apk` is the important setting because it lets
-Tapsmith install the app under test itself. `activity` is optional and mainly
+`apk` lets Tapsmith install the app under test itself, and `package` is what it
+launches and resets: without `package`, the app is installed but never launched or
+reset between test files. For iOS, set `platform: "ios"`, `app`, `package` and
+`simulator` (see [Minimal (iOS)](#minimal-ios)). `activity` is optional and mainly
 useful as a stability hint when you want Tapsmith to launch a specific activity.
 For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 
@@ -30,16 +33,16 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `platform` | `"android" \| "ios"` | auto-detected | Target platform. Auto-detected from `apk` (Android) or `app` (iOS). |
+| `platform` | `"android" \| "ios"` | `"android"` | Target platform. **Required for iOS**: it is not inferred from `app`, and a config (or project `use`) that sets `app`, `simulator` or `iosXctestrun` without `platform` is treated as Android: the run looks for an Android device (and fails there when there is none), and is refused when tests start (`tapsmith doctor` flags it as `config-platform`). |
 | `apk` | `string` | `undefined` | Path to the APK under test (Android). |
 | `app` | `string` | `undefined` | Path to the .app bundle under test (iOS). For simulators, build a simulator-slice `.app`. For physical devices, the `.app` must be code-signed with a profile matching the device — see [iOS physical devices](./ios-physical-devices.md). |
-| `package` | `string` | `undefined` | Package name (Android) or bundle identifier (iOS) of the app under test. When set, Tapsmith launches the app before tests. |
+| `package` | `string` | `undefined` | Package name (Android) or bundle identifier (iOS) of the app under test. Tapsmith launches the app before tests and resets it between test files only when this is set; without it, tests start on whatever is on screen. |
 | `activity` | `string` | `undefined` | Optional activity name to launch (Android only). Usually not needed; Tapsmith will try the default launcher activity automatically. |
 | `timeout` | `number` | `30000` | Default timeout in milliseconds for actions and assertions. Each test body also gets a safety timeout of 3× this value; that budget counts only time spent in test code — time inside slow device operations (app launches, deep links, state saves), which carry their own bounded deadlines and may run long while Tapsmith recovers a struggling device, is excluded, backstopped by a hard wall-clock cap of 5× the test timeout. |
 | `typingDelay` | `number` | `0` | Delay in milliseconds between keystrokes when typing text. Helps prevent dropped characters on slow CI simulators/emulators. Can be overridden per-call via `type("text", { delay: 50 })`. |
 | `retries` | `number` | `0` | Number of times to retry a failed test. |
 | `screenshot` | `ScreenshotMode` | `"only-on-failure"` | When to capture screenshots: `"always"`, `"only-on-failure"`, or `"never"`. |
-| `testMatch` | `string[]` | `["**/*.test.ts", "**/*.spec.ts"]` | Glob patterns for discovering test files. |
+| `testMatch` | `string[]` | `["**/*.test.ts", "**/*.spec.ts"]` | Glob patterns for discovering test files. To exclude files, use a project's `testIgnore` ([Projects](writing-tests.md#filtering-with-testmatch-and-testignore)); there is no root-level `testIgnore`. |
 | `daemonAddress` | `string` | `"localhost:50051"` | Address of the Tapsmith daemon (host:port). If another live Tapsmith session already answers on that port, this session starts its own daemon on a free port instead of taking it over. |
 | `daemonBin` | `string` | `undefined` | Path to the `tapsmith-core` binary. If unset, Tapsmith auto-resolves it from several common locations (including npm packages and monorepo build outputs) before falling back to `PATH`. |
 | `device` | `string` | `undefined` | Explicit single-device override. Useful for debugging or forcing one specific physical device/emulator/simulator. |
@@ -50,7 +53,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `agentApk` | `string` | auto-resolved | Path to the Tapsmith agent APK (Android). When installed via npm, the APK from `@tapsmith/agent-android` is used automatically. Only set this to override with a custom build. |
 | `agentTestApk` | `string` | auto-resolved | Path to the Tapsmith agent test APK (Android). When installed via npm, the APK from `@tapsmith/agent-android` is used automatically. Only set this to override with a custom build. |
 | `iosXctestrun` | `string` | `undefined` | Path to the iOS agent `.xctestrun` file. **Simulator and device builds are NOT interchangeable** — build one with `xcodebuild -destination 'platform=iOS Simulator,…'` for simulators, or `tapsmith ios build-agent` for physical devices. Use one project per target with its own `iosXctestrun`. When omitted, Tapsmith finds the agent build itself (for physical devices, see [iOS physical devices](./ios-physical-devices.md)). |
-| `simulator` | `string` | `undefined` | iOS simulator name or UDID. Run `xcrun simctl list devices` to see available simulators. For physical iOS devices, use `device` with the UDID instead — see [iOS physical devices](./ios-physical-devices.md). |
+| `simulator` | `string` | `undefined` | iOS simulator name or UDID. Run `xcrun simctl list devices` to see available simulators. There is no default: an iOS config with neither `simulator` nor `device` uses the single paired physical device if there is one, and otherwise the run fails before any test starts, saying it found neither. For physical iOS devices, use `device` with the UDID instead — see [iOS physical devices](./ios-physical-devices.md). |
 | `reporter` | `ReporterConfig` | `list` | Reporter output configuration. Defaults to `list` everywhere, including CI. |
 | `workers` | `number` | `1` | Number of parallel workers. Each worker needs its own device/emulator/simulator. |
 | `shard` | `{ current: number; total: number }` | `undefined` | Shard specification for splitting a run across multiple machines. Usually set via `--shard=x/y`. |
@@ -72,7 +75,6 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `telemetry` | `boolean` | `true` | Anonymous usage telemetry — one event per test-file run with the run mode, platform, pass/fail counts, and SDK/Node/OS versions, under a random per-machine id. Never test names, locators, app identifiers, or paths. Set `false` to opt out; `TAPSMITH_TELEMETRY=0` does the same per shell. See [Telemetry](telemetry.md). |
 | `resetAppDeepLink` | `string` | `undefined` | Deep link the app handles by clearing its own state and navigating to the start screen. Setting it makes `appReset: 'auto'` resolve to `warm`. Do not expose this route in production builds. |
 | `resetAppWaitMs` | `number` | `750` | Time in milliseconds to wait after navigating the `resetAppDeepLink` before continuing. Gives the app time to finish resetting. |
-| `testIgnore` | `string[]` | `[]` | Glob patterns for excluding test files from discovery. Files matching any pattern are skipped even if they match `testMatch`. |
 
 ### `ScreenshotMode`
 
@@ -272,6 +274,7 @@ import { defineConfig } from "tapsmith";
 
 export default defineConfig({
   apk: "./app-debug.apk",
+  package: "com.example.myapp",
 });
 ```
 
@@ -281,9 +284,16 @@ export default defineConfig({
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
-  app: "./build/MyApp.app",
+  platform: "ios",
+  app: "./ios/build/Build/Products/Debug-iphonesimulator/MyApp.app",
+  package: "com.example.myapp",
+  simulator: "iPhone 17",
 });
 ```
+
+`platform` and `simulator` are both required here: Tapsmith infers neither. See
+[Build the app under test](getting-started.md#build-the-app-under-test) for where
+the `.app` comes from.
 
 ### Custom Timeout
 
@@ -341,6 +351,7 @@ export default defineConfig({
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
+  platform: "ios",
   app: "./build/MyApp.app",
   package: "com.example.myapp",
   simulator: "iPhone 17",
