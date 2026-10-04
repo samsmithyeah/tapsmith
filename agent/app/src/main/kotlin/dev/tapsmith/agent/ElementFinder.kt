@@ -23,6 +23,8 @@ import javax.xml.xpath.XPathFactory
 data class ElementSelector(
     val role: String? = null,
     val name: String? = null,
+    /** getByRole `{ exact: true }`: match [name] case-sensitively and whole. */
+    val nameExact: Boolean = false,
     val text: String? = null,
     val textContains: String? = null,
     val contentDesc: String? = null,
@@ -554,20 +556,20 @@ class ElementFinder(private val device: UiDevice) {
                         }
                     }
                 return if (selector.name != null) {
-                    byTrait.filter { matchesAccessibleName(it, selector.name) }
+                    byTrait.filter { matchesAccessibleName(it, selector.name, selector.nameExact) }
                 } else {
                     byTrait
                 }
             }
         }
 
-        // Post-filter by role name: match contentDescription, text, or an
-        // exact descendant text segment. We use segment-level equality (not
-        // substring `contains`) so "Sign" doesn't false-positive on a
-        // container whose descendant reads "Sign out".
+        // Post-filter by role name: match contentDescription, text, or the
+        // joined descendant text. Like Playwright, a case-insensitive
+        // substring by default and a case-sensitive whole-string match with
+        // `exact` (PILOT-549).
         val byName =
             if (selector.role != null && selector.name != null) {
-                results.filter { matchesAccessibleName(it, selector.name) }
+                results.filter { matchesAccessibleName(it, selector.name, selector.nameExact) }
             } else {
                 results
             }
@@ -1002,10 +1004,11 @@ class ElementFinder(private val device: UiDevice) {
     private fun matchesAccessibleName(
         obj: UiObject2,
         name: String,
+        exact: Boolean,
     ): Boolean {
-        return TextMatch.equalsNormalized(obj.contentDescription, name) ||
-            TextMatch.equalsNormalized(obj.text, name) ||
-            TextMatch.equalsNormalized(collectDescendantText(obj), name)
+        return TextMatch.nameMatches(obj.contentDescription, name, exact) ||
+            TextMatch.nameMatches(obj.text, name, exact) ||
+            TextMatch.nameMatches(collectDescendantText(obj), name, exact)
     }
 
     private fun collectDescendantTextParts(
@@ -1152,6 +1155,7 @@ class ElementFinder(private val device: UiDevice) {
         val parts = mutableListOf<String>()
         selector.role?.let { parts.add("role=$it") }
         selector.name?.let { parts.add("name=$it") }
+        if (selector.name != null && selector.nameExact) parts.add("exact=true")
         selector.text?.let { parts.add("text=$it") }
         selector.textContains?.let { parts.add("textContains=$it") }
         selector.contentDesc?.let { parts.add("contentDesc=$it") }

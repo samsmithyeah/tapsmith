@@ -33,6 +33,24 @@ object TextMatch {
         expected: String,
     ): Boolean = actual != null && normalize(actual.toString()) == normalize(expected)
 
+    /**
+     * Whether [actual] (null = no text) matches the accessible-name [query]
+     * the way Playwright's getByRole `name` does (PILOT-549): by default a
+     * case-insensitive substring match, with [exact] a case-sensitive
+     * whole-string match. Whitespace is normalized either way. Case folding
+     * uses [String.lowercase], which is locale-independent, so a Turkish
+     * device locale doesn't break "LOGIN" vs "login".
+     */
+    fun nameMatches(
+        actual: CharSequence?,
+        query: String,
+        exact: Boolean,
+    ): Boolean {
+        if (actual == null) return false
+        if (exact) return equalsNormalized(actual, query)
+        return normalize(actual.toString()).lowercase().contains(normalize(query).lowercase())
+    }
+
     /** Full-match pattern: the text equals [query] after normalizing both. */
     fun exactPattern(query: String): Pattern = Pattern.compile("$WS_CLASS*${wordsPattern(query)}$WS_CLASS*")
 

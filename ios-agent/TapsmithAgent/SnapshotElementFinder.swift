@@ -1080,12 +1080,14 @@ class SnapshotElementFinder {
             if !typeMatch && !traitMatch { return false }
 
             // Filter by name if provided
+            // Like Playwright: a case-insensitive substring by default, a
+            // case-sensitive whole-string match with `exact` (PILOT-549).
             if let name = selector.name {
-                let exactMatch = TextMatch.equals(label, name) || TextMatch.equals(title, name)
-                let containsAsChild = !exactMatch
-                    && (TextMatch.containsChildText(label, childText: name)
-                        || TextMatch.containsChildText(title, childText: name))
-                if !exactMatch && !containsAsChild { return false }
+                let exact = selector.nameExact
+                if !TextMatch.nameMatches(label, name, exact: exact)
+                    && !TextMatch.nameMatches(title, name, exact: exact) {
+                    return false
+                }
             }
         }
 
@@ -1308,7 +1310,9 @@ class SnapshotElementFinder {
             element = resolve(labelQuery(concatenatedLabelPredicate(contentDesc)))
         } else if selector.role != nil, let name = selector.name {
             // Role + name: e.g. role("button", "Sign in")
-            element = resolve(labelQuery(normalizedConcatenatedLabelPredicate(name)))
+            element = resolve(labelQuery(
+                NSPredicate(format: "label MATCHES %@", TextMatch.nameQueryPattern(name, exact: selector.nameExact))
+            ))
         } else if let role = selector.role {
             // Role-only: match by type.
             if let types = try? RoleMapping.elementTypes(for: role), let firstType = types.first {
@@ -1417,6 +1421,7 @@ class SnapshotElementFinder {
         var parts: [String] = []
         if let v = selector.role { parts.append("role=\(v)") }
         if let v = selector.name { parts.append("name=\(v)") }
+        if selector.name != nil && selector.nameExact { parts.append("exact=true") }
         if let v = selector.text { parts.append("text=\(v)") }
         if let v = selector.textContains { parts.append("textContains=\(v)") }
         if let v = selector.contentDesc { parts.append("contentDesc=\(v)") }

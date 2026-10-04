@@ -70,6 +70,24 @@ enum TextMatch {
         return false
     }
 
+    /// Whether `text` matches the accessible-name `query` the way Playwright's
+    /// getByRole `name` does (PILOT-549): by default a case-insensitive
+    /// substring; with `exact`, case-sensitive equality — or, as iOS joins
+    /// child text into one label with ", ", one whole child of that label.
+    /// Whitespace is normalized either way.
+    static func nameMatches(_ text: String, _ query: String, exact: Bool) -> Bool {
+        if exact {
+            return equals(text, query) || containsChildText(text, childText: query)
+        }
+        let needle = normalize(query).lowercased()
+        return needle.isEmpty || normalize(text).lowercased().contains(needle)
+    }
+
+    /// ICU full-match pattern accepting the labels `nameMatches` accepts.
+    static func nameQueryPattern(_ query: String, exact: Bool) -> String {
+        exact ? concatenatedLabelPattern(query) : "(?si).*\(words(query)).*"
+    }
+
     /// ICU full-match pattern: the label equals `query` after normalizing both.
     static func exactPattern(_ query: String) -> String {
         "\(wsClass)*\(words(query))\(wsClass)*"

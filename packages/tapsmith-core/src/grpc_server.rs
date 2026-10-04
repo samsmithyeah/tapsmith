@@ -2700,6 +2700,11 @@ pub(crate) fn selector_to_json(selector: &proto::Selector) -> Value {
                     "role": role_sel.role,
                     "name": role_sel.name,
                 });
+                // getByRole `{ exact: true }` (PILOT-549). Absent means the
+                // Playwright default: case-insensitive substring.
+                if role_sel.exact {
+                    obj["role"]["exact"] = json!(true);
+                }
                 if let Some(checked) = role_sel.checked {
                     obj["checked"] = json!(checked);
                 }
@@ -9112,12 +9117,34 @@ mod tests {
                 disabled: None,
                 selected: None,
                 expanded: None,
+                exact: false,
             })),
             parent: None,
         };
         let j = selector_to_json(&sel);
         assert_eq!(j["role"]["role"], "button");
         assert_eq!(j["role"]["name"], "Submit");
+        // The default (substring, case-insensitive) sends no `exact` key.
+        assert!(j["role"].get("exact").is_none());
+    }
+
+    #[test]
+    fn selector_to_json_role_exact_name() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::Role(proto::RoleSelector {
+                role: "button".into(),
+                name: "Sign In".into(),
+                checked: None,
+                disabled: None,
+                selected: None,
+                expanded: None,
+                exact: true,
+            })),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["role"]["name"], "Sign In");
+        assert_eq!(j["role"]["exact"], true);
     }
 
     #[test]
@@ -9130,6 +9157,7 @@ mod tests {
                 disabled: Some(true),
                 selected: None,
                 expanded: Some(false),
+                exact: false,
             })),
             parent: None,
         };

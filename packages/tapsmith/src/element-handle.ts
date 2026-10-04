@@ -8,6 +8,7 @@
 
 import {
   type Selector,
+  type RoleLocatorOptions,
   selectorToProto,
   formatSelector,
   withParent,
@@ -671,7 +672,7 @@ export class ElementHandle {
   }
 
   /** Locate a descendant by accessibility role, optionally filtering by name or state. */
-  getByRole(role: string, options?: { name?: string; checked?: boolean; disabled?: boolean; selected?: boolean; expanded?: boolean }): ElementHandle {
+  getByRole(role: string, options?: RoleLocatorOptions): ElementHandle {
     return this._scoped(_role(role, options));
   }
 

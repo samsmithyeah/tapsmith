@@ -129,7 +129,8 @@ class ElementFinder {
             // Filter by accessible name if provided
             if let name = selector.name {
                 results = results.filter { elem in
-                    TextMatch.equals(elem.label, name) || TextMatch.equals(elem.title, name)
+                    TextMatch.nameMatches(elem.label, name, exact: selector.nameExact)
+                        || TextMatch.nameMatches(elem.title, name, exact: selector.nameExact)
                 }
             }
             return results
@@ -363,6 +364,7 @@ class ElementFinder {
         var parts: [String] = []
         if let v = selector.role { parts.append("role=\(v)") }
         if let v = selector.name { parts.append("name=\(v)") }
+        if selector.name != nil && selector.nameExact { parts.append("exact=true") }
         if let v = selector.text { parts.append("text=\(v)") }
         if let v = selector.textContains { parts.append("textContains=\(v)") }
         if let v = selector.contentDesc { parts.append("contentDesc=\(v)") }

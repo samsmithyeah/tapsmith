@@ -76,4 +76,33 @@ class TextMatchTest {
         assertFalse(TextMatch.equalsNormalized(null, "Save draft"))
         assertFalse(TextMatch.equalsNormalized("Save drafts", "Save draft"))
     }
+
+    @Test
+    fun `accessible name matches case-insensitive substrings by default (PILOT-549)`() {
+        // RN's <Button title="Sign In"> renders "SIGN IN" on Android.
+        assertTrue(TextMatch.nameMatches("SIGN IN", "Sign In", exact = false))
+        assertTrue(TextMatch.nameMatches("Explore the app", "explor", exact = false))
+        assertTrue(TextMatch.nameMatches("Welcome to Expo", "TO  expo", exact = false))
+        assertFalse(TextMatch.nameMatches("Sign out", "Sign in", exact = false))
+        assertFalse(TextMatch.nameMatches(null, "Sign in", exact = false))
+    }
+
+    @Test
+    fun `exact accessible name is case-sensitive and whole-string, whitespace-normalized`() {
+        assertTrue(TextMatch.nameMatches(" Sign  In ", "Sign In", exact = true))
+        assertFalse(TextMatch.nameMatches("SIGN IN", "Sign In", exact = true))
+        assertFalse(TextMatch.nameMatches("Sign In now", "Sign In", exact = true))
+        assertFalse(TextMatch.nameMatches(null, "Sign In", exact = true))
+    }
+
+    @Test
+    fun `case folding ignores the default locale`() {
+        val saved = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr"))
+            assertTrue(TextMatch.nameMatches("LOGIN", "login", exact = false))
+        } finally {
+            java.util.Locale.setDefault(saved)
+        }
+    }
 }

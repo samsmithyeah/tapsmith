@@ -72,6 +72,32 @@ expect("concatenated pattern: last child", matches(concat, "Intro,\u{00A0}Welcom
 expect("concatenated pattern: multi-line label", matches(concat, "Intro\nline, Welcome to Expo"))
 expect("concatenated pattern: not a partial child", !matches(concat, "Intro, Welcome to Expo now"))
 
+// Accessible-name matching (PILOT-549): Playwright's getByRole `name` is a
+// case-insensitive substring by default; `exact` is case-sensitive and whole.
+expect("name: case-insensitive", TextMatch.nameMatches("SIGN IN", "Sign In", exact: false))
+expect("name: substring", TextMatch.nameMatches("Explore the app", "explor", exact: false))
+expect("name: normalized substring", TextMatch.nameMatches("Welcome to\u{00A0}Expo", "TO  expo", exact: false))
+expect("name: not a substring", !TextMatch.nameMatches("Sign out", "Sign in", exact: false))
+expect("name: substring of a concatenated label", TextMatch.nameMatches("Intro, Sign In, More", "sign in", exact: false))
+expect("name exact: normalized equality", TextMatch.nameMatches(" Sign\u{00A0}In ", "Sign In", exact: true))
+expect("name exact: case-sensitive", !TextMatch.nameMatches("SIGN IN", "Sign In", exact: true))
+expect("name exact: whole string", !TextMatch.nameMatches("Sign In now", "Sign In", exact: true))
+expect("name exact: still a child of a concatenated label",
+       TextMatch.nameMatches("Intro, Sign In, More", "Sign In", exact: true))
+expect("name exact: child label is case-sensitive",
+       !TextMatch.nameMatches("Intro, SIGN IN, More", "Sign In", exact: true))
+
+// The XCUIElement-query pattern accepts the same labels as nameMatches.
+let ci = TextMatch.nameQueryPattern("Sign In", exact: false)
+expect("name pattern: case-insensitive", matches(ci, "SIGN IN"))
+expect("name pattern: substring", matches(ci, "Please sign\u{00A0}in now"))
+expect("name pattern: multi-line label", matches(ci, "Intro\nsign in"))
+expect("name pattern: not a substring", !matches(ci, "Sign out"))
+let ex = TextMatch.nameQueryPattern("Sign In", exact: true)
+expect("name exact pattern: child label", matches(ex, "Intro, Sign In"))
+expect("name exact pattern: case-sensitive", !matches(ex, "SIGN IN"))
+expect("name exact pattern: not a partial", !matches(ex, "Sign In now"))
+
 if failures > 0 {
     print("\(failures) failure(s)")
     exit(1)

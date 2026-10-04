@@ -11,9 +11,29 @@
 
 // ─── Types ───
 
+/** Options for `getByRole()` on a device or element handle. */
+export interface RoleLocatorOptions {
+  /**
+   * Filter by accessible name. A case-insensitive substring match by default,
+   * like Playwright; whitespace is normalized on both sides.
+   */
+  name?: string;
+  /** Match `name` case-sensitively and as the whole string. */
+  exact?: boolean;
+  checked?: boolean;
+  disabled?: boolean;
+  selected?: boolean;
+  expanded?: boolean;
+}
+
 export interface RoleSelectorValue {
   role: string;
   name: string;
+  /**
+   * Match `name` case-sensitively and as the whole string. Absent is
+   * Playwright's default: a case-insensitive substring match (PILOT-549).
+   */
+  exact?: boolean;
   checked?: boolean;
   disabled?: boolean;
   selected?: boolean;
@@ -69,6 +89,7 @@ export function selectorToProto(selector: Selector): Record<string, unknown> {
     case 'role': {
       const rv = selector.kind.value;
       const roleProto: Record<string, unknown> = { role: rv.role, name: rv.name };
+      if (rv.exact) roleProto.exact = true;
       if (rv.checked !== undefined) roleProto.checked = rv.checked;
       if (rv.disabled !== undefined) roleProto.disabled = rv.disabled;
       if (rv.selected !== undefined) roleProto.selected = rv.selected;
@@ -116,7 +137,7 @@ export function selectorToProto(selector: Selector): Record<string, unknown> {
 
 /**
  * Render a Selector as the user-facing locator call that produced it, e.g.
- * `getByText("Sign in")` or `getByRole("button", "Submit")`. Used in error
+ * `getByText("Sign in")` or `getByRole("button", { name: "Submit" })`. Used in error
  * messages and trace output.
  *
  * @internal
@@ -126,7 +147,10 @@ export function formatSelector(sel: Selector): string {
   switch (sel.kind.type) {
     case 'role': {
       const rv = sel.kind.value;
-      base = rv.name ? `getByRole("${rv.role}", "${rv.name}")` : `getByRole("${rv.role}")`;
+      // Rendered as the call the user wrote, so it can be pasted back as code.
+      base = rv.name
+        ? `getByRole(${JSON.stringify(rv.role)}, { name: ${JSON.stringify(rv.name)}${rv.exact ? ', exact: true' : ''} })`
+        : `getByRole(${JSON.stringify(rv.role)})`;
       break;
     }
     case 'text': base = `getByText("${sel.kind.value}", { exact: true })`; break;
@@ -162,13 +186,16 @@ function assertStringArg(value: unknown, what: string): void {
 }
 
 /** @internal */
-export function _role(roleName: string, options?: { name?: string; checked?: boolean; disabled?: boolean; selected?: boolean; expanded?: boolean }): Selector {
+export function _role(roleName: string, options?: RoleLocatorOptions): Selector {
   if (options?.name !== undefined) assertStringArg(options.name, 'getByRole() option `name`');
+  const name = options?.name ?? '';
   return makeSelector({
     type: 'role',
     value: {
       role: roleName,
-      name: options?.name ?? '',
+      name,
+      // `exact` only qualifies a name; Playwright ignores it without one.
+      ...(options?.exact && name ? { exact: true } : {}),
       checked: options?.checked,
       disabled: options?.disabled,
       selected: options?.selected,
