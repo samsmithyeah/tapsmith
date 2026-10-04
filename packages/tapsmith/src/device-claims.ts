@@ -140,10 +140,18 @@ function readSessionEnv(env: NodeJS.ProcessEnv): SessionIdentity | undefined {
   }
 }
 
-/** `ps -o lstart=` for `pid`, or undefined when it cannot be read. */
+/**
+ * `ps -o lstart=` for `pid`, or undefined when it cannot be read.
+ *
+ * Read in the C locale and UTC: the token is compared across sessions, and an
+ * MCP server spawned with a pared-down environment would otherwise print the
+ * same start time in another language or time zone than the shell that
+ * recorded it — and take a live session's device as stale.
+ */
 function processStartToken(pid: number): string | undefined {
   try {
     const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 5_000,
@@ -434,16 +442,6 @@ export class DaemonClaimedError extends Error {
     );
     this.name = 'DaemonClaimedError';
   }
-}
-
-/** Refuse when the daemon at `address` is another live session's. */
-export function assertDaemonNotHeldElsewhere(
-  address: string,
-  session: SessionIdentity = currentSession(),
-  opts: ClaimOptions = {},
-): void {
-  const holder = daemonHeldElsewhere(address, session, opts);
-  if (holder) throw new DaemonClaimedError(address, holder);
 }
 
 /** `` `tapsmith test --ui` (pid 4242) in /work/app, since 10:41:03 `` */

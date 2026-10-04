@@ -95,6 +95,25 @@ describe('device claims', () => {
     expect(claimDevice('emulator-5554', session(), { env }).ok).toBe(true);
   });
 
+  it('keeps a live holder live whatever locale or time zone the checking session runs in', () => {
+    const saved = { TZ: process.env.TZ, LC_ALL: process.env.LC_ALL };
+    try {
+      process.env.TZ = 'Asia/Tokyo';
+      process.env.LC_ALL = 'de_DE.UTF-8';
+      const holder = ensureClaimSession('tapsmith mcp-server', { env: {}, project: '/p', exitHook: false });
+      expect(holder.startToken).toBeDefined();
+      claimDevice('emulator-5554', holder, { env });
+      process.env.TZ = 'UTC';
+      process.env.LC_ALL = 'C';
+      expect(claimDevice('emulator-5554', session(), { env }).ok).toBe(false);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
   it('reports stale claims as not live', () => {
     claimDevice('emulator-5554', session({ pid: deadPid() }), { env });
     expect(listDeviceClaims({ env })[0].live).toBe(false);
