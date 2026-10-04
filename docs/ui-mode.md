@@ -60,7 +60,7 @@ Picking works even while the mirror is locked (it's read-only), and it works aga
 
 The UI server exposes a [Streamable HTTP](https://modelcontextprotocol.io/) MCP endpoint that AI coding agents (Claude Code, Cursor, Codex, etc.) can connect to. This gives agents 16 tools for test discovery, execution, result browsing, device interaction, and watch mode control -- all sharing the same session as the UI.
 
-The MCP endpoint listens on its own port, not the UI's: `http://127.0.0.1:9274/mcp` by default, or a free port when 9274 is taken (two UI sessions at once, say). The terminal prints the address as `MCP ready at …` when UI mode starts. To connect an agent:
+The MCP endpoint listens on its own port, not the UI's: `http://127.0.0.1:9274/mcp` by default, or a free port when 9274 is taken (two UI sessions at once, say). The terminal prints the address as `MCP ready at …` when UI mode starts; the commands below use the default, so substitute the printed address if it differs. To connect an agent:
 
 ```bash
 claude mcp add tapsmith --transport http http://localhost:9274/mcp
