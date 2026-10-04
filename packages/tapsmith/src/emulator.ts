@@ -1396,6 +1396,38 @@ const WRITABLE_INSTANCE_RUNNING = /^(?:ERROR|FATAL)\b.*another emulator instance
 /** How many lines of the emulator's output an early-exit message quotes. */
 const EXIT_OUTPUT_LINES = 3;
 
+/** The non-empty lines of an emulator log. */
+function logLines(log: string): string[] {
+  return log.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+}
+
+/** The last few log lines, without their `LEVEL |` prefix or a trailing full stop. */
+function quoteLogLines(lines: readonly string[]): string[] {
+  return lines.slice(-EXIT_OUTPUT_LINES).map((line) => line.replace(/^[A-Z_]+\s*\|\s*/, '').replace(/\.+$/, ''));
+}
+
+/**
+ * A launched emulator still running, but not booted within the boot timeout,
+ * with the emulator's last output and where the rest of it is (PILOT-512): a
+ * launch stuck at a prompt says so in its log, and nowhere else.
+ */
+export function describeBootTimeout(
+  timeout: EmulatorBootTimeoutError,
+  emu: { logPath: string | undefined },
+  readLog: (file: string) => string = (file) => fs.readFileSync(file, 'utf-8'),
+): string {
+  const base = timeout.message.replace(/\.$/, '');
+  if (emu.logPath === undefined) return `${base}.`;
+  let quoted: string[] = [];
+  try {
+    quoted = quoteLogLines(logLines(readLog(emu.logPath)));
+  } catch {
+    // The log has gone: name where it was.
+  }
+  const detail = quoted.length > 0 ? ` Its last output: ${quoted.join(' / ')}.` : '';
+  return `${base}.${detail} Full output: ${emu.logPath}`;
+}
+
 /**
  * Why a launched emulator failed to boot, from how its process ended and
  * what it wrote to its log (PILOT-417) — so the user sees the emulator's own
@@ -1422,10 +1454,9 @@ export function describeEmulatorExit(
       + 'and the emulator will not start a second instance beside it. '
       + 'Close that emulator, or point `avd` at another AVD.';
   }
-  const lines = log.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+  const lines = logLines(log);
   const errors = lines.filter((line) => /^(ERROR|FATAL)\b/.test(line));
-  const quoted = (errors.length > 0 ? errors : lines).slice(-EXIT_OUTPUT_LINES)
-    .map((line) => line.replace(/^[A-Z_]+\s*\|\s*/, '').replace(/\.+$/, ''));
+  const quoted = quoteLogLines(errors.length > 0 ? errors : lines);
   const how = exit.code !== null ? `exit code ${exit.code}` : `signal ${exit.signal ?? 'unknown'}`;
   const detail = quoted.length > 0 ? `: ${quoted.join(' / ')}` : '';
   const where = emu.logPath !== undefined ? ` Full output: ${emu.logPath}` : '';
@@ -1671,6 +1702,9 @@ const execFileAsync = promisify(execFile);
 /** Thrown by `waitForBoot` when its `signal` aborts the wait. */
 class BootWaitAborted extends Error {}
 
+/** Thrown by `waitForBoot` when the emulator has not booted within its timeout. */
+export class EmulatorBootTimeoutError extends Error {}
+
 /**
  * Wait for an emulator to finish booting.
  * Polls `adb -s <serial> shell getprop sys.boot_completed` until it returns "1".
@@ -1723,7 +1757,7 @@ export async function waitForBoot(
     await sleep(pollInterval);
   }
 
-  throw new Error(`Emulator ${serial} did not boot within ${timeoutMs / 1000}s`);
+  throw new EmulatorBootTimeoutError(`Emulator ${serial} did not boot within ${timeoutMs / 1000}s`);
 }
 
 export async function waitForDeviceStability(
@@ -2187,7 +2221,9 @@ export async function provisionEmulators(opts: {
       } catch (err) {
         if (emu === undefined) throw err;
         badAvds.add(candidateAvd);
-        const message = err instanceof Error ? err.message : String(err);
+        const message = err instanceof EmulatorBootTimeoutError
+          ? describeBootTimeout(err, emu)
+          : err instanceof Error ? err.message : String(err);
         logProgress(
           `Skipping launched emulator ${emu.serial} (${candidateAvd}): ${message.replace(/\.$/, '')}.`,
           'warning',

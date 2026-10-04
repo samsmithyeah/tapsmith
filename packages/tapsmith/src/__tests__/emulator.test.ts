@@ -51,6 +51,8 @@ import {
   reserveEmulatorPort,
   emulatorsBootingThisProcess,
   stopLaunchedEmulator,
+  describeBootTimeout,
+  EmulatorBootTimeoutError,
   EMULATOR_BOOT_TIMEOUT_MS,
 } from '../emulator.js';
 import lockfile from 'proper-lockfile';
@@ -1550,6 +1552,68 @@ describe('launchEmulator process and early exit', () => {
     expect(exit.kind).toBe('spawn-error');
     expect(describeEmulatorExit(exit, emu, { command: missing, found: false, tried: [missing, '`emulator` on PATH'] }))
       .toBe(emulatorNotFoundMessage([missing, '`emulator` on PATH']));
+  });
+});
+
+describe('describeBootTimeout (PILOT-512)', () => {
+  const timeout = new EmulatorBootTimeoutError('Emulator emulator-5554 did not boot within 120s');
+
+  it('quotes the last lines of the emulator output and names the log', () => {
+    const log = [
+      'INFO         | Android emulator version 36.6.11.0',
+      'WARNING      | Metrics will turn into a one-time blocking prompt',
+      '',
+      'INFO         | Showing crashdialog to get consent.',
+      '',
+    ].join('\n');
+    expect(describeBootTimeout(timeout, { logPath: '/tmp/tapsmith-emulator-5554-1-1.log' }, () => log)).toBe(
+      'Emulator emulator-5554 did not boot within 120s. Its last output: Android emulator version 36.6.11.0 / '
+      + 'Metrics will turn into a one-time blocking prompt / Showing crashdialog to get consent. '
+      + 'Full output: /tmp/tapsmith-emulator-5554-1-1.log',
+    );
+  });
+
+  it('names the log alone when it is empty', () => {
+    expect(describeBootTimeout(timeout, { logPath: '/tmp/x.log' }, () => '\n'))
+      .toBe('Emulator emulator-5554 did not boot within 120s. Full output: /tmp/x.log');
+  });
+
+  it('says only the timeout when there is no log', () => {
+    expect(describeBootTimeout(timeout, { logPath: undefined }, () => { throw new Error('unread'); }))
+      .toBe('Emulator emulator-5554 did not boot within 120s.');
+    expect(describeBootTimeout(timeout, { logPath: '/gone.log' }, () => { throw new Error('ENOENT'); }))
+      .toBe('Emulator emulator-5554 did not boot within 120s. Full output: /gone.log');
+  });
+
+  it('is what a launch that never boots warns with', async () => {
+    const warnings: string[] = [];
+    const emu = makeLaunchedEmulator('Pixel', 5554);
+    fs.writeFileSync(emu.logPath!, 'INFO         | Showing crashdialog to get consent.\n');
+    try {
+      await provisionEmulators(
+        {
+          existingSerials: [], workers: 1, avd: 'Pixel', launchOptions: undefined,
+          onProgress: (message, level) => { if (level === 'warning') warnings.push(message); },
+        },
+        {
+          ...unprobedPorts,
+          resolveEmulatorBinary: foundEmulator,
+          listAdbDevices: () => [],
+          listAvds: () => ['Pixel'],
+          getRunningAvdName: () => undefined,
+          launchEmulator: () => emu,
+          waitForBoot: async () => { throw timeout; },
+          probeDeviceHealth: (serial) => ({ serial, healthy: true }),
+          waitForDeviceStability: async (serial) => ({ serial, healthy: true }),
+          killEmulator: vi.fn(),
+          stopLaunchedEmulator: async () => true,
+        },
+      );
+    } finally {
+      fs.rmSync(emu.logPath!, { force: true });
+    }
+    expect(warnings[0]).toBe('Skipping launched emulator emulator-5554 (Pixel): Emulator emulator-5554 did not boot within 120s. '
+      + `Its last output: Showing crashdialog to get consent. Full output: ${emu.logPath}.`);
   });
 });
 
