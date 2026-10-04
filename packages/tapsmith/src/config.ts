@@ -548,6 +548,10 @@ function omitUndefined<T extends object>(raw: T): T {
  * Define a Tapsmith configuration. Merges the provided overrides with defaults.
  */
 export function defineConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
+  // Every problem at once, as loadConfig reports them: the per-key validators
+  // below stop at the first, and a typo'd key would only surface after it.
+  const issues = isPlainObject(overrides) ? configShapeIssues(overrides) : [];
+  if (issues.length > 0) throw new ConfigValidationError(issues);
   const clean = omitUndefined(overrides);
   const merged = applyConfigDefaults({ ...DEFAULT_CONFIG, ...clean }, clean);
   withExplicitRootDir(merged, clean.rootDir !== undefined);
@@ -861,11 +865,12 @@ export function validateAppResetOptions(
 // tables are typed against `TapsmithConfig`, `UseOptions` and `ProjectConfig`,
 // so a key added to one of them does not compile until it has a check here.
 
-/** Checks one value; returns the issue, or undefined when the value is fine. `name` is the key's full path. */
-type KeyCheck = (value: unknown, name: string) => string | undefined;
+/** Checks one value; returns its issues, or undefined when the value is fine. `name` is the key's full path. */
+type KeyCheck = (value: unknown, name: string) => string | string[] | undefined;
 
+/** An object literal (or `Object.create(null)`): not an array, RegExp, Promise or function. */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) && !isRegExp(value);
+  return Object.prototype.toString.call(value) === '[object Object]' && typeof value === 'object';
 }
 
 function isRegExp(value: unknown): value is RegExp {
@@ -918,6 +923,12 @@ const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Num
 const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string');
 
 const aString = check((v) => typeof v === 'string', 'a string');
+/**
+ * An optional path, name or serial. `null` means unset, as it always has
+ * downstream: `device: process.env.DEVICE ?? null`. Other kinds of option
+ * refuse `null` — their validators and defaults never accepted it.
+ */
+const optionalString = check((v) => v === null || typeof v === 'string', 'a string');
 const aBoolean = check((v) => typeof v === 'boolean', 'a boolean');
 const nonNegativeMs = check((v) => isFiniteNumber(v) && v >= 0, 'a non-negative number of milliseconds');
 const positiveMs = check((v) => isFiniteNumber(v) && v > 0, 'a positive number of milliseconds');
@@ -943,7 +954,8 @@ function oneOf(values: readonly string[]): KeyCheck {
 function isReporterDescription(v: unknown): boolean {
   if (typeof v === 'string') return true;
   return Array.isArray(v) && typeof v[0] === 'string'
-    && (v.length === 1 || (v.length === 2 && isPlainObject(v[1])));
+    // `['html', CI ? { open: 'never' } : undefined]`: every reporter defaults its options.
+    && (v.length === 1 || (v.length === 2 && (v[1] == null || isPlainObject(v[1]))));
 }
 
 /**
@@ -964,41 +976,89 @@ function delegated(key: string, validate: (options: Partial<TapsmithConfig>) => 
   };
 }
 
-const UI_KEYS = ['prepareBetweenRuns', 'prepareDelayMs'] as const satisfies readonly (keyof NonNullable<TapsmithConfig['ui']>)[];
+/**
+ * Check an option object's keys against `known` (unknown keys, with a
+ * suggestion), then its values with `values`. Typed records make the key
+ * lists complete: a new nested option does not compile until it is listed.
+ */
+function optionObject(known: Readonly<Record<string, true>>, values?: KeyCheck): KeyCheck {
+  const keys = Object.keys(known);
+  return (value, name) => {
+    if (!isPlainObject(value)) return `${name} must be an object (got ${describeValue(value)})`;
+    const issues = Object.keys(value)
+      .filter((key) => !Object.prototype.hasOwnProperty.call(known, key))
+      .map((key) => unknownKey(key, `${name}.`, keys));
+    const valueIssue = values?.(value, name);
+    return [...issues, ...(valueIssue === undefined ? [] : [valueIssue].flat())];
+  };
+}
+
+const UI_KEYS: { readonly [K in keyof NonNullable<TapsmithConfig['ui']>]-?: true } = {
+  prepareBetweenRuns: true,
+  prepareDelayMs: true,
+};
+
+const TRACE_KEYS: { readonly [K in keyof TraceConfig]-?: true } = {
+  mode: true,
+  screenshots: true,
+  snapshots: true,
+  sources: true,
+  attachments: true,
+  network: true,
+  networkHosts: true,
+  networkIgnoreHosts: true,
+  networkPassthroughHosts: true,
+  networkHttpPorts: true,
+  deviceLogs: true,
+  daemonLogs: true,
+};
+
+const VIDEO_KEYS: { readonly [K in keyof VideoConfig]-?: true } = {
+  mode: true,
+  size: true,
+};
+
+/** `trace` / `video`: the mode in either form, plus the object form's keys. */
+function recordingOption(key: 'trace' | 'video', known: Readonly<Record<string, true>>): KeyCheck {
+  const mode = delegated(key, (o) => validateRecordingModes(o));
+  const object = optionObject(known);
+  return (value, name) => {
+    const modeIssue = mode(value, name);
+    if (modeIssue !== undefined || !isPlainObject(value)) return modeIssue;
+    return object(value, name);
+  };
+}
 
 const ROOT_CHECKS: { readonly [K in keyof TapsmithConfig]-?: KeyCheck } = {
   platform: oneOf(['android', 'ios']),
-  apk: aString,
-  app: aString,
-  activity: aString,
+  apk: optionalString,
+  app: optionalString,
+  activity: optionalString,
   timeout: nonNegativeMs,
   retries: nonNegativeInteger,
   screenshot: oneOf(['always', 'only-on-failure', 'never']),
   testMatch: globs,
   daemonAddress: aString,
-  daemonBin: aString,
-  device: aString,
+  daemonBin: optionalString,
+  device: optionalString,
   devices: delegated('devices', (o) => validateDevicesOption(o)),
   deviceStrategy: oneOf(['prefer-connected', 'avd-only']),
   rootDir: aString,
   outputDir: aString,
-  package: aString,
-  agentApk: aString,
-  agentTestApk: aString,
-  iosXctestrun: aString,
-  resetAppDeepLink: aString,
+  package: optionalString,
+  agentApk: optionalString,
+  agentTestApk: optionalString,
+  iosXctestrun: optionalString,
+  resetAppDeepLink: optionalString,
   resetAppWaitMs: nonNegativeMs,
   appReset: delegated('appReset', (o) => validateAppResetOptions(o)),
   appResetScope: delegated('appResetScope', (o) => validateAppResetOptions(o)),
   appResetColdEvery: delegated('appResetColdEvery', (o) => validateAppResetOptions(o)),
-  ui: (value, name) => {
-    if (!isPlainObject(value)) return `${name} must be an object (got ${describeValue(value)})`;
-    return undefined;
-  },
+  ui: optionObject(UI_KEYS, delegated('ui', (o) => validateUiOptions(o))),
   telemetry: aBoolean,
   typingDelay: nonNegativeMs,
   doubleTapInterval: positiveMs,
-  simulator: aString,
+  simulator: optionalString,
   reporter: check(
     (v) => isReporterDescription(v) || (Array.isArray(v) && v.every(isReporterDescription)),
     'a reporter name, a [name, options] tuple, or an array of them',
@@ -1010,12 +1070,12 @@ const ROOT_CHECKS: { readonly [K in keyof TapsmithConfig]-?: KeyCheck } = {
     '{ current, total } with 1 <= current <= total',
   ),
   launchEmulators: aBoolean,
-  avd: aString,
+  avd: optionalString,
   emulatorLaunchOptions: delegated('emulatorLaunchOptions', (o) => validateEmulatorLaunchOptions(o)),
-  trace: delegated('trace', (o) => validateRecordingModes(o)),
-  video: delegated('video', (o) => validateRecordingModes(o)),
+  trace: recordingOption('trace', TRACE_KEYS),
+  video: recordingOption('video', VIDEO_KEYS),
   projects: check(Array.isArray, 'an array of project objects'),
-  baseURL: aString,
+  baseURL: optionalString,
   extraHTTPHeaders: check(
     (v) => isPlainObject(v) && Object.values(v).every((h) => typeof h === 'string'),
     'an object of string header values',
@@ -1052,7 +1112,7 @@ const USE_CHECKS: { readonly [K in keyof UseOptions]-?: KeyCheck } = {
   doubleTapInterval: ROOT_CHECKS.doubleTapInterval,
   baseURL: ROOT_CHECKS.baseURL,
   extraHTTPHeaders: ROOT_CHECKS.extraHTTPHeaders,
-  appState: aString,
+  appState: optionalString,
 };
 
 const PROJECT_CHECKS: { readonly [K in keyof ProjectConfig]-?: KeyCheck } = {
@@ -1065,9 +1125,6 @@ const PROJECT_CHECKS: { readonly [K in keyof ProjectConfig]-?: KeyCheck } = {
   grep: regExps,
   grepInvert: regExps,
 };
-
-/** Keys whose value must be present when set: a `null` would replace the default the rest of Tapsmith relies on. */
-const REQUIRED_ROOT_KEYS = new Set(Object.keys(DEFAULT_CONFIG));
 
 /** What to say about a root key Tapsmith does not know, when a near-miss suggestion would not help. */
 const ROOT_KEY_HINTS: Record<string, string> = {
@@ -1088,17 +1145,16 @@ function checkKeys(
   prefix: string,
   issues: string[],
   unknown: (key: string) => string,
-  required: ReadonlySet<string> = new Set(),
 ): void {
   for (const [key, value] of Object.entries(object)) {
     if (!Object.prototype.hasOwnProperty.call(checks, key)) {
       issues.push(unknown(key));
       continue;
     }
-    // Unset. `null` too for an optional key: `device: process.env.DEVICE ?? null`.
-    if (value === undefined || (value === null && !required.has(key))) continue;
+    // Unset. `null` is a value: each check says whether it accepts it.
+    if (value === undefined) continue;
     const issue = checks[key](value, prefix + key);
-    if (issue) issues.push(issue);
+    if (issue !== undefined) issues.push(...[issue].flat());
   }
 }
 
@@ -1119,7 +1175,7 @@ function checkProjectUse(use: Record<string, unknown>, prefix: string, issues: s
       return `${name} can't be set per project; set it at the top level of the config`;
     }
     return unknownKey(key, `${prefix}use.`, useKeys);
-  }, REQUIRED_ROOT_KEYS);
+  });
 }
 
 /**
@@ -1131,15 +1187,7 @@ function checkProjectUse(use: Record<string, unknown>, prefix: string, issues: s
 function configShapeIssues(config: Record<string, unknown>): string[] {
   const issues: string[] = [];
   const rootKeys = Object.keys(ROOT_CHECKS);
-  checkKeys(config, ROOT_CHECKS, '', issues, (key) => unknownKey(key, '', rootKeys, ROOT_KEY_HINTS[key]), REQUIRED_ROOT_KEYS);
-
-  if (isPlainObject(config.ui)) {
-    for (const key of Object.keys(config.ui)) {
-      if (!(UI_KEYS as readonly string[]).includes(key)) issues.push(unknownKey(key, 'ui.', UI_KEYS));
-    }
-    const uiIssue = delegated('ui', (o) => validateUiOptions(o))(config.ui, 'ui');
-    if (uiIssue) issues.push(uiIssue);
-  }
+  checkKeys(config, ROOT_CHECKS, '', issues, (key) => unknownKey(key, '', rootKeys, ROOT_KEY_HINTS[key]));
 
   if (Array.isArray(config.projects)) {
     const projectKeys = Object.keys(PROJECT_CHECKS);
@@ -1150,9 +1198,7 @@ function configShapeIssues(config: Record<string, unknown>): string[] {
         return;
       }
       // Required, so checked even when absent.
-      if (project.name === undefined || project.name === null) {
-        issues.push(PROJECT_CHECKS.name(project.name, `${prefix}name`) as string);
-      }
+      if (project.name === undefined) issues.push(`${prefix}name must be a non-empty string (got undefined)`);
       checkKeys(project, PROJECT_CHECKS, prefix, issues, (key) => unknownKey(key, prefix, projectKeys));
       if (isPlainObject(project.use)) checkProjectUse(project.use, prefix, issues);
     });

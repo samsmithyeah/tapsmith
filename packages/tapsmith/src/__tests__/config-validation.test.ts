@@ -179,10 +179,48 @@ describe('config validation at load (PILOT-552)', () => {
       );
     });
 
-    it('treats null as unset for an optional key', async () => {
+    it('treats null as unset for an optional path, name or serial', async () => {
       // `device: process.env.DEVICE ?? null` has always meant "no pin".
-      writeConfig('export default { device: null, avd: null, platform: "ios" }\n');
+      writeConfig('export default { device: null, avd: null, apk: null, simulator: null, platform: "ios" }\n');
       await expect(loadConfig(root)).resolves.toMatchObject({ platform: 'ios' });
+    });
+
+    // Their validators and defaults never accepted null: say so at load,
+    // naming the file, rather than crash or throw later without it.
+    it.each([
+      ['ui', 'ui must be an object (got null)'],
+      ['telemetry', 'telemetry must be a boolean (got null)'],
+      ['appReset', "appReset must be one of 'auto'"],
+      ['devices', 'devices must be a positive integer'],
+      ['emulatorLaunchOptions', 'emulatorLaunchOptions must be an object (got null)'],
+      ['platform', "platform must be 'android' or 'ios' (got null)"],
+      ['timeout', 'timeout must be a non-negative number of milliseconds (got null)'],
+    ])('rejects %s: null at load', async (key, expected) => {
+      const err = await loadError(`{ ${key}: null }`);
+      expect(err.message).toContain(expected);
+      expect(err.configPath).toBe(path.join(root, 'tapsmith.config.mjs'));
+    });
+
+    it('rejects a null in a project `use` at load, not at project resolution', async () => {
+      expect((await loadError('{ projects: [{ name: "p", use: { appReset: null, platform: null } }] }')).message)
+        .toMatch(/projects\[0\]\.use\.appReset must be one of[\s\S]*projects\[0\]\.use\.platform must be 'android' or 'ios' \(got null\)/);
+    });
+
+    it('accepts a reporter tuple whose options are left undefined', async () => {
+      // `['html', CI ? { open: 'never' } : undefined]`: every reporter defaults its options.
+      writeConfig('export default { reporter: [["html", undefined], ["json", null]] }\n');
+      await expect(loadConfig(root)).resolves.toBeTruthy();
+    });
+
+    it('checks the keys of the trace and video object forms', async () => {
+      const err = await loadError('{ trace: { mode: "on", screenshot: false }, video: { mode: "on", sizes: {} } }');
+      expect(err.message).toContain("unknown option 'trace.screenshot' (did you mean 'trace.screenshots'?)");
+      expect(err.message).toContain("unknown option 'video.sizes' (did you mean 'video.size'?)");
+    });
+
+    it('checks trace keys in a project `use` too', async () => {
+      expect((await loadError('{ projects: [{ name: "p", use: { trace: { mode: "on", netwrok: true } } }] }')).message)
+        .toContain("unknown option 'projects[0].use.trace.netwrok' (did you mean 'projects[0].use.trace.network'?)");
     });
 
     it('accepts every valid shape', async () => {
@@ -292,6 +330,14 @@ describe('config validation at load (PILOT-552)', () => {
       );
     });
 
+    it('must not be a promise', async () => {
+      // An async config would otherwise pass as an empty object and run on the defaults.
+      const file = writeConfig('export default Promise.resolve({ platform: "ios" });\n');
+      await expect(loadConfig(root)).rejects.toThrow(
+        `Invalid config file ${file}: the default export must be a config object (got {})`,
+      );
+    });
+
     it('must be an object', async () => {
       const file = writeConfig('export default () => ({ platform: "ios" });\n');
       await expect(loadConfig(root)).rejects.toThrow(
@@ -308,6 +354,17 @@ describe('config validation at load (PILOT-552)', () => {
 });
 
 describe('defineConfig()', () => {
+  it('reports every problem at once, as loadConfig does', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- exercising the runtime guard against untyped config files
+    const err = (() => { try { defineConfig({ timout: 5, platform: 'iOS', appReset: 'cold' } as any); } catch (e) { return e; } })();
+    expect(isConfigValidationError(err)).toBe(true);
+    expect((err as ConfigValidationError).issues).toEqual([
+      "unknown option 'timout' (did you mean 'timeout'?)",
+      "platform must be 'android' or 'ios' (got \"iOS\"; did you mean 'ios'?)",
+      "appReset must be one of 'auto', 'clear', 'restart', 'warm', 'none' (got \"cold\")",
+    ]);
+  });
+
   it('throws a ConfigValidationError for its own checks, keeping the "config:" message', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- exercising the runtime guard against untyped config files
     const err = (() => { try { defineConfig({ appReset: 'cold' as any }); } catch (e) { return e; } })();
