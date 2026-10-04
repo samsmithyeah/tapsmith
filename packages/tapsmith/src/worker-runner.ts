@@ -25,6 +25,7 @@ import {
   configFromSerialized,
 } from './worker-protocol.js';
 import { ensureSessionReady } from './session-preflight.js';
+import { currentSession } from './device-claims.js';
 import {
   closeDeviceSession,
   sessionsForRun,
@@ -79,6 +80,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
   ];
 
   sessions = await openDeviceGroup(specs, config, {
+    claimSession: currentSession(),
     label: `Worker ${workerId}`,
     forceInstall: msg.forceInstall,
     launchPhase: 'worker startup launch',

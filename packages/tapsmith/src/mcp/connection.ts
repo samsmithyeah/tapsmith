@@ -13,6 +13,15 @@ import { uiPortFilePath, allUiPortFiles, mcpDaemonRegistryPath } from './port-fi
 import { openDaemonLog, readDaemonLogSince } from './daemon-log.js';
 import { awaitDaemonStart, daemonStartFailure, spawnDaemonBinary, type DaemonStartFailed } from '../daemon-start.js';
 import { withDetail } from '../error-detail.js';
+import {
+  DaemonClaimedError,
+  DeviceClaimedError,
+  claimDeviceOrThrow,
+  currentSession,
+  daemonHeldElsewhere,
+  heldDevicesNote,
+  withoutHeldDevices,
+} from '../device-claims.js';
 
 const DEFAULT_ADDRESS = 'localhost:50051';
 
@@ -577,6 +586,31 @@ export function discoverySelectsDevice(opts: { uiMode: boolean }): boolean {
  */
 let _discoveryFailures: string[] = [];
 
+/**
+ * Drop the daemons another live Tapsmith session is driving a device through
+ * (PILOT-381). Adopting one — the default `localhost:50051` fallback found
+ * another worktree's daemon this way — let this session restart that session's
+ * agent and repoint its device. Judged by the daemon's *active* device, not its
+ * address alone: a port a dead daemon left can be reused by an unrelated one.
+ */
+async function withoutOtherSessionsDaemons<T extends { client: TapsmithGrpcClient; address: string }>(
+  live: T[],
+): Promise<T[]> {
+  const session = currentSession();
+  const kept = await Promise.all(live.map(async (daemon) => {
+    const holder = daemonHeldElsewhere(daemon.address, session);
+    if (!holder) return daemon;
+    const active = await daemon.client.listDevices()
+      .then(({ devices }) => activeDeviceOf(devices))
+      .catch(() => undefined);
+    if (active !== holder.device) return daemon;
+    log(`Ignoring ${daemon.address} — another Tapsmith session is driving ${holder.device} through it`);
+    daemon.client.close();
+    return null;
+  }));
+  return kept.filter((d): d is Awaited<T> => d !== null);
+}
+
 async function discover(): Promise<void> {
   const generation = _sessionGeneration;
   _discoveryFailures = [];
@@ -679,7 +713,7 @@ async function discover(): Promise<void> {
     return results.filter((r): r is LiveDaemon => r !== null);
   };
 
-  let live = await probeAll([...candidates]);
+  let live = await withoutOtherSessionsDaemons(await probeAll([...candidates]));
 
   // 6. Default address — a last resort, and one judged on what answered rather
   // than on how many addresses we had. Skipping it whenever the candidate list
@@ -694,7 +728,7 @@ async function discover(): Promise<void> {
   // to repoint and install this config's agent artifacts on.
   if (live.length === 0 && !pinned && !candidates.has(DEFAULT_ADDRESS)
       && !_uiOwned.has(normalizeDaemonAddress(DEFAULT_ADDRESS))) {
-    live = await probeAll([[DEFAULT_ADDRESS, 'configured']]);
+    live = await withoutOtherSessionsDaemons(await probeAll([[DEFAULT_ADDRESS, 'configured']]));
   }
   // Probing is the liveness check, so this is the moment we know which
   // registered daemons are gone. Drop them rather than re-probing dead ports
@@ -778,7 +812,7 @@ async function discover(): Promise<void> {
     // A device a UI session holds is never preferred: the target's own guard
     // refuses that pin by name.
     conn.preparedDevice = discoverySelectsDevice({ uiMode: _uiMode })
-      ? await setDeviceAndAgent(conn.client, config)
+      ? await setDeviceAndAgent(conn.client, conn.address, config)
       : undefined;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1092,16 +1126,17 @@ async function ensureMemberTarget(
 ): Promise<PlatformTargetMember> {
   const platform = config.platform;
   assertNotHeldByUi(wantedSerial, uiHeldDevices(), name);
+  assertPinNotClaimed(wantedSerial);
   const conn = await startDaemon(platform, name);
   if (!conn) throw new Error(`The session closed while a daemon for group member "${name}" was starting.`);
   const serial = (await pickDevice(conn, platform, wantedSerial, exclude))?.serial;
   if (!serial) {
-    const { serials, unusable } = await visibleDevices(conn, platform);
+    const { serials, all, unusable } = await visibleDevices(conn, platform);
     const visible = serials.filter((s) => !exclude.includes(s));
     discardDaemon(conn);
     await refreshDeviceIndex();
     throw new Error(
-      `${noDeviceMessage(platform, wantedSerial, visible, uiHeldDevices(), 'config', unusable)} (needed for group member "${name}"; `
+      `${noDeviceMessageWithClaims(all, platform, wantedSerial, visible, uiHeldDevices(), 'config', unusable)} (needed for group member "${name}"; `
       + `${exclude.join(', ')} already serve the group's other members)`,
     );
   }
@@ -1133,6 +1168,7 @@ async function ensurePrimaryTarget(
   // starts any daemon: a pinned device another session drives is refused
   // outright, not silently taken over.
   assertNotHeldByUi(wanted, uiHeldDevices(), undefined, pinSource);
+  assertPinNotClaimed(wanted);
 
   const existing = await findConnectionForPlatform(platform, key, wanted, exclude);
   if (existing) {
@@ -1168,13 +1204,13 @@ async function ensurePrimaryTarget(
     // Ask what it *could* see before discarding it, so a config pinning a
     // serial that does not exist is not reported as "no device available"
     // while the device the user is looking at sits there booted.
-    const { serials: visible, unusable } = await visibleDevices(conn, platform);
+    const { serials: visible, all, unusable } = await visibleDevices(conn, platform);
     // A daemon with no device to drive is dead weight: it would sit in the pool
     // and the shared registry, and a second unsatisfiable platform would start
     // yet another one.
     discardDaemon(conn);
     await refreshDeviceIndex();
-    throw new Error(noDeviceMessage(platform, wanted, visible, uiHeldDevices(), pinSource, unusable));
+    throw new Error(noDeviceMessageWithClaims(all, platform, wanted, visible, uiHeldDevices(), pinSource, unusable));
   }
 
   conn.claimedBy = key;
@@ -1201,23 +1237,54 @@ async function ensurePrimaryTarget(
 async function visibleDevices(
   conn: DaemonConnection,
   platform: string | undefined,
-): Promise<{ serials: string[]; unusable: DeviceInfoProto[] }> {
+): Promise<{ serials: string[]; all: string[]; unusable: DeviceInfoProto[] }> {
   try {
     const { devices, unusableDevices } = await conn.client.listDevices();
-    const held = uiHeldDevices();
     const forPlatform = (list: DeviceInfoProto[]) => (platform ? list.filter((d) => d.platform === platform) : list);
+    const all = forPlatform(devices).map((d) => d.serial);
+    const held = heldDevices(all);
     return {
-      serials: forPlatform(devices).map((d) => d.serial).filter((serial) => !held.has(serial)),
+      serials: all.filter((serial) => !held.has(serial)),
+      all,
       unusable: forPlatform(unusableDevices ?? []),
     };
   } catch {
-    return { serials: [], unusable: [] };
+    return { serials: [], all: [], unusable: [] };
   }
 }
 
 /** The devices a running UI session holds — none when this process *is* the UI server, whose devices are its own. */
 function uiHeldDevices(): Set<string> {
   return _uiMode ? new Set() : _uiHeld;
+}
+
+/**
+ * Every device this session must not pick: a running UI session's, and any
+ * another live Tapsmith session has claimed (PILOT-381). The UI server's own
+ * MCP endpoint is the UI session, so its claims are its own.
+ */
+function heldDevices(serials: Iterable<string>): Set<string> {
+  const held = new Set(uiHeldDevices());
+  for (const claim of withoutHeldDevices([...serials], currentSession()).held) held.add(claim.device);
+  return held;
+}
+
+/**
+ * Refuse a pin another live session has claimed, naming it — before a daemon
+ * is started for it, and rather than reporting the pin as "not available".
+ */
+function assertPinNotClaimed(wanted: string | undefined): void {
+  if (!wanted) return;
+  const [holder] = withoutHeldDevices([wanted], currentSession()).held;
+  if (holder) throw new DeviceClaimedError(wanted, holder);
+}
+
+/** The no-device message, plus which devices other sessions hold (there may be the missing ones). */
+function noDeviceMessageWithClaims(
+  candidates: readonly string[],
+  ...args: Parameters<typeof noDeviceMessage>
+): string {
+  return noDeviceMessage(...args) + heldDevicesNote(withoutHeldDevices(candidates, currentSession()).held);
 }
 
 /**
@@ -1414,7 +1481,7 @@ async function pickDevice(
   } catch {
     return undefined;
   }
-  return chooseDevice(devices, { platform, wantedSerial, exclude, heldByUi: uiHeldDevices() });
+  return chooseDevice(devices, { platform, wantedSerial, exclude, heldByUi: heldDevices(devices.map((d) => d.serial)) });
 }
 
 /**
@@ -1487,6 +1554,11 @@ async function prepareTarget(
   // a daemon that already serves this device would tear down a working agent,
   // including one a peer session is mid-run against.
   const wasPointedAt = await currentDevice(conn) ?? conn.preparedDevice;
+  // Never move a daemon another live session is driving its device through,
+  // nor take a device another session holds (PILOT-381).
+  const daemonHolder = daemonHeldElsewhere(conn.address, currentSession());
+  if (daemonHolder && wasPointedAt === daemonHolder.device) throw new DaemonClaimedError(conn.address, daemonHolder);
+  claimDeviceOrThrow(serial, currentSession(), { daemonAddress: conn.address });
   await setDeviceExplained(conn.client, serial);
   const repointed = isRepointing(wasPointedAt, serial);
   // Record the move before starting the agent: `setDevice` has already
@@ -2004,6 +2076,7 @@ function removeConnection(conn: DaemonConnection): void {
 /** Points the daemon at a device and starts its agent; returns that device. */
 async function setDeviceAndAgent(
   client: TapsmithGrpcClient,
+  address: string,
   config: TapsmithConfig | null,
 ): Promise<string | undefined> {
   let serial: string | undefined;
@@ -2014,7 +2087,7 @@ async function setDeviceAndAgent(
     serial = pinned;
   } else {
     const { devices } = await client.listDevices();
-    const held = uiHeldDevices();
+    const held = heldDevices(devices.map((d) => d.serial));
     const free = devices.filter((d) => !held.has(d.serial));
     const best = free.find(d => d.state === 'Active' || d.state === 'online')
       ?? free.find(d => d.state === 'Discovered');
@@ -2026,6 +2099,7 @@ async function setDeviceAndAgent(
     return undefined;
   }
 
+  claimDeviceOrThrow(serial, currentSession(), { daemonAddress: address });
   await setDeviceExplained(client, serial);
   log(`Using device: ${serial}`);
   await startAgentFromConfig(client, config, { serial });

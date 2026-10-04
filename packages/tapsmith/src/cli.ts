@@ -29,6 +29,7 @@ import {
   type DeviceSession,
 } from './device-session.js';
 import type { PreparedState, ResetCapabilities } from './app-reset.js';
+import { currentSession, ensureClaimSession } from './device-claims.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { discoverTestFiles } from './test-file-discovery.js';
 import { resolveTsxBin } from './child-scripts.js';
@@ -673,6 +674,7 @@ async function setupSequentialDevice(
       { name: group[0].name, serial: deviceSerial, daemonAddress },
       cfg,
       {
+        claimSession: currentSession(),
         label: 'Device',
         client,
         forceInstall,
@@ -876,6 +878,7 @@ async function openGroupMembersOnFreshDaemons(
   try {
 
     const sessions = await openDeviceGroup(specs, cfg, {
+      claimSession: currentSession(),
       label: 'Device',
       forceInstall,
       launchPhase: 'startup launch',
@@ -1753,6 +1756,10 @@ async function main(): Promise<void> {
   // forked (the tsx re-exec, workers, watch/MCP run children all inherit it),
   // so every per-file event of this invocation shares one session (PILOT-330).
   ensureSessionEnv();
+  // Likewise the device-claim session (PILOT-381): every process this
+  // invocation forks claims devices as this one session, and this process's
+  // exit releases them.
+  ensureClaimSession(claimSessionCommand(process.argv.slice(2)));
 
   const code = await runCli(process.argv.slice(2), {
     handlers: cliHandlers,
@@ -1763,6 +1770,17 @@ async function main(): Promise<void> {
   });
   // A handler that set process.exitCode itself returns nothing: keep its code.
   if (code !== 0) process.exitCode = code;
+}
+
+/**
+ * How a session is named to other sessions it holds a device against:
+ * `tapsmith test --ui`, `tapsmith mcp-server`. The subcommand and the flags
+ * that say which kind of run it is — nothing else from the command line.
+ */
+function claimSessionCommand(argv: readonly string[]): string {
+  const subcommand = argv.find((a) => !a.startsWith('-'));
+  const modes = argv.filter((a) => a === '--ui' || a === '--watch' || a === '--workers' || a.startsWith('--workers='));
+  return ['tapsmith', ...(subcommand ? [subcommand] : []), ...modes.map((m) => (m.startsWith('--workers') ? '--workers' : m))].join(' ');
 }
 
 async function runTestCommand(args: TestCommandArgs): Promise<void> {

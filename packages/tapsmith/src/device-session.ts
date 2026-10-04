@@ -35,6 +35,7 @@ import {
 import { satisfies, type AppResetPolicy, type PreparedState, type ResetCapabilities } from './app-reset.js';
 import { findDaemonBin } from './daemon-bin.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary, type DaemonStartFailed, type DaemonStartOutcome } from './daemon-start.js';
+import { DaemonClaimedError, claimDeviceOrThrow, daemonHeldElsewhere, type SessionIdentity } from './device-claims.js';
 
 // ─── Types ───
 
@@ -105,6 +106,13 @@ export type DeviceSessionPhaseState = 'start' | 'complete' | 'skip' | 'fail'
 export interface OpenDeviceSessionOptions {
   /** Prefix for error messages and preflight labels, e.g. `Worker 0`. */
   label: string
+  /**
+   * The Tapsmith session this device is opened for (`currentSession()`), which
+   * claims it in the machine-wide registry before selecting it (PILOT-381). A
+   * device or daemon another live session holds is refused, naming the holder.
+   * Required so an embedder cannot open a device without claiming it.
+   */
+  claimSession: SessionIdentity
   onProgress?: (message: string) => void
   /**
    * Step-level progress for embedders with a step UI (the sequential CLI):
@@ -510,6 +518,29 @@ async function prelaunchSimulatorApp(config: TapsmithConfig, serial: string): Pr
 // ─── Session lifecycle ───
 
 /**
+ * Claim `spec.serial` for `session`, refusing when another live session holds
+ * the device, or drives a device through this very daemon.
+ *
+ * The daemon check compares the daemon's *active* device with the other
+ * session's claim: an address alone is not proof, since a port a dead daemon
+ * left behind can be reused by an unrelated, freshly started one.
+ */
+async function claimForSession(
+  client: TapsmithGrpcClient,
+  spec: DeviceSessionSpec,
+  session: SessionIdentity,
+): Promise<void> {
+  const daemonHolder = daemonHeldElsewhere(spec.daemonAddress, session);
+  if (daemonHolder) {
+    const active = await client.listDevices()
+      .then((res) => res.devices.find((d) => d.state === 'Active')?.serial)
+      .catch(() => undefined);
+    if (active === daemonHolder.device) throw new DaemonClaimedError(spec.daemonAddress, daemonHolder);
+  }
+  claimDeviceOrThrow(spec.serial, session, { daemonAddress: spec.daemonAddress });
+}
+
+/**
  * Open a session on one device: connect to its daemon, select the device,
  * wake it, install the app, start the agent and cold-launch (or, with
  * `adopt`, verify what the daemon already holds). Throws with the session
@@ -564,6 +595,8 @@ export async function openDeviceSession(
   };
 
   try {
+    progress(`claiming device ${spec.serial}`);
+    await claimForSession(client, spec, opts.claimSession);
     progress(`selecting device ${spec.serial}`);
     if (opts.refreshDeviceList) await device.listDevices();
     let unreachableSince: number | undefined;
@@ -736,6 +769,9 @@ export async function openDeviceGroup(
   },
 ): Promise<DeviceSession[]> {
   if (specs.length === 0) return [];
+  // Claimed before anything slow (the artifact resolution below may build the
+  // simulator agent): a device another session holds is refused up front.
+  for (const spec of specs) claimDeviceOrThrow(spec.serial, opts.claimSession, { daemonAddress: spec.daemonAddress });
   // The artifacts are resolved once, from the first member, and shared: on
   // iOS the simulator and device agents are different builds, so a group
   // mixing the two would hand one kind the other's xctestrun and fail deep
