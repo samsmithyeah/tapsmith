@@ -448,7 +448,9 @@ instead of waiting for the boot timeout. The most common case is an AVD that is 
 open writable, from Android Studio for example: the emulator will not start a read-only
 instance beside it, so close that emulator or point `avd` at another AVD. If it is still
 running but has not booted by the timeout, the run quotes the last lines of that log and
-gives its path, then stops the emulator.
+gives its path, then stops the emulator (SIGTERM, then SIGKILL). An emulator that will not
+exit even then stays in Tapsmith's record of the emulators it launched, so it is never left
+running untracked.
 
 Tapsmith launches every emulator with `-crash-report-mode never` and `-no-metrics`, so the
 emulator never waits on a crash-report or metrics prompt that nobody will answer.
