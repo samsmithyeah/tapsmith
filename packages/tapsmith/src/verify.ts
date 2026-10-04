@@ -13,6 +13,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { formatJson, jsonError, stripAnsi } from './cli-json.js';
+import { isTapsmithNotInstalledError } from './config.js';
 
 // ─── Pure helpers (unit-tested) ───
 
@@ -154,6 +155,16 @@ function emitError(json: boolean, code: string, message: string, fix?: string): 
   process.exitCode = 1;
 }
 
+
+/**
+ * The fix for a config that could not be loaded: the install command when
+ * the project lacks Tapsmith itself (PILOT-551), else the config.
+ */
+export function configLoadFix(err: unknown): string {
+  if (isTapsmithNotInstalledError(err)) return `Run: ${err.installCommand.display}`;
+  return 'Fix the config problem described above (npx tapsmith doctor --json also reports it)';
+}
+
 export async function runVerify(args: VerifyArgs): Promise<void> {
   try {
     // Fast-fail when no config file exists and no explicit --config was provided.
@@ -175,7 +186,7 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
       // an invalid value: not a missing config, so not `init --yes`, which
       // would refuse to overwrite an existing one.
       emitError(args.json, 'CONFIG_ERROR', `Could not load config: ${err instanceof Error ? err.message : String(err)}`,
-        'Fix the config problem described above (npx tapsmith doctor --json also reports it)');
+        configLoadFix(err));
       return;
     }
 

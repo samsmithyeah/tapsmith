@@ -19,7 +19,7 @@ import { formatJson, jsonError, stripAnsi, type JsonCheck } from './cli-json.js'
 import { avdCaptureSupport, captureAvdFix, scanAvdImageTags, type AvdImageInfo } from './avd-images.js';
 import { parseSimctlDevicesJson, tryExec } from './env-scan.js';
 import { ADB_FIX, androidUnusableDeviceFix, parseAdbDevicesOutput, type AdbDevice } from './adb-devices.js';
-import type { TapsmithConfig } from './config.js';
+import { isTapsmithNotInstalledError, type TapsmithConfig } from './config.js';
 import { emulatorNotFoundMessage, resolveEmulatorBinary, type EmulatorBinary } from './emulator.js';
 
 // ─── ANSI helpers ───
@@ -788,7 +788,16 @@ function checkSystemProxy(report: Reporter): void {
  *
  * @internal — exported for unit testing.
  */
-export function configLoadFailure(message: string): { message: string; hint: string } {
+export function configLoadFailure(err: unknown): { message: string; hint: string } {
+  // A config written by `npx tapsmith init` in a project without Tapsmith
+  // (PILOT-551): the fix is the install, not the config.
+  if (isTapsmithNotInstalledError(err)) {
+    return {
+      message: `tapsmith isn't installed in this project (${err.configPath} imports it)`,
+      hint: `Run: ${err.installCommand.display}`,
+    };
+  }
+  const message = err instanceof Error ? err.message : String(err);
   if (message.startsWith('Config file not found')) {
     return { message, hint: 'Check the -c/--config path' };
   }
@@ -967,7 +976,7 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   try {
     config = await loadConfig(undefined, configFile);
   } catch (err) {
-    const failure = configLoadFailure(err instanceof Error ? err.message : String(err));
+    const failure = configLoadFailure(err);
     fail(report, 'config-load', failure.message, failure.hint);
   }
 

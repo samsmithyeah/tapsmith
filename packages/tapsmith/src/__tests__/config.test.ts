@@ -272,6 +272,60 @@ describe('loadConfig rootDir anchoring', () => {
       expect(out).toEqual({ error: `Failed to load config file ${file}: boom 1`, cause: 'boom 1', runs: 1 });
     });
 
+    // `npx tapsmith init` and a global install write a config importing
+    // `tapsmith` into a project that may not have it. Node's "Cannot find
+    // module 'tapsmith'" (plus tsx's Require stack) told nobody what to do
+    // (PILOT-551).
+    describe('a config importing tapsmith in a project without it', () => {
+      const CONFIG = 'import { defineConfig } from "tapsmith";\nexport default defineConfig({ platform: "ios" });\n';
+      type Out = { error?: string; code?: string; cause?: string };
+      const load = (): Out => inBareNode<Out>(`try { await loadConfig(${JSON.stringify(root)}); emit({}); }\n`
+        + 'catch (e) { emit({ error: e.message, code: e.code, cause: e.cause?.message }); }\n');
+
+      it.each(['commonjs', 'module'] as const)('names the missing install and the command, in a %s package', (type) => {
+        writePackage(root, type);
+        const file = path.join(root, 'tapsmith.config.ts');
+        fs.writeFileSync(file, CONFIG, 'utf-8');
+        const out = load();
+        expect(out.error).toBe(`Failed to load config file ${file}: tapsmith isn't installed in this project. Run \`npm i -D tapsmith\`.`);
+        expect(out.code).toBe('TAPSMITH_NOT_INSTALLED');
+        // Node's own error stays reachable for anyone debugging.
+        expect(out.cause).toMatch(/Cannot find (module|package) 'tapsmith'/);
+      });
+
+      it("uses the project's package manager", () => {
+        writePackage(root, 'commonjs');
+        fs.writeFileSync(path.join(root, 'pnpm-lock.yaml'), '', 'utf-8');
+        fs.writeFileSync(path.join(root, 'tapsmith.config.ts'), CONFIG, 'utf-8');
+        expect(load().error).toMatch(/Run `pnpm add -D tapsmith`\.$/);
+      });
+
+      it('leaves any other missing package to Node\'s own error', () => {
+        writePackage(root, 'module');
+        const file = path.join(root, 'tapsmith.config.mjs');
+        fs.writeFileSync(file, 'import { x } from "tapsmith-helpers";\nexport default { x };\n', 'utf-8');
+        const out = load();
+        expect(out.error).toContain(`Failed to load config file ${file}:`);
+        expect(out.error).toContain("'tapsmith-helpers'");
+        expect(out.error).not.toContain("isn't installed");
+        expect(out.code).toBeUndefined();
+      });
+
+      // Tapsmith is installed but a module inside it is not: reinstalling is
+      // not obviously the fix, so say nothing beyond Node's error.
+      it('does not blame the install when tapsmith itself resolves', () => {
+        writePackage(root, 'module');
+        const pkg = path.join(root, 'node_modules', 'tapsmith');
+        fs.mkdirSync(pkg, { recursive: true });
+        fs.writeFileSync(path.join(pkg, 'package.json'), '{ "name": "tapsmith", "type": "module", "exports": "./index.js" }\n', 'utf-8');
+        fs.writeFileSync(path.join(pkg, 'index.js'), 'import "tapsmith/missing.js";\nexport const defineConfig = (c) => c;\n', 'utf-8');
+        fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'), CONFIG, 'utf-8');
+        const out = load();
+        expect(out.error).not.toContain("isn't installed");
+        expect(out.code).toBeUndefined();
+      });
+    });
+
     // A SyntaxError the config raised while running is its own error, not a
     // parse failure for tsx to retry: retrying would run it twice.
     it('rejects a config that throws a SyntaxError while running, without running it twice', () => {

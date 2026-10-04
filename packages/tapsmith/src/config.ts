@@ -984,6 +984,81 @@ export function configPathOf(config: TapsmithConfig): string | undefined {
   return (config as unknown as Record<symbol, string | undefined>)[CONFIG_PATH];
 }
 
+// ─── Tapsmith not installed (PILOT-551) ───
+//
+// `npx tapsmith init` and a global install run Tapsmith from outside the
+// project, but the config and example test `init` writes import `tapsmith`,
+// so a project that never added the dependency cannot load its own config.
+// Here rather than in a module of its own: config.ts has no runtime imports
+// of Tapsmith's own modules, which lets its loader tests run it in bare Node.
+
+export interface InstallCommand {
+  command: string;
+  args: string[];
+  /** The command as a user would type it: `npm i -D tapsmith`. */
+  display: string;
+}
+
+/** Whether `import 'tapsmith'` from a file in `dir` finds a package. */
+export function isTapsmithResolvableFrom(dir: string): boolean {
+  try {
+    // Any file name in `dir` anchors the lookup; it need not exist.
+    createRequire(path.join(dir, 'noop.js')).resolve('tapsmith');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `<package manager> add -D tapsmith` for the project at `dir`: the manager
+ * its lockfile or `packageManager` field names (looking up from `dir`, so a
+ * workspace root's lockfile counts), else npm.
+ */
+export async function tapsmithInstallCommand(dir: string): Promise<InstallCommand> {
+  // Loaded only when needed: config.ts is part of the SDK every test imports.
+  const { detect, resolveCommand } = await import('package-manager-detector');
+  const detected = await detect({ cwd: dir }).catch(() => null);
+  const resolved = resolveCommand(detected?.agent ?? 'npm', 'add', ['-D', 'tapsmith'])
+    ?? { command: 'npm', args: ['i', '-D', 'tapsmith'] };
+  return { ...resolved, display: [resolved.command, ...resolved.args].join(' ') };
+}
+
+/**
+ * Node's error for an unresolvable `tapsmith` (or `tapsmith/…`) import: the
+ * CommonJS `Cannot find module 'tapsmith'` and the ESM `Cannot find package
+ * 'tapsmith' imported from …`.
+ */
+export function isMissingTapsmithError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  if (code !== 'MODULE_NOT_FOUND' && code !== 'ERR_MODULE_NOT_FOUND') return false;
+  return /Cannot find (?:module|package) 'tapsmith(?:\/[^']*)?'/.test(err.message);
+}
+
+/** The error a config that imports `tapsmith` fails with in a project without it. */
+export class TapsmithNotInstalledError extends Error {
+  readonly code = 'TAPSMITH_NOT_INSTALLED';
+  readonly configPath: string;
+  readonly installCommand: InstallCommand;
+
+  // No parameter properties: Node's type stripping cannot run them.
+  constructor(configPath: string, installCommand: InstallCommand, cause: unknown) {
+    super(
+      `Failed to load config file ${configPath}: tapsmith isn't installed in this project. Run \`${installCommand.display}\`.`,
+      { cause },
+    );
+    this.name = 'TapsmithNotInstalledError';
+    this.configPath = configPath;
+    this.installCommand = installCommand;
+  }
+}
+
+/** By code, not class: the error may come from another copy of this module. */
+export function isTapsmithNotInstalledError(err: unknown): err is TapsmithNotInstalledError {
+  return err instanceof Error && (err as { code?: unknown }).code === 'TAPSMITH_NOT_INSTALLED';
+}
+
 /** tsx fallback imports run one at a time; see `importConfigModule`. */
 let configImportQueue: Promise<unknown> = Promise.resolve();
 
@@ -1085,6 +1160,32 @@ function firstStackFrameIsCompileStep(err: Error): boolean {
 const insideFallbackLoad = new AsyncLocalStorage<true>();
 
 async function importConfigModule(configPath: string): Promise<Record<string, unknown>> {
+  try {
+    return await importConfigModuleOnce(configPath);
+  } catch (err) {
+    throw await explainMissingTapsmith(configPath, err);
+  }
+}
+
+/**
+ * A config importing `tapsmith` in a project without it — one written by
+ * `npx tapsmith init` or a global install — fails with Node's "Cannot find
+ * module 'tapsmith'", which says nothing about installing it (PILOT-551).
+ * Only when `tapsmith` really does not resolve from the config's directory:
+ * a module missing inside an installed Tapsmith is a different problem.
+ */
+async function explainMissingTapsmith(configPath: string, err: unknown): Promise<unknown> {
+  const failures = [(err as { cause?: unknown } | null)?.cause, (err as Record<symbol, unknown> | null)?.[NATIVE_ERROR]];
+  if (!failures.some(isMissingTapsmithError)) return err;
+  const dir = path.dirname(configPath);
+  if (isTapsmithResolvableFrom(dir)) return err;
+  return new TapsmithNotInstalledError(configPath, await tapsmithInstallCommand(dir), (err as { cause?: unknown }).cause ?? err);
+}
+
+/** The native import's error, kept on a tsx-retry failure for `explainMissingTapsmith`. */
+const NATIVE_ERROR = Symbol('tapsmith.nativeConfigError');
+
+async function importConfigModuleOnce(configPath: string): Promise<Record<string, unknown>> {
   let nativeError: unknown;
   try {
     // Not queued: a native import that runs while another load's tsx hooks
@@ -1140,6 +1241,7 @@ function configLoadError(configPath: string, err: unknown, nativeError?: unknown
   }
   if (note) detail += `\n(${note})`;
   const error = new Error(`Failed to load config file ${configPath}: ${detail}`, { cause: err });
+  if (nativeError !== undefined) Object.defineProperty(error, NATIVE_ERROR, { value: nativeError });
   // Callers print `stack`, which never includes `cause`: without this the
   // trace shows Tapsmith's loader frames and not the line in the config.
   const causeStack = err instanceof Error ? err.stack : undefined;
