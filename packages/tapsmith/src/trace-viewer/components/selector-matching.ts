@@ -8,6 +8,8 @@ export interface ParsedSelector {
   type: string
   value: string
   name?: string
+  /** getByRole `{ exact: true }`: the name matches case-sensitively and whole. */
+  exact?: boolean
   index?: number | 'first' | 'last'
 }
 
@@ -146,7 +148,9 @@ function mapDeviceMethod(method: string, value: string, name?: string, exact?: b
     // (device.ts getByText → textContains). The playground must agree, or a
     // selector validated here taps a different element at runtime (PILOT-226).
     case 'Text': return exact ? { type: 'text', value } : { type: 'textContains', value };
-    case 'Role': return { type: 'role', value, name };
+    // Role names match like the agents (PILOT-549): a case-insensitive
+    // substring unless { exact: true } is passed.
+    case 'Role': return { type: 'role', value, name, ...(exact && name ? { exact: true } : {}) };
     case 'Description': return { type: 'contentDesc', value };
     case 'Placeholder': return { type: 'hint', value };
     case 'TestId': return { type: 'testId', value };
@@ -255,7 +259,9 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
       const role = getNodeRole(node);
       if (role !== selector.value) return false;
       if (selector.name) {
-        return normalizeWhitespace(getNodeAccessibleName(node)) === normalizeWhitespace(selector.name);
+        const actual = normalizeWhitespace(getNodeAccessibleName(node));
+        const query = normalizeWhitespace(selector.name);
+        return selector.exact ? actual === query : actual.toLowerCase().includes(query.toLowerCase());
       }
       return true;
     }

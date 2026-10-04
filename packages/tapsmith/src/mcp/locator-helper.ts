@@ -27,7 +27,10 @@ function parsedSelectorToKind(parsed: ParsedSelector): SelectorKind {
       // getByText without { exact: true } — substring match, same as the SDK.
       return { type: 'textContains', value: parsed.value };
     case 'role':
-      return { type: 'role', value: { role: parsed.value, name: parsed.name ?? '' } };
+      return {
+        type: 'role',
+        value: { role: parsed.value, name: parsed.name ?? '', ...(parsed.exact ? { exact: true } : {}) },
+      };
     case 'contentDesc':
       return { type: 'contentDesc', value: parsed.value };
     case 'hint':

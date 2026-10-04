@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { HierarchyNode } from '../trace-viewer/components/hierarchy-utils.js';
 import { generateSelectors } from '../trace-viewer/components/selector-generation.js';
 import { disambiguateSelectors } from '../trace-viewer/components/selector-uniqueness.js';
+import { parseSelectorString, findMatchingNodes } from '../trace-viewer/components/selector-matching.js';
 import { handlePickFromScreenshot } from '../trace-viewer/components/selector-pick.js';
 import { formatHierarchy } from '../mcp/hierarchy-formatter.js';
 
@@ -208,5 +209,34 @@ describe('pick pre-fill disambiguation (playground input field)', () => {
     const result = handlePickFromScreenshot([root], 200, 146);
     expect(result).not.toBeNull();
     expect(result!.selector).toMatch(/\.(first|last)\(\)$|\.nth\(-?\d+\)$/);
+  });
+});
+
+describe('getByRole name matching in the playground (PILOT-549)', () => {
+  function overlayScreen() {
+    const show = makeNode('android.widget.Button', { class: 'android.widget.Button', text: 'SHOW OVERLAY', bounds: '[0,0][100,50]' });
+    const showBriefly = makeNode('android.widget.Button', { class: 'android.widget.Button', text: 'Show overlay briefly', bounds: '[0,60][100,110]' });
+    const root = makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout', bounds: '[0,0][100,200]' }, [show, showBriefly]);
+    return { roots: [root], show, showBriefly };
+  }
+
+  it('matches a role name case-insensitively and by substring by default', () => {
+    const { roots, show, showBriefly } = overlayScreen();
+    const parsed = parseSelectorString('device.getByRole("button", { name: "show overlay" })')!;
+    expect(findMatchingNodes(roots, parsed)).toEqual([show, showBriefly]);
+  });
+
+  it('matches case-sensitively and whole with { exact: true }', () => {
+    const { roots, showBriefly } = overlayScreen();
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("button", { name: "Show overlay", exact: true })')!)).toEqual([]);
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("button", { name: "Show  overlay briefly", exact: true })')!))
+      .toEqual([showBriefly]);
+  });
+
+  it('upgrades an ambiguous role-name suggestion to { exact: true }', () => {
+    const { roots, show } = overlayScreen();
+    const result = disambiguateSelectors(roots, show, generateSelectors(show));
+    expect(result[0].code).toBe('device.getByRole("button", { name: "SHOW OVERLAY", exact: true })');
+    expect(result[0].label).not.toContain('matches');
   });
 });
