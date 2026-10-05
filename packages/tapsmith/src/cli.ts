@@ -2026,7 +2026,11 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     const targetProjectNames = new Set<string>();
     const filesByProject = new Map<string, string[]>();
     for (const filePath of new Set(explicitPaths)) {
-      const owners = findProjectsForFile(filePath, allProjects, config.rootDir)
+      // The projects whose discovery found it — `testMatch` may be shaped
+      // (`./…`) so only glob reads it — else, for a file named outright that
+      // none discovered, the projects whose patterns match it.
+      const discoveredBy = [...discoveredByProject].filter(([, files]) => files.includes(filePath)).map(([name]) => name);
+      const owners = (discoveredBy.length > 0 ? discoveredBy : findProjectsForFile(filePath, allProjects, config.rootDir))
         .filter((name) => !selectedSet || selectedSet.has(name));
       if (owners.length === 0) filesOutsideProjects.push(filePath);
       for (const name of owners) {
@@ -2101,15 +2105,10 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     })));
     process.exit(1);
   }
-  for (const arg of unmatchedFileArgs) {
-    console.error(yellow(`Warning: "${arg}" matched no test file — running the files the other arguments selected.`));
-  }
-  for (const file of filesOutsideProjects) {
-    console.error(yellow(`Warning: ${relativeTestPath(file, config.rootDir)} is not matched by any${selectedProjects ? ' selected' : ''} project's testMatch, so it does not run.`));
-  }
 
   // Every project's files before sharding: whether a grep selects anything is
-  // a question about the whole suite, and must get one answer on every shard.
+  // a question about the whole suite, so every shard with files answers it the
+  // same way (a shard left with none still exits 0 below, as it always has).
   const unshardedFiles = projects.map((p) => ({ project: p, files: [...p.testFiles] }));
 
   let shardMessage: string | undefined;
@@ -2158,6 +2157,14 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     const forwardArgs = process.argv.slice(2).filter((a) => a !== '--__tsx-reexec');
     reExecWithTsx(forwardArgs);
     return;
+  }
+
+  // After the tsx re-exec, so each prints once.
+  for (const arg of unmatchedFileArgs) {
+    console.error(yellow(`Warning: "${arg}" matched no test file — running the files the other arguments selected.`));
+  }
+  for (const file of filesOutsideProjects) {
+    console.error(yellow(`Warning: ${relativeTestPath(file, config.rootDir)} is not matched by any${selectedProjects ? ' selected' : ''} project's testMatch, so it does not run.`));
   }
 
   // A selection filter (grep / grep-invert, at root or any project) is active.

@@ -71,7 +71,9 @@ export function discoverTestNames(
       settle(new Map(msg.results.map((r) => [r.file, r.names])));
     });
     child.on('error', () => settle(unknown));
-    child.on('exit', () => settle(unknown));
+    // 'disconnect', not 'exit': 'exit' can arrive before the names message has
+    // been read, while every message is delivered before the channel closes.
+    child.on('disconnect', () => settle(unknown));
     const request: PreflightRequest = { type: 'discover-names', files };
     child.send(request, (err) => { if (err) settle(unknown); });
   });

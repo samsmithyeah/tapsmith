@@ -121,9 +121,20 @@ describe.skipIf(!DIST_BUILT && !process.env.CI)('tapsmith test selection', { tim
     expect(reachedDevice).toBe(true);
   });
 
-  it('warns about an argument that matched nothing and runs the rest', () => {
+  it('warns once about an argument that matched nothing and runs the rest', () => {
     const { output, reachedDevice } = run('login', 'zzzz');
-    expect(output).toContain('Warning: "zzzz" matched no test file');
+    // Once, though the CLI re-execs itself under tsx for a TypeScript suite.
+    expect(output.split('Warning: "zzzz" matched no test file')).toHaveLength(2);
+    expect(reachedDevice).toBe(true);
+  });
+
+  it('runs what a directory selects under a project whose testMatch starts with ./', () => {
+    fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'),
+      'export default { platform: "android", package: "com.example", launchEmulators: false, '
+      + 'projects: [{ name: "pw", testMatch: ["./tests/pw/**/*.test.ts"] }] };\n');
+    const { output, reachedDevice } = run('tests/pw');
+    expect(output).not.toContain('No tests found');
+    expect(output).not.toContain('not matched by any project');
     expect(reachedDevice).toBe(true);
   });
 
