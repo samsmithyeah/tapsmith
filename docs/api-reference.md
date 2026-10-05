@@ -1860,20 +1860,70 @@ Custom fixtures can depend on other custom fixtures — they're resolved in depe
 
 **Lazy resolution:** Only fixtures that are destructured by the test function and its hooks are resolved. If a test destructures `{ device, todoId }`, only `todoId` (and its transitive dependencies) will be set up — other fixtures defined in `test.extend()` are skipped. This matches Playwright's behavior.
 
-### `describe(name: string, fn: () => void): void`
+### `describe(name: string, fn: () => void): void` / `test.describe(name, fn)`
 
-Group tests into a suite.
+Group tests into a suite. `test.describe` is the same function as the `describe` export (Playwright's spelling), with every variant below; it is also available on a `test.extend()` result.
 
 ```typescript
-describe("Login flow", () => {
+test.describe("Login flow", () => {
   test("valid credentials", async ({ device }) => { /* ... */ });
   test("invalid credentials", async ({ device }) => { /* ... */ });
 });
 ```
 
+The title is required, and the callback is the second argument: Playwright's anonymous `test.describe(callback)` and `test.describe(title, details, callback)` forms throw an error saying they aren't supported yet.
+
 ### `describe.only(name, fn)` / `describe.skip(name, fn)`
 
-Focus or skip an entire suite.
+Focus or skip an entire suite. Also available as `test.describe.only` and `test.describe.skip`.
+
+### `test.describe.serial(name, fn)` / `test.describe.serial.only(name, fn)`
+
+Declare a group of tests that depend on each other, as in Playwright: once a test in the group fails, every later test of the group is skipped (and reported as skipped), including the tests of nested describes. A nested describe that is skipped this way runs none of its hooks. The group's own `afterAll` hooks still run.
+
+```typescript
+test.describe.serial("checkout", () => {
+  test("adds an item to the cart", async ({ device }) => { /* ... */ });
+  test("pays", async ({ device }) => { /* skipped if the previous test failed */ });
+});
+```
+
+A test that passes on a retry does not stop the group. Unlike Playwright, retries apply to each test where it failed rather than re-running the whole group from its first test. Tests that sit directly in a describe run before its nested describes, so in a serial group a failure in a direct test also skips the nested describes declared above it.
+
+### `test.describe.configure(options: DescribeConfigureOptions): void`
+
+Configure the enclosing describe, or the whole file when called at the top level of a test file.
+
+```typescript
+test.describe.configure({ mode: "serial", retries: 1 });
+```
+
+| Option | Type | Description |
+|---|---|---|
+| `mode` | `'default' \| 'serial' \| 'parallel'` | `'serial'` makes the scope a serial group (see `test.describe.serial`); `'default'` turns that off for a describe declared with `test.describe.serial`. A serial group covers everything nested inside it, so a nested describe cannot leave its enclosing group with `'default'` or `'parallel'`. `'parallel'` is accepted for Playwright compatibility and runs the tests in order: Tapsmith runs the tests of a file one after another on one device, and runs files in parallel with `--workers`. |
+| `retries` | `number` | Retry count for failed tests in the scope. Same as `test.use({ retries })`. |
+| `timeout` | `number` | Same as `test.use({ timeout })`: the action and assertion timeout for the scope (ms), which also raises each test's safety timeout. |
+
+Any other option throws.
+
+### Playwright APIs not supported yet
+
+These Playwright names exist so that a test which uses one fails with a clear error rather than `test.step is not a function`. They are not part of the TypeScript types, so the type checker reports them as missing.
+
+| API | Error suggests |
+|---|---|
+| `test.step()` | `device.tracing.group(name)` / `groupEnd()` to group actions in the trace |
+| `test.fixme()` | `test.skip(title, fn)` |
+| `test.fail()` | — |
+| `test.slow()`, `test.setTimeout()` | `test.use({ timeout })` in the describe |
+| `test.info()` | — |
+| `test.describe.fixme()` | `test.describe.skip(title, fn)` |
+| `test.describe.parallel()` | `test.describe()` (and `--workers` for parallel files) |
+| `expect.configure()` | `{ timeout }` on the assertion, or `timeout` in the config / `test.use()` |
+| `expect.extend()` | — |
+| `expect(fn).toPass()` | `expect.poll(fn)` |
+
+Playwright locator methods that Tapsmith names differently throw an error naming the Tapsmith method: `.click()` → `.tap()`, `.dblclick()` → `.doubleTap()`, `.fill()` → `.clearAndType()`, `.textContent()` and `.innerText()` → `.getText()`.
 
 ### `beforeAll(fn: (fixtures) => void | Promise<void>): void`
 

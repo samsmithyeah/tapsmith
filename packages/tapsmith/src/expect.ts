@@ -22,6 +22,7 @@ import type { ElementInfo } from "./grpc-client.js";
 import { formatSelector } from "./selectors.js";
 import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
 import { WebViewLocator, WEBVIEW_LOCATOR_BRAND } from "./webview-locator.js";
+import { defineStandIns, notSupportedYet } from "./not-supported.js";
 
 const DEFAULT_ASSERTION_TIMEOUT_MS = 5_000;
 // Short server-side timeout for element lookups inside assertion polls.
@@ -1463,8 +1464,15 @@ function createGenericAssertions(
     },
   };
 
+  defineStandIns(assertions, { toPass: TO_PASS_STAND_IN });
   return assertions;
 }
+
+/** Playwright's `expect(fn).toPass()` — see not-supported.ts. */
+const TO_PASS_STAND_IN = notSupportedYet(
+  "expect(fn).toPass",
+  "Retry a value check with expect.poll(fn).toBe(...) instead.",
+);
 
 // ─── PILOT-43: Soft assertions ───
 
@@ -2004,3 +2012,12 @@ expect.poll = function expectPoll(
 ): GenericAssertions {
   return createPollAssertions(fn, options ?? {});
 };
+
+// Playwright `expect.*` APIs Tapsmith doesn't have yet — see not-supported.ts.
+defineStandIns(expect, {
+  configure: notSupportedYet(
+    "expect.configure",
+    "Pass { timeout } to an assertion, or set timeout in tapsmith.config.ts or with test.use({ timeout }).",
+  ),
+  extend: notSupportedYet("expect.extend"),
+});
