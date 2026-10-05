@@ -14,7 +14,7 @@ test("home screen shows welcome message", async ({ device }) => {
 })
 ```
 
-Use `describe()` to group related tests. Groups share hooks and make test output easier to scan:
+Use `describe()` (or Playwright's spelling, `test.describe()`) to group related tests. Groups share hooks and make test output easier to scan:
 
 ```typescript
 import { test, describe, expect, beforeAll } from "tapsmith"
