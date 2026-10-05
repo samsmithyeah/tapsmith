@@ -2566,7 +2566,7 @@ npx tapsmith test login checkout              # files whose path matches "login"
 
 As in Playwright, each argument is one of:
 
-- **a file** (relative to `rootDir` or the working directory, or absolute): run as named, even if `testMatch` would not discover it;
+- **a file** (relative to `rootDir` or the working directory, or absolute): run as named, even if `testMatch` would not discover it — except in a config with `projects`, where a file runs under the projects whose `testMatch` covers it, so one that no (selected) project covers is reported and not run;
 - **a directory**: the test files under it;
 - **a glob**: the test files it matches;
 - **anything else**: a case-insensitive regular expression matched against each test file's path relative to `rootDir` (`/pattern/flags` sets the flags; an invalid expression is matched as plain text).

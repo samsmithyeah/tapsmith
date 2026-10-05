@@ -1,5 +1,3 @@
-import type { DiscoveredSuite } from './runner.js';
-
 /**
  * Whether a test's fully-qualified name (`describe > test`) matches a `test`
  * filter. Case-insensitive substring match — intentionally grep-like, so it
@@ -55,43 +53,32 @@ export interface SelectionMiss {
 }
 
 /**
- * Whether the selection filters select no test at all in these files, found
- * by importing each file's test tree (no test body runs) — so a `--grep` that
- * matches nothing fails before any device work, as Playwright lists its tests
- * before starting workers (PILOT-553).
+ * Whether the selection filters select no test at all in these files, given
+ * each file's test names (read without running any test body) — so a `--grep`
+ * that matches nothing fails before any device work, as Playwright lists its
+ * tests before starting workers (PILOT-553).
  *
- * Returns `undefined` as soon as one test passes, and also when a file fails
- * to load: that file's tests are unknown, and the run itself reports its load
+ * `namesOf` returns `undefined` for a file that failed to load: its tests are
+ * unknown, so no conclusion is drawn, and the run itself reports the load
  * error. A skipped test that passes the filters counts as selected — the run
  * reports it as skipped rather than as "No tests found".
  */
-export async function findSelectionMiss(
+export function findSelectionMiss(
   entries: Array<{ file: string; filters: SelectionFilters }>,
-  discover: (file: string) => Promise<DiscoveredSuite>,
-): Promise<SelectionMiss | undefined> {
+  namesOf: (file: string) => string[] | undefined,
+): SelectionMiss | undefined {
   const testNames: string[] = [];
   const files = new Set<string>();
   for (const { file, filters } of entries) {
-    let tree: DiscoveredSuite;
-    try {
-      tree = await discover(file);
-    } catch {
-      return undefined;
-    }
+    const names = namesOf(file);
+    if (!names) return undefined;
     files.add(file);
-    for (const fullName of flattenDiscoveredNames(tree)) {
+    for (const fullName of names) {
       if (passesSelectionFilters(fullName, filters)) return undefined;
       testNames.push(fullName);
     }
   }
   return { fileCount: files.size, testNames: [...new Set(testNames)] };
-}
-
-function flattenDiscoveredNames(suite: DiscoveredSuite): string[] {
-  return [
-    ...suite.tests.map((t) => t.fullName),
-    ...suite.suites.flatMap(flattenDiscoveredNames),
-  ];
 }
 
 const MAX_LISTED_TESTS = 10;

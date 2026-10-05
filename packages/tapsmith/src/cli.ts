@@ -1969,6 +1969,8 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
   let unmatchedFileArgs: string[] = [];
   const filesOutsideProjects: string[] = [];
   const discoveredByProject = new Map<string, string[]>();
+  // The testMatch patterns the selection was drawn from, for that message.
+  let selectionTestMatch: string[] = config.testMatch;
 
   if (hasProjects && !hasExplicitFiles) {
     // Full project mode — discover all files per project
@@ -1985,6 +1987,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       projects = projects.filter((p) => required.has(p.name));
     }
     projectWaves = topologicalSort(projects);
+    selectionTestMatch = [...new Set(projects.flatMap((p) => p.testMatch))];
     for (const project of projects) {
       project.testFiles = await discoverTestFiles(project.testMatch, config.rootDir, project.testIgnore);
     }
@@ -2008,6 +2011,9 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       const files = await discoverTestFiles(project.testMatch, config.rootDir, project.testIgnore);
       discoveredByProject.set(project.name, files);
     }
+    selectionTestMatch = [...new Set(allProjects
+      .filter((p) => discoveredByProject.has(p.name))
+      .flatMap((p) => p.testMatch))];
     const resolution = resolveTestFileArgs(
       args.files,
       [...new Set([...discoveredByProject.values()].flat())].sort(),
@@ -2090,9 +2096,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       args: hasExplicitFiles ? args.files : [],
       unmatched: unmatchedFileArgs,
       outsideProjects: filesOutsideProjects.map((f) => relativeTestPath(f, config.rootDir)),
-      testMatch: hasProjects
-        ? [...new Set(projects.flatMap((p) => p.testMatch))]
-        : config.testMatch,
+      testMatch: selectionTestMatch,
       rootDir: config.rootDir,
     })));
     process.exit(1);
@@ -2162,15 +2166,17 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     (hasProjects && projects.some((p) => p.grep !== undefined || p.grepInvert !== undefined));
 
   // A grep that selects no test fails here, before the daemon, the device and
-  // the reporters (PILOT-553). After the tsx re-exec, so TypeScript test files
-  // import. Not in UI mode, which shows the tree to pick from, nor in watch
-  // mode, where an edit can add the test the pattern is waiting for.
+  // the reporters (PILOT-553). The names come from a child process, so no
+  // test file's top-level code runs in this one before the run imports it.
+  // Not in UI mode, which shows the tree to pick from, nor in watch mode,
+  // where an edit can add the test the pattern is waiting for.
   if (selectionFilterActive && !args.ui && !args.watch) {
-    const { discoverTestFile } = await import('./runner.js');
+    const { discoverTestNames } = await import('./selection-preflight.js');
     const { findSelectionMiss, noTestsMatchFilterMessage } = await import('./test-filter.js');
     const rootGrep = normalizeGrep(config.grep);
     const rootGrepInvert = normalizeGrep(config.grepInvert);
-    const miss = await findSelectionMiss(
+    const names = await discoverTestNames([...new Set(unshardedFiles.flatMap(({ files }) => files))]);
+    const miss = findSelectionMiss(
       unshardedFiles.flatMap(({ project, files }) => files.map((file) => ({
         file,
         filters: {
@@ -2180,7 +2186,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
           projectGrepInvert: normalizeGrep(project.grepInvert),
         },
       }))),
-      discoverTestFile,
+      (file) => names.get(file),
     );
     if (miss) {
       console.error(red(noTestsMatchFilterMessage(miss, config.grep, config.grepInvert)));

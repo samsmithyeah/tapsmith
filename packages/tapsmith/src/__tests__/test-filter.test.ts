@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { findSelectionMiss, matchesTestFilter, noTestsMatchFilterMessage, passesSelectionFilters } from '../test-filter.js';
-import type { DiscoveredSuite } from '../runner.js';
 
 describe('matchesTestFilter', () => {
   const fullName = 'Login screen > submits the form';
@@ -57,61 +56,44 @@ describe('passesSelectionFilters', () => {
 });
 
 describe('findSelectionMiss', () => {
-  const suite = (tests: string[], suites: DiscoveredSuite[] = [], name = ''): DiscoveredSuite => ({
-    name,
-    tests: tests.map((t) => ({ name: t, fullName: name ? `${name} > ${t}` : t, only: false, skip: false })),
-    suites,
-  });
-  const trees: Record<string, DiscoveredSuite> = {
-    '/p/a.test.ts': suite(['logs in'], [suite(['pays'], [], 'checkout')]),
-    '/p/b.test.ts': suite(['signs up']),
+  const names: Record<string, string[]> = {
+    '/p/a.test.ts': ['logs in', 'checkout > pays'],
+    '/p/b.test.ts': ['signs up'],
+    '/p/e.test.ts': [],
   };
-  const discover = async (file: string): Promise<DiscoveredSuite> => {
-    const tree = trees[file];
-    if (!tree) throw new Error(`cannot import ${file}`);
-    return tree;
-  };
+  const namesOf = (file: string): string[] | undefined => names[file];
 
-  it('returns undefined as soon as a test passes the filters', async () => {
-    await expect(findSelectionMiss([
+  it('returns undefined as soon as a test passes the filters', () => {
+    expect(findSelectionMiss([
       { file: '/p/a.test.ts', filters: { grep: [/checkout > pays/] } },
       { file: '/p/b.test.ts', filters: { grep: [/checkout > pays/] } },
-    ], discover)).resolves.toBeUndefined();
+    ], namesOf)).toBeUndefined();
   });
 
-  it('reports the tests it checked when nothing passes', async () => {
-    await expect(findSelectionMiss([
+  it('reports the tests it checked when nothing passes', () => {
+    expect(findSelectionMiss([
       { file: '/p/a.test.ts', filters: { grep: [/zzzz/] } },
       { file: '/p/b.test.ts', filters: { grep: [/zzzz/] } },
-    ], discover)).resolves.toEqual({
-      fileCount: 2,
-      testNames: ['logs in', 'checkout > pays', 'signs up'],
-    });
+    ], namesOf)).toEqual({ fileCount: 2, testNames: ['logs in', 'checkout > pays', 'signs up'] });
   });
 
-  it('applies each entry its own filters (a file in two projects)', async () => {
-    await expect(findSelectionMiss([
+  it('applies each entry its own filters (a file in two projects)', () => {
+    expect(findSelectionMiss([
       { file: '/p/b.test.ts', filters: { projectGrep: [/ios/] } },
       { file: '/p/b.test.ts', filters: { projectGrep: [/signs/] } },
-    ], discover)).resolves.toBeUndefined();
+    ], namesOf)).toBeUndefined();
   });
 
-  it('counts a skipped test as selected, so the run reports it rather than "No tests found"', async () => {
-    const skipped: DiscoveredSuite = { name: '', tests: [{ name: 'later', fullName: 'later', only: false, skip: true }], suites: [] };
-    await expect(findSelectionMiss([{ file: '/p/s.test.ts', filters: { grep: [/later/] } }], async () => skipped))
-      .resolves.toBeUndefined();
-  });
-
-  it('cannot conclude anything when a file fails to load: the run reports that file', async () => {
-    await expect(findSelectionMiss([
+  it('cannot conclude anything when a file fails to load: the run reports that file', () => {
+    expect(findSelectionMiss([
       { file: '/p/a.test.ts', filters: { grep: [/zzzz/] } },
       { file: '/p/broken.test.ts', filters: { grep: [/zzzz/] } },
-    ], discover)).resolves.toBeUndefined();
+    ], namesOf)).toBeUndefined();
   });
 
-  it('reports a run whose files hold no tests at all', async () => {
-    await expect(findSelectionMiss([{ file: '/p/e.test.ts', filters: { grep: [/x/] } }], async () => suite([])))
-      .resolves.toEqual({ fileCount: 1, testNames: [] });
+  it('reports a run whose files hold no tests at all', () => {
+    expect(findSelectionMiss([{ file: '/p/e.test.ts', filters: { grep: [/x/] } }], namesOf))
+      .toEqual({ fileCount: 1, testNames: [] });
   });
 });
 

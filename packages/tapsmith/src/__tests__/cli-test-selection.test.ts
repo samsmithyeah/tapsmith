@@ -126,4 +126,42 @@ describe.skipIf(!DIST_BUILT && !process.env.CI)('tapsmith test selection', { tim
     expect(output).toContain('Warning: "zzzz" matched no test file');
     expect(reachedDevice).toBe(true);
   });
+
+  it('reads the test names for --grep in a child, never importing a test file in the CLI process', () => {
+    // A test file's top-level code must not run in the process that later
+    // imports it for the run: a second evaluation re-runs its side effects,
+    // and a helper it imports stays cached with registrations made for the
+    // throwaway discovery context.
+    const log = path.join(root, 'imports.log');
+    fs.writeFileSync(path.join(root, 'tests', 'pw', 'login.test.ts'),
+      'import * as fs from "node:fs";\n'
+      + `fs.appendFileSync(${JSON.stringify(log)}, (typeof process.send) + "\\n");\n`
+      + testFile('login', ['signs in']));
+    const { reachedDevice } = run('--grep', 'signs in');
+    expect(reachedDevice).toBe(true);
+    expect(fs.readFileSync(log, 'utf-8').trim().split('\n')).toEqual(['function']);
+  });
+
+  it('names the projects\' testMatch when no argument matches in a projects config', () => {
+    fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'),
+      'export default { platform: "android", package: "com.example", launchEmulators: false, '
+      + 'projects: [{ name: "pw", testMatch: ["tests/pw/**/*.test.ts"] }] };\n');
+    const { status, output, reachedDevice } = run('typo');
+    expect(output).toContain('"typo" matched no test file');
+    expect(output).toContain('(tests/pw/**/*.test.ts)');
+    expect(status).toBe(1);
+    expect(reachedDevice).toBe(false);
+  });
+
+  it('reports, rather than runs, a named file no project covers', () => {
+    fs.mkdirSync(path.join(root, 'scripts'));
+    fs.writeFileSync(path.join(root, 'scripts', 'x.test.ts'), testFile('x', ['y']));
+    fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'),
+      'export default { platform: "android", package: "com.example", launchEmulators: false, '
+      + 'projects: [{ name: "pw", testMatch: ["tests/pw/**/*.test.ts"] }] };\n');
+    const { status, output, reachedDevice } = run('scripts/x.test.ts');
+    expect(output).toContain('scripts/x.test.ts is not matched by any project\'s testMatch');
+    expect(status).toBe(1);
+    expect(reachedDevice).toBe(false);
+  });
 });

@@ -40,11 +40,12 @@ export interface TestFileArgResolution {
  *
  * Each argument is, in order of precedence:
  * - an existing file (absolute, or relative to the first of `roots` that has
- *   it): selected as is, even outside `testMatch`, so naming a file always
- *   runs it;
+ *   it): selected as is, even outside `testMatch` (with projects, the caller
+ *   still needs a project whose `testMatch` covers it to run it under);
  * - an existing directory: the discovered test files under it;
  * - a glob: the discovered test files it matches, relative to any root or as
- *   an absolute pattern;
+ *   an absolute pattern — or, when it matches none, a filter as below, since
+ *   `*`, `?`, `[]` and `{}` are regex syntax too;
  * - anything else: a filter over the discovered test files' paths relative to
  *   `roots[0]` (rootDir) — a case-insensitive regular expression (`/re/flags`
  *   for explicit flags), or a literal substring when it is not a valid one.
@@ -113,25 +114,32 @@ function matchTestFileArg(arg: string, candidates: string[], roots: string[], ro
     }
   }
 
-  if (normalizeGlobPattern(arg).split('/').some(hasGlobMagic)) {
+  // `*`, `?`, `[]` and `{}` are regex syntax too (`login.*test`), so an
+  // argument that globs nothing is still read as a filter. `/re/flags` is
+  // always a filter.
+  if (!EXPLICIT_REGEX.test(arg) && normalizeGlobPattern(arg).split('/').some(hasGlobMagic)) {
     const pattern = normalizeGlobPattern(arg).replace(/^\.\//, '');
-    return candidates.filter((file) => {
+    const globbed = candidates.filter((file) => {
       if (minimatch(normalizeGlobPattern(file), pattern)) return true;
       return roots.some((root) => {
         const relative = relativeTestPath(file, root);
         return !relative.startsWith('../') && minimatch(relative, pattern);
       });
     });
+    if (globbed.length > 0) return globbed;
   }
 
   const filter = testFileFilter(arg);
   return candidates.filter((file) => filter(relativeTestPath(file, rootDir)));
 }
 
+const EXPLICIT_REGEX = /^\/(.+)\/([a-z]*)$/;
+
 function testFileFilter(arg: string): (relativePath: string) => boolean {
-  const explicit = /^\/(.+)\/([a-z]*)$/.exec(arg);
+  const explicit = EXPLICIT_REGEX.exec(arg);
   try {
-    const re = explicit ? new RegExp(explicit[1], explicit[2].replace('g', '')) : new RegExp(arg, 'i');
+    // `g` and `y` make one RegExp carry lastIndex from one file to the next.
+    const re = explicit ? new RegExp(explicit[1], explicit[2].replace(/[gy]/g, '')) : new RegExp(arg, 'i');
     return (relativePath) => re.test(relativePath);
   } catch {
     const needle = arg.toLowerCase();

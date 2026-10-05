@@ -199,6 +199,19 @@ describe('test-file-discovery helpers', () => {
       expect(resolve(['/^top\\./']).files).toEqual([path.join(rootDir, 'top.test.ts')]);
     });
 
+    it('reads a regular expression with glob-like characters as a filter when it globs nothing', () => {
+      expect(resolve(['login.*test']).files).toEqual([path.join(rootDir, 'tests/pw/login.test.ts')]);
+      expect(resolve(['/log.*in/']).files).toEqual([path.join(rootDir, 'tests/pw/login.test.ts')]);
+      expect(resolve(['sign(up)?']).files).toEqual([path.join(rootDir, 'tests/pw/signup.test.ts')]);
+      expect(resolve(['[ls]\\w+\\.test']).files).toHaveLength(2);
+      expect(resolve(['/^tests\\/pw\\/(login|signup)/']).files).toHaveLength(2);
+    });
+
+    it('ignores a sticky or global flag, which would carry state from one file to the next', () => {
+      expect(resolve(['/login/y']).files).toEqual([path.join(rootDir, 'tests/pw/login.test.ts')]);
+      expect(resolve(['/test/gy']).files).toHaveLength(4);
+    });
+
     it('falls back to a literal substring when the filter is not a valid regular expression', () => {
       expect(resolve(['login(']).unmatched).toEqual(['login(']);
     });
