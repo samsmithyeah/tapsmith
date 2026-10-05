@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 // `defineConfig` merges DEFAULT_CONFIG, whose `rootDir` is the *loading*
 // process's cwd, so `raw.rootDir ?? root` always kept cwd and silently
@@ -374,6 +375,25 @@ describe('loadConfig rootDir anchoring', () => {
         const { stderr } = loadWithStderr();
         expect(stderr).toContain("Warning: the config's own warning");
         expect(stderr).not.toContain('MODULE_TYPELESS_PACKAGE_JSON');
+      });
+
+      it('are printed again for imports after the load, including overlapping loads', () => {
+        fs.writeFileSync(path.join(root, 'package.json'), PACKAGES['without "type"'], 'utf-8');
+        fs.writeFileSync(path.join(root, 'tapsmith.config.ts'), 'export default { platform: "ios" };\n', 'utf-8');
+        // Another typeless package, so Node warns afresh (once per package.json).
+        const other = path.join(root, 'other');
+        fs.mkdirSync(other);
+        fs.writeFileSync(path.join(other, 'package.json'), '{ "name": "other" }\n', 'utf-8');
+        fs.writeFileSync(path.join(other, 'later.ts'), 'export const later: number = 1;\n', 'utf-8');
+        const script = `const { loadConfig } = await import(${JSON.stringify(configModule)});\n`
+          + `await Promise.all([loadConfig(${JSON.stringify(root)}), loadConfig(${JSON.stringify(root)})]);\n`
+          + `await import(${JSON.stringify(pathToFileURL(path.join(other, 'later.ts')).href)});\n`
+          + 'await new Promise((resolve) => setImmediate(resolve));\n';
+        const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: root, encoding: 'utf-8' });
+        expect(child.status, child.stderr).toBe(0);
+        expect(child.stderr).toContain('MODULE_TYPELESS_PACKAGE_JSON');
+        expect(child.stderr).toContain(path.join(other, 'later.ts'));
+        expect(child.stderr).not.toContain('tapsmith.config.ts');
       });
     });
 
