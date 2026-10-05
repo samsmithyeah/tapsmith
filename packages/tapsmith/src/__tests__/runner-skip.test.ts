@@ -349,6 +349,30 @@ describe('test.skip() inside a test', () => {
     expect(body).not.toHaveBeenCalled();
   });
 
+  it('in beforeAll still runs the scope afterAll hooks', async () => {
+    const cleanup = vi.fn();
+    const result = await run(() => {
+      tapsmithTest.describe('group', () => {
+        tapsmithBeforeAll(async () => { /* creates a backend account */ });
+        tapsmithBeforeAll(async () => { tapsmithTest.skip(true, 'flag off'); });
+        tapsmithAfterAll(cleanup);
+        tapsmithTest('a', async () => {});
+      });
+    });
+    expect(statuses(result)).toEqual({ 'group > a': 'skipped' });
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('is recognised when thrown by another copy of the runner module (CommonJS projects)', async () => {
+    // A CJS user project loads its own instance of runner.js, so the skip it
+    // throws is not an instance of this module's class.
+    const foreignSkip = Object.assign(new Error('Test skipped'), { [Symbol.for('tapsmith.TestSkipError')]: true });
+    const result = await run(() => {
+      tapsmithTest('x', async () => { throw foreignSkip; });
+    });
+    expect(statuses(result)).toEqual({ x: 'skipped' });
+  });
+
   it('in afterAll is ignored rather than reported as a hook error', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {

@@ -771,15 +771,21 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
  * Thrown by a runtime `test.skip()` to stop the running test, hook or
  * fixture; the runner turns it into a skipped result instead of a failure.
  */
+/** Brand for cross-instance checks: CJS projects load a second copy of this module. */
+const TEST_SKIP_BRAND = Symbol.for('tapsmith.TestSkipError');
+
 class TestSkipError extends Error {
+  readonly [TEST_SKIP_BRAND] = true;
+
   constructor(description: unknown) {
     super(typeof description === 'string' && description ? `Test skipped: ${description}` : 'Test skipped');
     this.name = 'TestSkipError';
   }
 }
 
+/** Brand-based like isAbortError: the user's file may throw another instance's class. */
 function isTestSkip(err: unknown): err is TestSkipError {
-  return err instanceof TestSkipError;
+  return typeof err === 'object' && err !== null && (err as Record<symbol, unknown>)[TEST_SKIP_BRAND] === true;
 }
 
 /**
@@ -1685,6 +1691,9 @@ async function runSuiteContext(
   // recoverable infrastructure error there is the embedder's to handle —
   // see the catch below.
   let fileEntryResetError: Error | undefined;
+  // Set when a beforeAll hook called test.skip(): the scope runs on with
+  // every test skipped, so its afterAll hooks still run (PILOT-546).
+  let skippedByBeforeAll = false;
 
   try {
     const runScopeSetup = async (): Promise<void> => {
@@ -1758,76 +1767,70 @@ async function runSuiteContext(
     }
 
     // test.skip() in a beforeAll hook skips every test of the scope, the way
-    // Playwright does (PILOT-546). The hooks that did run are not undone.
+    // Playwright does (PILOT-546): carry on with the scope marked skipped, so
+    // its tests are reported skipped and its afterAll hooks still clean up
+    // after the beforeAll hooks that did run.
     if (isTestSkip(err)) {
-      beforeAllCollector?.cleanup();
-      const skipped = skipAll(ctx, parentPrefix);
-      for (const tr of collectResults(skipped)) {
-        tr.project = opts.projectName;
-        tr.filePath = opts.testFilePath;
+      beforeAllCollector?.endGroup();
+      skippedByBeforeAll = true;
+    } else {
+      // beforeAll failed — mark all tests in this context as failed and bail out.
+      // This prevents a single beforeAll error from crashing the entire runner.
+      const beforeAllError = err instanceof Error ? err : new Error(String(err));
+
+      // Capture a screenshot so the user can see the device state at the time
+      // of failure — otherwise beforeAll errors are text-only with no visual
+      // context for debugging.
+      let beforeAllScreenshot: string | undefined;
+      if (opts.config.screenshot !== 'never') {
+        const label = parentPrefix ? `beforeAll_${parentPrefix}` : 'beforeAll';
+        beforeAllScreenshot = await captureFailureScreenshots(opts, opts.screenshotDir, label);
+      }
+
+      // Package whatever the beforeAll collector recorded into a trace ZIP.
+      // The trace captures every action that ran before the failure — invaluable
+      // for debugging why beforeAll couldn't find an element or timed out.
+      let beforeAllTrace: string | undefined;
+      if (beforeAllCollector) {
+        try {
+          beforeAllCollector.endGroup();
+          const outputDir = path.resolve(opts.config.rootDir, opts.config.outputDir, 'traces');
+          const label = parentPrefix || 'beforeAll';
+          beforeAllTrace = packageTrace(beforeAllCollector, {
+            testFile: opts.testFilePath ?? '',
+            testName: label,
+            testStatus: 'failed',
+            testDuration: Date.now() - suiteStart,
+            startTime: suiteStart,
+            endTime: Date.now(),
+            ...(await traceDeviceMetadata(opts)),
+            tapsmithVersion: getPackageVersion(),
+            error: beforeAllError.message,
+            outputDir,
+            rootDir: opts.config.rootDir,
+            project: opts.projectName,
+            appState: policy.appState || undefined,
+            appReset: policy.mode,
+            appResetScope: policy.scope,
+          });
+        } catch {
+          // Trace packaging is best-effort
+        }
+        beforeAllCollector.cleanup();
+      }
+
+      const failed = failAll(ctx, parentPrefix, beforeAllError, opts.projectName, beforeAllScreenshot, beforeAllTrace);
+      // A dialog the scope-entry reset closed may be why the scope failed.
+      drainPreflightNotices(opts, null);
+      const scopeWarnings = opts._preflightWarnings?.splice(0) ?? [];
+      for (const tr of collectResults(failed)) {
+        if (scopeWarnings.length > 0) tr.warnings = [...scopeWarnings];
         result.tests.push(tr);
         opts.reporter?.onTestEnd?.(tr);
       }
       result.durationMs = Date.now() - suiteStart;
       return result;
     }
-
-    // beforeAll failed — mark all tests in this context as failed and bail out.
-    // This prevents a single beforeAll error from crashing the entire runner.
-    const beforeAllError = err instanceof Error ? err : new Error(String(err));
-
-    // Capture a screenshot so the user can see the device state at the time
-    // of failure — otherwise beforeAll errors are text-only with no visual
-    // context for debugging.
-    let beforeAllScreenshot: string | undefined;
-    if (opts.config.screenshot !== 'never') {
-      const label = parentPrefix ? `beforeAll_${parentPrefix}` : 'beforeAll';
-      beforeAllScreenshot = await captureFailureScreenshots(opts, opts.screenshotDir, label);
-    }
-
-    // Package whatever the beforeAll collector recorded into a trace ZIP.
-    // The trace captures every action that ran before the failure — invaluable
-    // for debugging why beforeAll couldn't find an element or timed out.
-    let beforeAllTrace: string | undefined;
-    if (beforeAllCollector) {
-      try {
-        beforeAllCollector.endGroup();
-        const outputDir = path.resolve(opts.config.rootDir, opts.config.outputDir, 'traces');
-        const label = parentPrefix || 'beforeAll';
-        beforeAllTrace = packageTrace(beforeAllCollector, {
-          testFile: opts.testFilePath ?? '',
-          testName: label,
-          testStatus: 'failed',
-          testDuration: Date.now() - suiteStart,
-          startTime: suiteStart,
-          endTime: Date.now(),
-          ...(await traceDeviceMetadata(opts)),
-          tapsmithVersion: getPackageVersion(),
-          error: beforeAllError.message,
-          outputDir,
-          rootDir: opts.config.rootDir,
-          project: opts.projectName,
-          appState: policy.appState || undefined,
-          appReset: policy.mode,
-          appResetScope: policy.scope,
-        });
-      } catch {
-        // Trace packaging is best-effort
-      }
-      beforeAllCollector.cleanup();
-    }
-
-    const failed = failAll(ctx, parentPrefix, beforeAllError, opts.projectName, beforeAllScreenshot, beforeAllTrace);
-    // A dialog the scope-entry reset closed may be why the scope failed.
-    drainPreflightNotices(opts, null);
-    const scopeWarnings = opts._preflightWarnings?.splice(0) ?? [];
-    for (const tr of collectResults(failed)) {
-      if (scopeWarnings.length > 0) tr.warnings = [...scopeWarnings];
-      result.tests.push(tr);
-      opts.reporter?.onTestEnd?.(tr);
-    }
-    result.durationMs = Date.now() - suiteStart;
-    return result;
   }
 
   // Scope setup time (app reset + beforeAll) is attributed to the first test
@@ -1875,7 +1878,7 @@ async function runSuiteContext(
     // testFilter is a case-insensitive substring match against the fullName.
     // grep / grepInvert match against the fullName as regular expressions.
     const filteredOut = !passesTestFilter(fullName, opts);
-    const shouldSkip = entry.skip || !!ctx.skipped || (hasOnly && !entry.only) || filteredOut || !!serialGroup?.failed;
+    const shouldSkip = entry.skip || !!ctx.skipped || skippedByBeforeAll || (hasOnly && !entry.only) || filteredOut || !!serialGroup?.failed;
 
     if (shouldSkip) {
       const skippedResult: TestResult = {
@@ -2821,7 +2824,7 @@ async function runSuiteContext(
       continue;
     }
 
-    if (serialGroup?.failed || ctx.skipped) {
+    if (serialGroup?.failed || ctx.skipped || skippedByBeforeAll) {
       // An earlier test of the serial group failed, or this scope is skipped
       // by a describe-level test.skip(): the whole describe is skipped
       // without its hooks or app reset, and — like a test the loop above
