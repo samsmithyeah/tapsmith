@@ -139,6 +139,19 @@ describe('runTestFile — a file that fails to load (PILOT-545)', () => {
     expect(collectResults(fineSuite)[0].fileLevelFailure).toBeUndefined();
   });
 
+  it('fails only the file when it calls a Playwright API Tapsmith does not have yet at load (test.fixme)', async () => {
+    setup();
+    const filePath = writeFile('e-fixme.test.mjs', `
+      import { test } from ${JSON.stringify(runnerUrl)};
+      test.fixme('later', async () => {});
+    `);
+
+    const [result] = collectResults(await runTestFile(filePath, makeOpts()));
+
+    expect(result).toMatchObject({ status: 'failed', fileLevelFailure: true, fullName: 'e-fixme.test.mjs — failed to load' });
+    expect(result.error!.message).toMatch(/test\.fixme\(\) isn't supported in Tapsmith yet/);
+  });
+
   it('wraps a non-Error value thrown at load', async () => {
     setup();
     const filePath = writeFile('c-throws-string.test.mjs', `
