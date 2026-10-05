@@ -22,6 +22,17 @@ error, an import that does not resolve, an exception at the top level), the comm
 error and the file's path; it never falls back to another candidate or to the defaults. The
 defaults apply only when no config file exists.
 
+The config must be the file's default export (`export default defineConfig({ ... })`), and Tapsmith
+checks it before doing any work, because a config runs without type-checking. An unknown option, a
+value of the wrong type or a value outside the allowed set (at the top level, in a project or in a
+project's `use`) stops the command with every problem and the file's path:
+
+```text
+Invalid config file /path/to/tapsmith.config.ts:
+  - unknown option 'timout' (did you mean 'timeout'?)
+  - platform must be 'android' or 'ios' (got "iOS"; did you mean 'ios'?)
+```
+
 `apk` lets Tapsmith install the app under test itself, and `package` is what it
 launches and resets: without `package`, the app is installed but never launched or
 reset between test files. For iOS, set `platform: "ios"`, `app`, `package` and

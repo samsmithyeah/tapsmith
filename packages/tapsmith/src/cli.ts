@@ -9,7 +9,7 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { printsBanner, runCli, type CliHandlers, type TestCommandArgs } from './cli-program.js';
-import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, primaryDevicePin, deviceGroupSize, assignGroupMemberDevices, EXPLICIT_WORKERS, isExplicitWorkers, isTapsmithNotInstalledError, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
+import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, primaryDevicePin, deviceGroupSize, assignGroupMemberDevices, EXPLICIT_WORKERS, isExplicitWorkers, isTapsmithNotInstalledError, isConfigValidationError, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
 import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
@@ -3042,7 +3042,11 @@ main().catch(async (err) => {
 
   // Tapsmith missing from the project (PILOT-551): the message is the whole
   // story and the fix; a stack of loader frames would bury it.
-  if (isTapsmithNotInstalledError(err)) {
+  // A bad key or value in the config (PILOT-552): the message names the file
+  // and every problem; the loader's stack would bury them.
+  // Only one traced to the config file: a test.use() error needs its stack to
+  // point at the spec that made it.
+  if (isTapsmithNotInstalledError(err) || (isConfigValidationError(err) && err.configPath)) {
     console.error(red(message));
     if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) console.error(err.stack);
     process.exit(1);

@@ -248,7 +248,8 @@ describe('loadConfig rootDir anchoring', () => {
       fs.writeFileSync(
         path.join(pkg, 'index.js'),
         'import * as path from "node:path";\nconst here = path.resolve(import.meta.dirname);\n'
-        + 'export const defineConfig = (c) => ({ ...c, here });\n',
+        // Not added to the config: an unknown key is now an error (PILOT-552).
+        + 'export const defineConfig = (c) => (here ? c : null);\n',
         'utf-8',
       );
       const file = path.join(root, 'tapsmith.config.ts');
