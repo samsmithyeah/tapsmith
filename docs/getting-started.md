@@ -39,8 +39,10 @@ Apple Developer account, device pairing). See [iOS physical devices](./ios-physi
 ## Installation
 
 ```bash
-npm install tapsmith
+npm install -D tapsmith@beta
 ```
+
+Tapsmith 0.6 is in beta, published under npm's `beta` tag. Until it is released, a plain `npm install tapsmith` installs the previous stable release (0.5).
 
 This installs the TypeScript SDK, test runner, the Tapsmith daemon binary for your platform, and the Android agent APKs (via the `@tapsmith/agent-android` optional dependency).
 
