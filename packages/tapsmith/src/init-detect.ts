@@ -108,7 +108,8 @@ export interface ExpoProject {
   usesTapsmithHooks: boolean;
 }
 
-const EXPO_CONFIG_FILES = ['app.json', 'app.config.ts', 'app.config.js', 'app.config.mjs', 'app.config.cjs', 'app.config.json'];
+const EXPO_DYNAMIC_CONFIG_FILES = ['app.config.ts', 'app.config.js', 'app.config.mjs', 'app.config.cjs', 'app.config.json'];
+const EXPO_CONFIG_FILES = ['app.json', ...EXPO_DYNAMIC_CONFIG_FILES];
 
 /** The ids an Expo app config declares: `app.json` (wrapped in `expo` or not) or `expo config` output. */
 export function parseExpoAppConfig(config: unknown): { androidPackage?: string; iosBundleId?: string } {
@@ -136,7 +137,9 @@ function readJson(file: string): unknown {
  * The project's resolved public app config. The project's own Expo CLI
  * (`expo config`) evaluates a dynamic `app.config.ts`/`.js` exactly as a
  * build would; when it can't run (dependencies not installed, a config that
- * throws), a static `app.json` is read instead.
+ * throws), a static `app.json` is read instead — unless an `app.config.*`
+ * exists, which takes app.json only as its base and may override the ids, so
+ * nothing is read rather than a possibly stale id.
  */
 export function readExpoAppConfig(cwd: string): unknown {
   let cli: string | undefined;
@@ -160,6 +163,7 @@ export function readExpoAppConfig(cwd: string): unknown {
       // Fall through to the static read.
     }
   }
+  if (EXPO_DYNAMIC_CONFIG_FILES.some((f) => fs.existsSync(path.join(cwd, f)))) return undefined;
   return readJson(path.join(cwd, 'app.json'));
 }
 

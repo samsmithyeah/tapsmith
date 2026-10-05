@@ -115,6 +115,12 @@ describe('readExpoAppConfig() (PILOT-557)', () => {
     expect(readExpoAppConfig(dir)).toEqual(APP_JSON);
   });
 
+  it('does not fall back to app.json when a dynamic app config exists, since it may override the ids', () => {
+    const dir = project({ 'package.json': { dependencies: { expo: '~55.0.0' } }, 'app.json': APP_JSON, 'app.config.ts': 'throw new Error("boom")' });
+    fakeExpoCli(dir, 'process.exit(1)');
+    expect(readExpoAppConfig(dir)).toBeUndefined();
+  });
+
   it('falls back to app.json when the Expo CLI prints something other than JSON', () => {
     const dir = project({ 'package.json': { dependencies: { expo: '~55.0.0' } }, 'app.json': APP_JSON });
     fakeExpoCli(dir, 'console.log("Starting project…")');
