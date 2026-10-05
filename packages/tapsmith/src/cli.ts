@@ -31,7 +31,7 @@ import {
 import type { PreparedState, ResetCapabilities } from './app-reset.js';
 import { claimDeviceOrThrow, claimFirstFree, claimUpTo, currentSession, ensureClaimSession, devicesHeldByThisProcess, heldDevicesNote, releaseDeviceClaim, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
-import { discoverTestFiles } from './test-file-discovery.js';
+import { discoverTestFiles, noTestFilesFoundMessage, relativeTestPath, resolveTestFileArgs } from './test-file-discovery.js';
 import { resolveTsxBin } from './child-scripts.js';
 import {
   resolveTraceConfig,
@@ -1965,6 +1965,10 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
 
   let projects: import('./project.js').ResolvedProject[];
   let projectWaves: import('./project.js').ResolvedProject[][];
+  // What the positional arguments failed to select, for "No tests found".
+  let unmatchedFileArgs: string[] = [];
+  const filesOutsideProjects: string[] = [];
+  const discoveredByProject = new Map<string, string[]>();
 
   if (hasProjects && !hasExplicitFiles) {
     // Full project mode — discover all files per project
@@ -1982,7 +1986,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     }
     projectWaves = topologicalSort(projects);
     for (const project of projects) {
-      project.testFiles = await discoverTestFiles(project.testMatch, config.rootDir, undefined, project.testIgnore);
+      project.testFiles = await discoverTestFiles(project.testMatch, config.rootDir, project.testIgnore);
     }
   } else if (hasProjects && hasExplicitFiles) {
     // Explicit files with projects — auto-run dependencies
@@ -1996,15 +2000,30 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       }
     }
     const selectedSet = selectedProjects ? new Set(selectedProjects) : undefined;
-    const explicitPaths = args.files.map((f: string) => path.resolve(config.rootDir, f));
+    // Directories, globs and filters select among the files the (selected)
+    // projects discover; a file named outright is kept even if none does,
+    // and is then reported below rather than silently dropped.
+    for (const project of allProjects) {
+      if (selectedSet && !selectedSet.has(project.name)) continue;
+      const files = await discoverTestFiles(project.testMatch, config.rootDir, project.testIgnore);
+      discoveredByProject.set(project.name, files);
+    }
+    const resolution = resolveTestFileArgs(
+      args.files,
+      [...new Set([...discoveredByProject.values()].flat())].sort(),
+      [config.rootDir, process.cwd()],
+    );
+    unmatchedFileArgs = resolution.unmatched;
+    const explicitPaths = resolution.files;
 
     // Find which projects the explicit files belong to
     const targetProjectNames = new Set<string>();
     const filesByProject = new Map<string, string[]>();
     for (const filePath of new Set(explicitPaths)) {
-      for (const name of findProjectsForFile(filePath, allProjects, config.rootDir)) {
-        // When `--project` is given, only keep matches in the selected set.
-        if (selectedSet && !selectedSet.has(name)) continue;
+      const owners = findProjectsForFile(filePath, allProjects, config.rootDir)
+        .filter((name) => !selectedSet || selectedSet.has(name));
+      if (owners.length === 0) filesOutsideProjects.push(filePath);
+      for (const name of owners) {
         targetProjectNames.add(name);
         let list = filesByProject.get(name);
         if (!list) {
@@ -2028,7 +2047,8 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
         project.testFiles = filesByProject.get(project.name) ?? [];
       } else {
         // Dependency project — run all its files
-        project.testFiles = await discoverTestFiles(project.testMatch, config.rootDir, undefined, project.testIgnore);
+        project.testFiles = discoveredByProject.get(project.name)
+          ?? await discoverTestFiles(project.testMatch, config.rootDir, project.testIgnore);
       }
     }
   } else {
@@ -2046,7 +2066,14 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       effectiveConfig: config,
       deviceSignature: makeDeviceSignature(config),
     };
-    defaultProject.testFiles = await discoverTestFiles(config.testMatch, config.rootDir, args.files);
+    const discovered = await discoverTestFiles(config.testMatch, config.rootDir);
+    if (hasExplicitFiles) {
+      const resolution = resolveTestFileArgs(args.files, discovered, [config.rootDir, process.cwd()]);
+      unmatchedFileArgs = resolution.unmatched;
+      defaultProject.testFiles = resolution.files;
+    } else {
+      defaultProject.testFiles = discovered;
+    }
     projects = [defaultProject];
     projectWaves = [[defaultProject]];
   }
@@ -2056,9 +2083,25 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
   // Deduplicate (a file could match multiple projects' globs)
   testFiles = [...new Set(testFiles)].sort();
 
+  // Before any daemon, device or tsx work: an argument that selects nothing
+  // must not cost a device boot to find out (PILOT-553).
   if (testFiles.length === 0) {
-    console.error(red('No test files found.'));
+    console.error(red(noTestFilesFoundMessage({
+      args: hasExplicitFiles ? args.files : [],
+      unmatched: unmatchedFileArgs,
+      outsideProjects: filesOutsideProjects.map((f) => relativeTestPath(f, config.rootDir)),
+      testMatch: hasProjects
+        ? [...new Set(projects.flatMap((p) => p.testMatch))]
+        : config.testMatch,
+      rootDir: config.rootDir,
+    })));
     process.exit(1);
+  }
+  for (const arg of unmatchedFileArgs) {
+    console.error(yellow(`Warning: "${arg}" matched no test file — running the files the other arguments selected.`));
+  }
+  for (const file of filesOutsideProjects) {
+    console.error(yellow(`Warning: ${relativeTestPath(file, config.rootDir)} is not matched by any${selectedProjects ? ' selected' : ''} project's testMatch, so it does not run.`));
   }
 
   let shardMessage: string | undefined;
