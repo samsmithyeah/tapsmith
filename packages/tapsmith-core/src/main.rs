@@ -175,10 +175,12 @@ async fn main() -> Result<()> {
     let device_manager = Arc::new(RwLock::new(DeviceManager::with_platform_filter(
         args.platform,
     )));
-    let agent_connection = Arc::new(RwLock::new(match args.agent_port {
+    let agent_connection = match args.agent_port {
         Some(port) => AgentConnection::with_port(port),
         None => AgentConnection::new(),
-    }));
+    };
+    let agent_forward = agent_connection.forward();
+    let agent_connection = Arc::new(RwLock::new(agent_connection));
 
     // Tool discovery runs in the background so the gRPC listener binds as
     // early as possible. On a loaded CI runner these probes (plus macOS's
@@ -259,11 +261,15 @@ async fn main() -> Result<()> {
         });
     // Stop the iOS agents as soon as shutdown begins, alongside the drain
     // rather than after it: a long-lived stream can hold the drain open, and
-    // the agents must not outlive the daemon either way (PILOT-299).
+    // the agents must not outlive the daemon either way (PILOT-299). The
+    // Android agent's `adb forward` goes at the same moment — before a caller
+    // that SIGTERMed this daemon can respawn one that forwards the same port
+    // — so it never outlives the daemon and shadows the next session's agent
+    // port (PILOT-550).
     let mut teardown_began = shutdown_began_rx.clone();
     let agent_teardown = tokio::spawn(async move {
         if teardown_began.wait_for(|began| *began).await.is_ok() {
-            ios::agent_registry::shutdown_all().await;
+            tokio::join!(ios::agent_registry::shutdown_all(), agent_forward.remove());
         }
     });
     // The drain waits for every open connection. A client that keeps a stream
