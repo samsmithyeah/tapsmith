@@ -201,4 +201,20 @@ describe.skipIf(!DIST_BUILT && !process.env.CI)('tapsmith test selection', { tim
     expect(status).toBe(1);
     expect(reachedDevice).toBe(false);
   });
+
+  it('runs a dependency project in full when a filter also matches one of its files', () => {
+    // Playwright runs dependency projects whole: a filter selects among the
+    // projects that depend on them, so `auth` must not cut the setup project
+    // down to auth.setup.ts and leave seed.setup.ts out.
+    for (const f of ['tests/auth.setup.ts', 'tests/seed.setup.ts']) fs.writeFileSync(path.join(root, f), testFile('setup', ['s']));
+    fs.mkdirSync(path.join(root, 'tests', 'auth'));
+    fs.writeFileSync(path.join(root, 'tests', 'auth', 'flow.test.ts'), testFile('auth', ['logs in']));
+    fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'),
+      'export default { platform: "android", package: "com.example", launchEmulators: false, projects: ['
+      + '{ name: "setup", testMatch: ["**/*.setup.ts"] }, '
+      + '{ name: "main", testMatch: ["tests/auth/**/*.test.ts"], dependencies: ["setup"] }] };\n');
+    const { output, reachedDevice } = run('auth');
+    expect(output).toContain('3 test files');
+    expect(reachedDevice).toBe(true);
+  });
 });

@@ -2015,11 +2015,15 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     selectionTestMatch = [...new Set(allProjects
       .filter((p) => discoveredByProject.has(p.name))
       .flatMap((p) => p.testMatch))];
-    const resolution = resolveTestFileArgs(
-      args.files,
-      [...new Set([...discoveredByProject.values()].flat())].sort(),
-      [config.rootDir, process.cwd()],
-    );
+    // A dependency (setup) project runs whole, as in Playwright: directories,
+    // globs and filters select among the projects that depend on others'
+    // setup, so `auth` cannot cut a setup project down to auth.setup.ts.
+    // Naming a setup file outright, or selecting its project, still works.
+    const dependencyNames = new Set(allProjects.flatMap((p) => p.dependencies));
+    const filterProjects = [...discoveredByProject.keys()]
+      .filter((name) => !dependencyNames.has(name) || selectedSet?.has(name));
+    const filterCandidates = [...new Set(filterProjects.flatMap((name) => discoveredByProject.get(name) ?? []))].sort();
+    const resolution = resolveTestFileArgs(args.files, filterCandidates, [config.rootDir, process.cwd()]);
     unmatchedFileArgs = resolution.unmatched;
     regexReadFileArgs = resolution.readAsRegex;
     const explicitPaths = resolution.files;
@@ -2031,7 +2035,8 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       // The projects whose discovery found it — `testMatch` may be shaped
       // (`./…`) so only glob reads it — else, for a file named outright that
       // none discovered, the projects whose patterns match it.
-      const discoveredBy = [...discoveredByProject].filter(([, files]) => files.includes(filePath)).map(([name]) => name);
+      const foundBy = (names: string[]): string[] => names.filter((name) => discoveredByProject.get(name)?.includes(filePath));
+      const discoveredBy = foundBy(filterProjects).length > 0 ? foundBy(filterProjects) : foundBy([...discoveredByProject.keys()]);
       const owners = (discoveredBy.length > 0 ? discoveredBy : findProjectsForFile(filePath, allProjects, config.rootDir))
         .filter((name) => !selectedSet || selectedSet.has(name));
       if (owners.length === 0) filesOutsideProjects.push(filePath);

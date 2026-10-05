@@ -46,11 +46,13 @@ export function discoverTestNames(
     try {
       child = fork(script, [], {
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-        // Its own process group, so the whole tree can be killed: under tsx
+        // Under tsx, its own process group, so the whole tree can be killed:
         // the file is imported by a grandchild that tsx does not pass SIGKILL
         // to. Being detached, it also misses the terminal's Ctrl-C, hence the
-        // 'exit' hook below.
-        detached: true,
+        // 'exit' hook below (the CLI runs under tsx then, whose signal handler
+        // exits). Under plain node there is no grandchild, and staying in the
+        // foreground group lets Ctrl-C reach it directly.
+        detached: loader !== undefined,
         ...(loader ? { execPath: loader } : {}),
         env: { ...process.env, NODE_PATH: path.resolve(pkgDir, '..') },
       });
@@ -60,7 +62,7 @@ export function discoverTestNames(
     }
     const killTree = (): void => {
       try {
-        if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+        if (loader !== undefined && child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
         else child.kill('SIGKILL');
       } catch { /* already gone */ }
     };
