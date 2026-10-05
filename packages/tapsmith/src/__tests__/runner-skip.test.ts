@@ -208,6 +208,29 @@ describe('test.skip(condition) in a describe', () => {
     }
   });
 
+  it('at the top of a file sets up no worker fixture, and a skip inside one skips the file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-skip-'));
+    const runnerUrl = pathToFileURL(path.resolve('src/runner.ts')).href;
+    const write = (name: string, skipLine: string, fixtureBody: string): string => {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, [
+        `import { test as base } from ${JSON.stringify(runnerUrl)};`,
+        `const test = base.extend({ backend: [async ({}, use) => { ${fixtureBody} await use(1); }, { scope: 'worker' }] });`,
+        skipLine,
+        `test('one', async ({ backend }) => { throw new Error('ran ' + backend); });`,
+      ].join('\n'));
+      return pathToFileURL(file).href;
+    };
+    try {
+      const unreachable = write('a.test.mjs', `test.skip(true, 'needs the CI backend');`, `throw new Error('backend unreachable');`);
+      expect(statuses(await runTestFile(unreachable, makeOpts({ bustImportCache: true })))).toEqual({ one: 'skipped' });
+      const skipsInFixture = write('b.test.mjs', '', `test.skip(true, 'no backend');`);
+      expect(statuses(await runTestFile(skipsInFixture, makeOpts({ bustImportCache: true })))).toEqual({ one: 'skipped' });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('refuses call shapes it does not support with a clear message', () => {
     pushContext();
     try {
@@ -283,6 +306,19 @@ describe('test.skip() inside a test', () => {
     }, { config: makeConfig({ retries: 2 }) });
     expect(statuses(result)).toEqual({ x: 'skipped' });
     expect(body).toHaveBeenCalledOnce();
+  });
+
+  it('on a retry after a failed attempt still reports the failure', async () => {
+    let attempt = 0;
+    const result = await run(() => {
+      tapsmithTest('x', async () => {
+        if (attempt++ === 0) throw new Error('first attempt failed');
+        tapsmithTest.skip(true, 'backend went away');
+      });
+    }, { config: makeConfig({ retries: 1 }) });
+    const x = collectResults(result)[0];
+    expect(x.status).toBe('failed');
+    expect(x.error?.message).toBe('first attempt failed');
   });
 
   it('does not stop a serial group', async () => {

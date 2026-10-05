@@ -1710,7 +1710,7 @@ test("share sheet", async ({ device, platform }) => {
 });
 ```
 
-A skipped test is not retried, and it does not stop a `describe.serial` group. Playwright's callback form, `test.skip(({ platform }) => …, description)`, isn't supported yet. Call `test.skip(condition)` inside the test instead, where the fixtures are available.
+A skipped test is not retried, and it does not stop a `describe.serial` group. A test that fails and is then skipped on a retry is reported as failed. A file skipped at the top level sets up none of its worker-scoped fixtures, and `test.skip()` inside a worker-scoped fixture skips the whole file. Playwright's callback form, `test.skip(({ platform }) => …, description)`, isn't supported yet. Call `test.skip(condition)` inside the test instead, where the fixtures are available.
 
 ### `test.use(options: UseOptions): void`
 

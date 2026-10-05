@@ -2756,6 +2756,13 @@ async function runSuiteContext(
       });
     }
 
+    // Skipped on a retry after a failed attempt: still a failure, as in
+    // Playwright — a skip must not hide the failure that came before it.
+    if (status === 'skipped' && firstFailure) {
+      status = 'failed';
+      ({ error, tracePath, screenshotPath, videoPath } = firstFailure);
+    }
+
     // Flaky pass: link the first FAILED attempt's artifacts in place of the
     // passing retry's — the failure is the thing worth opening. Falls back
     // to the retry's own artifacts when the failed attempt has none (e.g.
@@ -3173,13 +3180,21 @@ export async function runTestFile(
   let workerFixtures: Record<string, unknown> = opts.workerFixtures ?? {};
   let workerTeardown: (() => Promise<void>) | undefined;
 
-  if (!fileRegistry.isEmpty) {
-    const resolved = await resolveFixtures(fileRegistry, 'worker', {
-      ...baseFixtures,
-      ...workerFixtures,
-    });
-    workerFixtures = resolved.fixtures;
-    workerTeardown = resolved.teardown;
+  // A file skipped by a top-level test.skip() runs no test, so it sets up no
+  // worker fixture either (Playwright); test.skip() inside a worker fixture
+  // skips the whole file (PILOT-546).
+  if (!fileRegistry.isEmpty && !rootCtx.skipped) {
+    try {
+      const resolved = await resolveFixtures(fileRegistry, 'worker', {
+        ...baseFixtures,
+        ...workerFixtures,
+      });
+      workerFixtures = resolved.fixtures;
+      workerTeardown = resolved.teardown;
+    } catch (err) {
+      if (!isTestSkip(err)) throw err;
+      rootCtx.skipped = true;
+    }
   }
 
   const abortFileController = opts.abortFileOnError ? new AbortController() : undefined;
