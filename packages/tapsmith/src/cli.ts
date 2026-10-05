@@ -1967,6 +1967,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
   let projectWaves: import('./project.js').ResolvedProject[][];
   // What the positional arguments failed to select, for "No tests found".
   let unmatchedFileArgs: string[] = [];
+  let regexReadFileArgs: string[] = [];
   const filesOutsideProjects: string[] = [];
   const discoveredByProject = new Map<string, string[]>();
   // The testMatch patterns the selection was drawn from, for that message.
@@ -2020,6 +2021,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       [config.rootDir, process.cwd()],
     );
     unmatchedFileArgs = resolution.unmatched;
+    regexReadFileArgs = resolution.readAsRegex;
     const explicitPaths = resolution.files;
 
     // Find which projects the explicit files belong to
@@ -2080,6 +2082,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     if (hasExplicitFiles) {
       const resolution = resolveTestFileArgs(args.files, discovered, [config.rootDir, process.cwd()]);
       unmatchedFileArgs = resolution.unmatched;
+      regexReadFileArgs = resolution.readAsRegex;
       defaultProject.testFiles = resolution.files;
     } else {
       defaultProject.testFiles = discovered;
@@ -2102,6 +2105,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       outsideProjects: filesOutsideProjects.map((f) => relativeTestPath(f, config.rootDir)),
       testMatch: selectionTestMatch,
       rootDir: config.rootDir,
+      projectsSelected: selectedProjects !== undefined,
     })));
     process.exit(1);
   }
@@ -2163,6 +2167,10 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
   for (const arg of unmatchedFileArgs) {
     console.error(yellow(`Warning: "${arg}" matched no test file — running the files the other arguments selected.`));
   }
+  for (const arg of regexReadFileArgs) {
+    // A glob that globbed nothing can select far more as a regex (`tests/*`).
+    console.error(yellow(`Note: "${arg}" matched no file as a glob, so it was read as a regular expression over the test file paths.`));
+  }
   for (const file of filesOutsideProjects) {
     console.error(yellow(`Warning: ${relativeTestPath(file, config.rootDir)} is not matched by any${selectedProjects ? ' selected' : ''} project's testMatch, so it does not run.`));
   }
@@ -2196,7 +2204,12 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       (file) => names.get(file),
     );
     if (miss) {
-      console.error(red(noTestsMatchFilterMessage(miss, config.grep, config.grepInvert)));
+      console.error(red(noTestsMatchFilterMessage(
+        miss,
+        config.grep,
+        config.grepInvert,
+        hasProjects && projects.some((p) => p.grep !== undefined || p.grepInvert !== undefined),
+      )));
       process.exit(1);
     }
   }

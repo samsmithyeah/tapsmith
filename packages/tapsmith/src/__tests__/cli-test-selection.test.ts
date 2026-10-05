@@ -175,4 +175,30 @@ describe.skipIf(!DIST_BUILT && !process.env.CI)('tapsmith test selection', { tim
     expect(status).toBe(1);
     expect(reachedDevice).toBe(false);
   });
+
+  it('notes a glob that globbed nothing and was read as a regular expression', () => {
+    const { output, reachedDevice } = run('tests/*');
+    expect(output).toContain('Note: "tests/*" matched no file as a glob, so it was read as a regular expression');
+    expect(reachedDevice).toBe(true);
+  });
+
+  it('blames the --project choice for a file only an unselected project covers', () => {
+    fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'),
+      'export default { platform: "android", package: "com.example", launchEmulators: false, projects: ['
+      + '{ name: "pw", testMatch: ["tests/pw/**/*.test.ts"] }, { name: "other", testMatch: ["tests/other/**/*.test.ts"] }] };\n');
+    const { status, output, reachedDevice } = run('--project', 'other', 'tests/pw/login.test.ts');
+    expect(output).toContain('tests/pw/login.test.ts is not matched by any selected project\'s testMatch');
+    expect(status).toBe(1);
+    expect(reachedDevice).toBe(false);
+  });
+
+  it('names a project grep that filters out every test the root grep selects', () => {
+    fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'),
+      'export default { platform: "android", package: "com.example", launchEmulators: false, '
+      + 'projects: [{ name: "pw", testMatch: ["tests/pw/**/*.test.ts"], grep: /@ios/ }] };\n');
+    const { status, output, reachedDevice } = run('--grep', 'signs');
+    expect(output).toContain('No tests found: no test matches grep /signs/ together with the projects\' grep / grepInvert');
+    expect(status).toBe(1);
+    expect(reachedDevice).toBe(false);
+  });
 });

@@ -117,6 +117,11 @@ describe('noTestsMatchFilterMessage', () => {
       .toMatch(/^No tests found: no test matches the projects' grep \/ grepInvert\./);
   });
 
+  it('names the projects\' filters alongside the root ones when a project has any', () => {
+    expect(noTestsMatchFilterMessage({ fileCount: 1, testNames: ['a'] }, /a/, undefined, true))
+      .toMatch(/^No tests found: no test matches grep \/a\/ together with the projects' grep \/ grepInvert\./);
+  });
+
   it('lists at most ten tests', () => {
     const names = Array.from({ length: 14 }, (_, i) => `t${i}`);
     const message = noTestsMatchFilterMessage({ fileCount: 1, testNames: names }, /x/, undefined);

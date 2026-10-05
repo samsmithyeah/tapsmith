@@ -96,13 +96,17 @@ export function noTestsMatchFilterMessage(
   miss: SelectionMiss,
   grep: RegExp | RegExp[] | undefined,
   grepInvert: RegExp | RegExp[] | undefined,
+  /** Some project has its own grep / grepInvert, intersected with the root's. */
+  projectFilters = false,
 ): string {
   const describe = (label: string, value: RegExp | RegExp[] | undefined): string | undefined => {
     const patterns = value === undefined ? [] : Array.isArray(value) ? value : [value];
     return patterns.length > 0 ? `${label} ${patterns.map(String).join(', ')}` : undefined;
   };
-  const filters = [describe('grep', grep), describe('grep-invert', grepInvert)].filter(Boolean).join(', ')
-    || 'the projects\' grep / grepInvert';
+  const root = [describe('grep', grep), describe('grep-invert', grepInvert)].filter(Boolean).join(', ');
+  const filters = !root
+    ? 'the projects\' grep / grepInvert'
+    : projectFilters ? `${root} together with the projects' grep / grepInvert` : root;
   const files = `${miss.fileCount} test file${miss.fileCount === 1 ? '' : 's'}`;
   const lines = [`${NO_TESTS_MATCH_FILTER_PREFIX} ${filters}.`];
   lines.push(
