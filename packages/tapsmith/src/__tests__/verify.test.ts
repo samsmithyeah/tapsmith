@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { SpawnSyncOptions, SpawnSyncReturns } from 'node:child_process';
-import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport, noTestsRanError, runVerify, stderrTail, configLoadFix } from '../verify.js';
+import { pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport, noTestsRanError, grepRefusalError, runVerify, stderrTail, configLoadFix } from '../verify.js';
 import { TapsmithNotInstalledError } from '../config.js';
 
 // runVerify spawns the real `tapsmith test`; the tests below replace that
@@ -119,7 +119,7 @@ describe('noTestsRanError()', () => {
   });
 
   it('points at what can cause it: skipped tests and a grep, not file selection', () => {
-    // The file was selected: an unselected one exits "No test files found."
+    // The file was selected: an unselected one exits "No tests found."
     // before any report is written (RUN_FAILED), so testMatch is not the cause.
     const err = noTestsRanError(summarizeVerifyReport(reportOf(['skipped'])), 'tests/a.test.ts', false);
     expect(err?.fix).toMatch(/test\.skip/);
@@ -314,5 +314,24 @@ describe('stderrTail()', () => {
     // Cutting the raw text to 7 characters would leave "1mFatal".
     expect(stderr.slice(-7)).toBe('1mFatal');
     expect(stderrTail(stderr, 7)).toBe('Fatal');
+  });
+});
+
+describe('grepRefusalError()', () => {
+  const stderr = '\u001b[31mNo tests found: no test matches grep /zzzz/.\nChecked 1 test in 1 test file\u001b[39m\n';
+
+  it('reads the run\'s early grep refusal as NO_TESTS_RAN', () => {
+    const err = grepRefusalError(stderr, 'tests/a.test.ts', false);
+    expect(err?.message).toBe('No tests ran: tests/a.test.ts was filtered out (No tests found: no test matches grep /zzzz/.)');
+    expect(err?.fix).toMatch(/grep/);
+  });
+
+  it('does not name the throwaway smoke test', () => {
+    expect(grepRefusalError(stderr, 'tests/tapsmith-verify-x/smoke.test.ts', true)?.message).not.toContain('tapsmith-verify');
+  });
+
+  it('leaves any other failure, and uncaptured stderr, to RUN_FAILED', () => {
+    expect(grepRefusalError('Error: daemon failed to start', 'tests/a.test.ts', false)).toBeUndefined();
+    expect(grepRefusalError(undefined, 'tests/a.test.ts', false)).toBeUndefined();
   });
 });

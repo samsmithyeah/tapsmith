@@ -2559,7 +2559,19 @@ Run test files. If no files are specified, discovers tests using the `testMatch`
 ```bash
 npx tapsmith test
 npx tapsmith test tests/login.test.ts tests/signup.test.ts
+npx tapsmith test tests/auth                  # every test file under a directory
+npx tapsmith test 'tests/auth/*.test.ts'      # a glob (quote it so the shell leaves it alone)
+npx tapsmith test login checkout              # files whose path matches "login" or "checkout"
 ```
+
+As in Playwright, each argument is one of:
+
+- **a file** (relative to `rootDir` or the working directory, or absolute): run as named, even if `testMatch` would not discover it;
+- **a directory**: the test files under it;
+- **a glob**: the test files it matches;
+- **anything else**: a case-insensitive regular expression matched against each test file's path relative to `rootDir` (`/pattern/flags` sets the flags; an invalid expression is matched as plain text).
+
+Directories, globs and filters select from the files `testMatch` discovers, so they never pick up a helper module. An argument that matches nothing prints a warning; if nothing is selected at all, the run fails with `No tests found` — before it starts the daemon or touches a device.
 
 ### `tapsmith test --device <serial>` / `tapsmith test -d <serial>`
 
@@ -2625,7 +2637,7 @@ npx tapsmith test --grep "@smoke|@critical"  # Run smoke + critical tests by tag
 
 The pattern is compiled as a JavaScript `RegExp`. Combine with `--grep-invert` to further narrow the selection.
 
-If a `--grep` / `--grep-invert` filter selects zero tests (e.g. a typo'd pattern), the run exits non-zero with an error rather than reporting a green "0 tests" success.
+If a `--grep` / `--grep-invert` filter selects zero tests (e.g. a typo'd pattern), the run fails with `No tests found` and lists the tests there are, rather than reporting a green "0 tests" success. Like Playwright, Tapsmith reads the test names first, so this happens before it starts the daemon or touches a device (a file that fails to load leaves the question open, and the run goes ahead to report it). Watch and UI mode skip this check: an edit can add the test the pattern is waiting for, and UI mode lists every test to pick from.
 
 The same filter can be set in `tapsmith.config.ts`:
 

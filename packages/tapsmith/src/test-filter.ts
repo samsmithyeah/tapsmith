@@ -1,3 +1,5 @@
+import type { DiscoveredSuite } from './runner.js';
+
 /**
  * Whether a test's fully-qualified name (`describe > test`) matches a `test`
  * filter. Case-insensitive substring match — intentionally grep-like, so it
@@ -9,4 +11,117 @@
  */
 export function matchesTestFilter(fullName: string, filter: string): boolean {
   return fullName.toLowerCase().includes(filter.toLowerCase());
+}
+
+/** The selection filters a test's full name must pass to run. */
+export interface SelectionFilters {
+  testFilter?: string;
+  grep?: RegExp[];
+  /** Intersected with `grep`: a test must match both sets. */
+  projectGrep?: RegExp[];
+  grepInvert?: RegExp[];
+  /** Unioned with `grepInvert`: matching either excludes the test. */
+  projectGrepInvert?: RegExp[];
+}
+
+/**
+ * Whether a test's fully-qualified name passes every selection filter.
+ *
+ * - `testFilter`: case-insensitive substring (`matchesTestFilter`).
+ * - `grep` / `projectGrep`: each non-empty set needs at least one match.
+ * - `grepInvert` / `projectGrepInvert`: no regex in either may match.
+ */
+export function passesSelectionFilters(fullName: string, filters: SelectionFilters): boolean {
+  if (filters.testFilter && !matchesTestFilter(fullName, filters.testFilter)) return false;
+  if (!matchesEverySet(fullName, filters.grep) || !matchesEverySet(fullName, filters.projectGrep)) return false;
+  if (matchesAny(fullName, filters.grepInvert) || matchesAny(fullName, filters.projectGrepInvert)) return false;
+  return true;
+}
+
+function matchesEverySet(fullName: string, patterns: RegExp[] | undefined): boolean {
+  return !patterns || patterns.length === 0 || matchesAny(fullName, patterns);
+}
+
+// Reset lastIndex before each test(): a RegExp with the `g` flag is stateful.
+function matchesAny(fullName: string, patterns: RegExp[] | undefined): boolean {
+  return !!patterns && patterns.some((re) => (re.lastIndex = 0, re.test(fullName)));
+}
+
+/** A run's selection that matched no test: what was checked. */
+export interface SelectionMiss {
+  fileCount: number;
+  /** Every test's full name, in file order. */
+  testNames: string[];
+}
+
+/**
+ * Whether the selection filters select no test at all in these files, found
+ * by importing each file's test tree (no test body runs) — so a `--grep` that
+ * matches nothing fails before any device work, as Playwright lists its tests
+ * before starting workers (PILOT-553).
+ *
+ * Returns `undefined` as soon as one test passes, and also when a file fails
+ * to load: that file's tests are unknown, and the run itself reports its load
+ * error. A skipped test that passes the filters counts as selected — the run
+ * reports it as skipped rather than as "No tests found".
+ */
+export async function findSelectionMiss(
+  entries: Array<{ file: string; filters: SelectionFilters }>,
+  discover: (file: string) => Promise<DiscoveredSuite>,
+): Promise<SelectionMiss | undefined> {
+  const testNames: string[] = [];
+  const files = new Set<string>();
+  for (const { file, filters } of entries) {
+    let tree: DiscoveredSuite;
+    try {
+      tree = await discover(file);
+    } catch {
+      return undefined;
+    }
+    files.add(file);
+    for (const fullName of flattenDiscoveredNames(tree)) {
+      if (passesSelectionFilters(fullName, filters)) return undefined;
+      testNames.push(fullName);
+    }
+  }
+  return { fileCount: files.size, testNames: [...new Set(testNames)] };
+}
+
+function flattenDiscoveredNames(suite: DiscoveredSuite): string[] {
+  return [
+    ...suite.tests.map((t) => t.fullName),
+    ...suite.suites.flatMap(flattenDiscoveredNames),
+  ];
+}
+
+const MAX_LISTED_TESTS = 10;
+
+/** How `noTestsMatchFilterMessage` starts, for callers that parse a run's stderr. */
+export const NO_TESTS_MATCH_FILTER_PREFIX = 'No tests found: no test matches';
+
+/** The "No tests found" error for a `SelectionMiss`. */
+export function noTestsMatchFilterMessage(
+  miss: SelectionMiss,
+  grep: RegExp | RegExp[] | undefined,
+  grepInvert: RegExp | RegExp[] | undefined,
+): string {
+  const describe = (label: string, value: RegExp | RegExp[] | undefined): string | undefined => {
+    const patterns = value === undefined ? [] : Array.isArray(value) ? value : [value];
+    return patterns.length > 0 ? `${label} ${patterns.map(String).join(', ')}` : undefined;
+  };
+  const filters = [describe('grep', grep), describe('grep-invert', grepInvert)].filter(Boolean).join(', ')
+    || 'the projects\' grep / grepInvert';
+  const files = `${miss.fileCount} test file${miss.fileCount === 1 ? '' : 's'}`;
+  const lines = [`${NO_TESTS_MATCH_FILTER_PREFIX} ${filters}.`];
+  if (miss.testNames.length === 0) {
+    lines.push(`The ${files} hold no tests.`);
+    return lines.join('\n');
+  }
+  lines.push(
+    `Checked ${miss.testNames.length} test${miss.testNames.length === 1 ? '' : 's'} in ${files}; `
+    + 'the patterns match against the full "describe > test" name. The tests are:',
+  );
+  for (const name of miss.testNames.slice(0, MAX_LISTED_TESTS)) lines.push(`  - ${name}`);
+  if (miss.testNames.length > MAX_LISTED_TESTS) lines.push(`  … and ${miss.testNames.length - MAX_LISTED_TESTS} more`);
+  return lines.join('\n');
 }

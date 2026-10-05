@@ -2104,6 +2104,10 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     console.error(yellow(`Warning: ${relativeTestPath(file, config.rootDir)} is not matched by any${selectedProjects ? ' selected' : ''} project's testMatch, so it does not run.`));
   }
 
+  // Every project's files before sharding: whether a grep selects anything is
+  // a question about the whole suite, and must get one answer on every shard.
+  const unshardedFiles = projects.map((p) => ({ project: p, files: [...p.testFiles] }));
+
   let shardMessage: string | undefined;
   // Apply sharding — deterministic split within each project. Setup projects
   // (depended on by others) only run on shards that have tests from their dependents.
@@ -2150,6 +2154,38 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     const forwardArgs = process.argv.slice(2).filter((a) => a !== '--__tsx-reexec');
     reExecWithTsx(forwardArgs);
     return;
+  }
+
+  // A selection filter (grep / grep-invert, at root or any project) is active.
+  const selectionFilterActive =
+    config.grep !== undefined || config.grepInvert !== undefined ||
+    (hasProjects && projects.some((p) => p.grep !== undefined || p.grepInvert !== undefined));
+
+  // A grep that selects no test fails here, before the daemon, the device and
+  // the reporters (PILOT-553). After the tsx re-exec, so TypeScript test files
+  // import. Not in UI mode, which shows the tree to pick from, nor in watch
+  // mode, where an edit can add the test the pattern is waiting for.
+  if (selectionFilterActive && !args.ui && !args.watch) {
+    const { discoverTestFile } = await import('./runner.js');
+    const { findSelectionMiss, noTestsMatchFilterMessage } = await import('./test-filter.js');
+    const rootGrep = normalizeGrep(config.grep);
+    const rootGrepInvert = normalizeGrep(config.grepInvert);
+    const miss = await findSelectionMiss(
+      unshardedFiles.flatMap(({ project, files }) => files.map((file) => ({
+        file,
+        filters: {
+          grep: rootGrep,
+          grepInvert: rootGrepInvert,
+          projectGrep: normalizeGrep(project.grep),
+          projectGrepInvert: normalizeGrep(project.grepInvert),
+        },
+      }))),
+      discoverTestFile,
+    );
+    if (miss) {
+      console.error(red(noTestsMatchFilterMessage(miss, config.grep, config.grepInvert)));
+      process.exit(1);
+    }
   }
 
   // Retry-only video/trace modes start no recorder on attempt 0, so with
@@ -2325,13 +2361,10 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     console.log(`\nStarting watch mode for ${testFiles.length} test file(s)...\n`);
   }
 
-  // A selection filter (grep / grep-invert, at root or any project) is active.
-  // When such a filter selects zero runnable tests — i.e. every discovered test
-  // ends up skipped — that's a usage error (typically a typo'd pattern), not a
-  // green run. The exit paths below fail loud rather than reporting success.
-  const selectionFilterActive =
-    config.grep !== undefined || config.grepInvert !== undefined ||
-    (hasProjects && projects.some((p) => p.grep !== undefined || p.grepInvert !== undefined));
+  // When a selection filter selects zero runnable tests — i.e. every
+  // discovered test ends up skipped — that's a usage error (typically a typo'd
+  // pattern), not a green run. The exit paths below fail loud rather than
+  // reporting success.
   const zeroMatchFilterMessage =
     'No tests ran: every selected test was filtered out. Check your --grep / --grep-invert pattern (it matches against the full "describe > test" name).';
 

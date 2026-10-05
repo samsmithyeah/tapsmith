@@ -14,6 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { formatJson, jsonError, stripAnsi } from './cli-json.js';
 import { isTapsmithNotInstalledError } from './config.js';
+import { NO_TESTS_MATCH_FILTER_PREFIX } from './test-filter.js';
 
 // ─── Pure helpers (unit-tested) ───
 
@@ -88,7 +89,7 @@ export function summarizeVerifyReport(report: VerifyReport): VerifySummary {
  * device or the app.
  *
  * The file was selected (an unselected one never reaches a report: the run
- * exits "No test files found." and verify reports RUN_FAILED), so the causes
+ * exits "No tests found." and verify reports RUN_FAILED), so the causes
  * left are a file with no runnable test and a grep that filters them out.
  * The counts cover the whole run (dependency projects, or a file several
  * projects match), so the message does not pin them on the file.
@@ -114,6 +115,27 @@ export function noTestsRanError(
       : `No tests ran: ${testFile} has no tests`,
     fix: `Give ${testFile} a test that is not skipped: check for test.skip / describe.skip, and for ${grepFix}`,
   };
+}
+
+/**
+ * The NO_TESTS_RAN error for a run that refused to start because a grep in the
+ * config selects none of the file's tests — `tapsmith test` checks that before
+ * any device work and writes no report (PILOT-553) — from its stderr; else
+ * undefined. Without captured stderr (verify without --json inherits it) the
+ * run's own message has already reached the user.
+ */
+export function grepRefusalError(
+  stderr: string | undefined,
+  testFile: string,
+  scaffolded: boolean,
+): { message: string; fix: string } | undefined {
+  if (!stderr) return undefined;
+  const line = stripAnsi(stderr).split('\n').find((l) => l.startsWith(NO_TESTS_MATCH_FILTER_PREFIX));
+  if (!line) return undefined;
+  const fix = 'Check for a grep / grepInvert in the config (at the root or in a project) that filters out every test';
+  return scaffolded
+    ? { message: `No tests ran: the throwaway smoke test verify generated was filtered out (${line})`, fix }
+    : { message: `No tests ran: ${testFile} was filtered out (${line})`, fix };
 }
 
 export function scaffoldVerifySmokeTest(testDir: string, contents: string): ScaffoldedVerifyTest {
@@ -240,6 +262,13 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
       });
 
       if (child.error || !fs.existsSync(resultsFile)) {
+        const refusal = child.error
+          ? undefined
+          : grepRefusalError(child.stderr?.toString(), path.relative(config.rootDir, target), scaffolded !== undefined);
+        if (refusal) {
+          emitError(args.json, 'NO_TESTS_RAN', refusal.message, refusal.fix);
+          return;
+        }
         const reason = child.error
           ? `Failed to execute test process: ${child.error.message}`
           : `Test run produced no results (exit code ${child.status ?? 'unknown'})`;
