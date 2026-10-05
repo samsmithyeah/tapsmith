@@ -1679,13 +1679,38 @@ test.only("focused test", async ({ device }) => {
 
 ### `test.skip(name, fn)`
 
-Skip this test.
+Declare a test that is reported as skipped and never runs.
 
 ```typescript
 test.skip("broken test", async ({ device }) => {
   // This test will not run
 });
 ```
+
+### `test.skip()` / `test.skip(condition: boolean, description?: string)`
+
+Skip conditionally, as in Playwright. Where you call it decides what is skipped:
+
+- **In a describe block, or at the top of a file:** every test of that scope is skipped, nested describes included, and none of its hooks run. The call can come anywhere in the block.
+- **Inside a test, a `beforeEach`/`afterEach` hook or a fixture:** the running test stops at that line and is reported as skipped. `afterEach` hooks still run. Called in `afterEach`, it marks a test that passed as skipped (a failed test stays failed).
+- **In a `beforeAll` hook:** every test of that scope is skipped.
+
+With no arguments it always skips. With a condition it skips only when the condition is truthy. The `description` says why. It is not shown in reports yet.
+
+```typescript
+describe("payments", () => {
+  test.skip(!process.env.CI, "needs the CI payment sandbox");
+
+  test("checkout succeeds", async ({ device }) => { /* ... */ });
+});
+
+test("share sheet", async ({ device, platform }) => {
+  test.skip(platform === "android", "iOS share sheet only");
+  // ...
+});
+```
+
+A skipped test is not retried, and it does not stop a `describe.serial` group. Playwright's callback form, `test.skip(({ platform }) => …, description)`, isn't supported yet. Call `test.skip(condition)` inside the test instead, where the fixtures are available.
 
 ### `test.use(options: UseOptions): void`
 

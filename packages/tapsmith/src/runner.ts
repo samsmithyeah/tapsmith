@@ -493,6 +493,11 @@ interface SuiteContext {
   useOptions?: UseOptions;
   /** `'serial'`: a failed test skips the rest of this scope (PILOT-544). */
   mode?: DescribeMode;
+  /**
+   * Set by a describe-level `test.skip(condition)` (PILOT-546): every test of
+   * this scope, nested describes included, is skipped and no hook runs.
+   */
+  skipped?: boolean;
 }
 
 // Store registration state on globalThis so ESM and CJS module instances
@@ -569,7 +574,7 @@ function collectFixtureRegistries(ctx: SuiteContext, registries: Set<FixtureRegi
 export interface TestFn<Fixtures extends object = TestFixtures> {
   (name: string, fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)): void;
   only: (name: string, fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
-  skip: (name: string, fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
+  skip: SkipFn<Fixtures>;
   /**
    * Override configuration options for all tests in the current describe scope.
    * Overrides cascade — inner describe blocks inherit and can further override.
@@ -612,6 +617,35 @@ export interface TestFn<Fixtures extends object = TestFixtures> {
   afterAll: (fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
   beforeEach: (fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
   afterEach: (fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
+}
+
+/**
+ * Playwright's `test.skip` overloads (PILOT-546).
+ *
+ * ```ts
+ * test.skip("broken", async ({ device }) => { ... })   // declare a skipped test
+ *
+ * test.describe("ci only", () => {
+ *   test.skip(!process.env.CI, "needs the CI backend")   // skip the whole scope
+ *   test("...", async ({ device }) => { ... })
+ * })
+ *
+ * test("ios only", async ({ platform }) => {
+ *   test.skip(platform !== "ios", "iOS only")            // skip the running test
+ * })
+ * ```
+ */
+export interface SkipFn<Fixtures extends object = TestFixtures> {
+  /** Declare a test that is reported as skipped and never runs. */
+  (name: string, fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)): void;
+  /**
+   * In a describe block or at the top of a file: skip every test of that
+   * scope. Inside a test, hook or fixture: skip the running test (or, in
+   * `beforeAll`, every test of the scope) and stop it there.
+   */
+  (): void;
+  /** Like `test.skip()`, but only when `condition` is truthy. */
+  (condition: boolean, description?: string): void;
 }
 
 /**
@@ -681,9 +715,13 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
         syncRegistry();
         currentContext().tests.push({ name, fn: testFn, only: true, skip: false, registry });
       },
-      skip: (name: string, testFn: TestCallback) => {
-        syncRegistry();
-        currentContext().tests.push({ name, fn: testFn, only: false, skip: true, registry });
+      skip: (...args: unknown[]) => {
+        if (typeof args[0] === 'string' && typeof args[1] === 'function') {
+          syncRegistry();
+          currentContext().tests.push({ name: args[0], fn: args[1] as TestCallback, only: false, skip: true, registry });
+          return;
+        }
+        applySkipModifier(args);
       },
       use: (options: UseOptions) => {
         syncRegistry();
@@ -725,6 +763,52 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
   ) as unknown as TestFn<F>;
   defineStandIns(fn, TEST_STAND_INS);
   return fn;
+}
+
+// ─── test.skip modifiers (PILOT-546) ───
+
+/**
+ * Thrown by a runtime `test.skip()` to stop the running test, hook or
+ * fixture; the runner turns it into a skipped result instead of a failure.
+ */
+class TestSkipError extends Error {
+  constructor(description: unknown) {
+    super(typeof description === 'string' && description ? `Test skipped: ${description}` : 'Test skipped');
+    this.name = 'TestSkipError';
+  }
+}
+
+function isTestSkip(err: unknown): err is TestSkipError {
+  return err instanceof TestSkipError;
+}
+
+/**
+ * `test.skip()`, `test.skip(condition)` and `test.skip(condition, description)`.
+ * Mirrors Playwright's modifier rules: while a file or describe body is
+ * registering tests (the context stack is non-empty — bodies run
+ * synchronously) it applies to that whole scope; otherwise it applies to the
+ * running test. A truthy condition of any type counts, as in Playwright.
+ */
+function applySkipModifier(args: unknown[]): void {
+  const [condition, description] = args;
+  if (typeof condition === 'function') {
+    throw new Error(
+      'test.skip(callback) isn\'t supported yet. Call test.skip(condition, description) inside the test instead: '
+      + 'test(\'my test\', async ({ platform }) => { test.skip(platform === \'ios\', \'Android only\'); ... }).',
+    );
+  }
+  if (typeof condition === 'string' && description !== null && typeof description === 'object' && typeof args[2] === 'function') {
+    throw new Error(
+      `test.skip('${condition}', details, callback): the details object (tag, annotation) isn't supported yet. `
+      + `Drop it and call test.skip('${condition}', async () => { ... }).`,
+    );
+  }
+  if (args.length > 0 && !condition) return;
+  if (getContextStack().length > 0) {
+    currentContext().skipped = true;
+    return;
+  }
+  throw new TestSkipError(description);
 }
 
 /** Playwright `test.*` APIs Tapsmith doesn't have yet — see not-supported.ts. */
@@ -1255,6 +1339,7 @@ function firstRunnableTest(
   opts: RunOptions,
   policy: AppResetPolicy,
 ): { fullName: string; policy: AppResetPolicy } | undefined {
+  if (ctx.skipped) return undefined;
   const hasOnlyTests = ctx.tests.some((t) => t.only);
   const hasOnly = hasOnlyTests || ctx.suites.some((s) => s.only);
   for (const t of ctx.tests) {
@@ -1672,6 +1757,21 @@ async function runSuiteContext(
       throw fileEntryResetError;
     }
 
+    // test.skip() in a beforeAll hook skips every test of the scope, the way
+    // Playwright does (PILOT-546). The hooks that did run are not undone.
+    if (isTestSkip(err)) {
+      beforeAllCollector?.cleanup();
+      const skipped = skipAll(ctx, parentPrefix);
+      for (const tr of collectResults(skipped)) {
+        tr.project = opts.projectName;
+        tr.filePath = opts.testFilePath;
+        result.tests.push(tr);
+        opts.reporter?.onTestEnd?.(tr);
+      }
+      result.durationMs = Date.now() - suiteStart;
+      return result;
+    }
+
     // beforeAll failed — mark all tests in this context as failed and bail out.
     // This prevents a single beforeAll error from crashing the entire runner.
     const beforeAllError = err instanceof Error ? err : new Error(String(err));
@@ -1775,7 +1875,7 @@ async function runSuiteContext(
     // testFilter is a case-insensitive substring match against the fullName.
     // grep / grepInvert match against the fullName as regular expressions.
     const filteredOut = !passesTestFilter(fullName, opts);
-    const shouldSkip = entry.skip || (hasOnly && !entry.only) || filteredOut || !!serialGroup?.failed;
+    const shouldSkip = entry.skip || !!ctx.skipped || (hasOnly && !entry.only) || filteredOut || !!serialGroup?.failed;
 
     if (shouldSkip) {
       const skippedResult: TestResult = {
@@ -2290,31 +2390,38 @@ async function runSuiteContext(
             if (onTestAbort) abortSignal?.removeEventListener('abort', onTestAbort);
           }
         } catch (err) {
-          status = 'failed';
-          error = err instanceof Error ? err : new Error(String(err));
-          if (isAbortError(error) || opts.abortSignal?.aborted) {
-            error = new TestAbortedError();
-          }
+          if (isTestSkip(err) && !opts.abortSignal?.aborted) {
+            // test.skip() in the body, a beforeEach hook or a fixture: the
+            // test stops here and is reported as skipped (PILOT-546).
+            status = 'skipped';
+            error = undefined;
+          } else {
+            status = 'failed';
+            error = err instanceof Error ? err : new Error(String(err));
+            if (isAbortError(error) || opts.abortSignal?.aborted) {
+              error = new TestAbortedError();
+            }
 
-          // Fail any in-flight traced action/assertion so it appears in the trace
-          traceCollector?.failPendingOperation(error.message);
+            // Fail any in-flight traced action/assertion so it appears in the trace
+            traceCollector?.failPendingOperation(error.message);
 
-          // If a WebView/CDP operation is the thing that hit the runner timeout,
-          // close it before screenshot/network teardown so stale async work does
-          // not bleed into the next test.
-          if (error.message.startsWith('Test timed out after ')) {
-            await forEachDeviceBestEffort(opts, (d) => d._disposeWebViewManager?.());
-          }
+            // If a WebView/CDP operation is the thing that hit the runner timeout,
+            // close it before screenshot/network teardown so stale async work does
+            // not bleed into the next test.
+            if (error.message.startsWith('Test timed out after ')) {
+              await forEachDeviceBestEffort(opts, (d) => d._disposeWebViewManager?.());
+            }
 
-          // Screenshot on failure — skipped on user stop: the capture RPC
-          // would be cancelled anyway, and a stop isn't a failure worth
-          // documenting.
-          if (opts.config.screenshot !== 'never' && !isAbortError(error)) {
-            screenshotPath = await captureFailureScreenshots(
-              opts,
-              opts.screenshotDir,
-              fullName,
-            );
+            // Screenshot on failure — skipped on user stop: the capture RPC
+            // would be cancelled anyway, and a stop isn't a failure worth
+            // documenting.
+            if (opts.config.screenshot !== 'never' && !isAbortError(error)) {
+              screenshotPath = await captureFailureScreenshots(
+                opts,
+                opts.screenshotDir,
+                fullName,
+              );
+            }
           }
         } finally {
           try {
@@ -2326,6 +2433,12 @@ async function runSuiteContext(
                   validateHookFixtures(hook, registry, 'afterEach');
                   await invokeHook(hook, allFixtures);
                 } catch (err) {
+                  // test.skip() in afterEach: a test that passed is reported
+                  // as skipped; a failure stays a failure (PILOT-546).
+                  if (isTestSkip(err)) {
+                    if (status === 'passed') status = 'skipped';
+                    continue;
+                  }
                   process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
                 }
               }
@@ -2497,7 +2610,7 @@ async function runSuiteContext(
           opts.onNetworkEntries(networkEntries, traceConfig.network, captureRoute());
         }
         if (collector) {
-          const retain = shouldRetain(traceConfig.mode, status === 'passed', attempt);
+          const retain = shouldRetain(traceConfig.mode, status !== 'failed', attempt);
           if (retain) {
             // Flush any pending after-action captures before packaging
             await collector.flushPendingCaptures();
@@ -2561,7 +2674,7 @@ async function runSuiteContext(
           const res = await primary._stopVideoRecording();
           const retainVideo = shouldRetain(
             videoConfig.mode,
-            status === 'passed',
+            status !== 'failed',
             attempt,
           );
           if (res.success && res.videoPath && retainVideo) {
@@ -2604,7 +2717,7 @@ async function runSuiteContext(
         }
       }
 
-      if (status === 'passed' || attempt === maxRetries || opts.abortSignal?.aborted) break;
+      if (status !== 'failed' || attempt === maxRetries || opts.abortSignal?.aborted) break;
 
       // A file-abort-worthy failure (e.g. "session recovered during before
       // test" — the app was relaunched by infra, destroying beforeAll-
@@ -2708,10 +2821,11 @@ async function runSuiteContext(
       continue;
     }
 
-    if (serialGroup?.failed) {
-      // An earlier test of the serial group failed: the whole describe is
-      // skipped without its hooks or app reset, and — like a test the loop
-      // above skips — each of its tests is reported as skipped.
+    if (serialGroup?.failed || ctx.skipped) {
+      // An earlier test of the serial group failed, or this scope is skipped
+      // by a describe-level test.skip(): the whole describe is skipped
+      // without its hooks or app reset, and — like a test the loop above
+      // skips — each of its tests is reported as skipped.
       const childCtx = materializeSuiteEntry(suiteEntry);
       const prefix = parentPrefix ? `${parentPrefix} > ${suiteEntry.name}` : suiteEntry.name;
       const skippedResult = skipAll(childCtx, prefix);
@@ -2815,6 +2929,7 @@ async function runSuiteContext(
             try {
               await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
             } catch (err) {
+              if (isTestSkip(err)) continue;
               process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
             }
           }
@@ -2838,6 +2953,7 @@ async function runSuiteContext(
         try {
           await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
         } catch (err) {
+          if (isTestSkip(err)) continue;
           process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
         }
       }
@@ -2848,6 +2964,7 @@ async function runSuiteContext(
       try {
         await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
       } catch (err) {
+        if (isTestSkip(err)) continue;
         process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
@@ -3229,13 +3346,16 @@ function discoverSuiteContext(
   ctx: SuiteContext,
   parentPrefix: string,
   parentUse: DiscoveredUseOptions | undefined,
+  parentSkipped = false,
 ): DiscoveredSuite {
   const use = pickDiscoveredUse(parentUse, ctx.useOptions);
+  // A describe-level test.skip() skips the scope and everything below it.
+  const scopeSkipped = parentSkipped || !!ctx.skipped;
   const tests: DiscoveredTest[] = ctx.tests.map((t) => ({
     name: t.name,
     fullName: parentPrefix ? `${parentPrefix} > ${t.name}` : t.name,
     only: t.only,
-    skip: t.skip,
+    skip: t.skip || scopeSkipped,
     ...(use ? { use } : {}),
   }));
 
@@ -3243,7 +3363,7 @@ function discoverSuiteContext(
   for (const entry of ctx.suites) {
     const suitePrefix = parentPrefix ? `${parentPrefix} > ${entry.name}` : entry.name;
     const childCtx = materializeSuiteEntry(entry);
-    suites.push(discoverSuiteContext(childCtx, suitePrefix, use));
+    suites.push(discoverSuiteContext(childCtx, suitePrefix, use, scopeSkipped));
   }
 
   return { name: parentPrefix, tests, suites, ...(use ? { use } : {}) };
