@@ -31,6 +31,8 @@ export interface TestFileArgResolution {
   files: string[];
   /** The arguments that selected no file, as given. */
   unmatched: string[];
+  /** Glob-looking arguments that globbed nothing and selected files read as a regex. */
+  readAsRegex: string[];
 }
 
 /**
@@ -42,7 +44,8 @@ export interface TestFileArgResolution {
  * - an existing file (absolute, or relative to the first of `roots` that has
  *   it): selected as is, even outside `testMatch` (with projects, the caller
  *   still needs a project whose `testMatch` covers it to run it under);
- * - an existing directory: the discovered test files under it;
+ * - an existing directory holding discovered test files: those files (one
+ *   holding none is read on as below);
  * - a glob: the discovered test files it matches, relative to any root or as
  *   an absolute pattern — or, when it matches none, a filter as below, since
  *   `*`, `?`, `[]` and `{}` are regex syntax too;
@@ -63,14 +66,16 @@ export function resolveTestFileArgs(
   const rootDir = roots[0];
   const files = new Set<string>();
   const unmatched: string[] = [];
+  const readAsRegex: string[] = [];
 
   for (const arg of args) {
-    const matches = matchTestFileArg(arg, candidates, roots, rootDir);
+    const { matches, byRegexAfterGlob } = matchTestFileArg(arg, candidates, roots, rootDir);
     if (matches.length === 0) unmatched.push(arg);
+    else if (byRegexAfterGlob) readAsRegex.push(arg);
     for (const file of matches) files.add(file);
   }
 
-  return { files: [...files], unmatched };
+  return { files: [...files], unmatched, readAsRegex };
 }
 
 /**
@@ -83,6 +88,8 @@ export function noTestFilesFoundMessage(opts: {
   outsideProjects: string[];
   testMatch: string[];
   rootDir: string;
+  /** `--project` narrowed the run, so an unselected project may cover a file. */
+  projectsSelected?: boolean;
 }): string {
   const lines = ['No tests found.'];
   const testMatch = opts.testMatch.join(', ');
@@ -94,7 +101,7 @@ export function noTestFilesFoundMessage(opts: {
     lines.push(`  "${arg}" matched no test file.`);
   }
   for (const file of opts.outsideProjects) {
-    lines.push(`  ${file} is not matched by any project's testMatch, so no project runs it.`);
+    lines.push(`  ${file} is not matched by any${opts.projectsSelected ? ' selected' : ''} project's testMatch, so no project runs it.`);
   }
   lines.push(
     'Each argument is a file, a directory, a glob, or a regular expression matched against the test file paths '
@@ -103,14 +110,23 @@ export function noTestFilesFoundMessage(opts: {
   return lines.join('\n');
 }
 
-function matchTestFileArg(arg: string, candidates: string[], roots: string[], rootDir: string): string[] {
+function matchTestFileArg(
+  arg: string,
+  candidates: string[],
+  roots: string[],
+  rootDir: string,
+): { matches: string[]; byRegexAfterGlob?: boolean } {
   for (const root of roots) {
     const resolved = path.resolve(root, arg);
     const stat = statOrUndefined(resolved);
-    if (stat?.isFile()) return [resolved];
+    if (stat?.isFile()) return { matches: [resolved] };
     if (stat?.isDirectory()) {
+      // A directory with no test file in it (an app's own `login/` source
+      // directory, say) does not end the search: the next root, then the
+      // name as a filter, may still select tests.
       const prefix = resolved.endsWith(path.sep) ? resolved : resolved + path.sep;
-      return candidates.filter((file) => file.startsWith(prefix));
+      const inside = candidates.filter((file) => file.startsWith(prefix));
+      if (inside.length > 0) return { matches: inside };
     }
   }
 
@@ -126,11 +142,13 @@ function matchTestFileArg(arg: string, candidates: string[], roots: string[], ro
         return !relative.startsWith('../') && minimatch(relative, pattern);
       });
     });
-    if (globbed.length > 0) return globbed;
+    if (globbed.length > 0) return { matches: globbed };
+    const filter = testFileFilter(arg);
+    return { matches: candidates.filter((file) => filter(relativeTestPath(file, rootDir))), byRegexAfterGlob: true };
   }
 
   const filter = testFileFilter(arg);
-  return candidates.filter((file) => filter(relativeTestPath(file, rootDir)));
+  return { matches: candidates.filter((file) => filter(relativeTestPath(file, rootDir))) };
 }
 
 const EXPLICIT_REGEX = /^\/(.+)\/([a-z]*)$/;

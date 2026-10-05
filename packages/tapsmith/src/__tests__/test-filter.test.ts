@@ -91,9 +91,11 @@ describe('findSelectionMiss', () => {
     ], namesOf)).toBeUndefined();
   });
 
-  it('reports a run whose files hold no tests at all', () => {
-    expect(findSelectionMiss([{ file: '/p/e.test.ts', filters: { grep: [/x/] } }], namesOf))
-      .toEqual({ fileCount: 1, testNames: [] });
+  it('concludes nothing when no file yielded a test name', () => {
+    // Files that load yet register nothing are as likely a sign the names
+    // were read on another tapsmith instance as an empty suite: let the run
+    // report what it finds.
+    expect(findSelectionMiss([{ file: '/p/e.test.ts', filters: { grep: [/x/] } }], namesOf)).toBeUndefined();
   });
 });
 
@@ -122,8 +124,4 @@ describe('noTestsMatchFilterMessage', () => {
     expect(message).not.toContain('t10');
   });
 
-  it('says so when the files hold no tests', () => {
-    expect(noTestsMatchFilterMessage({ fileCount: 3, testNames: [] }, /x/, undefined))
-      .toContain('The 3 test files hold no tests.');
-  });
 });

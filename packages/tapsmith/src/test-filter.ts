@@ -61,7 +61,8 @@ export interface SelectionMiss {
  * `namesOf` returns `undefined` for a file that failed to load: its tests are
  * unknown, so no conclusion is drawn, and the run itself reports the load
  * error. A skipped test that passes the filters counts as selected — the run
- * reports it as skipped rather than as "No tests found".
+ * reports it as skipped rather than as "No tests found". Files that yield no
+ * test name at all conclude nothing either.
  */
 export function findSelectionMiss(
   entries: Array<{ file: string; filters: SelectionFilters }>,
@@ -78,6 +79,10 @@ export function findSelectionMiss(
       testNames.push(fullName);
     }
   }
+  // Files that all load yet register no test at all say more about how the
+  // names were read (another tapsmith instance's registry) than about the
+  // suite: conclude nothing, and let the run report what it finds.
+  if (testNames.length === 0) return undefined;
   return { fileCount: files.size, testNames: [...new Set(testNames)] };
 }
 
@@ -100,10 +105,6 @@ export function noTestsMatchFilterMessage(
     || 'the projects\' grep / grepInvert';
   const files = `${miss.fileCount} test file${miss.fileCount === 1 ? '' : 's'}`;
   const lines = [`${NO_TESTS_MATCH_FILTER_PREFIX} ${filters}.`];
-  if (miss.testNames.length === 0) {
-    lines.push(`The ${files} hold no tests.`);
-    return lines.join('\n');
-  }
   lines.push(
     `Checked ${miss.testNames.length} test${miss.testNames.length === 1 ? '' : 's'} in ${files}; `
     + 'the patterns match against the full "describe > test" name. The tests are:',

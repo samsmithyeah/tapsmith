@@ -42,17 +42,15 @@ export function discoverTestNames(
   const unknown = new Map<string, string[] | undefined>(files.map((f) => [f, undefined]));
 
   return new Promise((resolve) => {
-    let settled = false;
-    const settle = (result: Map<string, string[] | undefined>): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(result);
-    };
     let child: ReturnType<typeof fork>;
     try {
       child = fork(script, [], {
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+        // Its own process group, so the whole tree can be killed: under tsx
+        // the file is imported by a grandchild that tsx does not pass SIGKILL
+        // to. Being detached, it also misses the terminal's Ctrl-C, hence the
+        // 'exit' hook below.
+        detached: true,
         ...(loader ? { execPath: loader } : {}),
         env: { ...process.env, NODE_PATH: path.resolve(pkgDir, '..') },
       });
@@ -60,8 +58,23 @@ export function discoverTestNames(
       resolve(unknown);
       return;
     }
+    const killTree = (): void => {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch { /* already gone */ }
+    };
+    let settled = false;
+    const settle = (result: Map<string, string[] | undefined>): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      process.off('exit', killTree);
+      resolve(result);
+    };
+    process.once('exit', killTree);
     const timer = setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      killTree();
       settle(unknown);
     }, timeoutMs);
     timer.unref?.();
