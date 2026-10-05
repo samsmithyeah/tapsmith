@@ -15,6 +15,12 @@ vi.mock('node:os', async (importOriginal) => {
   const tmpdir = () => dir;
   return { ...actual, tmpdir, default: { ...actual, tmpdir } };
 });
+// Never touch the real macOS user defaults from a test: provisioning a
+// windowed emulator on a Mac turns App Nap off for it (PILOT-515).
+vi.mock('../emulator-app-nap.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../emulator-app-nap.js')>();
+  return { ...actual, disableEmulatorAppNap: () => ({ kind: 'disabled', domains: [], changed: [] }) };
+});
 import {
   serialForPort,
   readUiHierarchyViaAdb,
@@ -714,6 +720,37 @@ describe('emulator utilities', () => {
         expect(String(writes.mock.calls[0]?.[0])).toContain(
           `This run would launch it ${headless ? 'with a window' : 'headless'}: stop it (adb -s emulator-5554 emu kill) to relaunch it that way.`,
         );
+      }
+    });
+
+    it('warns on a Mac when a reused windowed emulator was launched before App Nap was turned off for it (PILOT-515)', () => {
+      const windowedArgv = ['/sdk/qemu', ...emulatorLaunchArgs('Pixel_API_36', 5554, { headless: false, args: [] })];
+      const headlessArgv = ['/sdk/qemu', ...emulatorLaunchArgs('Pixel_API_36', 5554, { headless: true, args: [] })];
+      const cases: Array<[string, ReturnType<typeof entry> & { appNapDisabled?: boolean }, string[], NodeJS.Platform, boolean]> = [
+        ['older Tapsmith, windowed, Mac', entry(), windowedArgv, 'darwin', true],
+        ['launched with App Nap off', { ...entry(), appNapDisabled: true }, windowedArgv, 'darwin', false],
+        ['launched while the user kept App Nap on (warned at launch)', { ...entry(), appNapDisabled: false }, windowedArgv, 'darwin', false],
+        ['headless', entry(), headlessArgv, 'darwin', false],
+        ['Linux', entry(), windowedArgv, 'linux', false],
+      ];
+      for (const [name, record, argv, platform, warns] of cases) {
+        const h = harness({
+          entries: [record],
+          adb: [{ serial: 'emulator-5554', state: 'device' }],
+          alive: [4242],
+          argv: { 4242: argv },
+          listener: { 'emulator-5554': 4242 },
+        });
+        const writes = vi.mocked(process.stderr.write);
+        writes.mockClear();
+        expect(reclaimOrphanedEmulators({ ...h.deps, platform }).reusable, name).toEqual(['emulator-5554']);
+        const output = writes.mock.calls.map((call) => String(call[0])).join('');
+        if (warns) {
+          expect(output, name).toContain('emulator-5554 was launched before Tapsmith turned off macOS App Nap for the emulator');
+          expect(output, name).toContain('adb -s emulator-5554 emu kill');
+        } else {
+          expect(output, name).not.toContain('App Nap');
+        }
       }
     });
 
@@ -1688,6 +1725,80 @@ describe('describeEmulatorExit', () => {
     const error = Object.assign(new Error('spawn EACCES'), { code: 'EACCES' });
     expect(describeEmulatorExit({ kind: 'spawn-error', error }, emu, bin))
       .toBe('Could not start the Android emulator (/sdk/emulator/emulator): spawn EACCES');
+  });
+});
+
+describe('provisionEmulators and macOS App Nap (PILOT-515)', () => {
+  const base = {
+    ...unprobedPorts,
+    listAdbDevices: () => [],
+    listAvds: () => ['Pixel'],
+    getRunningAvdName: () => undefined,
+    probeDeviceHealth: (serial: string) => ({ serial, healthy: true }),
+    waitForDeviceStability: async (serial: string) => ({ serial, healthy: true }),
+    waitForBoot: async () => undefined,
+    resolveEmulatorBinary: foundEmulator,
+    launchEmulator: (avd: string, port: number) => makeLaunchedEmulator(avd, port),
+  };
+  const manifestEntries = (): Array<Record<string, unknown>> => {
+    try { return JSON.parse(fs.readFileSync(manifestFile, 'utf-8')); } catch { return []; }
+  };
+  const run = async (
+    launchOptions: { headless?: boolean } | undefined,
+    platform: NodeJS.Platform,
+    appNap: import('../emulator-app-nap.js').EmulatorAppNapResult,
+  ) => {
+    try { fs.unlinkSync(manifestFile); } catch { /* ok */ }
+    const disableAppNap = vi.fn(() => appNap);
+    const messages: Array<[string, string | undefined]> = [];
+    // Judged as on a developer's Mac, not by this machine's own CI or display.
+    const resolveLaunchSettings = (options: { headless?: boolean } | undefined) => ({ headless: options?.headless === true, args: [] });
+    const result = await provisionEmulators(
+      { existingSerials: [], workers: 1, avd: 'Pixel', launchOptions, onProgress: (message, level) => { messages.push([message, level]); } },
+      { ...base, platform, disableAppNap, resolveLaunchSettings },
+    );
+    const entries = manifestEntries();
+    try { fs.unlinkSync(manifestFile); } catch { /* ok */ }
+    return { result, disableAppNap, messages, entries };
+  };
+
+  it('turns App Nap off before a windowed launch on a Mac, says so, and records it', async () => {
+    const { result, disableAppNap, messages, entries } = await run(undefined, 'darwin', {
+      kind: 'disabled', domains: ['qemu-system-aarch64'], changed: ['qemu-system-aarch64'],
+    });
+    expect(disableAppNap).toHaveBeenCalledWith('/sdk/emulator/emulator');
+    expect(result.launched.map((emu) => emu.serial)).toEqual(['emulator-5554']);
+    const notice = messages.find(([message]) => message.includes('App Nap'));
+    expect(notice?.[1]).toBe('info');
+    expect(notice?.[0]).toContain('defaults delete qemu-system-aarch64 NSAppSleepDisabled');
+    // Announced before the emulator starts.
+    expect(messages.findIndex(([message]) => message.includes('App Nap')))
+      .toBeLessThan(messages.findIndex(([message]) => message.startsWith('Starting emulator-5554')));
+    expect(entries.map((entry) => [entry.serial, entry.appNapDisabled])).toEqual([['emulator-5554', true]]);
+  });
+
+  it('is silent when App Nap was already off', async () => {
+    const { messages, entries } = await run(undefined, 'darwin', { kind: 'disabled', domains: ['qemu-system-aarch64'], changed: [] });
+    expect(messages.filter(([message]) => message.includes('App Nap'))).toEqual([]);
+    expect(entries[0]?.appNapDisabled).toBe(true);
+  });
+
+  it('warns, and still launches, when App Nap stays on', async () => {
+    const { result, messages, entries } = await run(undefined, 'darwin', { kind: 'user-enabled', domains: ['qemu-system-aarch64'] });
+    expect(result.launched).toHaveLength(1);
+    const warning = messages.find(([message]) => message.includes('App Nap'));
+    expect(warning?.[1]).toBe('warning');
+    expect(warning?.[0]).toContain('emulatorLaunchOptions: { headless: true }');
+    expect(entries[0]?.appNapDisabled).toBe(false);
+  });
+
+  it('leaves App Nap alone for a headless launch and off macOS', async () => {
+    const headless = await run({ headless: true }, 'darwin', { kind: 'disabled', domains: [], changed: [] });
+    const linux = await run(undefined, 'linux', { kind: 'disabled', domains: [], changed: [] });
+    for (const { disableAppNap, entries } of [headless, linux]) {
+      expect(disableAppNap).not.toHaveBeenCalled();
+      expect(entries[0]).not.toHaveProperty('appNapDisabled');
+    }
   });
 });
 
