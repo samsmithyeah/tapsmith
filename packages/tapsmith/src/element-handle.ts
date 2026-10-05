@@ -27,6 +27,7 @@ import { type TraceCapture, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
 import { sleep, isAbortError } from './abort.js';
+import { defineRenamedMethods } from './not-supported.js';
 
 // ─── Public types ───
 
@@ -3063,3 +3064,13 @@ export class ElementHandle {
     }
   }
 }
+
+// Playwright locator methods that Tapsmith names differently: a clear
+// pointer instead of "handle.click is not a function" (PILOT-544).
+defineRenamedMethods(ElementHandle.prototype, {
+  click: 'tap',
+  dblclick: 'doubleTap',
+  fill: 'clearAndType',
+  textContent: 'getText',
+  innerText: 'getText',
+});
