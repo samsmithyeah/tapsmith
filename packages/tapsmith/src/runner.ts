@@ -809,6 +809,15 @@ function applySkipModifier(args: unknown[]): void {
       + `Drop it and call test.skip('${condition}', async () => { ... }).`,
     );
   }
+  // A title with something other than a function or a description after it
+  // is a test declaration whose function is missing (e.g. an undefined
+  // import) — not a condition that should silently skip the whole scope.
+  if (typeof condition === 'string' && args.length >= 2 && typeof description !== 'string') {
+    throw new Error(
+      `test.skip('${condition}', …) needs a test function: test.skip('${condition}', async () => { ... }). `
+      + `Got ${description === null ? 'null' : typeof description} instead.`,
+    );
+  }
   if (args.length > 0 && !condition) return;
   if (getContextStack().length > 0) {
     currentContext().skipped = true;
@@ -2756,8 +2765,9 @@ async function runSuiteContext(
       });
     }
 
-    // Skipped on a retry after a failed attempt: still a failure, as in
-    // Playwright — a skip must not hide the failure that came before it.
+    // Skipped on a retry after a failed attempt: reported as the failure, so a
+    // skip never hides it. (Stricter than Playwright, which calls it flaky;
+    // Tapsmith's flaky result is a pass, and this retry did not pass.)
     if (status === 'skipped' && firstFailure) {
       status = 'failed';
       ({ error, tracePath, screenshotPath, videoPath } = firstFailure);
@@ -3181,8 +3191,7 @@ export async function runTestFile(
   let workerTeardown: (() => Promise<void>) | undefined;
 
   // A file skipped by a top-level test.skip() runs no test, so it sets up no
-  // worker fixture either (Playwright); test.skip() inside a worker fixture
-  // skips the whole file (PILOT-546).
+  // worker fixture either, as in Playwright (PILOT-546).
   if (!fileRegistry.isEmpty && !rootCtx.skipped) {
     try {
       const resolved = await resolveFixtures(fileRegistry, 'worker', {
@@ -3192,8 +3201,14 @@ export async function runTestFile(
       workerFixtures = resolved.fixtures;
       workerTeardown = resolved.teardown;
     } catch (err) {
+      // Worker fixtures are set up for the whole file up front, not lazily per
+      // test as in Playwright, so a skip here can't be scoped to the tests
+      // that use the fixture: refuse it rather than skip the whole file.
       if (!isTestSkip(err)) throw err;
-      rootCtx.skipped = true;
+      throw new Error(
+        'test.skip() isn\'t supported in a worker-scoped fixture yet: Tapsmith sets up worker fixtures once for the whole file. '
+        + 'Call test.skip(condition) in the tests (or a beforeEach) that need the fixture, or at the top of the file to skip all of it.',
+      );
     }
   }
 

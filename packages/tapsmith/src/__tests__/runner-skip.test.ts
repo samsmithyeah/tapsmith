@@ -208,7 +208,7 @@ describe('test.skip(condition) in a describe', () => {
     }
   });
 
-  it('at the top of a file sets up no worker fixture, and a skip inside one skips the file', async () => {
+  it('at the top of a file sets up no worker fixture; a skip inside one is refused', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-skip-'));
     const runnerUrl = pathToFileURL(path.resolve('src/runner.ts')).href;
     const write = (name: string, skipLine: string, fixtureBody: string): string => {
@@ -225,10 +225,21 @@ describe('test.skip(condition) in a describe', () => {
       const unreachable = write('a.test.mjs', `test.skip(true, 'needs the CI backend');`, `throw new Error('backend unreachable');`);
       expect(statuses(await runTestFile(unreachable, makeOpts({ bustImportCache: true })))).toEqual({ one: 'skipped' });
       const skipsInFixture = write('b.test.mjs', '', `test.skip(true, 'no backend');`);
-      expect(statuses(await runTestFile(skipsInFixture, makeOpts({ bustImportCache: true })))).toEqual({ one: 'skipped' });
+      await expect(runTestFile(skipsInFixture, makeOpts({ bustImportCache: true })))
+        .rejects.toThrow(/test\.skip\(\) isn't supported in a worker-scoped fixture yet/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('a declaration with a missing function does not skip its scope', async () => {
+    const result = await run(() => {
+      tapsmithTest.describe('group', () => {
+        try { looseSkip('slow flow', undefined); } catch { /* refused, as asserted below */ }
+        tapsmithTest('runs', async () => {});
+      });
+    });
+    expect(statuses(result)).toEqual({ 'group > runs': 'passed' });
   });
 
   it('refuses call shapes it does not support with a clear message', () => {
@@ -238,6 +249,9 @@ describe('test.skip(condition) in a describe', () => {
         .toThrow(/test\.skip\(callback\) isn't supported yet.*test\.skip\(condition, description\) inside the test/);
       expect(() => looseSkip('title', { tag: '@slow' }, async () => {}))
         .toThrow(/test\.skip\('title', details, callback\): the details object .* isn't supported yet/);
+      // A declaration whose function is missing must not skip the whole scope.
+      expect(() => looseSkip('slow flow', undefined)).toThrow(/test\.skip\('slow flow', …\) needs a test function.*Got undefined/);
+      expect(() => looseSkip('slow flow', null)).toThrow(/needs a test function.*Got null/);
     } finally {
       popContext();
     }
