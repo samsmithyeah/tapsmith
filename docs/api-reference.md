@@ -2571,7 +2571,7 @@ As in Playwright, each argument is one of:
 - **a glob**: the test files it matches;
 - **anything else**: a case-insensitive regular expression matched against each test file's path relative to `rootDir` (`/pattern/flags` sets the flags; an invalid expression is matched as plain text).
 
-Directories, globs and filters select from the files `testMatch` discovers, so they never pick up a helper module. An argument that matches nothing prints a warning; if nothing is selected at all, the run fails with `No tests found` — before it starts the daemon or touches a device.
+Directories, globs and filters select from the files `testMatch` discovers, so they never pick up a helper module. With `projects`, they select among the projects that are not another project's `dependencies`: a dependency (setup) project runs whole whenever a project that depends on it runs, as in Playwright — to run a setup file on its own, name it outright or pass `--project`. An argument that matches nothing prints a warning; if nothing is selected at all, the run fails with `No tests found` — before it starts the daemon or touches a device.
 
 ### `tapsmith test --device <serial>` / `tapsmith test -d <serial>`
 

@@ -217,4 +217,18 @@ describe.skipIf(!DIST_BUILT && !process.env.CI)('tapsmith test selection', { tim
     expect(output).toContain('3 test files');
     expect(reachedDevice).toBe(true);
   });
+
+  it('answers the grep check from the whole suite on every shard', () => {
+    // --grep "creates" matches only signup.test.ts. With two files and two
+    // shards, a shard holding only login.test.ts must still get past the
+    // check: the suite has a match, whichever shard it falls on.
+    fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'),
+      'export default { platform: "android", package: "com.example", launchEmulators: false, '
+      + 'projects: [{ name: "pw", testMatch: ["tests/pw/**/*.test.ts"] }] };\n');
+    for (const shard of ['1/2', '2/2']) {
+      const { output, reachedDevice } = run('--grep', 'creates', `--shard=${shard}`);
+      expect(output).not.toContain('No tests found');
+      expect(reachedDevice).toBe(true);
+    }
+  });
 });
