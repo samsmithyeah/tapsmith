@@ -2568,7 +2568,7 @@ As in Playwright, each argument is one of:
 
 - **a file** (relative to `rootDir` or the working directory, or absolute): run as named, even if `testMatch` would not discover it — except in a config with `projects`, where a file runs under the projects whose `testMatch` covers it, so one that no (selected) project covers is reported and not run;
 - **a directory**: the test files under it;
-- **a glob**: the test files it matches;
+- **a glob**: the test files it matches (a glob that matches none is read as the regular expression below instead, with a note saying so — `*`, `?`, `[]` and `{}` are regex syntax too);
 - **anything else**: a case-insensitive regular expression matched against each test file's path relative to `rootDir` (`/pattern/flags` sets the flags; an invalid expression is matched as plain text).
 
 Directories, globs and filters select from the files `testMatch` discovers, so they never pick up a helper module. With `projects`, a project that another project in the run depends on (a setup project) runs whole, as in Playwright, even when an argument also matched some of its files; an argument that selects only setup files, with nothing depending on them in the run, runs just those files. An argument that matches nothing prints a warning; if nothing is selected at all, the run fails with `No tests found` — before it starts the daemon or touches a device.
