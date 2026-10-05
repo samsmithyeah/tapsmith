@@ -231,4 +231,40 @@ describe.skipIf(!DIST_BUILT && !process.env.CI)('tapsmith test selection', { tim
       expect(reachedDevice).toBe(true);
     }
   });
+
+  function writeChain(): void {
+    for (const f of ['tests/auth.setup.ts', 'tests/seed.setup.ts']) fs.writeFileSync(path.join(root, f), testFile('setup', ['s']));
+    fs.mkdirSync(path.join(root, 'tests', 'api'));
+    fs.writeFileSync(path.join(root, 'tests', 'api', 'checkout.test.ts'), testFile('checkout', ['pays']));
+    fs.writeFileSync(path.join(root, 'tests', 'api', 'orders.test.ts'), testFile('orders', ['lists']));
+    fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'),
+      'export default { platform: "android", package: "com.example", launchEmulators: false, projects: ['
+      + '{ name: "setup", testMatch: ["**/*.setup.ts"] }, '
+      + '{ name: "api", testMatch: ["tests/api/**/*.test.ts"], dependencies: ["setup"] }, '
+      + '{ name: "e2e", testMatch: ["tests/pw/**/*.test.ts"], dependencies: ["api"] }] };\n');
+  }
+
+  it('selects with a filter in a project that is both a dependency and a dependent', () => {
+    // setup → api → e2e: `checkout` picks api's checkout.test.ts, which runs
+    // with all of setup; nothing depends on api in this run, so it is cut down.
+    writeChain();
+    const { output, reachedDevice } = run('checkout');
+    expect(output).not.toContain('No tests found');
+    expect(output).toContain('3 test files');
+    expect(reachedDevice).toBe(true);
+  });
+
+  it('runs a selected setup project whole when a selected project depends on it', () => {
+    writeChain();
+    const { output, reachedDevice } = run('--project', 'setup', '--project', 'api', 'auth', 'checkout');
+    expect(output).toContain('3 test files');
+    expect(reachedDevice).toBe(true);
+  });
+
+  it('runs just the setup file a filter names when nothing in the run depends on its project', () => {
+    writeChain();
+    const { output, reachedDevice } = run('auth.setup');
+    expect(output).toContain('1 test file');
+    expect(reachedDevice).toBe(true);
+  });
 });
