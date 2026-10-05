@@ -252,6 +252,9 @@ describe('test.skip(condition) in a describe', () => {
       // A declaration whose function is missing must not skip the whole scope.
       expect(() => looseSkip('slow flow', undefined)).toThrow(/test\.skip\('slow flow', …\) needs a test function.*Got undefined/);
       expect(() => looseSkip('slow flow', null)).toThrow(/needs a test function.*Got null/);
+      // A computed title that is not a string must neither drop the test nor skip the scope.
+      expect(() => looseSkip(undefined, async () => {})).toThrow(/test\.skip\(title, fn\) needs a string title \(got undefined\)/);
+      expect(() => looseSkip(true, async () => {})).toThrow(/needs a string title \(got boolean\)/);
     } finally {
       popContext();
     }

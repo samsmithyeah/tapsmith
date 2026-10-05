@@ -797,6 +797,14 @@ function isTestSkip(err: unknown): err is TestSkipError {
  */
 function applySkipModifier(args: unknown[]): void {
   const [condition, description] = args;
+  if (typeof description === 'function') {
+    // Playwright refuses this too: the title is not a string, so it is
+    // neither a declaration nor a condition with a description.
+    throw new Error(
+      `test.skip(title, fn) needs a string title (got ${condition === null ? 'null' : typeof condition}): `
+      + 'test.skip(\'my test\', async () => { ... }).',
+    );
+  }
   if (typeof condition === 'function') {
     throw new Error(
       'test.skip(callback) isn\'t supported yet. Call test.skip(condition, description) inside the test instead: '
