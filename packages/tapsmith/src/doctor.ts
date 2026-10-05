@@ -991,9 +991,9 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
 
   // The AVDs each Android scope launches, with the runner's own merge of
   // project `use` over the root (launchEmulators defaults on with an avd).
-  // loadConfig validates only the root; a project's `use` is validated by
-  // this merge, which throws — report that as the config error it is (as
-  // `tapsmith test` does), not as doctor crashing.
+  // loadConfig rejects a malformed project `use`; should this merge still
+  // throw, report that as the config error it is (as `tapsmith test` does),
+  // not as doctor crashing.
   const scopes: TapsmithConfig[] = [];
   if (config && configPathOf(config)) {
     if (config.projects && config.projects.length > 0) {
