@@ -1895,7 +1895,7 @@ test.describe.configure({ mode: "serial", retries: 1 });
 
 | Option | Type | Description |
 |---|---|---|
-| `mode` | `'default' \| 'serial' \| 'parallel'` | `'serial'` makes the scope a serial group (see `test.describe.serial`); `'default'` turns that off for the scope. `'parallel'` is accepted for Playwright compatibility and runs the tests in order: Tapsmith runs the tests of a file one after another on one device, and runs files in parallel with `--workers`. |
+| `mode` | `'default' \| 'serial' \| 'parallel'` | `'serial'` makes the scope a serial group (see `test.describe.serial`); `'default'` turns that off for a describe declared with `test.describe.serial`. A serial group covers everything nested inside it, so a nested describe cannot leave its enclosing group with `'default'` or `'parallel'`. `'parallel'` is accepted for Playwright compatibility and runs the tests in order: Tapsmith runs the tests of a file one after another on one device, and runs files in parallel with `--workers`. |
 | `retries` | `number` | Retry count for failed tests in the scope. Same as `test.use({ retries })`. |
 | `timeout` | `number` | Same as `test.use({ timeout })`: the action and assertion timeout for the scope (ms), which also raises each test's safety timeout. |
 

@@ -248,6 +248,27 @@ describe('test.describe.configure', () => {
     expect(statuses(result)).toEqual({ 'flow > fails': 'failed', 'flow > next': 'passed' });
   });
 
+  it('a nested describe cannot leave an enclosing serial group', async () => {
+    const result = await run(() => {
+      tapsmithTest.describe.serial('flow', () => {
+        tapsmithTest('fails', async () => { throw new Error('boom'); });
+        tapsmithTest.describe('default', () => {
+          tapsmithTest.describe.configure({ mode: 'default' });
+          tapsmithTest('a', async () => {});
+        });
+        tapsmithTest.describe('parallel', () => {
+          tapsmithTest.describe.configure({ mode: 'parallel' });
+          tapsmithTest('b', async () => {});
+        });
+      });
+    });
+    expect(statuses(result)).toEqual({
+      'flow > fails': 'failed',
+      'flow > default > a': 'skipped',
+      'flow > parallel > b': 'skipped',
+    });
+  });
+
   it('mode: parallel is accepted and runs the tests in order', async () => {
     const order: string[] = [];
     const result = await run(() => {
