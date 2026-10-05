@@ -286,6 +286,13 @@ pub async fn forward_port(serial: &str, host_port: u16, device_port: u16) -> Res
     Ok(())
 }
 
+/// The host's port forwards, as `adb forward --list` prints them
+/// (`<serial> <local> <remote>` per line).
+pub async fn list_forwards(timeout: Duration) -> Result<String> {
+    let out = run_adb(None, &["forward", "--list"], timeout).await?;
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
 /// Remove a specific port forward.
 #[instrument]
 pub async fn remove_forward(serial: &str, host_port: u16) -> Result<()> {

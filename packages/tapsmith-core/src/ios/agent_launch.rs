@@ -107,18 +107,30 @@ async fn start_agent_impl(
     // running one, so we never adopt an agent the reaper is about to kill.
     #[cfg(target_os = "macos")]
     super::agent_registry::reap_orphans().await;
+    // An `adb forward` on the agent port (an Android session's) shadows the
+    // runner: the ping reaches the Android agent instead, and a fresh runner
+    // cannot take the port. One left behind by a finished Android run is
+    // removed; one a live daemon is using is refused (PILOT-550).
+    if agent_port_listeners(agent_port).await.has_adb() {
+        clear_stale_adb_forwards(agent_port).await?;
+    }
     // Check if agent is already running by trying to connect
     if !force && ping_agent(agent_port).await.is_ok() {
         // A runner answering on this port is only ours to adopt if it serves
         // this device. Another session's runner for another simulator on the
         // same port would otherwise be driven as this one (PILOT-381).
-        if let AgentPortOwner::Other(other) = agent_port_listeners(agent_port).await.judge(udid) {
-            bail!(
-                "The iOS agent port {agent_port} is held by a Tapsmith runner for another device \
-                 ({other}), not {udid}. Another Tapsmith session is probably driving {other} \
-                 through it; refusing to adopt its agent. Stop that session, or start this \
-                 daemon with a free --agent-port."
-            );
+        match agent_port_listeners(agent_port).await.judge(udid) {
+            AgentPortOwner::Other(other) => bail!(
+                "The iOS agent port {agent_port} is held by a Tapsmith runner for another \
+                 device ({other}), not {udid}. Another Tapsmith session is probably driving \
+                 {other}, so its agent was not adopted. Stop that session, then run again."
+            ),
+            AgentPortOwner::AdbForward => bail!(
+                "The iOS agent port {agent_port} is taken by an adb port forward to an Android \
+                 device, not a runner for {udid}. If no Tapsmith session is using it, remove \
+                 it with `adb forward --remove tcp:{agent_port}`, then run again."
+            ),
+            AgentPortOwner::Serves | AgentPortOwner::Unknown => {}
         }
         info!("iOS agent is already running");
         crate::timing::timing_log!(
@@ -676,6 +688,8 @@ enum AgentPortOwner {
     Serves,
     /// The only device a listener names is another one.
     Other(String),
+    /// An `adb forward` (an Android device's agent) and no runner.
+    AdbForward,
     /// Nothing identifies a device (no `lsof`, an unfamiliar listener):
     /// adopted as before, since refusing would break every such host.
     Unknown,
@@ -684,22 +698,150 @@ enum AgentPortOwner {
 impl AgentPortListeners {
     fn judge(&self, udid: &str) -> AgentPortOwner {
         let mut other = None;
+        let mut adb = false;
         for command in &self.0 {
             match device_in_listener_command(command) {
                 Some(found) if found.eq_ignore_ascii_case(udid) => return AgentPortOwner::Serves,
                 Some(found) => other = other.or_else(|| Some(found.to_string())),
                 // An Android session's `adb forward` on this port answers the
-                // ping with its own agent's pong.
-                None if is_adb_command(command) => {
-                    other = other.or_else(|| {
-                        Some("an Android device, through an adb port forward".to_string())
-                    });
-                }
+                // ping with its own agent's pong. A stale one was removed
+                // before the ping; this one could not be.
+                None if is_adb_command(command) => adb = true,
                 None => {}
             }
         }
-        other.map_or(AgentPortOwner::Unknown, AgentPortOwner::Other)
+        match other {
+            Some(other) => AgentPortOwner::Other(other),
+            None if adb => AgentPortOwner::AdbForward,
+            None => AgentPortOwner::Unknown,
+        }
     }
+}
+
+impl AgentPortListeners {
+    /// Whether the adb server is one of the listeners — an `adb forward`.
+    fn has_adb(&self) -> bool {
+        self.0.iter().any(|command| is_adb_command(command))
+    }
+}
+
+/// Remove the `adb forward`s on `port` that no live Tapsmith daemon is using
+/// — left behind by an Android run whose daemon was killed before it could
+/// remove its own. Refuses, with what to do, when a live daemon uses the port
+/// or the forwards cannot be read.
+async fn clear_stale_adb_forwards(port: u16) -> Result<()> {
+    let manual = format!("adb forward --remove tcp:{port}");
+    let list = adb_forward_list().await.with_context(|| {
+        format!(
+            "The iOS agent port {port} is taken by an adb port forward, and the forwards \
+             could not be listed. Remove it with `{manual}`, then run again."
+        )
+    })?;
+    let serials = forwards_on_port(&list, port);
+    if serials.is_empty() {
+        // adb listens on the port without a forward to show for it (a
+        // forward set up by another adb server, or a race with its removal).
+        return Ok(());
+    }
+    let devices = serials.join(", ");
+    let daemons = match running_processes().await {
+        Ok(ps) => daemons_on_agent_port(&ps, port, std::process::id()),
+        Err(e) => bail!(
+            "The iOS agent port {port} is taken by an adb port forward to {devices}, and \
+             whether a Tapsmith session is using it could not be checked ({e:#}). If none \
+             is, remove it with `{manual}`, then run again."
+        ),
+    };
+    if let Some(pid) = daemons.first() {
+        bail!(
+            "The iOS agent port {port} is taken by an adb port forward to {devices}, which the \
+             Tapsmith daemon with pid {pid} uses for its agent. Stop that Tapsmith \
+             session, then run again."
+        );
+    }
+    for serial in &serials {
+        crate::adb::remove_forward_with_timeout(serial, port, Duration::from_secs(5))
+            .await
+            .with_context(|| {
+                format!(
+                    "The iOS agent port {port} is taken by a stale adb port forward to {serial} \
+                     that could not be removed. Remove it with `adb -s {serial} forward --remove \
+                     tcp:{port}`, then run again."
+                )
+            })?;
+        info!(
+            serial,
+            port, "Removed a stale adb port forward left on the iOS agent port by an Android run"
+        );
+    }
+    Ok(())
+}
+
+async fn adb_forward_list() -> Result<String> {
+    crate::adb::list_forwards(Duration::from_secs(5)).await
+}
+
+/// Every process's pid and command line (`ps -ww -axo pid=,command=`).
+async fn running_processes() -> Result<String> {
+    let out = Command::new("ps")
+        .args(["-ww", "-axo", "pid=,command="])
+        .output()
+        .await
+        .context("ps could not be run")?;
+    if !out.status.success() {
+        bail!("ps exited with {}", out.status);
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The serials whose forward's host side is `tcp:<port>`, from
+/// `adb forward --list` output.
+fn forwards_on_port(list: &str, port: u16) -> Vec<String> {
+    let local = format!("tcp:{port}");
+    list.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let serial = fields.next()?;
+            (fields.next()? == local).then(|| serial.to_string())
+        })
+        .collect()
+}
+
+/// The pids of the `tapsmith-core` daemons, other than `self_pid`, whose
+/// agent port is `port` (`--agent-port`, else the default), from
+/// `ps -axo pid=,command=` output.
+fn daemons_on_agent_port(ps: &str, port: u16, self_pid: u32) -> Vec<u32> {
+    const PROGRAM: &str = "tapsmith-core";
+    const DEFAULT_AGENT_PORT: u16 = 18700;
+    ps.lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let (pid, command) = line.split_once(char::is_whitespace)?;
+            let pid: u32 = pid.parse().ok()?;
+            if pid == self_pid {
+                return None;
+            }
+            let command = command.trim_start();
+            // The program, possibly a path (which may hold spaces): its
+            // basename is the binary's name, followed by the arguments.
+            let at = command.match_indices(PROGRAM).map(|(i, _)| i).find(|&i| {
+                let prefix = &command[..i];
+                let rest = &command[i + PROGRAM.len()..];
+                (prefix.is_empty() || (prefix.starts_with('/') && prefix.ends_with('/')))
+                    && (rest.is_empty() || rest.starts_with(' '))
+            })?;
+            let mut args = command[at + PROGRAM.len()..].split_whitespace();
+            let mut agent_port = DEFAULT_AGENT_PORT;
+            while let Some(arg) = args.next() {
+                if arg == "--agent-port" {
+                    agent_port = args.next()?.parse().ok()?;
+                } else if let Some(value) = arg.strip_prefix("--agent-port=") {
+                    agent_port = value.parse().ok()?;
+                }
+            }
+            (agent_port == port).then_some(pid)
+        })
+        .collect()
 }
 
 /// Whether a listener's command line is the adb server (`adb … fork-server …`).
@@ -1047,7 +1189,13 @@ mod tests {
         let listeners = AgentPortListeners(vec![
             "adb -L tcp:5037 fork-server server --reply-fd 4".to_string()
         ]);
-        assert!(matches!(listeners.judge(SIM_A), AgentPortOwner::Other(_)));
+        assert_eq!(listeners.judge(SIM_A), AgentPortOwner::AdbForward);
+        // A runner naming another device is the more specific owner.
+        let both = AgentPortListeners(vec![
+            "adb -L tcp:5037 fork-server server --reply-fd 4".to_string(),
+            runner_command(SIM_B),
+        ]);
+        assert_eq!(both.judge(SIM_A), AgentPortOwner::Other(SIM_B.to_string()));
     }
 
     #[test]
@@ -1067,6 +1215,51 @@ mod tests {
         // one of them serving this device is enough.
         let listeners = AgentPortListeners(vec![runner_command(SIM_B), runner_command(SIM_A)]);
         assert_eq!(listeners.judge(SIM_A), AgentPortOwner::Serves);
+    }
+
+    #[test]
+    fn agent_port_listeners_notice_an_adb_forward() {
+        let adb = AgentPortListeners(vec![
+            "/opt/android/platform-tools/adb -L tcp:5037 fork-server server --reply-fd 4"
+                .to_string(),
+        ]);
+        assert!(adb.has_adb());
+        assert!(!AgentPortListeners(vec![runner_command(SIM_A)]).has_adb());
+        assert!(!AgentPortListeners(vec![]).has_adb());
+    }
+
+    #[test]
+    fn forwards_on_port_reads_the_host_side_only() {
+        let list = "emulator-5554 tcp:18700 tcp:18700\n\
+                    emulator-5556 tcp:18701 tcp:18700\n\
+                    R58M123 tcp:18700 tcp:18700\n\
+                    emulator-5554 tcp:9222 localabstract:webview_devtools_remote_1\n";
+        assert_eq!(
+            forwards_on_port(list, 18700),
+            vec!["emulator-5554".to_string(), "R58M123".to_string()]
+        );
+        assert_eq!(
+            forwards_on_port(list, 18701),
+            vec!["emulator-5556".to_string()]
+        );
+        assert!(forwards_on_port("", 18700).is_empty());
+    }
+
+    #[test]
+    fn daemons_on_agent_port_reads_daemon_command_lines() {
+        let ps = "  101 /usr/local/lib/node_modules/@tapsmith/core-darwin-arm64/tapsmith-core --port 50051 --platform android\n\
+                    102 tapsmith-core --port 50961 --agent-port 18700\n\
+                    103 /repo/target/release/tapsmith-core --port 50070 --agent-port 18800\n\
+                    104 /bin/zsh -c grep tapsmith-core --agent-port 18700\n\
+                    105 /Users/me/My Tools/tapsmith-core --port 50052\n\
+                    106 /repo/target/release/tapsmith-core-helper --port 50053\n";
+        // 101 and 105 run on the default agent port; 102 names it; 103 is on
+        // another; 104 is not a daemon; 106 is another binary.
+        assert_eq!(daemons_on_agent_port(ps, 18700, 999), vec![101, 102, 105]);
+        assert_eq!(daemons_on_agent_port(ps, 18800, 999), vec![103]);
+        // The daemon asking is never its own competitor.
+        assert_eq!(daemons_on_agent_port(ps, 18700, 102), vec![101, 105]);
+        assert!(daemons_on_agent_port(ps, 18900, 999).is_empty());
     }
 
     #[test]
