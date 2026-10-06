@@ -32,9 +32,10 @@ after its own gate (implement-ticket Phase 8); you never merge anything yourself
 
 Each worker builds the SDK, possibly the Rust daemon and an agent, in its own worktree
 (gigabytes each; builds contend for CPU), leases devices for device tests and QA, and
-opens a PR whose CI runs ten device-E2E shards, five of them on macOS runners that are
-the scarce resource. Past about three workers, parallel tickets mostly queue behind each
-other. Raise `max-parallel` only for batches that are mostly device-free.
+opens a PR whose CI runs eight device-E2E shards, three of them on macOS runners that are
+the scarce resource (5 concurrent jobs org-wide; iOS E2E waits until the PR leaves draft).
+Past about three workers, parallel tickets mostly queue behind each other. Raise
+`max-parallel` only for batches that are mostly device-free.
 
 ## The coordinator's state
 

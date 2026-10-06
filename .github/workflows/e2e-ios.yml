@@ -1,22 +1,71 @@
 name: E2E iOS
 
+# macOS runners are the scarce resource: the org gets 5 concurrent macOS jobs
+# across every workflow, and each run of this one needs up to 3 of them for
+# builds plus one per shard. So it runs only where it can find something:
+#
+# - Not on draft PRs. The `gate` job skips the whole run for a draft, and
+#   `ready_for_review` starts it when the PR is marked ready. Drafts are where
+#   most pushes land, and each one used to start a run the next push cancelled.
+# - Not on changes that cannot reach an iOS run. The `paths` lists below
+#   (keep the two in sync) include everything, then exclude docs, the website,
+#   the Android agent and Android-only e2e files, other tooling, and other
+#   workflows. A later positive pattern re-includes a path.
 on:
   push:
     branches: [ main ]
+    paths:
+      - '**'
+      - '!**.md'
+      - '!docs/**'
+      - '!website/**'
+      - '!agent/**'
+      - '!tools/**'
+      - '!web-tests/**'
+      - '!npm-packages/**'
+      - '!.claude/**'
+      - '!LICENSE'
+      - '!DCO'
+      - '!e2e/**/*.android.test.ts'
+      - '!e2e/tapsmith.config.android*.mjs'
+      - '!.github/**'
+      - '.github/workflows/e2e-ios.yml'
   pull_request:
     branches: [ main ]
+    types: [ opened, synchronize, reopened, ready_for_review ]
+    paths:
+      - '**'
+      - '!**.md'
+      - '!docs/**'
+      - '!website/**'
+      - '!agent/**'
+      - '!tools/**'
+      - '!web-tests/**'
+      - '!npm-packages/**'
+      - '!.claude/**'
+      - '!LICENSE'
+      - '!DCO'
+      - '!e2e/**/*.android.test.ts'
+      - '!e2e/tapsmith.config.android*.mjs'
+      - '!.github/**'
+      - '.github/workflows/e2e-ios.yml'
   # Manual runs exist for the `Multi-device` job, which is disabled on push
   # and pull_request (see the job's comment).
   workflow_dispatch:
 
+# A PR's runs share its branch; pushes to main share refs/heads/main, so a
+# burst of merges finishes only the newest main run instead of one per merge.
 concurrency:
-  group: e2e-ios-${{ github.head_ref || github.run_id }}
+  group: e2e-ios-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:
   # Tapsmith's own CI is not a user; keep its runs out of the usage counts.
   TAPSMITH_TELEMETRY: "0"
-  SHARD_TOTAL: 5
+  # Fixed per-shard overhead (cache restores, simulator boot, app install,
+  # agent start) is ~10 of a shard's ~20 min, so fewer shards spend fewer
+  # macOS runner-minutes per run. Keep the matrix and the job name in sync.
+  SHARD_TOTAL: 3
   # Cached login state for the `authenticated` project. Shards restore it
   # before the test step; ci-projects.mjs drops the `authentication` setup
   # project when the archive is present. Bump the -v suffix if the daemon's
@@ -25,10 +74,69 @@ env:
   AUTH_STATE_CACHE_VERSION: v1
 
 jobs:
+  # ─── Gate ──────────────────────────────────────────────────────────────
+
+  # Every other job needs this one, so skipping it (a draft PR) skips the run.
+  #
+  # It also checks, from an ubuntu runner, whether each macOS build job's
+  # output is already cached. A build job whose output is cached would only
+  # restore and re-upload it, but it still has to wait for one of the 5 macOS
+  # slots first — which took up to 54 min on a busy day, before the shards
+  # queued a second time. The caches restore across Linux and macOS, so this
+  # lookup sees exactly what the shards will restore. The keys repeat the
+  # build jobs' keys verbatim — keep them in sync.
+  gate:
+    name: Gate
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    outputs:
+      daemon-cached: ${{ steps.daemon.outputs.cache-hit == 'true' }}
+      # The agent key ends in the Xcode version, which only a macOS runner
+      # can read, so this matches on the sources' prefix: some Xcode's build
+      # of these sources is cached. A shard whose Xcode has no build of its
+      # own builds the agent itself (see the shard's "Build iOS agent").
+      agent-cached: ${{ steps.agent.outputs.cache-matched-key != '' }}
+      test-app-cached: ${{ steps.test-app.outputs.cache-hit == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Look up daemon binaries
+        id: daemon
+        uses: actions/cache/restore@v4
+        with:
+          lookup-only: true
+          path: |
+            packages/tapsmith-core/target/release/tapsmith-core
+            packages/tapsmith-core/target/release/tapsmith-ios-hid
+          key: ios-daemon-bin-${{ hashFiles('packages/tapsmith-core/**', 'proto/tapsmith.proto') }}
+
+      - name: Look up iOS agent build
+        id: agent
+        uses: actions/cache/restore@v4
+        with:
+          lookup-only: true
+          path: ios-agent/.build-sim
+          key: ios-agent-build-${{ hashFiles('ios-agent/**') }}-
+          restore-keys: ios-agent-build-${{ hashFiles('ios-agent/**') }}-
+
+      - name: Look up test app
+        id: test-app
+        uses: actions/cache/restore@v4
+        with:
+          lookup-only: true
+          path: e2e/fixtures/TapsmithTestApp.app
+          key: test-app-ios-${{ hashFiles('test-app/app/**', 'test-app/assets/**',
+            'test-app/package-lock.json', 'test-app/app.json',
+            'test-app/metro.config.js',
+            'packages/tapsmith-react-native/src/**',
+            'packages/tapsmith-react-native/package.json',
+            'packages/tapsmith-react-native/tsconfig*.json') }}
+
   # ─── Build prerequisites (parallel) ────────────────────────────────────
 
   build-sdk:
     name: Build SDK
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +180,8 @@ jobs:
 
   build-daemon:
     name: Build Daemon
+    needs: gate
+    if: needs.gate.outputs.daemon-cached != 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -130,6 +240,8 @@ jobs:
 
   build-agent:
     name: Build Agent
+    needs: gate
+    if: needs.gate.outputs.agent-cached != 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -138,7 +250,8 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
       # The xctestrun bundle is tied to the Xcode/SDK that produced it, so the
-      # image's Xcode version is part of the key.
+      # image's Xcode version is part of the key — last, so the gate (which
+      # cannot read it) can match the sources' prefix.
       - name: Resolve Xcode version
         id: xcode
         run: echo "version=$(xcodebuild -version | tr '\n' ' ' | tr -c 'A-Za-z0-9. ' '-' | xargs | tr ' ' '-')" >> "$GITHUB_OUTPUT"
@@ -148,7 +261,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ios-agent/.build-sim
-          key: ios-agent-build-${{ steps.xcode.outputs.version }}-${{ hashFiles('ios-agent/**') }}
+          key: ios-agent-build-${{ hashFiles('ios-agent/**') }}-${{ steps.xcode.outputs.version }}
 
       - name: Generate Xcode project
         if: steps.agent-cache.outputs.cache-hit != 'true'
@@ -177,6 +290,8 @@ jobs:
 
   build-test-app:
     name: Build Test App
+    needs: gate
+    if: needs.gate.outputs.test-app-cached != 'true'
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -256,14 +371,21 @@ jobs:
   # ─── Sharded E2E execution ─────────────────────────────────────────────
 
   e2e-test:
-    name: "Shard ${{ matrix.shard }}/5"
+    name: "Shard ${{ matrix.shard }}/3"
     needs: [ build-sdk, build-daemon, build-agent, build-test-app ]
+    # The gate skips a build job whose output is already cached; a skipped
+    # need would otherwise skip this job too.
+    if: >-
+      !cancelled() && needs.build-sdk.result == 'success'
+      && contains(fromJSON('["success", "skipped"]'), needs.build-daemon.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.build-agent.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.build-test-app.result)
     runs-on: macos-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: [ 1, 2, 3, 4, 5 ]
+        shard: [ 1, 2, 3 ]
     steps:
       - uses: actions/checkout@v4
 
@@ -310,8 +432,10 @@ jobs:
 
       # ─── Fetch build outputs: cache first, artifact on a miss ───
       # Keys mirror the build jobs' cache steps exactly (see the note above
-      # build-daemon). The build jobs populate these caches in this same run,
-      # so a miss here only happens if a save failed or was evicted.
+      # build-daemon). A build job that ran populated its cache in this same
+      # run, and the gate skips one only when its output is already cached,
+      # so a miss here means a save failed, the entry was evicted after the
+      # gate looked, or (the agent only) this runner's Xcode has no build yet.
 
       - name: Restore daemon binaries from cache
         id: daemon-cache
@@ -323,7 +447,7 @@ jobs:
           key: ios-daemon-bin-${{ hashFiles('packages/tapsmith-core/**', 'proto/tapsmith.proto') }}
 
       - name: Download daemon binary
-        if: steps.daemon-cache.outputs.cache-hit != 'true'
+        if: steps.daemon-cache.outputs.cache-hit != 'true' && needs.build-daemon.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: daemon-binary-macos
@@ -334,14 +458,38 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ios-agent/.build-sim
-          key: ios-agent-build-${{ steps.xcode.outputs.version }}-${{ hashFiles('ios-agent/**') }}
+          key: ios-agent-build-${{ hashFiles('ios-agent/**') }}-${{ steps.xcode.outputs.version }}
 
       - name: Download iOS agent
-        if: steps.agent-cache.outputs.cache-hit != 'true'
+        if: steps.agent-cache.outputs.cache-hit != 'true' && needs.build-agent.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: ios-agent-build
           path: ios-agent/.build-sim
+
+      # The gate skipped build-agent because a build of these sources is
+      # cached for some Xcode, but not for this runner's (a new runner image).
+      # Build it here, as build-agent does, and cache it for the next run.
+      - name: Build iOS agent for this Xcode
+        if: steps.agent-cache.outputs.cache-hit != 'true' && needs.build-agent.result != 'success'
+        working-directory: ios-agent
+        run: |
+          brew install xcodegen 2>/dev/null || true
+          ./create-xcode-project.sh
+          xcodebuild build-for-testing \
+            -project TapsmithAgent.xcodeproj \
+            -scheme TapsmithAgentUITests \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath .build-sim \
+            -quiet
+
+      # Concurrent shards race to save the same key; the losers only warn.
+      - name: Save iOS agent build to cache
+        if: steps.agent-cache.outputs.cache-hit != 'true' && needs.build-agent.result != 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ios-agent/.build-sim
+          key: ${{ steps.agent-cache.outputs.cache-primary-key }}
 
       - name: Restore test app from cache
         id: test-app-cache
@@ -356,11 +504,19 @@ jobs:
             'packages/tapsmith-react-native/tsconfig*.json') }}
 
       - name: Download test app
-        if: steps.test-app-cache.outputs.cache-hit != 'true'
+        if: steps.test-app-cache.outputs.cache-hit != 'true' && needs.build-test-app.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: test-app-ios
           path: .
+
+      - name: Fail if a skipped build's cache entry is gone
+        if: >-
+          (steps.daemon-cache.outputs.cache-hit != 'true' && needs.build-daemon.result != 'success')
+          || (steps.test-app-cache.outputs.cache-hit != 'true' && needs.build-test-app.result != 'success')
+        run: |
+          echo "::error::The gate skipped a build because its output was cached, but the cache entry was gone when this job restored it (the repo's Actions cache evicts least-recently-used entries past its size limit). Use 'Re-run all jobs': 'Re-run failed jobs' keeps the gate's old answer."
+          exit 1
 
       # e2e/node_modules/tapsmith is a `file:../packages/tapsmith` symlink, so
       # the build has to land at that real path.
@@ -643,11 +799,18 @@ jobs:
   # manual-only (`workflow_dispatch`).
   #
   # To re-enable: give it a larger runner (`macos-latest-xlarge`), drop the
-  # `if:` below and the test step's `continue-on-error`.
+  # `workflow_dispatch` clause from the `if:` below and the test step's
+  # `continue-on-error`.
   e2e-multi-device:
     name: Multi-device
     needs: [ build-sdk, build-daemon, build-agent, build-test-app ]
-    if: github.event_name == 'workflow_dispatch'
+    # Skipped builds are fine here too (see e2e-test).
+    if: >-
+      !cancelled() && needs.build-sdk.result == 'success'
+      && contains(fromJSON('["success", "skipped"]'), needs.build-daemon.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.build-agent.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.build-test-app.result)
+      && github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -702,8 +865,10 @@ jobs:
 
       # ─── Fetch build outputs: cache first, artifact on a miss ───
       # Keys mirror the build jobs' cache steps exactly (see the note above
-      # build-daemon). The build jobs populate these caches in this same run,
-      # so a miss here only happens if a save failed or was evicted.
+      # build-daemon). A build job that ran populated its cache in this same
+      # run, and the gate skips one only when its output is already cached,
+      # so a miss here means a save failed, the entry was evicted after the
+      # gate looked, or (the agent only) this runner's Xcode has no build yet.
 
       - name: Restore daemon binaries from cache
         id: daemon-cache
@@ -715,7 +880,7 @@ jobs:
           key: ios-daemon-bin-${{ hashFiles('packages/tapsmith-core/**', 'proto/tapsmith.proto') }}
 
       - name: Download daemon binary
-        if: steps.daemon-cache.outputs.cache-hit != 'true'
+        if: steps.daemon-cache.outputs.cache-hit != 'true' && needs.build-daemon.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: daemon-binary-macos
@@ -726,14 +891,38 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ios-agent/.build-sim
-          key: ios-agent-build-${{ steps.xcode.outputs.version }}-${{ hashFiles('ios-agent/**') }}
+          key: ios-agent-build-${{ hashFiles('ios-agent/**') }}-${{ steps.xcode.outputs.version }}
 
       - name: Download iOS agent
-        if: steps.agent-cache.outputs.cache-hit != 'true'
+        if: steps.agent-cache.outputs.cache-hit != 'true' && needs.build-agent.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: ios-agent-build
           path: ios-agent/.build-sim
+
+      # The gate skipped build-agent because a build of these sources is
+      # cached for some Xcode, but not for this runner's (a new runner image).
+      # Build it here, as build-agent does, and cache it for the next run.
+      - name: Build iOS agent for this Xcode
+        if: steps.agent-cache.outputs.cache-hit != 'true' && needs.build-agent.result != 'success'
+        working-directory: ios-agent
+        run: |
+          brew install xcodegen 2>/dev/null || true
+          ./create-xcode-project.sh
+          xcodebuild build-for-testing \
+            -project TapsmithAgent.xcodeproj \
+            -scheme TapsmithAgentUITests \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath .build-sim \
+            -quiet
+
+      # Concurrent shards race to save the same key; the losers only warn.
+      - name: Save iOS agent build to cache
+        if: steps.agent-cache.outputs.cache-hit != 'true' && needs.build-agent.result != 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ios-agent/.build-sim
+          key: ${{ steps.agent-cache.outputs.cache-primary-key }}
 
       - name: Restore test app from cache
         id: test-app-cache
@@ -748,11 +937,19 @@ jobs:
             'packages/tapsmith-react-native/tsconfig*.json') }}
 
       - name: Download test app
-        if: steps.test-app-cache.outputs.cache-hit != 'true'
+        if: steps.test-app-cache.outputs.cache-hit != 'true' && needs.build-test-app.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: test-app-ios
           path: .
+
+      - name: Fail if a skipped build's cache entry is gone
+        if: >-
+          (steps.daemon-cache.outputs.cache-hit != 'true' && needs.build-daemon.result != 'success')
+          || (steps.test-app-cache.outputs.cache-hit != 'true' && needs.build-test-app.result != 'success')
+        run: |
+          echo "::error::The gate skipped a build because its output was cached, but the cache entry was gone when this job restored it (the repo's Actions cache evicts least-recently-used entries past its size limit). Use 'Re-run all jobs': 'Re-run failed jobs' keeps the gate's old answer."
+          exit 1
 
       # e2e/node_modules/tapsmith is a `file:../packages/tapsmith` symlink, so
       # the build has to land at that real path.

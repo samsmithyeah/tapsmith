@@ -153,7 +153,7 @@ Run `"${CLAUDE_SKILL_DIR}/scripts/device-availability.sh"` first and act on its 
 target; BUSY → use an unheld one, or ask). Do not hand-roll a `pgrep` check: the raw
 process list is dominated by orphans and idle MCP servers that are not active use.
 
-**The e2e suite is CI's job** — it runs on both platforms, 5 shards each, on your PR.
+**The e2e suite is CI's job** — it runs on both platforms on your PR (iOS once it is out of draft).
 So a device run here needs one of three reasons: a mode CI does not exercise, an
 artifact you need to read, or a red CI job you are reproducing. Pick the narrowest
 target that gives you that, and never run the whole suite "to check".

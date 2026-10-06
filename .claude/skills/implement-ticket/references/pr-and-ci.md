@@ -6,6 +6,11 @@ Facts about this repo that shape every rule below:
   gets no CI at all.
 - **Every push cancels the in-flight run** of each workflow (`cancel-in-progress: true`).
   The E2E workflows take tens of minutes; pushing in the middle throws that away.
+- **`E2E iOS` skips draft PRs** (its checks read *skipped*) and starts when the PR is
+  marked ready (`ready_for_review`). It also never runs on a PR that touches only docs,
+  the website, the Android agent, Android-only e2e files, tooling or other workflows (the
+  `paths` lists in `e2e-ios.yml`). The org gets 5 concurrent macOS jobs across every
+  workflow and PR, so iOS runs are kept for code that is about to merge.
 - **PRs are squash-merged**, so branch history is not what lands on `main`. Merge
   commits on the branch are fine, and there is never a reason to force-push.
 - **The `main` ruleset requires only the DCO check.** GitHub will offer the merge button
@@ -185,6 +190,28 @@ while :; do
   sleep 60
 done
 ```
+
+**E2E iOS after ready** (set `t0` just before `gh pr ready`, as Phase 7 says; only runs
+created after it count, so the draft's skipped run never reads as a result). Long queues
+for macOS runners are normal — this is not a stuck run:
+
+```bash
+end=$((SECONDS+6000))
+while :; do
+  now=$(gh pr view $n -R $R --json headRefOid -q .headRefOid 2>/dev/null) || now=$head
+  [ "$now" = "$head" ] || { echo "WAIT_DONE: head moved off $head"; exit 0; }
+  r=$(gh run list -R $R --workflow e2e-ios.yml --commit $head --limit 10 \
+      --json createdAt,status,conclusion \
+      -q "[.[] | select(.createdAt >= \"$t0\")][0] | \"\(.status) \(.conclusion)\"" 2>/dev/null) || r=""
+  case "$r" in completed*) echo "WAIT_DONE: E2E iOS $r on $head"; exit 0;; esac
+  [ $SECONDS -ge $end ] && { echo "WAIT_TIMEOUT: E2E iOS ${r:-unknown} on $head"; exit 124; }
+  sleep 60
+done
+```
+
+`WAIT_DONE: E2E iOS completed success` is the pass; any other conclusion is a red check
+for Phase 6. No run at all for this head 10 minutes after `gh pr ready` is the *CI checks
+to register* timeout in SKILL.md *Waiting*.
 
 **CodeRabbit reviewed this head** — its commit status, which ends `Review completed` (or
 `Review skipped`, which is not a review):

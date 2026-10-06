@@ -104,7 +104,10 @@ exempts merges and GitHub-recognised bots, and allows authors to repair their ow
 sign-offs with individual remediation commits. Repository setup is in `.github/dco-setup.md`.
 
 Device E2E runs separately on every PR: `e2e-android.yml` (ubuntu + KVM emulator, 5 shards) and
-`e2e-ios.yml` (macOS simulators, 5 shards). `e2e-android-hookless.yml` covers the hook-less reset
+`e2e-ios.yml` (macOS simulators, 3 shards). macOS runners are capped at 5 concurrent jobs org-wide,
+so `e2e-ios.yml` skips draft PRs (it starts when the PR is marked ready), skips changes that cannot
+reach an iOS run (its `paths` lists), and skips each macOS build job whose output an ubuntu `gate`
+job finds already cached. `e2e-android-hookless.yml` covers the hook-less reset
 path (test app built without `EXPO_PUBLIC_TAPSMITH_HOOKS`) weekly, on manual dispatch, and on PRs
 touching the reset-path sources. `e2e-provisioning.yml` (same triggers, for the emulator/simulator
 provisioning sources) is where Tapsmith launches or boots its own devices from nothing: the sharded
