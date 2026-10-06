@@ -72,6 +72,41 @@ expect("concatenated pattern: last child", matches(concat, "Intro,\u{00A0}Welcom
 expect("concatenated pattern: multi-line label", matches(concat, "Intro\nline, Welcome to Expo"))
 expect("concatenated pattern: not a partial child", !matches(concat, "Intro, Welcome to Expo now"))
 
+// Accessible-name matching (PILOT-549): Playwright's getByRole `name` is a
+// case-insensitive substring by default; `exact` is case-sensitive and whole.
+expect("name: case-insensitive", TextMatch.nameMatches("SIGN IN", "Sign In", exact: false))
+expect("name: substring", TextMatch.nameMatches("Explore the app", "explor", exact: false))
+expect("name: normalized substring", TextMatch.nameMatches("Welcome to\u{00A0}Expo", "TO  expo", exact: false))
+expect("name: not a substring", !TextMatch.nameMatches("Sign out", "Sign in", exact: false))
+expect("name: substring of a concatenated label", TextMatch.nameMatches("Intro, Sign In, More", "sign in", exact: false))
+expect("name exact: normalized equality", TextMatch.nameMatches(" Sign\u{00A0}In ", "Sign In", exact: true))
+expect("name exact: case-sensitive", !TextMatch.nameMatches("SIGN IN", "Sign In", exact: true))
+expect("name exact: whole string", !TextMatch.nameMatches("Sign In now", "Sign In", exact: true))
+expect("name exact: still a child of a concatenated label",
+       TextMatch.nameMatches("Intro, Sign In, More", "Sign In", exact: true))
+expect("name exact: child label is case-sensitive",
+       !TextMatch.nameMatches("Intro, SIGN IN, More", "Sign In", exact: true))
+
+
+// Live re-resolution index for role+name matches (PILOT-549): the position
+// within what `label == L [AND identifier == I]` on the scoped type returns.
+func node(_ type: UInt, _ label: String, _ id: String = "") -> QueryNode {
+    QueryNode(typeRaw: type, label: label, identifier: id)
+}
+let other: UInt = 46, button: UInt = 9, staticText: UInt = 48
+// Two "Delete" buttons: the first has a testID, the second none. The second's
+// query (label only) also returns the first, so it is index 1.
+let deletes = [node(other, "Delete", "delete-1"), node(other, "Delete")]
+expect("no-id node counts earlier id'd same-label nodes", QueryIndex.liveIndex(of: 1, in: deletes, scopeTypeRaw: nil) == 1)
+expect("id'd node counts only its id", QueryIndex.liveIndex(of: 0, in: deletes, scopeTypeRaw: nil) == 0)
+// Rows sharing a testID but not a label.
+let rows = [node(other, "Item 1", "row"), node(other, "Item 2", "row")]
+expect("same id, different label: own label only", QueryIndex.liveIndex(of: 1, in: rows, scopeTypeRaw: nil) == 0)
+// An .any query (RN .other) also returns a native button and a heading with the same label.
+let saves = [node(staticText, "Save"), node(other, "Save"), node(button, "Save"), node(other, "Save")]
+expect(".any scope counts every same-label node", QueryIndex.liveIndex(of: 3, in: saves, scopeTypeRaw: nil) == 3)
+expect("a specific scope counts only its type", QueryIndex.liveIndex(of: 2, in: saves, scopeTypeRaw: button) == 0)
+
 if failures > 0 {
     print("\(failures) failure(s)")
     exit(1)

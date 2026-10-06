@@ -17,9 +17,9 @@ device.getByText("Welcome")                          // substring
 device.getByText("Sign In", { exact: true })         // exact
 ```
 
-Whitespace is normalized on both sides before comparing, exact or not, as in Playwright: runs of whitespace — including non-breaking spaces (`&nbsp;`, U+00A0), other Unicode spaces and line breaks — collapse to one space, and leading and trailing whitespace is ignored. So `getByText("Welcome to Expo", { exact: true })` matches text rendered as `Welcome to&nbsp;Expo` or split over two lines. The same applies to `getByRole`'s `name` and to `getByLabel`. Matching is case-sensitive, and `text` must be a string: a regular expression throws a `TypeError`.
+Whitespace is normalized on both sides before comparing, exact or not, as in Playwright: runs of whitespace — including non-breaking spaces (`&nbsp;`, U+00A0), other Unicode spaces and line breaks — collapse to one space, and leading and trailing whitespace is ignored. So `getByText("Welcome to Expo", { exact: true })` matches text rendered as `Welcome to&nbsp;Expo` or split over two lines. The same applies to `getByRole`'s `name` and to `getByLabel`. `getByText` matching is case-sensitive, and `text` must be a string: a regular expression throws a `TypeError`.
 
-> Because the default is a substring match, `getByText("Sign in")` also matches longer text like `"Sign in to continue"`. When that happens, acting on the locator throws a [strict mode](#strict-mode) violation — add `{ exact: true }` or use `getByRole(role, { name })` to pin a single element.
+> Because the default is a substring match, `getByText("Sign in")` also matches longer text like `"Sign in to continue"`. When that happens, acting on the locator throws a [strict mode](#strict-mode) violation — add `{ exact: true }` or use `getByRole(role, { name, exact: true })` to pin a single element.
 
 ### `device.getByRole(role: string, options?): ElementHandle`
 
@@ -27,6 +27,8 @@ Locate an element by its accessibility role, optionally filtered by accessible n
 
 ```typescript
 device.getByRole("button", { name: "Submit" })
+device.getByRole("button", { name: "sign in" })                 // also matches "SIGN IN", "Sign in now"
+device.getByRole("button", { name: "Sign In", exact: true })    // only "Sign In"
 device.getByRole("textfield", { name: "Email" })
 device.getByRole("checkbox")
 device.getByRole("switch", { name: "Dark Mode", checked: true })
@@ -39,11 +41,14 @@ device.getByRole("button", { name: "Details", expanded: true })
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `name` | `string` | Filter by accessible name (exact, with whitespace normalized like `getByText`) |
+| `name` | `string` | Filter by accessible name. **Case-insensitive substring match by default**, like Playwright; whitespace is normalized like `getByText` |
+| `exact` | `boolean` | Match `name` case-sensitively and as the whole string (whitespace still normalized). Ignored without `name` |
 | `checked` | `boolean` | Filter by checked state (checkbox, switch, radio) |
 | `disabled` | `boolean` | Filter by disabled state |
 | `selected` | `boolean` | Filter by selected state (tab, option) |
 | `expanded` | `boolean` | Filter by expanded state (accordion, dropdown) |
+
+The accessible name is the element's content description / accessibility label, its text, or — on Android — the joined text of its descendants. Because the default is a case-insensitive substring match, a name can match more than one element (`{ name: "Show overlay" }` also matches *Show overlay briefly*); acting on such a locator throws a [strict mode](#strict-mode) violation — add `exact: true`. The case-insensitive default also covers platform casing differences, such as React Native's `<Button title="Sign In">`, which Android renders as `SIGN IN`.
 
 ### `device.getByDescription(text: string): ElementHandle`
 
@@ -116,8 +121,8 @@ Like Playwright, Tapsmith locators are **strict**: a locator used for an action,
 ```
 strict mode violation: getByText("Sign in") resolved to 2 elements:
     1) text "Sign in to continue to DreamSpinner" [44,210][436,260] aka device.getByText("Sign in to continue to DreamSpinner", { exact: true })
-    2) button "Sign in" [44,640][436,712] aka device.getByRole("button", { name: "Sign in" })
-Hint: use { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last() to target a single element.
+    2) button "Sign in" [44,640][436,712] aka device.getByRole("button", { name: "Sign in", exact: true })
+Hint: use { exact: true }, getByRole(role, { name, exact: true }), getByTestId(), or .first()/.nth()/.last() to target a single element.
 ```
 
 This is the safety net for the substring default of `getByText` — without it, an ambiguous locator would silently act on the first match in document order, which is rarely the element you meant.
@@ -2736,7 +2741,7 @@ npx tapsmith test --reporter json     # writes tapsmith-results/results.json
 
 ### `tapsmith init [options]`
 
-Set up a project. With no options, in a terminal, it runs the interactive wizard: it detects your environment (ADB, Xcode, simulators, emulators), offers the app builds it finds under `android/` and `ios/` (a typed path must exist), walks you through platform and app configuration, and generates a `tapsmith.config.ts`, an example test and an `AGENTS.md` section. Run outside a project that has Tapsmith installed (`npx tapsmith init` before `npm i -D tapsmith`, or a global install), it offers to install it with the project's package manager, since the files it writes import `tapsmith`; declined, it prints the command as the first next step.
+Set up a project. With no options, in a terminal, it runs the interactive wizard: it detects your environment (ADB, Xcode, simulators, emulators), offers the app builds it finds under `android/` and `ios/` (a typed path must exist), walks you through platform and app configuration, and generates a `tapsmith.config.ts`, an example test and an `AGENTS.md` section. Run outside a project that has Tapsmith installed (`npx tapsmith init` before `npm i -D tapsmith`, or a global install), it offers to install it with the project's package manager, since the files it writes import `tapsmith`; declined, it prints the command as the first next step. In an Expo project (`expo` among the dependencies, plus `app.json` or `app.config.*`) it gives the Expo build commands when it finds no build (`npx expo prebuild`, then a release `./gradlew assembleRelease` or `xcodebuild` build, with `EXPO_PUBLIC_TAPSMITH_HOOKS=1` when the app uses `@tapsmith/react-native`), and pre-fills the package and bundle ID prompts from the app config when it can't read them from the build.
 
 Pass `--yes` or any setup flag below (every flag but `--json`) to run non-interactively instead, for scripts and AI agents: anything not given is auto-detected, and a choice that cannot be made (two APKs, say) exits 1 naming the candidates and the flag that picks one. `--json` only changes the output, so an agent passes `--yes --json`. Without a terminal and without `--yes` or a setup flag, `init` exits 1 rather than waiting for input. iOS physical devices need the interactive wizard, for its code-signing preflight.
 
@@ -2745,9 +2750,9 @@ Pass `--yes` or any setup flag below (every flag but `--json`) to run non-intera
 | `-y`, `--yes` | Accept auto-detected defaults for anything not specified |
 | `--platform <list>` | `android`, `ios`, or `android,ios` (default: inferred from `android/` and `ios/`) |
 | `--apk <path>` | Android APK (default: auto-detected under `android/**/build/outputs/apk/`) |
-| `--package <id>` | Android package name (default: read from the APK) |
+| `--package <id>` | Android package name (default: read from the APK, else, in an Expo project, `expo.android.package` from the app config, with a warning) |
 | `--app <path>` | iOS simulator `.app` bundle (default: auto-detected under `ios/`) |
-| `--bundle-id <id>` | iOS bundle identifier (default: read from `Info.plist`) |
+| `--bundle-id <id>` | iOS bundle identifier (default: read from `Info.plist`, else, in an Expo project, `expo.ios.bundleIdentifier` from the app config, with a warning) |
 | `--avd <name>` | Android AVD to auto-launch (default: first available; with `--network-capture`, the first that supports HTTPS capture — Google Play images don't, and init warns if it can only pick one) |
 | `--simulator <name>` | iOS simulator name (default: newest available iPhone) |
 | `--device-type <type>` | `emulator`, `physical` or `both` (default: `emulator`) |

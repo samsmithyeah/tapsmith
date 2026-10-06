@@ -87,6 +87,22 @@ function tryExactTextUpgrade(
   return { ...s, code: upgraded };
 }
 
+/**
+ * (a') Ambiguous getByRole name (a case-insensitive substring at runtime,
+ * PILOT-549) → try the { exact: true } variant.
+ */
+function tryExactRoleNameUpgrade(
+  s: GeneratedSelector,
+  roots: HierarchyNode[],
+  node: HierarchyNode,
+): GeneratedSelector | null {
+  const parsed = parseSelectorString(s.code);
+  if (!parsed || parsed.type !== 'role' || !parsed.name || parsed.exact) return null;
+  const upgraded = `device.getByRole("${escapeQuotes(parsed.value)}", { name: "${escapeQuotes(parsed.name)}", exact: true })`;
+  if (!uniquelyMatches(upgraded, roots, node)) return null;
+  return { ...s, code: upgraded };
+}
+
 /** (b) Ambiguous getByRole without a name → try adding the accessible name. */
 function tryRoleNameUpgrade(
   s: GeneratedSelector,
@@ -98,9 +114,11 @@ function tryRoleNameUpgrade(
   const accessibleName =
     node.attributes.get('content-desc') || node.attributes.get('label') || node.attributes.get('text') || '';
   if (!accessibleName) return null;
-  const upgraded = `device.getByRole("${parsed.value}", { name: "${escapeQuotes(accessibleName)}" })`;
-  if (!uniquelyMatches(upgraded, roots, node)) return null;
-  return { ...s, code: upgraded, label: 'Role + name' };
+  for (const exact of ['', ', exact: true']) {
+    const upgraded = `device.getByRole("${parsed.value}", { name: "${escapeQuotes(accessibleName)}"${exact} })`;
+    if (uniquelyMatches(upgraded, roots, node)) return { ...s, code: upgraded, label: 'Role + name' };
+  }
+  return null;
 }
 
 /**
@@ -109,8 +127,8 @@ function tryRoleNameUpgrade(
  *
  * 1. Unique already → keep as-is.
  * 2. Doesn't resolve to the picked node → mark "(may not match)" and demote.
- * 3. Ambiguous → upgrade ladder: `{ exact: true }` text variant, then
- *    getByRole `{ name }`, both kept at full priority when they pin the
+ * 3. Ambiguous → upgrade ladder: `{ exact: true }` text or role-name
+ *    variant, then getByRole `{ name }` (exact if need be), all kept at full priority when they pin the
  *    node uniquely; otherwise append `.first()/.nth(i)/.last()` and demote.
  *
  * Returns suggestions sorted by priority.
@@ -133,7 +151,9 @@ export function disambiguateSelectors(
     }
     if (matches.length <= 1) return s;
 
-    const upgraded = tryExactTextUpgrade(s, roots, node) ?? tryRoleNameUpgrade(s, roots, node);
+    const upgraded = tryExactTextUpgrade(s, roots, node)
+      ?? tryExactRoleNameUpgrade(s, roots, node)
+      ?? tryRoleNameUpgrade(s, roots, node);
     if (upgraded) return upgraded;
 
     const nthSuffix = idx === 0 ? '.first()' : idx === matches.length - 1 ? '.last()' : `.nth(${idx})`;
