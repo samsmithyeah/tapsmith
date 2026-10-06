@@ -240,6 +240,7 @@ test("authenticate and save app state", async ({ device, projectName }) => {
 import { defineConfig } from "tapsmith"
 
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   package: "com.example.myapp",
   timeout: 10_000,
   projects: [
@@ -272,6 +273,7 @@ When running on both Android and iOS, each platform needs its own auth state fil
 ```typescript
 // tapsmith.config.ts
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   projects: [
     { name: "android:auth-setup", testMatch: ["**/auth.setup.ts"], use: { platform: "android", /* ... */ } },
     { name: "ios:auth-setup",     testMatch: ["**/auth.setup.ts"], use: { platform: "ios", /* ... */ } },
@@ -497,6 +499,7 @@ Control which tests run in each project:
 
 ```typescript
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   projects: [
     {
       name: "smoke",
@@ -551,6 +554,7 @@ Use file naming conventions combined with `testIgnore` to exclude platform-speci
 
 ```typescript
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   projects: [
     {
       name: "ios",
