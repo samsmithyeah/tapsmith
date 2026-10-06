@@ -51,6 +51,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * A readable runtime name from a simctl runtime id:
+ * `com.apple.CoreSimulator.SimRuntime.iOS-26-5` is `iOS 26.5` (PILOT-562).
+ * An id not shaped `<os>-<n>-<n>…` keeps its words, hyphens as spaces.
+ */
+function simRuntimeName(id: string): string {
+  const bare = id.replace(/^com\.apple\.CoreSimulator\.SimRuntime\./, '');
+  const versioned = /^([A-Za-z]+)-(\d+(?:-\d+)*)$/.exec(bare);
+  return versioned ? `${versioned[1]} ${versioned[2].replace(/-/g, '.')}` : bare.replace(/-/g, ' ');
+}
+
 export function parseSimctlDevicesJson(output: string): SimulatorInfo[] {
   const simulators: SimulatorInfo[] = [];
   let data: unknown;
@@ -67,7 +78,7 @@ export function parseSimctlDevicesJson(output: string): SimulatorInfo[] {
     if (!Array.isArray(devs)) continue;
     for (const device of devs) {
       if (!isRecord(device)) continue;
-      const runtimeName = runtime.replace(/^com\.apple\.CoreSimulator\.SimRuntime\./, '').replace(/-/g, ' ');
+      const runtimeName = simRuntimeName(runtime);
       simulators.push({
         name: typeof device['name'] === 'string' ? device['name'] : '',
         udid: typeof device['udid'] === 'string' ? device['udid'] : '',

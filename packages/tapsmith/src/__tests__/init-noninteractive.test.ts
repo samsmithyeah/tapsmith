@@ -24,8 +24,8 @@ const baseEnv: EnvScan = {
   androidHome: '/sdk',
   xcodeVersion: '16.0',
   simulators: [
-    { name: 'iPhone 16', udid: 'A', state: 'Shutdown', runtime: 'iOS 18 0' },
-    { name: 'iPhone 16', udid: 'B', state: 'Shutdown', runtime: 'iOS 18 2' },
+    { name: 'iPhone 16', udid: 'A', state: 'Shutdown', runtime: 'iOS 18.0' },
+    { name: 'iPhone 16', udid: 'B', state: 'Shutdown', runtime: 'iOS 18.2' },
   ],
   avds: ['Pixel_7', 'Pixel_8'],
   avdImages: [
