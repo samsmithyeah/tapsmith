@@ -11,6 +11,7 @@ import {
 } from '../runner.js';
 import type { TapsmithConfig } from '../config.js';
 import { runnerClaimsUnhandledRejection } from '../unhandled-errors.js';
+import { TestEndedError } from '../attempt-fence.js';
 import { Device } from '../device.js';
 import type { TapsmithGrpcClient } from '../grpc-client.js';
 import type { NetworkRouteManager } from '../network.js';
@@ -225,7 +226,8 @@ describe('runTestFile — unhandled errors during a test (PILOT-543)', () => {
     expect(result.error!.message).toBe('rejected during afterEach');
   });
 
-  it('ignores a rejected call that the attempt fence refused', async () => {
+  it('notes a refused call from an ended test without failing anything', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const fenceUrl = pathToFileURL(path.resolve('src/attempt-fence.ts')).href;
     const filePath = writeFile('l.test.mjs', `
       import { TestEndedError } from ${JSON.stringify(fenceUrl)};
@@ -238,6 +240,11 @@ describe('runTestFile — unhandled errors during a test (PILOT-543)', () => {
     const [result] = collectResults(await runTestFile(filePath, makeOpts()));
 
     expect(result.status).toBe('passed');
+    expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain(
+      `A call from a test that has already ended in ${filePath} was refused (an action the test did not await?)`,
+    );
+    // The CLI's fatal handler must leave it alone even outside a file.
+    expect(runnerClaimsUnhandledRejection(new TestEndedError())).toBe(true);
   });
 
   it('claims unhandled rejections only while a file runs', async () => {
@@ -246,7 +253,7 @@ describe('runTestFile — unhandled errors during a test (PILOT-543)', () => {
         if (!globalThis.__pilot543Claims()) throw new Error('runner did not claim rejections during the test');
       });
     `);
-    (globalThis as Record<string, unknown>).__pilot543Claims = runnerClaimsUnhandledRejection;
+    (globalThis as Record<string, unknown>).__pilot543Claims = () => runnerClaimsUnhandledRejection(new Error('x'));
     try {
       const [result] = collectResults(await runTestFile(filePath, makeOpts()));
       expect(result.status).toBe('passed');
@@ -254,7 +261,7 @@ describe('runTestFile — unhandled errors during a test (PILOT-543)', () => {
       delete (globalThis as Record<string, unknown>).__pilot543Claims;
     }
 
-    expect(runnerClaimsUnhandledRejection()).toBe(false);
+    expect(runnerClaimsUnhandledRejection(new Error('x'))).toBe(false);
   });
 
   it('releases ownership when the file fails to load', async () => {
@@ -263,7 +270,7 @@ describe('runTestFile — unhandled errors during a test (PILOT-543)', () => {
     const [result] = collectResults(await runTestFile(filePath, makeOpts()));
 
     expect(result.fileLevelFailure).toBe(true);
-    expect(runnerClaimsUnhandledRejection()).toBe(false);
+    expect(runnerClaimsUnhandledRejection(new Error('x'))).toBe(false);
   });
 
   it('reports a leftover of the file\'s last test that fails after the file ended, without crashing', async () => {

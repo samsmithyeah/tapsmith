@@ -71,9 +71,18 @@ function report(err: Error, what: string): void {
 }
 
 function onUnhandledRejection(reason: unknown): void {
-  // A device call fenced off from a test that already ended: that test has
-  // already failed (it timed out), and this says nothing new.
-  if (isTestEndedError(reason)) return;
+  const where = activeFile ? ` in ${activeFile}` : '';
+  // A device call the attempt fence refused, from a test that has already
+  // ended — typically an action it did not await, still retrying when the
+  // test finished. Never a failure of the test running now; its message is
+  // all there is to say (the stack is the fence's own).
+  if (isTestEndedError(reason)) {
+    process.stderr.write(
+      `[tapsmith] A call from a test that has already ended${where} was refused`
+      + ' (an action the test did not await?), not attributed to any test.\n',
+    );
+    return;
+  }
   const fromEndedTest = isLeftoverOfEndedTest();
   if (ownerCount === 0 && !fromEndedTest) {
     // Not a test's: what happens without this module. Another listener (the
@@ -86,7 +95,6 @@ function onUnhandledRejection(reason: unknown): void {
     activeScope.errors.push(err);
     return;
   }
-  const where = activeFile ? ` in ${activeFile}` : '';
   report(err, fromEndedTest
     ? `from a test that has already ended${where} (a call it did not await?)`
     : `outside a test${where}`);
@@ -121,12 +129,13 @@ export function ownUnhandledErrors(filePath: string | undefined): () => void {
 
 /**
  * True when the runner reports this rejection itself — it happened while a
- * test file ran, or it is a leftover of a test that has already ended — so a
+ * test file ran, or it is a leftover of (or a call refused from) a test that
+ * has already ended — so a
  * process-wide fatal handler must leave it be. Call it from an
  * `unhandledRejection` listener (it reads the rejecting promise's context).
  */
-export function runnerClaimsUnhandledRejection(): boolean {
-  return ownerCount > 0 || isLeftoverOfEndedTest();
+export function runnerClaimsUnhandledRejection(reason: unknown): boolean {
+  return ownerCount > 0 || isTestEndedError(reason) || isLeftoverOfEndedTest();
 }
 
 /**

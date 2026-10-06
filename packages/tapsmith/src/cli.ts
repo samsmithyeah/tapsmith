@@ -346,7 +346,7 @@ function installSequentialFatalHandlers(
   // the test the rejection happened in and the run carries on (PILOT-543).
   // It also reports a late leftover of a test that has already ended.
   process.on('unhandledRejection', (reason) => {
-    if (!runnerClaimsUnhandledRejection()) runFatalTeardown('rejection', reason);
+    if (!runnerClaimsUnhandledRejection(reason)) runFatalTeardown('rejection', reason);
   });
 }
 
