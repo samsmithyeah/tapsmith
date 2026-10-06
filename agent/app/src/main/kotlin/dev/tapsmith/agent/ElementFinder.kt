@@ -25,7 +25,7 @@ data class ElementSelector(
     val name: String? = null,
     /** getByRole `{ exact: true }`: match [name] case-sensitively and whole. */
     val nameExact: Boolean = false,
-    /** getByRole `{ name: RegExp }` (PILOT-520); [name] is then null. */
+    /** getByRole `{ name: RegExp }` (PILOT-520); the parser then leaves [name] null. */
     val nameRegex: TextRegex? = null,
     val text: String? = null,
     val textContains: String? = null,

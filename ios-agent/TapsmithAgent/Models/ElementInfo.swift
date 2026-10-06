@@ -8,7 +8,7 @@ struct ElementSelector {
     var name: String?
     /// getByRole `{ exact: true }`: match `name` case-sensitively and whole (PILOT-549).
     var nameExact: Bool = false
-    /// getByRole `{ name: RegExp }` (PILOT-520); `name` is then nil.
+    /// getByRole `{ name: RegExp }` (PILOT-520); SelectorParser then leaves `name` nil.
     var nameRegex: TextRegex?
     var text: String?
     var textContains: String?

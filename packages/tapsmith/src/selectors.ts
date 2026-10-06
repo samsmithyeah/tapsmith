@@ -38,7 +38,10 @@ export interface RoleSelectorValue {
    * Playwright's default: a case-insensitive substring match (PILOT-549).
    */
   exact?: boolean;
-  /** getByRole `{ name: RegExp }` (PILOT-520); `name` is then empty. */
+  /**
+   * getByRole `{ name: RegExp }` (PILOT-520); `name` is then empty here (the
+   * proto carries the literal in `name` for agents without RegExp support).
+   */
   nameRegex?: TextRegexValue;
   checked?: boolean;
   disabled?: boolean;
