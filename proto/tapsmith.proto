@@ -131,8 +131,25 @@ message Selector {
     string resource_id = 8;
     string xpath = 9;
     string label = 11;
+    // getByText(RegExp) (PILOT-520): tested against the element's text.
+    TextRegex text_regex = 12;
+    // getByLabel(RegExp) (PILOT-520): tested against the input's label text.
+    TextRegex label_regex = 13;
   }
   Selector parent = 10;
+}
+
+// A JavaScript RegExp passed to a getBy* locator (PILOT-520). The SDK
+// translates it into a pattern ICU (both agents' regex engine) reads with
+// JavaScript's semantics; the agents only compile and run it.
+message TextRegex {
+  // The translated pattern. Matched anywhere in the text (a search, not a
+  // whole-string match), like RegExp.prototype.test.
+  string pattern = 1;
+  // The RegExp's `i` flag. Every other flag is applied by the translation.
+  bool ignore_case = 2;
+  // The RegExp as written (`/source/flags`), for agent messages and logs only.
+  string display = 3;
 }
 
 message RoleSelector {
@@ -146,6 +163,9 @@ message RoleSelector {
   // whole string. Unset/false is Playwright's default, a case-insensitive
   // substring match (whitespace is normalized either way).
   bool exact = 7;
+  // getByRole `{ name: RegExp }` (PILOT-520): tested against the
+  // whitespace-normalized accessible name. `name` is empty when set.
+  TextRegex name_regex = 8;
 }
 
 message ElementInfo {

@@ -70,27 +70,25 @@ describe('playground text matching normalizes whitespace (PILOT-510)', () => {
   });
 });
 
-describe('getBy* text arguments must be strings (PILOT-510)', () => {
-  // getByText is typed `string`, but a test run through tsx is not
-  // type-checked: a RegExp used to serialize as its source text and silently
+describe('getBy* text arguments must be strings or RegExps (PILOT-510, PILOT-520)', () => {
+  // getByText is typed `string | RegExp`, but a test run through tsx is not
+  // type-checked: anything else used to serialize as garbage and silently
   // never match. Fail loudly instead.
-  it('rejects a RegExp passed as text', () => {
-    expect(() => _textContains(/Welcome to\sExpo/ as unknown as string)).toThrow(
-      /getByText\(\) expects a string, got a RegExp/,
+  it('rejects a non-string, non-RegExp text, role name and label', () => {
+    expect(() => _textContains(42 as unknown as string)).toThrow(/getByText\(\) expects a string or a RegExp, got a number/);
+    expect(() => _text(null as unknown as string)).toThrow(/getByText\(\) expects a string or a RegExp, got null/);
+    expect(() => _role('button', { name: {} as unknown as string })).toThrow(
+      /getByRole\(\) option `name` expects a string or a RegExp, got a object/,
     );
-    expect(() => _text(/x/ as unknown as string)).toThrow(/getByText\(\) expects a string/);
+    expect(() => _label(42 as unknown as string)).toThrow(/getByLabel\(\) expects a string or a RegExp, got a number/);
   });
 
-  it('rejects a non-string role name and label', () => {
-    expect(() => _role('button', { name: /Save/ as unknown as string })).toThrow(
-      /getByRole\(\) option `name` expects a string, got a RegExp/,
-    );
-    expect(() => _label(42 as unknown as string)).toThrow(/getByLabel\(\) expects a string, got a number/);
-  });
-
-  it('accepts strings, including an omitted role name', () => {
+  it('accepts strings and RegExps, including an omitted role name', () => {
     expect(() => _textContains('Welcome')).not.toThrow();
+    expect(() => _textContains(/Welcome\sto/)).not.toThrow();
     expect(() => _role('button')).not.toThrow();
     expect(() => _role('button', { name: 'Save' })).not.toThrow();
+    expect(() => _role('button', { name: /save/i })).not.toThrow();
+    expect(() => _label(/full\sname/i)).not.toThrow();
   });
 });

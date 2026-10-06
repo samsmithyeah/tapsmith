@@ -14,6 +14,7 @@ import {
   selectorToProto,
   formatSelector,
 } from '../selectors.js';
+import { translateRegex } from '../text-regex.js';
 
 // ─── Internal selector builders ───
 
@@ -266,5 +267,48 @@ describe('getByRole name matching options (PILOT-549)', () => {
 
   it('escapes quotes in the formatted name', () => {
     expect(formatSelector(_role('button', { name: 'Say "hi"' }))).toBe('getByRole("button", { name: "Say \\"hi\\"" })');
+  });
+});
+
+describe('RegExp locators (PILOT-520)', () => {
+  it('getByText(RegExp) builds a textRegex selector, exact or not', () => {
+    for (const sel of [_textContains(/Welcome\sto/i), _text(/Welcome\sto/i)]) {
+      expect(sel.kind.type).toBe('textRegex');
+      expect(sel.kind.value).toMatchObject({ source: 'Welcome\\sto', flags: 'i', ignoreCase: true });
+    }
+  });
+
+  it('serializes the device pattern, the i flag and the literal for display', () => {
+    const proto = selectorToProto(_textContains(/^Save\sdraft$/i)) as { textRegex: Record<string, unknown> };
+    expect(Object.keys(proto)).toEqual(['textRegex']);
+    expect(proto.textRegex).toEqual({
+      pattern: translateRegex('^Save\\sdraft$', 'i').pattern,
+      ignoreCase: true,
+      display: '/^Save\\sdraft$/i',
+    });
+    expect(selectorToProto(_label(/name/))).toEqual({
+      labelRegex: { pattern: 'name', ignoreCase: false, display: '/name/' },
+    });
+  });
+
+  it('getByRole name RegExp travels as nameRegex with an empty name, and ignores exact', () => {
+    const sel = _role('button', { name: /save/i, exact: true });
+    expect(selectorToProto(sel)).toEqual({
+      role: { role: 'button', name: '', nameRegex: { pattern: 'save', ignoreCase: true, display: '/save/i' } },
+    });
+  });
+
+  it('formats regex locators as valid code', () => {
+    expect(formatSelector(_textContains(/a\/b\s/i))).toBe('getByText(/a\\/b\\s/i)');
+    expect(formatSelector(_label(/full\sname/))).toBe('getByLabel(/full\\sname/)');
+    expect(formatSelector(_role('button', { name: /^save/i, selected: true })))
+      .toBe('getByRole("button", { name: /^save/i, selected: true })');
+    expect(formatSelector(withParent(_textContains(/x/), _role('list')))).toBe('getByRole("list").getByText(/x/)');
+  });
+
+  it('rejects an unsupported flag at locator creation, naming the call', () => {
+    expect(() => _textContains(/a/y)).toThrow(/getByText\(\) does not support the RegExp flag "y"/);
+    expect(() => _role('button', { name: /a/y })).toThrow(/getByRole\(\) option `name` does not support the RegExp flag "y"/);
+    expect(() => _label(/(?<=a+)b/)).toThrow(/getByLabel\(\).*lookbehind/);
   });
 });
