@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { runCli, printsBanner, type CliHandlers } from '../cli-program.js';
+import { runCli, printsBanner, claimBanner, type CliHandlers } from '../cli-program.js';
 
 // ─── Harness ───
 
@@ -773,6 +773,18 @@ describe('tapsmith ios', () => {
 });
 
 // ─── Banner ───
+
+// `verify` prints the banner, then runs `tapsmith test` as a child, which
+// printed it again (PILOT-540).
+describe('claimBanner()', () => {
+  it('claims the banner once per process tree, through the environment children inherit', () => {
+    const env: NodeJS.ProcessEnv = {};
+    expect(claimBanner(env)).toBe(true);
+    expect(claimBanner(env)).toBe(false);
+    // A child spawned with `{ ...process.env }` sees the claim.
+    expect(claimBanner({ ...env })).toBe(false);
+  });
+});
 
 describe('printsBanner()', () => {
   it('keeps --json output byte-clean', async () => {
