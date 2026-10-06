@@ -37,6 +37,13 @@ when configured with `launchEmulators` and `avd`.
 Install Xcode from the Mac App Store (the Command Line Tools alone have no simulators), open it once
 to finish setup, then select it: `sudo xcode-select -s /Applications/Xcode.app`.
 
+On an Apple Silicon Mac, use an arm64 build of Node (`node -p process.arch` prints `arm64`). An x64 Node,
+common after Migration Assistant from an Intel Mac, runs under Rosetta: npm then installs the x64 builds of
+Tapsmith's packages, which run translated, and the prebuilt iOS simulator agent among them cannot run on
+the Mac's arm64 simulators. Tapsmith still works — it builds an arm64 agent on the first iOS run and picks
+arm64 emulator images — but `tapsmith doctor`, `init` and `test` warn until you switch Node and reinstall
+(`rm -rf node_modules && npm install`).
+
 Tapsmith manages iOS simulators automatically. Set the `simulator` config option to
 the simulator to boot (for example `simulator: "iPhone 17"`; `xcrun simctl list devices`
 lists the names). There is no default: without `simulator` (or `device`), Tapsmith
