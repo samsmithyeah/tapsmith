@@ -7,7 +7,7 @@ non-interactive mode with machine-readable output.
 ## The setup loop
 
 ```bash
-npm install -D tapsmith
+npm install -D tapsmith@beta   # 0.6 is in beta; plain `tapsmith` installs 0.5
 
 # 1. Diagnose the environment. Every failing check includes a `fix`.
 npx tapsmith doctor --json
