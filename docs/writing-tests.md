@@ -240,6 +240,7 @@ test("authenticate and save app state", async ({ device, projectName }) => {
 import { defineConfig } from "tapsmith"
 
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   package: "com.example.myapp",
   timeout: 10_000,
   projects: [
@@ -250,14 +251,14 @@ export default defineConfig({
     },
     {
       name: "default",
-      testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/auth-gate.test.ts"],
+      testMatch: ["**/*.tapsmith.ts"],
+      testIgnore: ["**/auth-gate.tapsmith.ts"],
     },
     {
       name: "authenticated",
       dependencies: ["setup"],
       use: { appState: "./tapsmith-results/auth-state-setup.tar.gz" },
-      testMatch: ["**/auth-gate.test.ts"],
+      testMatch: ["**/auth-gate.tapsmith.ts"],
     },
   ],
 })
@@ -272,6 +273,7 @@ When running on both Android and iOS, each platform needs its own auth state fil
 ```typescript
 // tapsmith.config.ts
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   projects: [
     { name: "android:auth-setup", testMatch: ["**/auth.setup.ts"], use: { platform: "android", /* ... */ } },
     { name: "ios:auth-setup",     testMatch: ["**/auth.setup.ts"], use: { platform: "ios", /* ... */ } },
@@ -279,13 +281,13 @@ export default defineConfig({
       name: "android:authenticated",
       dependencies: ["android:auth-setup"],
       use: { platform: "android", appState: "./tapsmith-results/auth-state-android-auth-setup.tar.gz" },
-      testMatch: ["**/auth-gate.test.ts"],
+      testMatch: ["**/auth-gate.tapsmith.ts"],
     },
     {
       name: "ios:authenticated",
       dependencies: ["ios:auth-setup"],
       use: { platform: "ios", appState: "./tapsmith-results/auth-state-ios-auth-setup.tar.gz" },
-      testMatch: ["**/auth-gate.test.ts"],
+      testMatch: ["**/auth-gate.tapsmith.ts"],
     },
   ],
 })
@@ -462,14 +464,14 @@ const response = await responsePromise
 
 ### File naming conventions
 
-Tapsmith discovers test files matching `**/*.test.ts` and `**/*.spec.ts` by default. Use either convention consistently:
+Tapsmith finds test files with `testMatch`. A config from `tapsmith init` sets it to `**/*.tapsmith.ts`, a suffix Jest and Vitest don't run, so the app's unit-test suite and Tapsmith don't pick up each other's files, as long as Tapsmith tests stay out of `__tests__` folders, where Jest runs every file ([more](getting-started.md#tapsmith-tests-and-your-unit-tests)). Without `testMatch`, Tapsmith runs `**/*.test.ts` and `**/*.spec.ts` files. Use one convention consistently:
 
 ```
 tests/
-  login.test.ts
-  checkout.test.ts
-  settings.test.ts
-  device-management.android.test.ts    # platform-specific tests
+  login.tapsmith.ts
+  checkout.tapsmith.ts
+  settings.tapsmith.ts
+  device-management.android.tapsmith.ts    # platform-specific tests
 ```
 
 ### Folder structure
@@ -483,9 +485,9 @@ e2e/
     checkout.screen.ts
     settings.screen.ts
   tests/
-    login.test.ts
-    checkout.test.ts
-    settings.test.ts
+    login.tapsmith.ts
+    checkout.tapsmith.ts
+    settings.tapsmith.ts
   utils/
     test-data.ts
   tapsmith.config.ts
@@ -497,15 +499,16 @@ Control which tests run in each project:
 
 ```typescript
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   projects: [
     {
       name: "smoke",
-      testMatch: ["**/smoke-*.test.ts"],
+      testMatch: ["**/smoke-*.tapsmith.ts"],
     },
     {
       name: "full",
-      testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/smoke-*.test.ts"],
+      testMatch: ["**/*.tapsmith.ts"],
+      testIgnore: ["**/smoke-*.tapsmith.ts"],
     },
   ],
 })
@@ -551,11 +554,12 @@ Use file naming conventions combined with `testIgnore` to exclude platform-speci
 
 ```typescript
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   projects: [
     {
       name: "ios",
       use: { platform: "ios" },
-      testIgnore: ["**/*.android.test.ts"],
+      testIgnore: ["**/*.android.tapsmith.ts"],
     },
     {
       name: "android",

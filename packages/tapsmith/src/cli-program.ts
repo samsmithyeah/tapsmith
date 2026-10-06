@@ -451,7 +451,7 @@ function buildProgram(deps: RunCliDeps, io: CliIo, state: ParseState): Command {
     .option('--simulator <name>', 'iOS simulator name (default: newest available iPhone)')
     .option('--device-type <type>', 'emulator, physical or both (default: emulator)')
     .option('--network-capture', 'Enable HTTP(S) trace capture', false)
-    .option('--no-example-test', 'Skip scaffolding tests/example.test.ts')
+    .option('--no-example-test', 'Skip scaffolding tests/example.tapsmith.ts')
     .option('--no-agents-md', 'Skip scaffolding the AGENTS.md section')
     .option('--force', 'Overwrite an existing tapsmith.config.*', false)
     .addOption(jsonOption())

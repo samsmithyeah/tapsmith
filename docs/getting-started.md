@@ -132,8 +132,8 @@ The wizard walks through these steps:
 4. **iOS** — choose simulators, physical devices or both. For simulators, pick your simulator `.app` the same way and the simulator to boot. For physical devices, the wizard runs a code-signing preflight, offers to build the device agent, and asks for your device-signed (`iphoneos`) `.app`. It reads each build's bundle ID and asks only when it can't (in an Expo project, with `expo.ios.bundleIdentifier` pre-filled). Choosing both writes two projects, `ios` (simulator) and `ios-device` (physical device), so `npx tapsmith test --project ios-device` runs on the device alone (the layout of [Running simulator and device together](./ios-physical-devices.md#running-simulator-and-device-together), with these project names)
 5. **Network capture** — optionally record HTTP/HTTPS traffic; saying yes writes `trace: { mode: 'retain-on-failure' }`, which [`device.route()`](network.md#prerequisites) needs, and lists the per-platform setup still to do
 6. **iOS simulator agent** — if no simulator agent build is found, offers to build it now (~30 s)
-7. **Config** — writes `tapsmith.config.ts` with the app, its `package` and, for iOS, `platform: 'ios'` and the simulator
-8. **Example test** — optionally creates `tests/example.test.ts`
+7. **Config** — writes `tapsmith.config.ts` with the app, its `package` and, for iOS, `platform: 'ios'` and the simulator, plus `testMatch: ['**/*.tapsmith.ts']` (see [Tapsmith tests and your unit tests](#tapsmith-tests-and-your-unit-tests))
+8. **Example test** — optionally creates `tests/example.tapsmith.ts`
 9. **AGENTS.md** — optionally adds a Tapsmith section to `AGENTS.md` for AI coding agents
 10. **Install** — if the project doesn't have Tapsmith yet (you ran `npx tapsmith init` before installing it), offers to install it with your package manager (`npm i -D tapsmith`, `yarn add -D tapsmith`, …), since the config and example test import it. Decline and the command is the first of the next steps. During the 0.6 beta, install `tapsmith@beta` first: with no local install, `npx tapsmith init` runs the 0.5 release's wizard, which installs 0.5
 
@@ -185,7 +185,13 @@ Then prove the whole loop works before writing tests:
 npx tapsmith verify
 ```
 
-`tapsmith verify` runs one real test through `tapsmith test` (starting the daemon, launching the emulator or simulator, installing the app) and reports whether it passed. It runs `tests/example.test.ts` if the wizard created it, or your first test file; with no test files yet it runs a throwaway smoke test and removes it afterwards.
+`tapsmith verify` runs one real test through `tapsmith test` (starting the daemon, launching the emulator or simulator, installing the app) and reports whether it passed. It runs `tests/example.tapsmith.ts` if the wizard created it, or your first test file; with no test files yet it runs a throwaway smoke test and removes it afterwards.
+
+### Tapsmith tests and your unit tests
+
+Jest and Vitest run every `*.test.ts` and `*.spec.ts` file in the project by default, so a Tapsmith test with one of those names would run in your unit-test suite too, and fail there. That's why `tapsmith init` names its example `tests/example.tapsmith.ts` and writes `testMatch: ['**/*.tapsmith.ts']` into the config: name your Tapsmith test files `*.tapsmith.ts` and each suite leaves the other's files alone. Keep them out of `__tests__` folders, though: Jest runs every file in one, whatever its name.
+
+If you'd rather keep `*.test.ts` names, set `testMatch` in `tapsmith.config.ts` to `['tests/**/*.test.ts']` (or remove it to use the default, which also matches `*.test.ts` files outside `tests/`), and exclude the Tapsmith test directory from the unit-test runner: `testPathIgnorePatterns: ['/node_modules/', '<rootDir>/tests/']` in your Jest config, or `exclude: [...configDefaults.exclude, 'tests/**']` under `test` in your Vitest config (`configDefaults` comes from `vitest/config`). Re-running `tapsmith init` warns about any Tapsmith tests the new config's `testMatch` won't run.
 
 ## Make runs faster (optional, one line)
 
@@ -209,6 +215,7 @@ If you prefer to configure manually, create `tapsmith.config.ts` in your project
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   apk: "./app/build/outputs/apk/debug/app-debug.apk",
   package: "com.example.myapp",
   timeout: 30_000,
@@ -216,7 +223,7 @@ export default defineConfig({
 });
 ```
 
-`apk` is the path to the Android APK you want to test; Tapsmith installs it. `package` is its package name, and you need it too: without `package`, Tapsmith never launches the app and never resets it between test files, so tests start on whatever happens to be on screen. `activity` is optional and usually not needed.
+`testMatch` makes Tapsmith run `*.tapsmith.ts` files, the names `tapsmith init` uses, which your Jest or Vitest run leaves alone ([why](#tapsmith-tests-and-your-unit-tests)); without it Tapsmith runs `*.test.ts` and `*.spec.ts` files. `apk` is the path to the Android APK you want to test; Tapsmith installs it. `package` is its package name, and you need it too: without `package`, Tapsmith never launches the app and never resets it between test files, so tests start on whatever happens to be on screen. `activity` is optional and usually not needed.
 
 ### iOS
 
@@ -224,6 +231,7 @@ export default defineConfig({
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   platform: "ios",
   app: "./ios/build/Build/Products/Debug-iphonesimulator/MyApp.app",
   package: "com.example.myapp",
@@ -245,6 +253,7 @@ For parallel Android emulator runs, use:
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   apk: "./app/build/outputs/apk/debug/app-debug.apk",
   package: "com.example.myapp",
   workers: 4,
@@ -271,6 +280,7 @@ For parallel iOS simulator runs:
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   platform: "ios",
   app: "./ios/build/Build/Products/Debug-iphonesimulator/MyApp.app",
   package: "com.example.myapp",
@@ -283,7 +293,7 @@ Tapsmith provisions additional simulator clones automatically for multi-worker i
 
 ## Write Your First Test
 
-Create a file at `tests/smoke.test.ts`:
+Create a file at `tests/smoke.tapsmith.ts`:
 
 ```typescript
 import { test, expect } from "tapsmith";
@@ -319,7 +329,7 @@ Tapsmith will:
 1. Connect to the Tapsmith daemon (starting it if needed).
 2. Detect your connected device or emulator.
 3. Install the APK under test and the Tapsmith agent.
-4. Discover all test files matching `**/*.test.ts` and `**/*.spec.ts`.
+4. Discover the test files your config's `testMatch` matches (`**/*.tapsmith.ts` in a config from `tapsmith init`; `**/*.test.ts` and `**/*.spec.ts` when the config doesn't set it).
 5. Run each test sequentially and report results.
 
 For multi-worker runs, Tapsmith will assign one device per worker. If
@@ -329,7 +339,7 @@ instances automatically. If `avd` is set, those instances will use that AVD.
 ### Run a specific file
 
 ```bash
-npx tapsmith test tests/smoke.test.ts
+npx tapsmith test tests/smoke.tapsmith.ts
 ```
 
 ### Run on multiple devices in parallel
@@ -357,7 +367,7 @@ Tapsmith prints results to the terminal with pass/fail status and timing for eac
 ```
 Found 2 test file(s)
 
-  tests/smoke.test.ts
+  tests/smoke.tapsmith.ts
 
 Results:
 

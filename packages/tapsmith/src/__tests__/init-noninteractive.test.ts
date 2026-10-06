@@ -508,9 +508,10 @@ describe('executeInitPlan()', () => {
       const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
       const result = executeInitPlan(plan, args, tmp);
       expect(fs.readFileSync(path.join(tmp, 'tapsmith.config.ts'), 'utf8')).toContain("package: 'com.example.app',");
-      expect(fs.existsSync(path.join(tmp, 'tests', 'example.test.ts'))).toBe(true);
+      expect(fs.existsSync(path.join(tmp, 'tests', 'example.tapsmith.ts'))).toBe(true);
+      expect(fs.existsSync(path.join(tmp, 'tests', 'example.test.ts'))).toBe(false);
       expect(fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf8')).toContain('tapsmith:begin');
-      expect(result.filesCreated).toEqual(expect.arrayContaining(['tapsmith.config.ts', 'tests/example.test.ts', 'AGENTS.md']));
+      expect(result.filesCreated).toEqual(expect.arrayContaining(['tapsmith.config.ts', 'tests/example.tapsmith.ts', 'AGENTS.md']));
       expect(result.configPath).toBe(path.join(tmp, 'tapsmith.config.ts'));
       expect(result.nextSteps.some((s) => s.includes('tapsmith verify'))).toBe(true);
       // The init --yes --json result, a public contract (docs/api-reference.md, CLI → JSON output).
@@ -633,12 +634,135 @@ describe('executeInitPlan()', () => {
     const tmp = makeTmp();
     try {
       fs.mkdirSync(path.join(tmp, 'tests'));
-      fs.writeFileSync(path.join(tmp, 'tests', 'example.test.ts'), '// mine');
+      fs.writeFileSync(path.join(tmp, 'tests', 'example.tapsmith.ts'), '// mine');
       const args = initArgs({ yes: true, platform: 'android' });
       const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
       const result = executeInitPlan(plan, args, tmp);
-      expect(fs.readFileSync(path.join(tmp, 'tests', 'example.test.ts'), 'utf8')).toBe('// mine');
-      expect(result.filesCreated).not.toContain('tests/example.test.ts');
+      expect(fs.readFileSync(path.join(tmp, 'tests', 'example.tapsmith.ts'), 'utf8')).toBe('// mine');
+      expect(result.filesCreated).not.toContain('tests/example.tapsmith.ts');
+      expect(result.warnings).toContain('tests/example.tapsmith.ts already exists — left untouched');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // PILOT-554: the generated config runs only *.tapsmith.ts files, so a re-init
+  // over Tapsmith tests named *.test.ts (an older scaffold) must say they stop running.
+  it("warns about existing Tapsmith tests the new config's testMatch would no longer run", () => {
+    const tmp = makeTmp();
+    try {
+      fs.mkdirSync(path.join(tmp, 'tests', 'auth'), { recursive: true });
+      fs.mkdirSync(path.join(tmp, 'src'));
+      fs.mkdirSync(path.join(tmp, 'node_modules', 'pkg'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, 'tests', 'example.test.ts'), "import { test, expect } from 'tapsmith'\n");
+      fs.writeFileSync(path.join(tmp, 'tests', 'auth', 'login.spec.ts'), 'import { test } from "tapsmith";\n');
+      fs.writeFileSync(path.join(tmp, 'tests', 'kept.tapsmith.ts'), "import { test } from 'tapsmith'\n");
+      // Jest unit tests, and anything under node_modules, are not Tapsmith's.
+      fs.writeFileSync(path.join(tmp, 'src', 'utils.test.ts'), "import { sum } from './utils'\n");
+      fs.writeFileSync(path.join(tmp, 'node_modules', 'pkg', 'x.test.ts'), "import { test } from 'tapsmith'\n");
+      const args = initArgs({ yes: true, platform: 'android', force: true });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const result = executeInitPlan(plan, args, tmp);
+      const warning = result.warnings.find((w) => w.includes('.tapsmith.ts'));
+      expect(warning).toBeDefined();
+      expect(warning).toContain('tests/auth/login.spec.ts');
+      expect(warning).toContain('tests/example.test.ts');
+      expect(warning).not.toContain('utils.test.ts');
+      expect(warning).not.toContain('node_modules');
+      expect(warning).not.toContain('kept.tapsmith.ts');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // The AGENTS.md section recommends importing through a fixtures module, so
+  // a spec that imports `tapsmith` one module away is a Tapsmith test too.
+  it('counts specs that import tapsmith through a local fixtures module, or for side effects', () => {
+    const tmp = makeTmp();
+    try {
+      fs.mkdirSync(path.join(tmp, 'e2e', 'support'), { recursive: true });
+      fs.mkdirSync(path.join(tmp, 'e2e', 'fixtures'));
+      fs.writeFileSync(path.join(tmp, 'e2e', 'fixtures.ts'), "export { test, expect } from 'tapsmith'\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'fixtures', 'index.ts'), "import { test as base } from 'tapsmith'\nexport const test = base\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'support', 'helpers.ts'), 'export const x = 1\n');
+      fs.writeFileSync(path.join(tmp, 'e2e', 'login.test.ts'), "import { test, expect } from './fixtures.js'\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'cart.test.ts'), "import { test } from './fixtures/index'\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'setup.spec.ts'), "import 'tapsmith'\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'unit.test.ts'), "import { x } from './support/helpers'\n");
+      const args = initArgs({ yes: true, platform: 'android' });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const warning = executeInitPlan(plan, args, tmp).warnings.find((w) => w.includes('.tapsmith.ts'));
+      expect(warning).toContain('e2e/login.test.ts');
+      expect(warning).toContain('e2e/cart.test.ts');
+      expect(warning).toContain('e2e/setup.spec.ts');
+      expect(warning).not.toContain('unit.test.ts');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("counts specs that reach tapsmith through a path alias or a chain of modules, by the device fixture they use", () => {
+    const tmp = makeTmp();
+    try {
+      fs.mkdirSync(path.join(tmp, 'e2e'));
+      fs.writeFileSync(path.join(tmp, 'e2e', 'alias.test.ts'),
+        "import { test, expect } from '@/e2e/fixtures'\n\ntest('signs in', async ({ device }) => {\n  await device.getByText('Hi').tap()\n})\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'info.test.ts'),
+        "import { test } from '@/fixtures'\ntest('x', async ({ device }, testInfo) => {\n  await device.tap()\n})\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'hook.spec.ts'),
+        "import { test } from '~/support'\ntest.beforeEach(async ({ device, page }) => {\n  await device.restartApp()\n})\n");
+      // A Jest test that merely mentions a device is not one, even one that
+      // destructures a `device` key in a table test or a factory.
+      fs.writeFileSync(path.join(tmp, 'e2e', 'unit.test.ts'),
+        "test('formats a device name', () => { const device = { name: 'x' }; expect(device.name).toBe('x') })\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'table.test.ts'),
+        "it.each([{ device: 'ios' }])('labels $device', ({ device }) => { expect(label(device)).toBe(device.toUpperCase()) })\n"
+        + "const row = ({ device }) => device.name\n");
+      const args = initArgs({ yes: true, platform: 'android' });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const warning = executeInitPlan(plan, args, tmp).warnings.find((w) => w.includes('.tapsmith.ts'));
+      expect(warning).toContain('e2e/alias.test.ts');
+      expect(warning).toContain('e2e/hook.spec.ts');
+      expect(warning).toContain('e2e/info.test.ts');
+      expect(warning).not.toContain('unit.test.ts');
+      expect(warning).not.toContain('table.test.ts');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // The scan is advisory: it runs after the config is written, so a path it
+  // cannot probe must not fail init halfway.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('keeps going when an import resolves into a directory it cannot search', () => {
+    const tmp = makeTmp();
+    const locked = path.join(tmp, 'e2e', 'locked');
+    try {
+      fs.mkdirSync(locked, { recursive: true });
+      fs.writeFileSync(path.join(tmp, 'e2e', 'a.test.ts'), "import { x } from './locked/helpers'\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'b.test.ts'), "import { test } from 'tapsmith'\n");
+      fs.chmodSync(locked, 0o000);
+      const args = initArgs({ yes: true, platform: 'android' });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const result = executeInitPlan(plan, args, tmp);
+      expect(result.filesCreated).toContain('tests/example.tapsmith.ts');
+      const warning = result.warnings.find((w) => w.includes('.tapsmith.ts'));
+      expect(warning).toContain('e2e/b.test.ts');
+      expect(warning).not.toContain('e2e/a.test.ts');
+    } finally {
+      fs.chmodSync(locked, 0o755);
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('gives no such warning in a project without Tapsmith tests', () => {
+    const tmp = makeTmp();
+    try {
+      fs.mkdirSync(path.join(tmp, 'src'));
+      fs.writeFileSync(path.join(tmp, 'src', 'utils.test.ts'), "import { sum } from './utils'\n");
+      const args = initArgs({ yes: true, platform: 'android' });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const result = executeInitPlan(plan, args, tmp);
+      expect(result.warnings.join('\n')).not.toContain('testMatch');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

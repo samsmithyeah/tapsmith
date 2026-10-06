@@ -67,6 +67,9 @@ Or create `tapsmith.config.ts` manually:
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
+  // Tapsmith tests end in .tapsmith.ts, so your Jest or Vitest run leaves them alone
+  testMatch: ["**/*.tapsmith.ts"],
+
   // Android
   apk: "./android/app/build/outputs/apk/debug/app-debug.apk",
   package: "com.example.myapp", // needed to launch and reset the app
@@ -88,7 +91,7 @@ npx tapsmith verify
 
 ### 3. Write a test
 
-Create `tests/login.test.ts`:
+Create `tests/login.tapsmith.ts` (`tapsmith init` sets `testMatch` to `*.tapsmith.ts`, so your Jest or Vitest run leaves Tapsmith tests alone):
 
 ```typescript
 import { test, describe, expect, beforeEach } from "tapsmith";

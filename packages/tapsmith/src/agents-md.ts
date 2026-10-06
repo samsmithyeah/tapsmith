@@ -19,7 +19,8 @@ This project uses [Tapsmith](https://github.com/tapsmith/tapsmith) for mobile E2
 ### Running and debugging
 
 - Run all tests: \`npx tapsmith test\`
-- Run one file: \`npx tapsmith test tests/example.test.ts\`
+- Run one file: \`npx tapsmith test tests/example.tapsmith.ts\`
+- Test files end in \`.tapsmith.ts\` (the config's \`testMatch\`), so the project's Jest or Vitest run doesn't pick them up as unit tests. Keep them out of \`__tests__\` folders, where Jest runs every file.
 - Filter by name: \`npx tapsmith test --grep "login"\`
 - Machine-readable results: \`npx tapsmith test --reporter json\` (writes \`tapsmith-results/results.json\`)
 - Interactive UI mode: \`npx tapsmith test --ui\` (preferred for local debugging and agent-assisted work)
