@@ -508,9 +508,10 @@ describe('executeInitPlan()', () => {
       const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
       const result = executeInitPlan(plan, args, tmp);
       expect(fs.readFileSync(path.join(tmp, 'tapsmith.config.ts'), 'utf8')).toContain("package: 'com.example.app',");
-      expect(fs.existsSync(path.join(tmp, 'tests', 'example.test.ts'))).toBe(true);
+      expect(fs.existsSync(path.join(tmp, 'tests', 'example.tapsmith.ts'))).toBe(true);
+      expect(fs.existsSync(path.join(tmp, 'tests', 'example.test.ts'))).toBe(false);
       expect(fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf8')).toContain('tapsmith:begin');
-      expect(result.filesCreated).toEqual(expect.arrayContaining(['tapsmith.config.ts', 'tests/example.test.ts', 'AGENTS.md']));
+      expect(result.filesCreated).toEqual(expect.arrayContaining(['tapsmith.config.ts', 'tests/example.tapsmith.ts', 'AGENTS.md']));
       expect(result.configPath).toBe(path.join(tmp, 'tapsmith.config.ts'));
       expect(result.nextSteps.some((s) => s.includes('tapsmith verify'))).toBe(true);
       // The init --yes --json result, a public contract (docs/api-reference.md, CLI → JSON output).
@@ -633,12 +634,56 @@ describe('executeInitPlan()', () => {
     const tmp = makeTmp();
     try {
       fs.mkdirSync(path.join(tmp, 'tests'));
-      fs.writeFileSync(path.join(tmp, 'tests', 'example.test.ts'), '// mine');
+      fs.writeFileSync(path.join(tmp, 'tests', 'example.tapsmith.ts'), '// mine');
       const args = initArgs({ yes: true, platform: 'android' });
       const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
       const result = executeInitPlan(plan, args, tmp);
-      expect(fs.readFileSync(path.join(tmp, 'tests', 'example.test.ts'), 'utf8')).toBe('// mine');
-      expect(result.filesCreated).not.toContain('tests/example.test.ts');
+      expect(fs.readFileSync(path.join(tmp, 'tests', 'example.tapsmith.ts'), 'utf8')).toBe('// mine');
+      expect(result.filesCreated).not.toContain('tests/example.tapsmith.ts');
+      expect(result.warnings).toContain('tests/example.tapsmith.ts already exists — left untouched');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // PILOT-554: the generated config runs only *.tapsmith.ts files, so a re-init
+  // over Tapsmith tests named *.test.ts (an older scaffold) must say they stop running.
+  it("warns about existing Tapsmith tests the new config's testMatch would no longer run", () => {
+    const tmp = makeTmp();
+    try {
+      fs.mkdirSync(path.join(tmp, 'tests', 'auth'), { recursive: true });
+      fs.mkdirSync(path.join(tmp, 'src'));
+      fs.mkdirSync(path.join(tmp, 'node_modules', 'pkg'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, 'tests', 'example.test.ts'), "import { test, expect } from 'tapsmith'\n");
+      fs.writeFileSync(path.join(tmp, 'tests', 'auth', 'login.spec.ts'), 'import { test } from "tapsmith";\n');
+      fs.writeFileSync(path.join(tmp, 'tests', 'kept.tapsmith.ts'), "import { test } from 'tapsmith'\n");
+      // Jest unit tests, and anything under node_modules, are not Tapsmith's.
+      fs.writeFileSync(path.join(tmp, 'src', 'utils.test.ts'), "import { sum } from './utils'\n");
+      fs.writeFileSync(path.join(tmp, 'node_modules', 'pkg', 'x.test.ts'), "import { test } from 'tapsmith'\n");
+      const args = initArgs({ yes: true, platform: 'android', force: true });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const result = executeInitPlan(plan, args, tmp);
+      const warning = result.warnings.find((w) => w.includes('.tapsmith.ts'));
+      expect(warning).toBeDefined();
+      expect(warning).toContain('tests/auth/login.spec.ts');
+      expect(warning).toContain('tests/example.test.ts');
+      expect(warning).not.toContain('utils.test.ts');
+      expect(warning).not.toContain('node_modules');
+      expect(warning).not.toContain('kept.tapsmith.ts');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('gives no such warning in a project without Tapsmith tests', () => {
+    const tmp = makeTmp();
+    try {
+      fs.mkdirSync(path.join(tmp, 'src'));
+      fs.writeFileSync(path.join(tmp, 'src', 'utils.test.ts'), "import { sum } from './utils'\n");
+      const args = initArgs({ yes: true, platform: 'android' });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const result = executeInitPlan(plan, args, tmp);
+      expect(result.warnings.join('\n')).not.toContain('testMatch');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

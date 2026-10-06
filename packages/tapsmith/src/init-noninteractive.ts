@@ -8,7 +8,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { EnvScan, SimulatorInfo } from './env-scan.js';
 import type { AndroidConfig, IosConfig, Platform } from './init.js';
-import { generateConfig, generateExampleTest } from './init.js';
+import { EXAMPLE_TEST_PATH, generateConfig, tapsmithTestsOutsideGeneratedMatch, testsOutsideGeneratedMatchWarning, writeExampleTest } from './init.js';
 import { writeAgentsMd } from './agents-md.js';
 import { avdCaptureSupport, avdCaptureWarning, noAvdsListedMessage } from './avd-images.js';
 import * as detectDefaults from './init-detect.js';
@@ -346,14 +346,14 @@ export function executeInitPlan(
   fs.writeFileSync(configPath, generateConfig(plan.platforms, plan.android, plan.ios, plan.networkCapture));
   filesCreated.push('tapsmith.config.ts');
 
+  const unmatched = testsOutsideGeneratedMatchWarning(tapsmithTestsOutsideGeneratedMatch(cwd));
+  if (unmatched) warnings.push(unmatched);
+
   if (args.exampleTest) {
-    const testPath = path.join(cwd, 'tests', 'example.test.ts');
-    if (fs.existsSync(testPath)) {
-      warnings.push('tests/example.test.ts already exists — left untouched');
+    if (writeExampleTest(cwd) === 'exists') {
+      warnings.push(`${EXAMPLE_TEST_PATH} already exists — left untouched`);
     } else {
-      fs.mkdirSync(path.dirname(testPath), { recursive: true });
-      fs.writeFileSync(testPath, generateExampleTest());
-      filesCreated.push('tests/example.test.ts');
+      filesCreated.push(EXAMPLE_TEST_PATH);
     }
   }
 

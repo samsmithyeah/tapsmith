@@ -22,6 +22,9 @@ import type { InitCommandOptions } from './cli-program.js';
 import { formatJson, jsonError } from './cli-json.js';
 import { avdCaptureSupport, avdCaptureWarning, noAvdsListedMessage, type AvdImageInfo } from './avd-images.js';
 import { isTapsmithResolvableFrom, tapsmithInstallCommand, type InstallCommand } from './config.js';
+import { globSync } from 'glob';
+import { minimatch } from 'minimatch';
+import { DEFAULT_TEST_IGNORE } from './test-file-discovery.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -668,6 +671,23 @@ export function generatedProjects(
   return out;
 }
 
+/**
+ * Where init scaffolds its example test, and the `testMatch` the generated
+ * config uses (PILOT-554). Jest and Vitest run every `*.test.ts` / `*.spec.ts`
+ * file by default, so a scaffold with that suffix breaks the project's own
+ * unit-test run, and Tapsmith's default `testMatch` would in turn pick up the
+ * project's unit tests. The distinct suffix keeps the two suites apart without
+ * touching the project's Jest or Vitest config (Cypress's `*.cy.ts` precedent).
+ */
+export const EXAMPLE_TEST_PATH = 'tests/example.tapsmith.ts';
+export const GENERATED_TEST_MATCH = ['**/*.tapsmith.ts'];
+
+const GENERATED_TEST_MATCH_LINES = [
+  '  // Tapsmith tests end in .tapsmith.ts: Jest and Vitest run every *.test.ts',
+  "  // file, so this suffix keeps each suite out of the other's way.",
+  `  testMatch: [${GENERATED_TEST_MATCH.map((g) => `'${g}'`).join(', ')}],`,
+];
+
 export function generateConfig(
   platforms: Platform[],
   android: AndroidConfig | undefined,
@@ -681,6 +701,7 @@ export function generateConfig(
 
   const esc = (s: string): string => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
+  lines.push(...GENERATED_TEST_MATCH_LINES);
   if (enableNetwork) lines.push("  trace: { mode: 'retain-on-failure' },");
 
   const { sim: iosSim, deviceApp: iosDeviceApp } = iosTargets(ios);
@@ -690,7 +711,6 @@ export function generateConfig(
     if (iosSim) {
       out.push('    {');
       out.push("      name: 'ios',");
-      out.push("      testMatch: ['**/*.test.ts'],");
       out.push('      use: {');
       out.push("        platform: 'ios',");
       if (iosCfg.bundleId) out.push(`        package: '${esc(iosCfg.bundleId)}',`);
@@ -702,7 +722,6 @@ export function generateConfig(
     if (iosDeviceApp) {
       out.push('    {');
       out.push("      name: 'ios-device',");
-      out.push("      testMatch: ['**/*.test.ts'],");
       out.push('      workers: 1,');
       out.push('      use: {');
       out.push("        platform: 'ios',");
@@ -746,7 +765,6 @@ export function generateConfig(
 
     lines.push('    {');
     lines.push("      name: 'android',");
-    lines.push("      testMatch: ['**/*.test.ts'],");
     lines.push('      use: {');
     lines.push("        platform: 'android',");
     if (android.packageName) lines.push(`        package: '${esc(android.packageName)}',`);
@@ -776,6 +794,56 @@ test('app launches successfully', async ({ device }) => {
   await expect(device.getByRole('text').first()).toBeVisible()
 })
 `;
+}
+
+/**
+ * Writes the example test at EXAMPLE_TEST_PATH, unless a file is already
+ * there: `'exists'` leaves it untouched.
+ */
+export function writeExampleTest(cwd: string): 'created' | 'exists' {
+  const testPath = path.join(cwd, EXAMPLE_TEST_PATH);
+  if (fs.existsSync(testPath)) return 'exists';
+  fs.mkdirSync(path.dirname(testPath), { recursive: true });
+  fs.writeFileSync(testPath, generateExampleTest());
+  return 'created';
+}
+
+const TAPSMITH_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)['"]tapsmith(?:\/[^'"]*)?['"]/;
+
+/**
+ * Tapsmith tests already in the project under the old `*.test.ts` /
+ * `*.spec.ts` names (an earlier init's scaffold, say), which the generated
+ * config's GENERATED_TEST_MATCH no longer runs (PILOT-554). A file counts when
+ * it imports `tapsmith`, so the project's own Jest or Vitest tests don't.
+ * Paths are relative to `cwd`, with `/` separators, sorted.
+ */
+export function tapsmithTestsOutsideGeneratedMatch(cwd: string): string[] {
+  const candidates = globSync(['**/*.test.ts', '**/*.spec.ts'], {
+    cwd,
+    // Bounded, so init in a huge directory doesn't crawl it: tests live near the top.
+    ignore: [...DEFAULT_TEST_IGNORE, '**/Pods/**', '**/build/**'],
+    maxDepth: 10,
+    posix: true,
+  });
+  return candidates
+    .filter((file) => !GENERATED_TEST_MATCH.some((glob) => minimatch(file, glob)))
+    .filter((file) => {
+      try {
+        return TAPSMITH_IMPORT.test(fs.readFileSync(path.join(cwd, file), 'utf8'));
+      } catch {
+        return false;
+      }
+    })
+    .sort();
+}
+
+/** The warning for tapsmithTestsOutsideGeneratedMatch()'s files, or undefined when there are none. */
+export function testsOutsideGeneratedMatchWarning(files: string[]): string | undefined {
+  if (files.length === 0) return undefined;
+  const shown = files.slice(0, 5).join(', ');
+  const more = files.length > 5 ? ` and ${files.length - 5} more` : '';
+  return `The new tapsmith.config.ts runs only *.tapsmith.ts test files, so these existing Tapsmith tests won't run: ${shown}${more}. `
+    + 'Rename each to end in .tapsmith.ts (Jest and Vitest also run *.test.ts and *.spec.ts files), or add its pattern to testMatch in tapsmith.config.ts';
 }
 
 // ─── Main wizard ───
@@ -981,6 +1049,8 @@ async function runInitInner(): Promise<void> {
   try {
     fs.writeFileSync(path.resolve(process.cwd(), 'tapsmith.config.ts'), configContent);
     console.log(`  ${green('✓')} tapsmith.config.ts created`);
+    const unmatched = testsOutsideGeneratedMatchWarning(tapsmithTestsOutsideGeneratedMatch(process.cwd()));
+    if (unmatched) console.log(`  ${YELLOW}⚠${RESET} ${unmatched}`);
   } catch (err) {
     console.log(`  ${RED}✗${RESET} Failed to write tapsmith.config.ts: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -993,15 +1063,14 @@ async function runInitInner(): Promise<void> {
   });
 
   if (createTest) {
-    const testDir = path.resolve(process.cwd(), 'tests');
-    const testPath = path.resolve(testDir, 'example.test.ts');
-
-    if (fs.existsSync(testPath)) {
-      console.log(`  ${YELLOW}⚠${RESET} tests/example.test.ts already exists, skipping.`);
-    } else {
-      fs.mkdirSync(testDir, { recursive: true });
-      fs.writeFileSync(testPath, generateExampleTest());
-      console.log(`  ${green('✓')} tests/example.test.ts created`);
+    try {
+      if (writeExampleTest(process.cwd()) === 'exists') {
+        console.log(`  ${YELLOW}⚠${RESET} ${EXAMPLE_TEST_PATH} already exists, skipping.`);
+      } else {
+        console.log(`  ${green('✓')} ${EXAMPLE_TEST_PATH} created`);
+      }
+    } catch (err) {
+      console.log(`  ${RED}✗${RESET} Failed to write ${EXAMPLE_TEST_PATH}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

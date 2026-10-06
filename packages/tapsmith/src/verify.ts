@@ -14,6 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { formatJson, jsonError, stripAnsi } from './cli-json.js';
 import { isTapsmithNotInstalledError } from './config.js';
+import { minimatch } from 'minimatch';
 
 // ─── Pure helpers (unit-tested) ───
 
@@ -22,8 +23,15 @@ export interface VerifyArgs {
   config?: string;
 }
 
+/** init's example test (PILOT-554), then the name an older init gave it. */
+const EXAMPLE_TEST_NAMES = ['example.tapsmith.ts', 'example.test.ts'];
+
 export function pickVerifyTarget(testFiles: string[]): string | undefined {
-  return testFiles.find((f) => path.basename(f) === 'example.test.ts') ?? testFiles[0];
+  for (const name of EXAMPLE_TEST_NAMES) {
+    const example = testFiles.find((f) => path.basename(f) === name);
+    if (example) return example;
+  }
+  return testFiles[0];
 }
 
 interface ReportTest {
@@ -116,9 +124,33 @@ export function noTestsRanError(
   };
 }
 
-export function scaffoldVerifySmokeTest(testDir: string, contents: string): ScaffoldedVerifyTest {
+/** Names the throwaway smoke test can take, in order of preference. */
+const SMOKE_TEST_NAMES = ['smoke.test.ts', 'smoke.spec.ts', 'smoke.tapsmith.ts'];
+
+/**
+ * The smoke test's file name: the first of SMOKE_TEST_NAMES that `testMatch`
+ * covers at `dir`. It is run by name, and with projects a named file runs only
+ * when a project's testMatch covers it (PILOT-553); init's configs match only
+ * `*.tapsmith.ts` (PILOT-554). None covered: `smoke.test.ts`.
+ */
+function smokeTestName(dir: string, match: { testMatch: string[]; rootDir: string } | undefined): string {
+  if (match) {
+    const relDir = path.relative(match.rootDir, dir).split(path.sep).join('/');
+    const covered = (name: string): boolean => match.testMatch.some((glob) =>
+      minimatch(relDir ? `${relDir}/${name}` : name, glob.replace(/^\.\//, ''), { dot: true }));
+    const name = SMOKE_TEST_NAMES.find(covered);
+    if (name) return name;
+  }
+  return SMOKE_TEST_NAMES[0];
+}
+
+export function scaffoldVerifySmokeTest(
+  testDir: string,
+  contents: string,
+  match?: { testMatch: string[]; rootDir: string },
+): ScaffoldedVerifyTest {
   const tempDir = fs.mkdtempSync(path.join(testDir, 'tapsmith-verify-'));
-  const file = path.join(tempDir, 'smoke.test.ts');
+  const file = path.join(tempDir, smokeTestName(tempDir, match));
   try {
     fs.writeFileSync(file, contents, { flag: 'wx' });
     return { file, tempDir };
@@ -220,7 +252,7 @@ export async function runVerify(args: VerifyArgs): Promise<void> {
           fs.mkdirSync(testDir, { recursive: true });
           testDirCreated = true;
         }
-        scaffolded = scaffoldVerifySmokeTest(testDir, generateExampleTest());
+        scaffolded = scaffoldVerifySmokeTest(testDir, generateExampleTest(), { testMatch: config.testMatch, rootDir: config.rootDir });
         target = scaffolded.file;
       }
 
