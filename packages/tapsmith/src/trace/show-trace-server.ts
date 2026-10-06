@@ -172,7 +172,7 @@ function buildFallbackViewer(): string {
       const app = document.getElementById('app')
       app.className = ''
 
-      const status = meta.testStatus === 'passed' ? '✅' : '❌'
+      const status = meta.testStatus === 'passed' ? '✅' : meta.testStatus === 'skipped' ? '⏭️' : '❌'
       let html = '<div class="info"><dl class="meta">'
       html += '<dt>Test</dt><dd>' + esc(meta.testName) + ' ' + status + '</dd>'
       html += '<dt>File</dt><dd>' + esc(meta.testFile) + '</dd>'

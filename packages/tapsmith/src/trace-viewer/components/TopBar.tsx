@@ -20,8 +20,9 @@ function formatTestPath(metadata: TraceMetadata): preact.JSX.Element {
   const fileName = file.split('/').pop() ?? file;
   const parts = metadata.testName.split(' > ');
 
-  const statusIcon = metadata.testStatus === 'passed' ? '✓' : '✗';
-  const statusClass = metadata.testStatus === 'passed' ? 'passed' : 'failed';
+  // A runtime test.skip() packages a trace whose test was skipped, not failed.
+  const statusIcon = metadata.testStatus === 'passed' ? '✓' : metadata.testStatus === 'skipped' ? '○' : '✗';
+  const statusClass = metadata.testStatus === 'passed' ? 'passed' : metadata.testStatus === 'skipped' ? 'skipped' : 'failed';
 
   return (
     <span>

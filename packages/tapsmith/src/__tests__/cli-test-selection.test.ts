@@ -267,4 +267,17 @@ describe.skipIf(!DIST_BUILT && !process.env.CI)('tapsmith test selection', { tim
     expect(output).toContain('1 test file');
     expect(reachedDevice).toBe(true);
   });
+
+  it('gets past the grep check when the only match is a skipped test, so the run reports the skip', () => {
+    fs.writeFileSync(path.join(root, 'tests', 'pw', 'later.test.ts'),
+      'import { test } from "tapsmith";\n'
+      + 'test.skip("parked feature", async () => {});\n'
+      + 'test("runtime skipped", async () => { test.skip(); });\n');
+    for (const pattern of ['parked', 'runtime skipped']) {
+      const { output, reachedDevice } = run('--grep', pattern);
+      expect(output).not.toContain('No tests found');
+      expect(reachedDevice).toBe(true);
+    }
+  });
 });
+
