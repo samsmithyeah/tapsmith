@@ -6,7 +6,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { resolveTsxBin } from '../child-scripts.js';
 import {
   MIN_NODE_MAJOR,
@@ -74,6 +76,57 @@ describe('ignoreTypelessPackageWarnings()', () => {
     }
     expect(seen).toEqual(['OTHER_WARNING']);
   });
+});
+
+describe('ignoreTypelessPackageWarnings() in forked children', () => {
+  // Workers, UI mode, watch and MCP fork children that natively import the
+  // user's `.js` tests; the shebang flag used to reach them via execArgv.
+  // Plain node, not tsx (whose loader hides the warning), so this runs the
+  // built module: CI builds dist/ before the unit tests.
+  const distRuntime = path.join(PKG_DIR, 'dist', 'node-runtime.js');
+  const originalExecArgv = [...process.execArgv];
+  let dir: string | undefined;
+  afterEach(() => {
+    process.execArgv.splice(0, process.execArgv.length, ...originalExecArgv);
+    process.emit = originalEmitForFork;
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+  const originalEmitForFork = process.emit;
+
+  it('are forked with the warning disabled', () => {
+    ignoreTypelessPackageWarnings();
+    expect(process.execArgv).toContain('--disable-warning=MODULE_TYPELESS_PACKAGE_JSON');
+  });
+
+  function runParent(ignore: boolean): string {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-typeless-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"typeless"}\n');
+    fs.writeFileSync(path.join(dir, 'esm.js'), 'export const a = 1;\n');
+    fs.writeFileSync(path.join(dir, 'child.mjs'), "await import('./esm.js');\n");
+    fs.writeFileSync(path.join(dir, 'parent.mjs'), [
+      "import { fork } from 'node:child_process';",
+      `import { ignoreTypelessPackageWarnings } from ${JSON.stringify(pathToFileURL(distRuntime).href)};`,
+      ignore ? 'ignoreTypelessPackageWarnings();' : '',
+      "const child = fork(new URL('./child.mjs', import.meta.url).pathname, [], { stdio: 'inherit' });",
+      "await new Promise((resolve) => child.on('exit', resolve));",
+    ].join('\n'));
+    const result = spawnSync(process.execPath, [path.join(dir, 'parent.mjs')], {
+      cwd: dir,
+      encoding: 'utf-8',
+      env: { ...process.env, NODE_OPTIONS: '' },
+      timeout: 60_000,
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+    return result.stderr;
+  }
+
+  it.skipIf(!fs.existsSync(distRuntime))('do not print the warning (built dist/)', () => {
+    // Control first: without the call, a forked child on this Node warns.
+    expect(runParent(false)).toContain('MODULE_TYPELESS_PACKAGE_JSON');
+    expect(runParent(true)).not.toContain('MODULE_TYPELESS_PACKAGE_JSON');
+  }, 60_000);
 });
 
 // ─── The bin entry ───

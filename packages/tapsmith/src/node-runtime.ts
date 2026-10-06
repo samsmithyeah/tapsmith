@@ -21,16 +21,24 @@ export function unsupportedNodeMessage(version: string): string {
     + `Install Node.js ${MIN_NODE_MAJOR} or newer (https://nodejs.org), then run the command again.`;
 }
 
+const DISABLE_TYPELESS_WARNING = '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON';
+
 /**
- * Drop Node's MODULE_TYPELESS_PACKAGE_JSON warnings for the rest of the
- * process: the runtime equivalent of `--disable-warning=MODULE_TYPELESS_PACKAGE_JSON`,
+ * Drop Node's MODULE_TYPELESS_PACKAGE_JSON warnings for this process and the
+ * children it forks: the runtime equivalent of `--disable-warning=MODULE_TYPELESS_PACKAGE_JSON`,
  * which the bin cannot put in its shebang because Node before 20.11 rejects
  * the flag ("node: bad option") before the version check could explain why.
  * It fires when a user's typeless project has ES-module `.js` files (the
  * config, plain-JS tests) and advises adding `"type": "module"`, which can
  * break an Expo/React Native app. Every other warning passes through.
+ *
+ * This process gets a `process.emit` filter (the flag can no longer take
+ * effect here); forked children get the flag itself, through
+ * `process.execArgv`, which `fork()` passes on by default — as it passed on
+ * the shebang's flag to the worker, UI-mode, watch and MCP children.
  */
 export function ignoreTypelessPackageWarnings(): void {
+  if (!process.execArgv.includes(DISABLE_TYPELESS_WARNING)) process.execArgv.push(DISABLE_TYPELESS_WARNING);
   const emit = process.emit as (event: string | symbol, ...args: unknown[]) => boolean;
   process.emit = function (this: NodeJS.Process, event: string | symbol, ...args: unknown[]): boolean {
     if (event === 'warning' && (args[0] as { code?: unknown } | undefined)?.code === 'MODULE_TYPELESS_PACKAGE_JSON') return false;
