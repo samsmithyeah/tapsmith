@@ -8,7 +8,7 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { printsBanner, runCli, type CliHandlers, type TestCommandArgs } from './cli-program.js';
+import { claimBanner, printsBanner, runCli, type CliHandlers, type TestCommandArgs } from './cli-program.js';
 import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, primaryDevicePin, deviceGroupSize, assignGroupMemberDevices, EXPLICIT_WORKERS, isExplicitWorkers, isTapsmithNotInstalledError, isConfigValidationError, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
 import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
@@ -100,6 +100,7 @@ function dim(s: string): string {
 }
 
 function printTapsmithBanner(): void {
+  if (!claimBanner()) return;
   console.log();
   const banner = figlet.textSync('Tapsmith', { font: 'Three Point' });
   console.log(banner.split('\n').map((line) => `${GREEN}${line}${RESET}`).join('\n'));
