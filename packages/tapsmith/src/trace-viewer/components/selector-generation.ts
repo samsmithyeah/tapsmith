@@ -1,5 +1,6 @@
 import type { HierarchyNode } from './hierarchy-utils.js';
 import { getNodeRole, WEBVIEW_TAG_TO_ROLE, ANDROID_CLASS_TO_ROLE, IOS_TYPE_TO_ROLE } from './hierarchy-utils.js';
+import { unknownRoleMessage } from '../../roles.js';
 
 function escapeQuotes(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
@@ -12,7 +13,10 @@ function isWebViewNode(node: HierarchyNode): boolean {
 }
 
 function getRole(node: HierarchyNode): string | null {
-  return getNodeRole(node) || null;
+  const role = getNodeRole(node);
+  // Never suggest a role getByRole rejects: Android reports an RN
+  // roleDescription ("menuitem", "tablist", …) as tapsmith-role (PILOT-556).
+  return role && unknownRoleMessage(role) === null ? role : null;
 }
 
 function getText(node: HierarchyNode): string {

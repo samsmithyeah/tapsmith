@@ -2,6 +2,7 @@ import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
 import { parseBounds, getNodeRole } from './hierarchy-utils.js';
 import { FORM_FIELD_ROLES } from './selector-generation.js';
 import { toJsRegExp } from '../../text-regex.js';
+import { normalizeRole, unknownRoleMessage } from '../../roles.js';
 
 // ─── Selector Parsing ───
 
@@ -413,8 +414,11 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
       return rid === selector.value || rid.endsWith(`:id/${selector.value}`);
     }
     case 'role': {
+      // Like getByRole at runtime (PILOT-556): case-insensitive, aliases
+      // resolved, and a role it rejects matches nothing.
+      if (unknownRoleMessage(selector.value) !== null) return false;
       const role = getNodeRole(node);
-      if (role !== selector.value) return false;
+      if (!role || normalizeRole(role) !== normalizeRole(selector.value)) return false;
       if (selector.nameRegex) return roleNameMatchesRegex(node, toJsRegExp(selector.nameRegex));
       if (selector.name) return roleNameMatches(node, selector.name, selector.exact === true);
       return true;
@@ -529,6 +533,15 @@ export function applyPositionalIndex<T>(items: T[], index: ParsedSelector['index
   if (index === undefined) return items;
   const idx = resolvePositionalIndex(items.length, index);
   return idx >= 0 && idx < items.length ? [items[idx]] : [];
+}
+
+/**
+ * Why a parsed locator would throw when the test builds it, or `null`. Today
+ * that is a native getByRole role the runtime rejects (PILOT-556); WebView
+ * roles are DOM ARIA roles and are not checked.
+ */
+export function parsedSelectorError(selector: ParsedSelector): string | null {
+  return selector.type === 'role' ? unknownRoleMessage(selector.value) : null;
 }
 
 export function findMatchingNodes(roots: HierarchyNode[], selector: ParsedSelector): HierarchyNode[] {

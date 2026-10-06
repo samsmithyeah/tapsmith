@@ -20,6 +20,7 @@
 import { ElementHandle, ELEMENT_HANDLE_BRAND, isStrictModeViolation, isRetryableResolutionError, isStaleSnapshotError, POLL_INTERVAL_MS } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { formatSelector } from "./selectors.js";
+import { normalizeRole } from "./roles.js";
 import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
 import { WebViewLocator, WEBVIEW_LOCATOR_BRAND } from "./webview-locator.js";
 import { defineStandIns, notSupportedYet } from "./not-supported.js";
@@ -1083,40 +1084,8 @@ function classNameToRole(className: string): string {
   return CLASS_TO_ROLE_MAP[className] || "";
 }
 
-/**
- * Cross-platform role aliases. Lets `toHaveRole("header")` succeed when the
- * agent reports "heading" (and vice versa), and similarly for "slider" /
- * "seekbar".
- *
- * **Parity contract — three places, one canonical list:**
- * 1. This file (SDK side, used by `toHaveRole` normalization).
- * 2. `agent/.../ElementFinder.kt` (Android `ROLE_ALIASES`, used during
- *    role-description extraction).
- * 3. `ios-agent/TapsmithAgent/RoleMapping.swift` (`roleAliases`, used by
- *    `RoleMapping.elementTypes(for:)`).
- *
- * Drift here causes silent per-platform mismatch — the SDK normalizes
- * one way, the agent matches the other, and `toHaveRole` either fails
- * loudly or (worse) matches the wrong elements. The parity test in
- * `expect.test.ts > ROLE_ALIASES parity` pins the SDK side; if you add
- * or rename an alias, update all three files AND that test.
- */
-const ROLE_ALIASES: Record<string, string> = {
-  header: "heading",
-  heading: "heading",
-  slider: "seekbar",
-  seekbar: "seekbar",
-  // RN's accessibilityRole="search" surfaces as a role description of
-  // "search" via extractRoleDescription; normalize so toHaveRole("searchfield")
-  // matches.
-  search: "searchfield",
-  searchfield: "searchfield",
-};
-
-function normalizeRole(role: string): string {
-  const lower = role.toLowerCase();
-  return ROLE_ALIASES[lower] ?? lower;
-}
+// Role aliases and the native role set live in roles.ts (PILOT-556), shared
+// with getByRole's validation and the locator playground.
 
 // ─── PILOT-42: Generic value assertions ───
 

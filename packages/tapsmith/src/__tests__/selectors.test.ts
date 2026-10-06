@@ -25,6 +25,20 @@ describe('internal selector builders', () => {
     expect(sel.parent).toBeUndefined();
   });
 
+  it('_role() rejects an unknown role when the locator is built (PILOT-556)', () => {
+    expect(() => _role('list2')).toThrow(/^Unknown role "list2"\. Supported: alert, button, /);
+    expect(() => _role('textbox', { name: 'Email' })).toThrow('Did you mean "textfield"?');
+  });
+
+  it('_role() keeps the role as written for a known role in any case or alias', () => {
+    expect(_role('Button').kind).toEqual({ type: 'role', value: { role: 'Button', name: '' } });
+    expect(_role('header').kind).toEqual({ type: 'role', value: { role: 'header', name: '' } });
+  });
+
+  it('_role() throws a TypeError for a non-string role', () => {
+    expect(() => _role(undefined as unknown as string)).toThrow('getByRole() expects a role name string, got undefined.');
+  });
+
   it('_role() defaults name to empty string when omitted', () => {
     const sel = _role('checkbox');
     expect(sel.kind).toEqual({ type: 'role', value: { role: 'checkbox', name: '' } });
@@ -127,7 +141,7 @@ describe('withParent()', () => {
   });
 
   it('supports multi-level nesting', () => {
-    const grandparent = _role('navigation');
+    const grandparent = _role('toolbar');
     const parent = withParent(_className('MenuList'), grandparent);
     const child = withParent(_text('Settings'), parent);
 

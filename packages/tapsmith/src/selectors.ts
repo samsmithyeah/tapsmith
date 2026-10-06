@@ -11,6 +11,7 @@
 
 import { textRegexValue, formatRegex } from './text-regex.js';
 import type { TextRegexValue } from './text-regex.js';
+import { assertKnownRole } from './roles.js';
 
 // ─── Types ───
 
@@ -224,6 +225,9 @@ function assertTextArg(value: unknown, what: string): asserts value is string | 
 
 /** @internal */
 export function _role(roleName: string, options?: RoleLocatorOptions): Selector {
+  // Fail fast on a role no element can have, instead of polling until the
+  // timeout (PILOT-556).
+  assertKnownRole(roleName, 'getByRole()');
   if (options?.name !== undefined) assertTextArg(options.name, 'getByRole() option `name`');
   const nameRegex = options?.name instanceof RegExp
     ? textRegexValue(options.name, 'getByRole() option `name`')

@@ -23,6 +23,7 @@ import {
   _xpath,
   _label,
 } from './selectors.js';
+import { unknownRoleMessage } from './roles.js';
 import type { TapsmithGrpcClient, ElementInfo, ActionResponse } from './grpc-client.js';
 import { type TraceCapture, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory } from './trace/types.js';
@@ -444,7 +445,9 @@ function suggestSelectorFor(el: ElementInfo): string | undefined {
   }
   const name = el.contentDescription || el.text;
   // Static text elements read better as getByText; real widgets as getByRole.
-  if (el.role && el.role !== 'text' && name) {
+  // Only a role getByRole accepts: Android reports an RN roleDescription
+  // ("menuitem", "tablist", …) as the role, which getByRole rejects (PILOT-556).
+  if (el.role && el.role !== 'text' && name && unknownRoleMessage(el.role) === null) {
     // Role names match by substring unless exact (PILOT-549): pin a short
     // name whole; a long one is suggested as its leading part (no ellipsis,
     // which the name doesn't contain), still a valid substring locator.

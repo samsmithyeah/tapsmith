@@ -156,16 +156,21 @@ describe('getBy* scoping', () => {
 
   it('preserves client and timeout in child handle', () => {
     const client = makeMockClient();
-    const parent = new ElementHandle(client, _role('container'), 7000);
+    const parent = new ElementHandle(client, _role('list'), 7000);
     const child = parent.getByText('inner', { exact: true });
     expect(child._client).toBe(client);
     expect(child._timeoutMs).toBe(7000);
   });
 
+  it('rejects an unknown role on a scoped getByRole (PILOT-556)', () => {
+    const parent = new ElementHandle(makeMockClient(), _role('list'), 5000);
+    expect(() => parent.getByRole('row')).toThrow(/^Unknown role "row"\. Supported: /);
+  });
+
   it('supports multi-level scoping', () => {
     const client = makeMockClient();
-    const root = new ElementHandle(client, _role('page'), 5000);
-    const mid = root.getByRole('section');
+    const root = new ElementHandle(client, _role('scrollview'), 5000);
+    const mid = root.getByRole('list');
     const leaf = mid.getByText('Label', { exact: true });
 
     expect(leaf._selector.parent).toBeDefined();
@@ -860,6 +865,17 @@ describe('tap()', () => {
     ]);
     expect(err.message).toContain(`aka device.getByRole("button", { name: "${long.slice(0, 60)}" })`);
     expect(err.message).toContain('aka device.getByRole("button", { name: "Other", exact: true })');
+  });
+
+  it('never suggests getByRole for a role getByRole rejects (PILOT-556)', () => {
+    // Android reports an RN roleDescription ("menuitem") as the element's
+    // role, but getByRole only takes the native role names.
+    const err = buildStrictModeViolationError('getByText("Open")', [
+      makeElementInfo({ role: 'menuitem', text: 'Open' }),
+      makeElementInfo({ role: 'menuitem', text: 'Open recent' }),
+    ]);
+    expect(err.message).not.toContain('getByRole("menuitem"');
+    expect(err.message).toContain('aka device.getByText("Open", { exact: true })');
   });
 
   it('.first() disambiguates an ambiguous selector', async () => {

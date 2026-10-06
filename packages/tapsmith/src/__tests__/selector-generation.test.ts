@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { HierarchyNode } from '../trace-viewer/components/hierarchy-utils.js';
 import { getNodeRole } from '../trace-viewer/components/hierarchy-utils.js';
 import { generateSelectors, generateBestSelector, findBetterDescendant, hasGoodSelectors, FORM_FIELD_ROLES } from '../trace-viewer/components/selector-generation.js';
-import { parseSelectorString, findMatchingNodes, hitTest, applyPositionalIndex } from '../trace-viewer/components/selector-matching.js';
+import { parseSelectorString, findMatchingNodes, hitTest, applyPositionalIndex, parsedSelectorError } from '../trace-viewer/components/selector-matching.js';
 
 function makeNode(tagName: string, attrs: Record<string, string>, children: HierarchyNode[] = []): HierarchyNode {
   return {
@@ -565,5 +565,38 @@ describe('applyPositionalIndex (shared positional-chain util)', () => {
     expect(applyPositionalIndex(items, 5)).toEqual([]);
     expect(applyPositionalIndex(items, -4)).toEqual([]);
     expect(applyPositionalIndex([], 'first')).toEqual([]);
+  });
+});
+
+// ─── Native role names (PILOT-556) ───
+
+describe('role names in the playground match the runtime', () => {
+  const heading = makeNode('node', { class: 'android.view.ViewGroup', 'tapsmith-role': 'heading', text: 'Settings', bounds: '[0,0][100,50]' });
+  const button = makeNode('node', { class: 'android.widget.Button', text: 'OK', bounds: '[0,60][100,110]' });
+  const menuItem = makeNode('node', { class: 'android.view.ViewGroup', 'tapsmith-role': 'menuitem', text: 'Open', bounds: '[0,120][100,170]' });
+  const roots = [makeNode('hierarchy', {}, [heading, button, menuItem])];
+  const match = (selector: string) => findMatchingNodes(roots, parseSelectorString(selector)!);
+
+  it('resolves aliases and ignores case, like getByRole', () => {
+    expect(match('device.getByRole("header")')).toEqual([heading]);
+    expect(match('device.getByRole("Button", { name: "OK" })')).toEqual([button]);
+  });
+
+  it('matches nothing for a role getByRole rejects, and says why', () => {
+    expect(match('device.getByRole("menuitem")')).toEqual([]);
+    expect(parsedSelectorError(parseSelectorString('device.getByRole("menuitem")')!))
+      .toMatch(/^Unknown role "menuitem"\. Supported: /);
+    expect(parsedSelectorError(parseSelectorString('device.getByRole("button")')!)).toBeNull();
+    expect(parsedSelectorError(parseSelectorString('device.getByText("OK")')!)).toBeNull();
+  });
+
+  it('leaves WebView roles alone (DOM ARIA roles)', () => {
+    expect(parsedSelectorError(parseSelectorString('webview.getByRole("banner")')!)).toBeNull();
+  });
+
+  it('suggests no getByRole for a role getByRole rejects', () => {
+    const codes = generateSelectors(menuItem).map((s) => s.code);
+    expect(codes.some((c) => c.includes('getByRole'))).toBe(false);
+    expect(codes).toContain('device.getByText("Open")');
   });
 });

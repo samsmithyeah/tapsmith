@@ -176,3 +176,17 @@ describe('positional re-targeting ambiguity guard (PR #124 review)', () => {
     expect(selectorToProto(target.selector)).toEqual({ resourceId: 'row_1' });
   });
 });
+
+describe('parseSelectorToInternal role validation (PILOT-556)', () => {
+  it('rejects an unknown role instead of polling for it', () => {
+    expect(() => parseSelectorToInternal('device.getByRole("lst")')).toThrow(/^Unknown role "lst"\. Supported: /);
+    expect(() => parseSelectorToInternal('device.getByRole("textbox", { name: /mail/i })')).toThrow('Did you mean "textfield"?');
+  });
+
+  it('accepts a known role in any case, and the aliases', () => {
+    expect(parseSelectorToInternal('device.getByRole("Button", { name: "OK" })').selector.kind)
+      .toEqual({ type: 'role', value: { role: 'Button', name: 'OK' } });
+    expect(parseSelectorToInternal('device.getByRole("header")').selector.kind)
+      .toEqual({ type: 'role', value: { role: 'header', name: '' } });
+  });
+});
