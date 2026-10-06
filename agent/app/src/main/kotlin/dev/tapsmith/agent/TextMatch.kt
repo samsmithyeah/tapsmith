@@ -72,6 +72,23 @@ object TextMatch {
             nameMatches(text, name, exact || textIsValue) ||
             nameMatches(descendantText(), name, exact)
 
+    /**
+     * [accessibleNameMatches] for a getByRole `{ name: RegExp }` (PILOT-520):
+     * the RegExp is tested against each whitespace-normalized name source, as
+     * Playwright tests it against the normalized accessible name. A typed
+     * EditText value is not a name ([textIsValue]), so it is not tested.
+     */
+    fun accessibleNameMatches(
+        contentDescription: CharSequence?,
+        text: CharSequence?,
+        textIsValue: Boolean,
+        descendantText: () -> CharSequence?,
+        regex: TextRegex,
+    ): Boolean {
+        val test = { value: CharSequence? -> value != null && regex.matches(normalize(value.toString())) }
+        return test(contentDescription) || (!textIsValue && test(text)) || test(descendantText())
+    }
+
     /** Full-match pattern: the text equals [query] after normalizing both. */
     fun exactPattern(query: String): Pattern = Pattern.compile("$WS_CLASS*${wordsPattern(query)}$WS_CLASS*")
 
@@ -82,5 +99,50 @@ object TextMatch {
         val normalized = normalize(query)
         if (normalized.isEmpty()) return ""
         return normalized.split(' ').joinToString("$WS_CLASS+") { Pattern.quote(it) }
+    }
+}
+
+/**
+ * A getBy* RegExp (PILOT-520), as the daemon forwards it: [pattern] is the
+ * SDK's translation of the JavaScript RegExp, written so ICU (the engine
+ * behind Android's java.util.regex) reads it with JavaScript's semantics —
+ * whitespace, digit and word classes, anchors and `.` are all spelled out —
+ * so only [ignoreCase] is left to the engine. [display] is the RegExp as
+ * written, for messages.
+ */
+class TextRegex(
+    val pattern: String,
+    val ignoreCase: Boolean,
+    val display: String,
+) {
+    private val flags = if (ignoreCase) Pattern.CASE_INSENSITIVE or Pattern.UNICODE_CASE else 0
+
+    private val compiled: Pattern =
+        try {
+            Pattern.compile(pattern, flags)
+        } catch (e: java.util.regex.PatternSyntaxException) {
+            throw InvalidSelectorException("Invalid RegExp $display: ${e.description}")
+        }
+
+    /** Whether the RegExp matches anywhere in [text], like `RegExp.prototype.test` (null = no text). */
+    fun matches(text: CharSequence?): Boolean = text != null && compiled.matcher(text).find()
+
+    /**
+     * The same test as a whole-string match, for UIAutomator's
+     * `By.text(Pattern)` (which calls `matches()`): any prefix, the RegExp,
+     * any suffix. The wrappers are non-capturing, so backreferences keep
+     * their numbers.
+     */
+    fun fullMatchPattern(): Pattern = Pattern.compile("(?s:.*?)(?:$pattern)(?s:.*)", flags)
+
+    override fun toString(): String = display
+
+    companion object {
+        /** Parse the daemon's `{pattern, ignoreCase, display}` object; null when absent. */
+        fun fromJson(obj: org.json.JSONObject?): TextRegex? {
+            if (obj == null) return null
+            val pattern = obj.optString("pattern", "")
+            return TextRegex(pattern, obj.optBoolean("ignoreCase", false), obj.optString("display", "/$pattern/"))
+        }
     }
 }

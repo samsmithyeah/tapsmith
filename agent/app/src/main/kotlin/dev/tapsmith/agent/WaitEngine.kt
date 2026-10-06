@@ -217,8 +217,11 @@ class WaitEngine(private val device: UiDevice) {
         selector.role?.let { parts.add("role=$it") }
         selector.name?.let { parts.add("name=$it") }
         if (selector.name != null && selector.nameExact) parts.add("exact=true")
+        selector.nameRegex?.let { parts.add("name=$it") }
         selector.text?.let { parts.add("text=$it") }
         selector.textContains?.let { parts.add("textContains=$it") }
+        selector.textRegex?.let { parts.add("text=$it") }
+        selector.labelRegex?.let { parts.add("label=$it") }
         selector.contentDesc?.let { parts.add("contentDesc=$it") }
         selector.hint?.let { parts.add("hint=$it") }
         selector.className?.let { parts.add("className=$it") }
