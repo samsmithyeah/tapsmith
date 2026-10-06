@@ -29,12 +29,13 @@ describe('confirmQuestion()', () => {
   it('renders the answer as yes/no, never as the boolean', async () => {
     const yes = await render(true, '\r');
     expect(yes.value).toBe(true);
-    expect(yes.final).toMatch(/Generate example test file\? \(Y\/n\) · yes/);
+    // enquirer's separator glyphs differ by platform (`›`/`‣` pending, `·` answered), so match any.
+    expect(yes.final).toMatch(/Generate example test file\? \(Y\/n\) \S yes/);
     expect(yes.final).not.toMatch(/true|false/);
 
     const no = await render(true, 'n');
     expect(no.value).toBe(false);
-    expect(no.final).toMatch(/· no/);
+    expect(no.final).toMatch(/\(Y\/n\) \S no/);
     expect(no.final).not.toMatch(/true|false/);
   });
 
@@ -57,7 +58,7 @@ describe('confirmQuestion()', () => {
 
   it('shows no value while waiting for an answer: the (Y/n) hint is the default', async () => {
     const { pending } = await render(false, '\r');
-    expect(pending).toMatch(/Generate example test file\? \(y\/N\) ›/);
-    expect(pending).not.toMatch(/true|false|› (yes|no)/);
+    expect(pending).toMatch(/Generate example test file\? \(y\/N\) \S\s*$/);
+    expect(pending).not.toMatch(/\b(yes|no|true|false)\b/);
   });
 });
