@@ -731,6 +731,29 @@ describe('executeInitPlan()', () => {
     }
   });
 
+  // The scan is advisory: it runs after the config is written, so a path it
+  // cannot probe must not fail init halfway.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('keeps going when an import resolves into a directory it cannot search', () => {
+    const tmp = makeTmp();
+    const locked = path.join(tmp, 'e2e', 'locked');
+    try {
+      fs.mkdirSync(locked, { recursive: true });
+      fs.writeFileSync(path.join(tmp, 'e2e', 'a.test.ts'), "import { x } from './locked/helpers'\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'b.test.ts'), "import { test } from 'tapsmith'\n");
+      fs.chmodSync(locked, 0o000);
+      const args = initArgs({ yes: true, platform: 'android' });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const result = executeInitPlan(plan, args, tmp);
+      expect(result.filesCreated).toContain('tests/example.tapsmith.ts');
+      const warning = result.warnings.find((w) => w.includes('.tapsmith.ts'));
+      expect(warning).toContain('e2e/b.test.ts');
+      expect(warning).not.toContain('e2e/a.test.ts');
+    } finally {
+      fs.chmodSync(locked, 0o755);
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('gives no such warning in a project without Tapsmith tests', () => {
     const tmp = makeTmp();
     try {

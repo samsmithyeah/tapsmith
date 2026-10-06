@@ -242,6 +242,7 @@ For parallel Android emulator runs, use:
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   apk: "./app/build/outputs/apk/debug/app-debug.apk",
   package: "com.example.myapp",
   workers: 4,
@@ -268,6 +269,7 @@ For parallel iOS simulator runs:
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
+  testMatch: ["**/*.tapsmith.ts"],
   platform: "ios",
   app: "./ios/build/Build/Products/Debug-iphonesimulator/MyApp.app",
   package: "com.example.myapp",

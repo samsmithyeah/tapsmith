@@ -835,7 +835,16 @@ function readText(file: string): string | undefined {
 function resolveRelativeImport(fromFile: string, specifier: string): string | undefined {
   const base = path.resolve(path.dirname(fromFile), specifier).replace(/\.[cm]?js$/, '');
   return [base, `${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts')]
-    .find((candidate) => /\.tsx?$/.test(candidate) && fs.statSync(candidate, { throwIfNoEntry: false })?.isFile());
+    .find((candidate) => /\.tsx?$/.test(candidate) && isFile(candidate));
+}
+
+/** Whether `file` is a file; a path that can't be probed (EACCES, ELOOP) is not one. */
+function isFile(file: string): boolean {
+  try {
+    return fs.statSync(file, { throwIfNoEntry: false })?.isFile() ?? false;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -863,13 +872,19 @@ function importsTapsmith(file: string): boolean {
  * Vitest tests don't. Paths are relative to `cwd`, with `/` separators, sorted.
  */
 export function tapsmithTestsOutsideGeneratedMatch(cwd: string): string[] {
-  const candidates = globSync(['**/*.test.ts', '**/*.spec.ts'], {
-    cwd,
-    // Bounded, so init in a huge directory doesn't crawl it: tests live near the top.
-    ignore: [...DEFAULT_TEST_IGNORE, '**/Pods/**', '**/build/**'],
-    maxDepth: 10,
-    posix: true,
-  });
+  let candidates: string[];
+  try {
+    candidates = globSync(['**/*.test.ts', '**/*.spec.ts'], {
+      cwd,
+      // Bounded, so init in a huge directory doesn't crawl it: tests live near the top.
+      ignore: [...DEFAULT_TEST_IGNORE, '**/Pods/**', '**/build/**'],
+      maxDepth: 10,
+      posix: true,
+    });
+  } catch {
+    // Advisory, and init has already written the config: never fail init over it.
+    return [];
+  }
   return candidates
     .filter((file) => !GENERATED_TEST_MATCH.some((glob) => minimatch(file, glob)))
     .filter((file) => importsTapsmith(path.join(cwd, file)))
