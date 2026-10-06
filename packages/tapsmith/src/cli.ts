@@ -341,12 +341,9 @@ function installSequentialFatalHandlers(
     }
     setImmediate(() => process.exit(1));
   };
-  // While a test file runs, the runner owns these: it fails the test the
-  // error happened in and the run carries on (PILOT-543). Tearing the run
-  // down is for errors outside any file — the CLI's own.
-  process.on('uncaughtException', (err) => {
-    if (!runnerOwnsUnhandledErrors()) runFatalTeardown('error', err);
-  });
+  process.on('uncaughtException', (err) => runFatalTeardown('error', err));
+  // While a test file runs, the runner owns unhandled rejections: it fails
+  // the test the rejection happened in and the run carries on (PILOT-543).
   process.on('unhandledRejection', (reason) => {
     if (!runnerOwnsUnhandledErrors()) runFatalTeardown('rejection', reason);
   });

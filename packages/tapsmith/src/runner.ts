@@ -2566,7 +2566,7 @@ async function runSuiteContext(
         if (d._routeManager?.hasRoutes) await d._routeManager.removeAllRoutes();
       });
 
-      // An unhandled rejection or uncaught exception raised during the
+      // An unhandled rejection raised during the
       // attempt fails it — only it — as in Playwright (PILOT-543).
       const unhandledErrors = closeErrorScope(attemptErrors);
       if (unhandledErrors.length > 0) {
@@ -3240,7 +3240,7 @@ export async function runTestFile(
   filePath: string,
   opts: RunOptions,
 ): Promise<SuiteResult> {
-  // While the file runs, an unhandled rejection or uncaught exception is
+  // While the file runs, an unhandled rejection is
   // attributed to the test it happens in rather than killing the process —
   // every embedder runs files through here (PILOT-543).
   const releaseUnhandledErrors = ownUnhandledErrors(filePath);

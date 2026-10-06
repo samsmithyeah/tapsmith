@@ -7,16 +7,22 @@
 // tore the run down without a summary, and the worker, UI-mode and watch
 // children (which install no handler) crashed on Node's default.
 //
-// Playwright ties such errors to the test that is running: its worker routes
-// `unhandledRejection` and `uncaughtException` to the current test and fails
-// that test only. The runner does the same here. While `runTestFile` runs it
-// owns both process events; an error is recorded on the active *error scope*
-// — a test attempt, or a scope's beforeAll hooks — and fails it there. With no
-// scope open (afterAll hooks, the runner's own work between tests) it is
-// printed, as an afterAll hook's error is, and the run carries on.
+// Playwright ties such errors to the test that is running and fails that test
+// only. The runner does the same here. While `runTestFile` runs it owns
+// `unhandledRejection`; a rejection is recorded on the active *error scope* —
+// a test attempt, or a scope's beforeAll hooks — and fails it there. With no
+// scope open (afterAll hooks, the runner's own work between tests), or when it
+// was left behind by a test that has already ended, it is printed, as an
+// afterAll hook's error is, and the run carries on.
 //
-// Outside `runTestFile` nothing changes: the CLI's fatal handlers (which ask
-// `runnerOwnsUnhandledErrors()` first) still tear a crashed run down cleanly.
+// Uncaught exceptions are deliberately not taken over. A rejection nobody
+// handles is, by definition, awaited by nothing, so recording it holds nothing
+// up; an exception thrown from a callback can be the callback that would have
+// settled a promise a hook is awaiting — hooks have no timeout — and
+// swallowing it would turn a loud crash into a silent hang.
+//
+// Outside `runTestFile` nothing changes: the CLI's fatal handler (which asks
+// `runnerOwnsUnhandledErrors()` first) still tears a crashed run down cleanly.
 
 import { currentAttemptToken, isTestEndedError, type AttemptToken } from './attempt-fence.js';
 
@@ -45,13 +51,13 @@ function describeValue(value: unknown): string {
   }
 }
 
-function record(kind: 'rejection' | 'exception', reason: unknown): void {
+function record(reason: unknown): void {
   // A device call fenced off from a test that already ended: that test has
   // already failed (it timed out), and this says nothing new.
   if (isTestEndedError(reason)) return;
   const err = toError(reason);
-  // Node runs these listeners in the async context of the promise that
-  // rejected (or of the callback that threw), so a leftover from a test
+  // Node runs this listener in the async context of the promise that
+  // rejected, so a leftover from a test
   // body that has already ended — an action it forgot to await, failing
   // late — is told apart from an error of the test running now.
   const origin = currentAttemptToken();
@@ -65,23 +71,21 @@ function record(kind: 'rejection' | 'exception', reason: unknown): void {
     ? `from a test that has already ended${where} (a call it did not await?)`
     : `outside a test${where}`;
   process.stderr.write(
-    `[tapsmith] Unhandled ${kind} ${what}, not attributed to any test:\n`
+    `[tapsmith] Unhandled rejection ${what}, not attributed to any test:\n`
     + `${err.stack ?? err.message}\n`,
   );
 }
 
-const onUnhandledRejection = (reason: unknown): void => record('rejection', reason);
-const onUncaughtException = (err: Error): void => record('exception', err);
+const onUnhandledRejection = (reason: unknown): void => record(reason);
 
 /**
- * Take ownership of `unhandledRejection` / `uncaughtException` for the length
+ * Take ownership of `unhandledRejection` for the length
  * of a test file. Returns the release function; nested ownership is counted,
  * so the listeners come off only when the last owner releases.
  */
 export function ownUnhandledErrors(filePath: string | undefined): () => void {
   if (ownerCount++ === 0) {
     process.on('unhandledRejection', onUnhandledRejection);
-    process.on('uncaughtException', onUncaughtException);
   }
   const previousFile = activeFile;
   activeFile = filePath;
@@ -93,7 +97,6 @@ export function ownUnhandledErrors(filePath: string | undefined): () => void {
     if (--ownerCount === 0) {
       activeScope = undefined;
       process.removeListener('unhandledRejection', onUnhandledRejection);
-      process.removeListener('uncaughtException', onUncaughtException);
     }
   };
 }

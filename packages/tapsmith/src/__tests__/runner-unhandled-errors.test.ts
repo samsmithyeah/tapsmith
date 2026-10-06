@@ -18,7 +18,7 @@ import type { NetworkRouteManager } from '../network.js';
 // PILOT-543: a promise a test never awaits (typically a waitForResponse()
 // left behind by a step that failed) used to reject unhandled and kill the
 // whole run. While a file runs, the runner owns unhandled rejections and
-// uncaught exceptions and fails the test they happen in — only that test.
+// fails the test they happen in — only that test.
 
 function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
   return {
@@ -108,19 +108,20 @@ describe('runTestFile — unhandled errors during a test (PILOT-543)', () => {
     );
   });
 
-  it('treats an uncaught exception thrown during a test the same way', async () => {
+  it('leaves uncaught exceptions alone: swallowing one could hang a hook awaiting its callback', async () => {
     const filePath = writeFile('c.test.mjs', `
-      test('throws from a timer', async () => {
-        setTimeout(() => { throw new Error('thrown from a callback'); }, 0);
-        ${SETTLE}
+      test('observes the listeners', async () => {
+        globalThis.__pilot543Listeners = process.listenerCount('uncaughtException');
       });
-      test('next', async () => {});
     `);
 
-    const results = collectResults(await runTestFile(filePath, makeOpts()));
-
-    expect(results.map((r) => r.status)).toEqual(['failed', 'passed']);
-    expect(results[0].error!.message).toBe('thrown from a callback');
+    try {
+      const [result] = collectResults(await runTestFile(filePath, makeOpts()));
+      expect(result.status).toBe('passed');
+      expect((globalThis as Record<string, unknown>).__pilot543Listeners).toBe(0);
+    } finally {
+      delete (globalThis as Record<string, unknown>).__pilot543Listeners;
+    }
   });
 
   it('wraps a rejection with a non-Error value', async () => {
