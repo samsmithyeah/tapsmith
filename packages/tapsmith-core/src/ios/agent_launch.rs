@@ -781,10 +781,10 @@ async fn adb_forward_list() -> Result<String> {
     crate::adb::list_forwards(Duration::from_secs(5)).await
 }
 
-/// Every process's pid and command line (`ps -ww -axo pid=,command=`).
+/// Every process's pid and command line (`ps -A -ww -o pid=,args=`).
 async fn running_processes() -> Result<String> {
     let out = Command::new("ps")
-        .args(["-ww", "-axo", "pid=,command="])
+        .args(["-A", "-ww", "-o", "pid=,args="])
         .output()
         .await
         .context("ps could not be run")?;
@@ -809,7 +809,7 @@ fn forwards_on_port(list: &str, port: u16) -> Vec<String> {
 
 /// The pids of the `tapsmith-core` daemons, other than `self_pid`, whose
 /// agent port is `port` (`--agent-port`, else the default), from
-/// `ps -axo pid=,command=` output.
+/// `ps -A -ww -o pid=,args=` output.
 fn daemons_on_agent_port(ps: &str, port: u16, self_pid: u32) -> Vec<u32> {
     const PROGRAM: &str = "tapsmith-core";
     const DEFAULT_AGENT_PORT: u16 = 18700;

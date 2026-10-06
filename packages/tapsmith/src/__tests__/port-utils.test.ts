@@ -232,7 +232,7 @@ describe('daemonsOnAgentPort', () => {
   it('reads every process from ps', () => {
     mockedExecFileSync.mockReturnValue('  7 tapsmith-core --port 50961\n');
     expect(daemonsOnAgentPort(18700, new Set())).toEqual([7]);
-    expect(mockedExecFileSync).toHaveBeenCalledWith('ps', ['-ww', '-axo', 'pid=,command='], expect.anything());
+    expect(mockedExecFileSync).toHaveBeenCalledWith('ps', ['-A', '-ww', '-o', 'pid=,args='], expect.anything());
   });
 
   it('is undefined when ps cannot be read', () => {

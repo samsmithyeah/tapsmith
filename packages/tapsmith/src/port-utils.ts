@@ -104,7 +104,7 @@ export const DEFAULT_AGENT_PORT = 18700;
 const DAEMON_PROGRAM = 'tapsmith-core';
 
 /**
- * The pids of the `tapsmith-core` daemons in `ps -axo pid=,command=` output
+ * The pids of the `tapsmith-core` daemons in `ps -A -ww -o pid=,args=` output
  * whose agent port is `port` (`--agent-port`, else the default), leaving out
  * `excludePids`. The program may be a path, spaces and all; only its basename
  * has to be the daemon's.
@@ -146,7 +146,7 @@ export function parseDaemonsOnAgentPort(ps: string, port: number, excludePids: R
  */
 export function daemonsOnAgentPort(port: number, excludePids: ReadonlySet<number>): number[] | undefined {
   try {
-    const ps = execFileSync('ps', ['-ww', '-axo', 'pid=,command='], { encoding: 'utf-8', timeout: 5_000 });
+    const ps = execFileSync('ps', ['-A', '-ww', '-o', 'pid=,args='], { encoding: 'utf-8', timeout: 5_000 });
     return parseDaemonsOnAgentPort(ps, port, new Set([...excludePids, process.pid]));
   } catch {
     return undefined;
