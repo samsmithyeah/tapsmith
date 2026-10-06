@@ -15,21 +15,33 @@ afterEach(() => {
   for (const dir of tmps.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const notIgnored = (): boolean => false;
+const notIgnored = (): string[] => [];
+const BLOCK = '# Tapsmith test output (traces, screenshots, reports)\ntapsmith-results/\ntapsmith-report/\n';
 const read = (dir: string): string => fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
 
 describe('ignoreTestResults() (PILOT-562)', () => {
-  it('creates a .gitignore ignoring tapsmith-results/ when there is none', () => {
+  it('creates a .gitignore ignoring tapsmith-results/ and the HTML report when there is none', () => {
     const dir = tmp();
     expect(ignoreTestResults(dir, notIgnored)).toBe('created');
-    expect(read(dir)).toBe('# Tapsmith test results (traces, screenshots, reports)\ntapsmith-results/\n');
+    expect(read(dir)).toBe(BLOCK);
+  });
+
+  it('adds only the entries not already listed or ignored', () => {
+    const listed = tmp();
+    fs.writeFileSync(path.join(listed, '.gitignore'), 'tapsmith-results/\n');
+    expect(ignoreTestResults(listed, notIgnored)).toBe('added');
+    expect(read(listed)).toBe('tapsmith-results/\n\n# Tapsmith test output (traces, screenshots, reports)\ntapsmith-report/\n');
+
+    const gitIgnored = tmp();
+    expect(ignoreTestResults(gitIgnored, () => ['tapsmith-report/'])).toBe('created');
+    expect(read(gitIgnored)).toBe('# Tapsmith test output (traces, screenshots, reports)\ntapsmith-results/\n');
   });
 
   it('appends to an existing .gitignore, keeping what is there, after a missing final newline', () => {
     const dir = tmp();
     fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n.expo');
     expect(ignoreTestResults(dir, notIgnored)).toBe('added');
-    expect(read(dir)).toBe('node_modules/\n.expo\n\n# Tapsmith test results (traces, screenshots, reports)\ntapsmith-results/\n');
+    expect(read(dir)).toBe(`node_modules/\n.expo\n\n${BLOCK}`);
   });
 
   it('is idempotent: a second run changes nothing', () => {
@@ -40,19 +52,19 @@ describe('ignoreTestResults() (PILOT-562)', () => {
     expect(read(dir)).toBe(once);
   });
 
-  it.each(['tapsmith-results', '/tapsmith-results/', '  tapsmith-results/  ', 'tapsmith-results/**'])(
-    'leaves a .gitignore that already lists %j alone',
-    (line) => {
+  it.each([['tapsmith-results', 'tapsmith-report'], ['/tapsmith-results/', '/tapsmith-report/'], ['  tapsmith-results/  ', 'tapsmith-report/'], ['tapsmith-results/**', 'tapsmith-report/*']])(
+    'leaves a .gitignore that already lists %j and %j alone',
+    (results, report) => {
       const dir = tmp();
-      fs.writeFileSync(path.join(dir, '.gitignore'), `node_modules/\n${line}\n`);
+      fs.writeFileSync(path.join(dir, '.gitignore'), `node_modules/\n${results}\n${report}\n`);
       expect(ignoreTestResults(dir, notIgnored)).toBe('present');
-      expect(read(dir)).toBe(`node_modules/\n${line}\n`);
+      expect(read(dir)).toBe(`node_modules/\n${results}\n${report}\n`);
     },
   );
 
   it('changes nothing when git already ignores it (a parent .gitignore, say)', () => {
     const dir = tmp();
-    expect(ignoreTestResults(dir, () => true)).toBe('present');
+    expect(ignoreTestResults(dir, () => ['tapsmith-results/', 'tapsmith-report/'])).toBe('present');
     expect(fs.existsSync(path.join(dir, '.gitignore'))).toBe(false);
   });
 
@@ -60,7 +72,7 @@ describe('ignoreTestResults() (PILOT-562)', () => {
     if (spawnSync('git', ['--version']).status !== 0) return; // no git on this machine
     const repo = tmp();
     spawnSync('git', ['init', '-q'], { cwd: repo });
-    fs.writeFileSync(path.join(repo, '.gitignore'), 'tapsmith-results/\n');
+    fs.writeFileSync(path.join(repo, '.gitignore'), 'tapsmith-results/\ntapsmith-report/\n');
     const project = path.join(repo, 'apps', 'mobile');
     fs.mkdirSync(project, { recursive: true });
     expect(ignoreTestResults(project)).toBe('present');

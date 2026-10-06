@@ -570,7 +570,7 @@ describe('executeInitPlan()', () => {
     }
   });
 
-  it('adds tapsmith-results/ to .gitignore and lists it, warning instead of failing when it cannot (PILOT-562)', () => {
+  it('adds the test output folders to .gitignore and lists it, warning instead of failing when it cannot (PILOT-562)', () => {
     const tmp = makeTmp();
     try {
       fs.writeFileSync(path.join(tmp, '.gitignore'), 'node_modules/\n');
@@ -588,7 +588,7 @@ describe('executeInitPlan()', () => {
       fs.mkdirSync(path.join(tmp, '.gitignore'));
       const blocked = executeInitPlan(resolveInitPlan({ ...args, force: true }, baseEnv, detectStubs, tmp), { ...args, force: true }, tmp);
       expect(blocked.filesCreated).not.toContain('.gitignore');
-      expect(blocked.warnings.join('\n')).toMatch(/Could not add tapsmith-results\/ to \.gitignore/);
+      expect(blocked.warnings.join('\n')).toMatch(/Could not add tapsmith-results\/ and tapsmith-report\/ to \.gitignore/);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

@@ -71,7 +71,9 @@ function displayEnvironment(env: EnvScan, expo: ExpoProject | undefined): void {
 
   if (env.isMacOS) {
     lines.push(env.xcodeVersion ? ok(`Xcode ${env.xcodeVersion}`) : warn('Xcode not found'));
-    if (env.simulators.length > 0) lines.push(ok(`${env.simulators.length} iOS simulators available`));
+    // The count the simulator picker offers (PILOT-562), not every simctl entry.
+    const sims = simulatorChoices(env.simulators).length;
+    if (sims > 0) lines.push(ok(`${sims} iOS simulator${sims === 1 ? '' : 's'} available`));
   }
 
   if (env.avds.length > 0) lines.push(ok(`${env.avds.length} Android AVDs available`));
@@ -1096,10 +1098,10 @@ async function runInitInner(): Promise<void> {
     console.log(`  ${RED}✗${RESET} Failed to write tapsmith.config.ts: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Step 7.5: keep test results out of git (PILOT-562)
+  // Step 7.5: keep test output out of git (PILOT-562)
   const ignored = ignoreTestResultsOrWarn(process.cwd());
-  if (ignored === 'created') console.log(`  ${green('✓')} .gitignore created (ignores tapsmith-results/)`);
-  else if (ignored === 'added') console.log(`  ${green('✓')} tapsmith-results/ added to .gitignore`);
+  if (ignored === 'created') console.log(`  ${green('✓')} .gitignore created (ignores Tapsmith's test output)`);
+  else if (ignored === 'added') console.log(`  ${green('✓')} Tapsmith's test output folders added to .gitignore`);
   else if (typeof ignored === 'object') console.log(`  ${YELLOW}⚠${RESET} ${ignored.warning}`);
 
   // Step 8: Example test
