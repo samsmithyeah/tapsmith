@@ -121,8 +121,8 @@ The wizard walks through these steps:
 4. **iOS** — choose simulators, physical devices or both. For simulators, pick your simulator `.app` the same way and the simulator to boot. For physical devices, the wizard runs a code-signing preflight, offers to build the device agent, and asks for your device-signed (`iphoneos`) `.app`. It reads each build's bundle ID and asks only when it can't (in an Expo project, with `expo.ios.bundleIdentifier` pre-filled). Choosing both writes two projects, `ios` (simulator) and `ios-device` (physical device), so `npx tapsmith test --project ios-device` runs on the device alone (the layout of [Running simulator and device together](./ios-physical-devices.md#running-simulator-and-device-together), with these project names)
 5. **Network capture** — optionally record HTTP/HTTPS traffic; saying yes writes `trace: { mode: 'retain-on-failure' }`, which [`device.route()`](network.md#prerequisites) needs, and lists the per-platform setup still to do
 6. **iOS simulator agent** — if no simulator agent build is found, offers to build it now (~30 s)
-7. **Config** — writes `tapsmith.config.ts` with the app, its `package` and, for iOS, `platform: 'ios'` and the simulator
-8. **Example test** — optionally creates `tests/example.test.ts`
+7. **Config** — writes `tapsmith.config.ts` with the app, its `package` and, for iOS, `platform: 'ios'` and the simulator, plus `testMatch: ['**/*.tapsmith.ts']` (see [Tapsmith tests and your unit tests](#tapsmith-tests-and-your-unit-tests))
+8. **Example test** — optionally creates `tests/example.tapsmith.ts`
 9. **AGENTS.md** — optionally adds a Tapsmith section to `AGENTS.md` for AI coding agents
 10. **Install** — if the project doesn't have Tapsmith yet (you ran `npx tapsmith init` before installing it), offers to install it with your package manager (`npm i -D tapsmith`, `yarn add -D tapsmith`, …), since the config and example test import it. Decline and the command is the first of the next steps
 
@@ -174,7 +174,13 @@ Then prove the whole loop works before writing tests:
 npx tapsmith verify
 ```
 
-`tapsmith verify` runs one real test through `tapsmith test` (starting the daemon, launching the emulator or simulator, installing the app) and reports whether it passed. It runs `tests/example.test.ts` if the wizard created it, or your first test file; with no test files yet it runs a throwaway smoke test and removes it afterwards.
+`tapsmith verify` runs one real test through `tapsmith test` (starting the daemon, launching the emulator or simulator, installing the app) and reports whether it passed. It runs `tests/example.tapsmith.ts` if the wizard created it, or your first test file; with no test files yet it runs a throwaway smoke test and removes it afterwards.
+
+### Tapsmith tests and your unit tests
+
+Jest and Vitest run every `*.test.ts` and `*.spec.ts` file in the project by default, so a Tapsmith test with one of those names would run in your unit-test suite too, and fail there. That's why `tapsmith init` names its example `tests/example.tapsmith.ts` and writes `testMatch: ['**/*.tapsmith.ts']` into the config: name your Tapsmith test files `*.tapsmith.ts` and each suite leaves the other's files alone.
+
+If you'd rather keep `*.test.ts` names (or set up Tapsmith by hand with the default `testMatch`), exclude the Tapsmith test directory from the unit-test runner instead: `testPathIgnorePatterns: ['/node_modules/', '<rootDir>/tests/']` in your Jest config, or `exclude: [...configDefaults.exclude, 'tests/**']` under `test` in your Vitest config (`configDefaults` comes from `vitest/config`). Re-running `tapsmith init` warns about any Tapsmith tests the new config's `testMatch` won't run.
 
 ## Make runs faster (optional, one line)
 
