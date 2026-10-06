@@ -6,6 +6,8 @@ import XCTest
 struct ElementSelector {
     var role: String?
     var name: String?
+    /// getByRole `{ exact: true }`: match `name` case-sensitively and whole (PILOT-549).
+    var nameExact: Bool = false
     var text: String?
     var textContains: String?
     var contentDesc: String?

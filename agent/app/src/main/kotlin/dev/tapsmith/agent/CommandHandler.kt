@@ -550,6 +550,8 @@ class CommandHandler(
         val source = if (roleObj is JSONObject) roleObj else params
         val role = source.optString("role", null)?.ifEmpty { null }
         val name = source.optString("name", null)?.ifEmpty { null }
+        // getByRole `{ exact: true }` rides inside the role object (PILOT-549).
+        val nameExact = roleObj is JSONObject && roleObj.optBoolean("exact", false)
 
         // Handle "resourceId" (sent by daemon) or "id" (legacy)
         val resourceId = params.optString("resourceId", null) ?: params.optString("id", null)
@@ -557,6 +559,7 @@ class CommandHandler(
         return ElementSelector(
             role = role,
             name = name,
+            nameExact = nameExact,
             text = params.optString("text", null),
             textContains = params.optString("textContains", null),
             contentDesc = params.optString("contentDesc", null),
