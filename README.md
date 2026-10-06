@@ -46,8 +46,10 @@ The TypeScript SDK communicates with a Rust daemon over gRPC. The daemon manages
 ### 1. Install
 
 ```bash
-npm install tapsmith
+npm install -D tapsmith@beta
 ```
+
+Tapsmith 0.6 is in beta, published under npm's `beta` tag. Until it is released, a plain `npm install tapsmith` installs the previous stable release (0.5).
 
 ### 2. Build your app and set up
 
