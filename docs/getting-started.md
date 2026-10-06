@@ -2,6 +2,8 @@
 
 This guide walks you through installing Tapsmith, writing your first test, and running it against an Android or iOS device/simulator.
 
+> **Tapsmith requires Node.js 22 or newer.** Check with `node --version` before you install. On older Node, npm can install an old Tapsmith release whose commands don't match this guide (or fail with `No matching version found`).
+
 > **Setting up with an AI coding agent?** See [Using Tapsmith with AI coding agents](agents.md) for the non-interactive setup loop (`doctor --json` → `init --yes` → `verify --json`).
 
 ## Prerequisites

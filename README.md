@@ -45,6 +45,8 @@ The TypeScript SDK communicates with a Rust daemon over gRPC. The daemon manages
 
 ### 1. Install
 
+Tapsmith requires **Node.js 22 or newer** — check with `node --version` first. On older Node, npm can install an old Tapsmith release whose commands don't match these docs, or none at all.
+
 ```bash
 npm install -D tapsmith@beta
 ```
