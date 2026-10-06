@@ -64,6 +64,7 @@ import { findDaemonBin } from './daemon-bin.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary } from './daemon-start.js';
 import { splitHeadline } from './error-detail.js';
 import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage, pinnedDeviceUnusableMessage, waitForPinnedDeviceAuthorization } from './device-advice.js';
+import { androidToolchainBlocker, assertAdbForEmulatorLaunch, iosToolchainBlocker, toolchainBlocker } from './toolchain.js';
 import {
   createUiLaunchSteps,
   UiLaunchProgress,
@@ -632,7 +633,7 @@ async function setupSequentialDeviceClaimed(
     progress?.fail('primary-device', 'no online device found');
     // Devices that are there but held by other sessions are named: the user
     // stops one, rather than looking for a device problem they do not have.
-    throw new Error(noOnlineDeviceMessage(cfg, listAdbDevices()) + heldDevicesNote(withoutHeldDevices(listConnectedDeviceSerials()).held));
+    throw new Error(noOnlineDeviceMessage(cfg, listAdbDevices(), androidToolchainBlocker()) + heldDevicesNote(withoutHeldDevices(listConnectedDeviceSerials()).held));
   }
 
   cfg.device = target.selectedSerial;
@@ -1017,7 +1018,7 @@ async function provisionGroupMemberDevices(
     throw new Error(
       `use.devices asks for ${group.length} device(s) but only ${pool.length + pinned.length + 1} could be provisioned `
       + `(${[primary, ...pinned, ...pool].filter(Boolean).join(', ')}). `
-      + moreDevicesAdvice(cfg),
+      + moreDevicesAdvice(cfg, toolchainBlocker(cfg.platform)),
     );
   }
   return { serials, launched: provision.launched, fresh: provision.freshSerials };
@@ -1218,6 +1219,7 @@ async function ensureSequentialTargetDevice(
     return { selectedSerial: undefined, launched: [] };
   }
 
+  assertAdbForEmulatorLaunch();
   progress?.update('primary-device', { state: 'running', detail: 'launching Android emulator' });
   const provision = await provisionEmulators({
     existingSerials: [],
@@ -1352,6 +1354,7 @@ async function provisionMultiWorkerDevices(
     serials = [config.device!, ...pinned, ...others].filter(Boolean);
 
     if (serials.length < wanted && config.launchEmulators) {
+      assertAdbForEmulatorLaunch();
       const provision = await provisionEmulators({
         existingSerials: serials,
         occupiedSerials: allConnected,
@@ -1623,6 +1626,7 @@ async function provisionDevicesForBucketUnclaimed(
     return { serials, launched: [], reusedSimulatorCount: 0 };
   }
 
+  assertAdbForEmulatorLaunch();
   const provision = await provisionEmulators({
     existingSerials: serials,
     occupiedSerials: allConnected,
@@ -1726,9 +1730,12 @@ async function provisionPerProjectDevices(
     const provisioned = await provisionDevicesForBucket(bucketEffective, desiredDevices, sink, snapshot?.group);
 
     if (provisioned.serials.length === 0) {
+      const iosBucketBlocker = bucketEffective.platform === 'ios' ? iosToolchainBlocker() : undefined;
       throw new Error(
         `Failed to provision any devices for bucket "${signature.split('|').slice(0, 2).join(' ')}".`
-        + (bucketEffective.platform === 'ios' ? '' : ` ${attachedDeviceAdvice(bucketEffective, listAdbDevices())}`)
+        + (bucketEffective.platform === 'ios'
+          ? (iosBucketBlocker ? ` ${iosBucketBlocker}.` : '')
+          : ` ${attachedDeviceAdvice(bucketEffective, listAdbDevices(), androidToolchainBlocker())}`)
         // Devices other sessions hold are named, not left to read as missing.
         + (bucketEffective.platform === 'ios' ? '' : heldDevicesNote(withoutHeldDevices(listConnectedDeviceSerials()).held)),
       );

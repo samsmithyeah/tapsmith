@@ -16,6 +16,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { withFileLockSync } from './file-lock.js';
+import { iosToolchainBlocker } from './toolchain.js';
 import { DeviceClaimedError, claimDevice, currentSession, devicesHeldElsewhere, withoutHeldDevices } from './device-claims.js';
 
 export interface SimulatorInfo {
@@ -36,6 +37,9 @@ export function listSimulators(): SimulatorInfo[] {
     const output = execFileSync('xcrun', ['simctl', 'list', 'devices', '--json'], {
       encoding: 'utf-8',
       timeout: 30_000,
+      // A failure is reported as "no simulators" by the caller; xcrun's own
+      // "unable to find utility" lines would only repeat on every retry.
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     const parsed = JSON.parse(output) as {
@@ -430,6 +434,10 @@ export function provisionSimulator(
     sim = findSimulator(simulatorName, held);
   }
   if (!sim) {
+    // With only the command-line tools (or nothing), simctl does not exist:
+    // "run xcrun simctl" would fail too (PILOT-558).
+    const noXcode = process.platform === 'darwin' ? iosToolchainBlocker() : undefined;
+    if (noXcode) throw new Error(`${noXcode}.`);
     throw new Error(
       `No iOS simulator found matching '${simulatorName}'. ` +
         `Run 'xcrun simctl list devices' to see available simulators.`,

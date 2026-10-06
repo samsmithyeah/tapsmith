@@ -349,6 +349,47 @@ describe('doctor platform gating (PILOT-263 item 6)', () => {
     expect(code).toBe(0);
   });
 
+  // A machine that cannot run a single test must not pass (PILOT-558).
+  it('with no config, a Mac with neither adb nor Xcode fails, and the summary says why', async () => {
+    const { code, json } = await doctorJson();
+    expect(code).toBe(1);
+    expect(json.ok).toBe(false);
+    expect(check(json, 'no-platform')).toMatchObject({
+      status: 'fail',
+      label: expect.stringContaining('Neither Android nor iOS tests can run on this machine'),
+      fix: expect.stringMatching(/Install Android Studio[\s\S]*Install Xcode/),
+    });
+    // The per-platform rows keep their install fixes: no SDK means install one.
+    expect(check(json, 'adb')).toMatchObject({ status: 'warn', fix: expect.stringContaining('Install Android Studio') });
+    expect(check(json, 'xcode')).toMatchObject({ status: 'warn', fix: expect.stringContaining('xcode-select -s') });
+    const { code: textCode, text } = await doctorText();
+    expect(textCode).toBe(1);
+    expect(text).toMatch(/checks? passed, \d+ warnings, 1 error — no platform can run tests on this machine/);
+  });
+
+  it('with no config, Linux without adb fails: iOS cannot run there either', async () => {
+    setPlatform('linux');
+    const { code, json } = await doctorJson();
+    expect(code).toBe(1);
+    expect(check(json, 'no-platform')).toMatchObject({
+      status: 'fail',
+      label: expect.stringContaining('Android tests cannot run on this machine, and iOS testing needs macOS'),
+      fix: expect.stringContaining('Install Android Studio'),
+    });
+    expect(check(json, 'no-platform')?.fix).not.toContain('Xcode');
+  });
+
+  it('names the platform-tools directory when the SDK has adb but PATH does not', async () => {
+    const sdk = path.join(home, 'Library', 'Android', 'sdk');
+    fs.mkdirSync(path.join(sdk, 'platform-tools'), { recursive: true });
+    fs.writeFileSync(path.join(sdk, 'platform-tools', 'adb'), '');
+    withXcode();
+    const { code, json } = await doctorJson();
+    expect(check(json, 'adb')?.fix).toContain(`adb is in ${path.join(sdk, 'platform-tools')} but not on PATH`);
+    expect(ids(json)).not.toContain('no-platform');
+    expect(code).toBe(0);
+  });
+
   it('with no config on Linux, iOS is skipped with a note', async () => {
     setPlatform('linux');
     withAdb();
