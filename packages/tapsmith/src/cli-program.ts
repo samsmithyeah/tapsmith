@@ -587,6 +587,21 @@ export function printsBanner(command: string, opts: Record<string, unknown>): bo
   return opts.json !== true && BANNER_COMMANDS.has(command);
 }
 
+/** Set once a process has printed the banner; inherited by the CLI processes it spawns. */
+const BANNER_PRINTED_ENV = 'TAPSMITH_BANNER_PRINTED';
+
+/**
+ * Whether this process should print the banner — false when it, or the CLI
+ * process that spawned it, already has — marking it printed. `verify` runs
+ * `tapsmith test` as a child, which would otherwise print it a second time
+ * (PILOT-540).
+ */
+export function claimBanner(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env[BANNER_PRINTED_ENV] === '1') return false;
+  env[BANNER_PRINTED_ENV] = '1';
+  return true;
+}
+
 // ─── Pre-parse ───
 
 const ROOT_FLAGS = new Set(['-h', '--help', '-v', '--version']);

@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import * as fs from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 // `defineConfig` merges DEFAULT_CONFIG, whose `rootDir` is the *loading*
 // process's cwd, so `raw.rootDir ?? root` always kept cwd and silently
@@ -324,6 +325,75 @@ describe('loadConfig rootDir anchoring', () => {
         const out = load();
         expect(out.error).not.toContain("isn't installed");
         expect(out.code).toBeUndefined();
+      });
+    });
+
+    // Node warns about the package's module type when it imports an ESM-syntax
+    // config natively: MODULE_TYPELESS_PACKAGE_JSON in a package without
+    // "type", "Failed to load the ES module" (before the tsx retry) in a
+    // "type": "commonjs" one. Both tell the user to add "type": "module" —
+    // which can break an Expo/RN app — for a config Tapsmith loads either way.
+    // The CLI's shebang flag hid only the first, and only when the shebang
+    // ran (not for `verify`'s child, yarn, or `node dist/cli.js`) (PILOT-540).
+    describe('Node module-type warnings', () => {
+      function loadWithStderr(): { stderr: string; out: { platform?: string; retries?: number } } {
+        const script = `const { loadConfig } = await import(${JSON.stringify(configModule)});\n`
+          + `const c = await loadConfig(${JSON.stringify(root)});\n`
+          + 'process.stdout.write(JSON.stringify({ platform: c.platform, retries: c.retries }));\n';
+        const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: root, encoding: 'utf-8' });
+        expect(child.status, child.stderr).toBe(0);
+        return { stderr: child.stderr, out: JSON.parse(child.stdout) as { platform?: string; retries?: number } };
+      }
+
+      const PACKAGES = {
+        'without "type"': '{ "name": "app" }\n',
+        '"type": "commonjs"': '{ "name": "app", "type": "commonjs" }\n',
+        '"type": "module"': '{ "name": "app", "type": "module" }\n',
+      };
+
+      it.each(Object.entries(PACKAGES))('are not printed for a TypeScript config in a package %s', (_type, pkg) => {
+        fs.writeFileSync(path.join(root, 'package.json'), pkg, 'utf-8');
+        // A helper the config imports is part of the same load.
+        fs.writeFileSync(path.join(root, 'retries.ts'), 'export const retries: number = 2;\n', 'utf-8');
+        fs.writeFileSync(
+          path.join(root, 'tapsmith.config.ts'),
+          'import { retries } from "./retries.ts";\nconst platform: string = "ios";\nexport default { platform, retries };\n',
+          'utf-8',
+        );
+        const { stderr, out } = loadWithStderr();
+        expect(out).toEqual({ platform: 'ios', retries: 2 });
+        expect(stderr).toBe('');
+      });
+
+      it('still prints any other warning raised while the config loads', () => {
+        fs.writeFileSync(path.join(root, 'package.json'), PACKAGES['without "type"'], 'utf-8');
+        fs.writeFileSync(
+          path.join(root, 'tapsmith.config.ts'),
+          'process.emitWarning("the config\'s own warning");\nexport default { platform: "ios" };\n',
+          'utf-8',
+        );
+        const { stderr } = loadWithStderr();
+        expect(stderr).toContain("Warning: the config's own warning");
+        expect(stderr).not.toContain('MODULE_TYPELESS_PACKAGE_JSON');
+      });
+
+      it('are printed again for imports after the load, including overlapping loads', () => {
+        fs.writeFileSync(path.join(root, 'package.json'), PACKAGES['without "type"'], 'utf-8');
+        fs.writeFileSync(path.join(root, 'tapsmith.config.ts'), 'export default { platform: "ios" };\n', 'utf-8');
+        // Another typeless package, so Node warns afresh (once per package.json).
+        const other = path.join(root, 'other');
+        fs.mkdirSync(other);
+        fs.writeFileSync(path.join(other, 'package.json'), '{ "name": "other" }\n', 'utf-8');
+        fs.writeFileSync(path.join(other, 'later.ts'), 'export const later: number = 1;\n', 'utf-8');
+        const script = `const { loadConfig } = await import(${JSON.stringify(configModule)});\n`
+          + `await Promise.all([loadConfig(${JSON.stringify(root)}), loadConfig(${JSON.stringify(root)})]);\n`
+          + `await import(${JSON.stringify(pathToFileURL(path.join(other, 'later.ts')).href)});\n`
+          + 'await new Promise((resolve) => setImmediate(resolve));\n';
+        const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: root, encoding: 'utf-8' });
+        expect(child.status, child.stderr).toBe(0);
+        expect(child.stderr).toContain('MODULE_TYPELESS_PACKAGE_JSON');
+        expect(child.stderr).toContain(path.join(other, 'later.ts'));
+        expect(child.stderr).not.toContain('tapsmith.config.ts');
       });
     });
 
