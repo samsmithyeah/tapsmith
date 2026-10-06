@@ -180,7 +180,7 @@ npx tapsmith verify
 
 Jest and Vitest run every `*.test.ts` and `*.spec.ts` file in the project by default, so a Tapsmith test with one of those names would run in your unit-test suite too, and fail there. That's why `tapsmith init` names its example `tests/example.tapsmith.ts` and writes `testMatch: ['**/*.tapsmith.ts']` into the config: name your Tapsmith test files `*.tapsmith.ts` and each suite leaves the other's files alone. Keep them out of `__tests__` folders, though: Jest runs every file in one, whatever its name.
 
-If you'd rather keep `*.test.ts` names (or set up Tapsmith by hand with the default `testMatch`), exclude the Tapsmith test directory from the unit-test runner instead: `testPathIgnorePatterns: ['/node_modules/', '<rootDir>/tests/']` in your Jest config, or `exclude: [...configDefaults.exclude, 'tests/**']` under `test` in your Vitest config (`configDefaults` comes from `vitest/config`). Re-running `tapsmith init` warns about any Tapsmith tests the new config's `testMatch` won't run.
+If you'd rather keep `*.test.ts` names, set `testMatch` in `tapsmith.config.ts` to `['tests/**/*.test.ts']` (or remove it to use the default, which also matches `*.test.ts` files outside `tests/`), and exclude the Tapsmith test directory from the unit-test runner: `testPathIgnorePatterns: ['/node_modules/', '<rootDir>/tests/']` in your Jest config, or `exclude: [...configDefaults.exclude, 'tests/**']` under `test` in your Vitest config (`configDefaults` comes from `vitest/config`). Re-running `tapsmith init` warns about any Tapsmith tests the new config's `testMatch` won't run.
 
 ## Make runs faster (optional, one line)
 
