@@ -22,7 +22,7 @@
 // swallowing it would turn a loud crash into a silent hang.
 //
 // Outside `runTestFile` nothing changes: the CLI's fatal handler (which asks
-// `runnerOwnsUnhandledErrors()` first) still tears a crashed run down cleanly.
+// `runnerClaimsUnhandledRejection()` first) still tears a crashed run down cleanly.
 
 import { currentAttemptToken, isTestEndedError, type AttemptToken } from './attempt-fence.js';
 
@@ -51,42 +51,63 @@ function describeValue(value: unknown): string {
   }
 }
 
-function record(reason: unknown): void {
-  // A device call fenced off from a test that already ended: that test has
-  // already failed (it timed out), and this says nothing new.
-  if (isTestEndedError(reason)) return;
-  const err = toError(reason);
-  // Node runs this listener in the async context of the promise that
-  // rejected, so a leftover from a test
-  // body that has already ended — an action it forgot to await, failing
-  // late — is told apart from an error of the test running now.
+/**
+ * Whether the calling async context is a test body that has already ended.
+ * Node runs `unhandledRejection` listeners in the async context of the
+ * promise that rejected, so for a rejection this tells a leftover of an
+ * ended test — an action it forgot to await, failing late — from an error
+ * of whatever is running now.
+ */
+function isLeftoverOfEndedTest(): boolean {
   const origin = currentAttemptToken();
-  const fromEndedTest = origin?.closed === true && origin !== activeScope?.attempt;
-  if (activeScope && !fromEndedTest) {
-    activeScope.errors.push(err);
-    return;
-  }
-  const where = activeFile ? ` in ${activeFile}` : '';
-  const what = fromEndedTest
-    ? `from a test that has already ended${where} (a call it did not await?)`
-    : `outside a test${where}`;
+  return origin?.closed === true && origin !== activeScope?.attempt;
+}
+
+function report(err: Error, what: string): void {
   process.stderr.write(
     `[tapsmith] Unhandled rejection ${what}, not attributed to any test:\n`
     + `${err.stack ?? err.message}\n`,
   );
 }
 
-const onUnhandledRejection = (reason: unknown): void => record(reason);
+function onUnhandledRejection(reason: unknown): void {
+  // A device call fenced off from a test that already ended: that test has
+  // already failed (it timed out), and this says nothing new.
+  if (isTestEndedError(reason)) return;
+  const fromEndedTest = isLeftoverOfEndedTest();
+  if (ownerCount === 0 && !fromEndedTest) {
+    // Not a test's: what happens without this module. Another listener (the
+    // CLI's fatal teardown) handles it; with none, crash as Node would.
+    if (process.listenerCount('unhandledRejection') === 1) throw reason;
+    return;
+  }
+  const err = toError(reason);
+  if (activeScope && !fromEndedTest) {
+    activeScope.errors.push(err);
+    return;
+  }
+  const where = activeFile ? ` in ${activeFile}` : '';
+  report(err, fromEndedTest
+    ? `from a test that has already ended${where} (a call it did not await?)`
+    : `outside a test${where}`);
+}
+
+let listenerInstalled = false;
 
 /**
- * Take ownership of `unhandledRejection` for the length
- * of a test file. Returns the release function; nested ownership is counted,
- * so the listeners come off only when the last owner releases.
+ * Take ownership of `unhandledRejection` for the length of a test file.
+ * Returns the release function; nested ownership is counted.
+ *
+ * The listener itself stays installed once a file has run: an action the
+ * file's last test forgot to await can fail after the file ends, and must be
+ * reported as that test's leftover rather than crash the process.
  */
 export function ownUnhandledErrors(filePath: string | undefined): () => void {
-  if (ownerCount++ === 0) {
+  if (!listenerInstalled) {
+    listenerInstalled = true;
     process.on('unhandledRejection', onUnhandledRejection);
   }
+  ownerCount++;
   const previousFile = activeFile;
   activeFile = filePath;
   let released = false;
@@ -94,19 +115,18 @@ export function ownUnhandledErrors(filePath: string | undefined): () => void {
     if (released) return;
     released = true;
     activeFile = previousFile;
-    if (--ownerCount === 0) {
-      activeScope = undefined;
-      process.removeListener('unhandledRejection', onUnhandledRejection);
-    }
+    if (--ownerCount === 0) activeScope = undefined;
   };
 }
 
 /**
- * True while a test file is running in this process: its unhandled errors are
- * the runner's to attribute, so a process-wide fatal handler must leave them be.
+ * True when the runner reports this rejection itself — it happened while a
+ * test file ran, or it is a leftover of a test that has already ended — so a
+ * process-wide fatal handler must leave it be. Call it from an
+ * `unhandledRejection` listener (it reads the rejecting promise's context).
  */
-export function runnerOwnsUnhandledErrors(): boolean {
-  return ownerCount > 0;
+export function runnerClaimsUnhandledRejection(): boolean {
+  return ownerCount > 0 || isLeftoverOfEndedTest();
 }
 
 /**

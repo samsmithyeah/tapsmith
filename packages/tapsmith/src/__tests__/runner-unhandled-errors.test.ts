@@ -10,7 +10,7 @@ import {
   type RunOptions,
 } from '../runner.js';
 import type { TapsmithConfig } from '../config.js';
-import { runnerOwnsUnhandledErrors } from '../unhandled-errors.js';
+import { runnerClaimsUnhandledRejection } from '../unhandled-errors.js';
 import { Device } from '../device.js';
 import type { TapsmithGrpcClient } from '../grpc-client.js';
 import type { NetworkRouteManager } from '../network.js';
@@ -57,10 +57,12 @@ const SETTLE = 'await new Promise((r) => setTimeout(r, 10));';
 beforeEach(() => {
   tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-unhandled-')));
   // Vitest's own listeners would report the deliberate rejections below as
-  // errors of this test file; the runner's are what is under test.
-  savedRejectionListeners = process.listeners('unhandledRejection');
+  // errors of this test file; the runner's are what is under test (it stays
+  // installed once a file has run, so it is left in place).
+  savedRejectionListeners = process.listeners('unhandledRejection')
+    .filter((l) => l.name !== 'onUnhandledRejection');
   savedExceptionListeners = process.listeners('uncaughtException');
-  process.removeAllListeners('unhandledRejection');
+  for (const l of savedRejectionListeners) process.removeListener('unhandledRejection', l);
   process.removeAllListeners('uncaughtException');
 });
 
@@ -238,23 +240,21 @@ describe('runTestFile — unhandled errors during a test (PILOT-543)', () => {
     expect(result.status).toBe('passed');
   });
 
-  it('owns unhandled errors only while a file runs', async () => {
+  it('claims unhandled rejections only while a file runs', async () => {
     const filePath = writeFile('h.test.mjs', `
       test('observes ownership', async () => {
-        if (!globalThis.__pilot543Owned()) throw new Error('runner did not own unhandled errors during the test');
+        if (!globalThis.__pilot543Claims()) throw new Error('runner did not claim rejections during the test');
       });
     `);
-    (globalThis as Record<string, unknown>).__pilot543Owned = runnerOwnsUnhandledErrors;
+    (globalThis as Record<string, unknown>).__pilot543Claims = runnerClaimsUnhandledRejection;
     try {
       const [result] = collectResults(await runTestFile(filePath, makeOpts()));
       expect(result.status).toBe('passed');
     } finally {
-      delete (globalThis as Record<string, unknown>).__pilot543Owned;
+      delete (globalThis as Record<string, unknown>).__pilot543Claims;
     }
 
-    expect(runnerOwnsUnhandledErrors()).toBe(false);
-    expect(process.listenerCount('unhandledRejection')).toBe(0);
-    expect(process.listenerCount('uncaughtException')).toBe(0);
+    expect(runnerClaimsUnhandledRejection()).toBe(false);
   });
 
   it('releases ownership when the file fails to load', async () => {
@@ -263,7 +263,41 @@ describe('runTestFile — unhandled errors during a test (PILOT-543)', () => {
     const [result] = collectResults(await runTestFile(filePath, makeOpts()));
 
     expect(result.fileLevelFailure).toBe(true);
-    expect(runnerOwnsUnhandledErrors()).toBe(false);
+    expect(runnerClaimsUnhandledRejection()).toBe(false);
+  });
+
+  it('reports a leftover of the file\'s last test that fails after the file ended, without crashing', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const filePath = writeFile('m.test.mjs', `
+      test('last test forgets to await', async () => {
+        new Promise((_, reject) => setTimeout(() => reject(new Error('failed after the file ended')), 30));
+      });
+    `);
+
+    const [result] = collectResults(await runTestFile(filePath, makeOpts()));
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(result.status).toBe('passed');
+    const printed = stderr.mock.calls.map((c) => String(c[0])).join('');
+    expect(printed).toContain('Unhandled rejection from a test that has already ended');
+    expect(printed).toContain('failed after the file ended');
+  });
+
+  it('leaves a rejection outside any file to the other listeners', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const other = vi.fn();
+    process.on('unhandledRejection', other);
+    try {
+      // Make sure the runner's listener is installed.
+      await runTestFile(writeFile('n.test.mjs', `test('t', async () => {});`), makeOpts());
+      Promise.reject(new Error('not a test\'s'));
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(other).toHaveBeenCalledTimes(1);
+      expect(stderr.mock.calls.map((c) => String(c[0])).join('')).not.toContain('not a test');
+    } finally {
+      process.removeListener('unhandledRejection', other);
+    }
   });
 });
 
