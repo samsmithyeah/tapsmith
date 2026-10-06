@@ -70,6 +70,19 @@ enum TextMatch {
         return false
     }
 
+    /// Whether `text` matches the accessible-name `query` the way Playwright's
+    /// getByRole `name` does (PILOT-549): by default a case-insensitive
+    /// substring; with `exact`, case-sensitive equality — or, as iOS joins
+    /// child text into one label with ", ", one whole child of that label.
+    /// Whitespace is normalized either way.
+    static func nameMatches(_ text: String, _ query: String, exact: Bool) -> Bool {
+        if exact {
+            return equals(text, query) || containsChildText(text, childText: query)
+        }
+        let needle = normalize(query).lowercased()
+        return needle.isEmpty || normalize(text).lowercased().contains(needle)
+    }
+
     /// ICU full-match pattern: the label equals `query` after normalizing both.
     static func exactPattern(_ query: String) -> String {
         "\(wsClass)*\(words(query))\(wsClass)*"
@@ -93,5 +106,35 @@ enum TextMatch {
             .split(separator: " ")
             .map { NSRegularExpression.escapedPattern(for: String($0)) }
             .joined(separator: "\(wsClass)+")
+    }
+}
+
+/// One snapshot node, as the live XCUIElement re-resolution query sees it.
+struct QueryNode {
+    let typeRaw: UInt
+    let label: String
+    let identifier: String
+}
+
+/// Positional bookkeeping for re-resolving a role+name snapshot match through
+/// a live XCUIElement query (PILOT-549). That query finds the match again by
+/// its exact label (and identifier, when it has one), scoped to its element
+/// type when the type is specific. Its index must therefore count every node
+/// of the app's tree that the same query returns — other roles, other
+/// scopes, unmatched same-label nodes included — not just the matches.
+enum QueryIndex {
+    /// The index of `nodes[ordinal]` within the live query's results, where
+    /// `nodes` is the app's descendants in pre-order (XCUIElementQuery order)
+    /// and `scopeTypeRaw` is the query's element type, or nil for any type.
+    static func liveIndex(of ordinal: Int, in nodes: [QueryNode], scopeTypeRaw: UInt?) -> Int {
+        let target = nodes[ordinal]
+        var count = 0
+        for node in nodes[..<ordinal]
+        where node.label == target.label
+            && (target.identifier.isEmpty || node.identifier == target.identifier)
+            && (scopeTypeRaw == nil || node.typeRaw == scopeTypeRaw) {
+            count += 1
+        }
+        return count
     }
 }

@@ -12,6 +12,7 @@ import {
   _label,
   withParent,
   selectorToProto,
+  formatSelector,
 } from '../selectors.js';
 
 // ─── Internal selector builders ───
@@ -224,5 +225,46 @@ describe('selectorToProto()', () => {
 
   it('handles empty string values', () => {
     expect(selectorToProto(_text(''))).toEqual({ text: '' });
+  });
+});
+
+describe('getByRole name matching options (PILOT-549)', () => {
+  it('_role() records exact only when it is true', () => {
+    expect(_role('button', { name: 'Sign In', exact: true }).kind).toEqual({
+      type: 'role', value: { role: 'button', name: 'Sign In', exact: true },
+    });
+    expect(_role('button', { name: 'Sign In', exact: false }).kind).toEqual({
+      type: 'role', value: { role: 'button', name: 'Sign In' },
+    });
+  });
+
+  it('serializes exact into the role message, and omits it by default', () => {
+    expect(selectorToProto(_role('button', { name: 'Sign In', exact: true }))).toEqual({
+      role: { role: 'button', name: 'Sign In', exact: true },
+    });
+    expect(selectorToProto(_role('button', { name: 'Sign In' }))).toEqual({
+      role: { role: 'button', name: 'Sign In' },
+    });
+  });
+
+  it('ignores exact without a name, as Playwright does', () => {
+    expect(selectorToProto(_role('button', { exact: true }))).toEqual({ role: { role: 'button', name: '' } });
+  });
+
+  it('formats the locator as valid code', () => {
+    expect(formatSelector(_role('button', { name: 'explor' }))).toBe('getByRole("button", { name: "explor" })');
+    expect(formatSelector(_role('button', { name: 'Sign In', exact: true })))
+      .toBe('getByRole("button", { name: "Sign In", exact: true })');
+    expect(formatSelector(_role('button'))).toBe('getByRole("button")');
+  });
+
+  it('formats state filters too, so the locator can be pasted back', () => {
+    expect(formatSelector(_role('button', { name: 'Item 3', exact: true, selected: true })))
+      .toBe('getByRole("button", { name: "Item 3", exact: true, selected: true })');
+    expect(formatSelector(_role('switch', { checked: false }))).toBe('getByRole("switch", { checked: false })');
+  });
+
+  it('escapes quotes in the formatted name', () => {
+    expect(formatSelector(_role('button', { name: 'Say "hi"' }))).toBe('getByRole("button", { name: "Say \\"hi\\"" })');
   });
 });
