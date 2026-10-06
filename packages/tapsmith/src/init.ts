@@ -813,12 +813,15 @@ const TAPSMITH_IMPORT = new RegExp(`${IMPORT_PREFIX}['"]tapsmith(?:/[^'"]*)?['"]
 const RELATIVE_IMPORT = new RegExp(`${IMPORT_PREFIX}['"](\\.{1,2}/[^'"]+)['"]`, 'g');
 
 /**
- * A test or hook body that destructures Tapsmith's `device` fixture:
- * `async ({ device }) =>`, `async ({ device, page }) =>`. Jest and Vitest
- * callbacks take no fixture object, so this marks a Tapsmith test whatever
- * module path (an alias, a chain of fixture modules) brings `tapsmith` in.
+ * A test or hook body that destructures Tapsmith's `device` fixture
+ * (`async ({ device }) =>`) and drives it through Tapsmith's device API
+ * (`device.getByRole(`, `device.tap(`, …). Both together mark a Tapsmith test
+ * whatever module path (an alias, a chain of fixture modules) brings
+ * `tapsmith` in; a Jest table test or factory that destructures a `device`
+ * key does not call those methods on it.
  */
 const DEVICE_FIXTURE = /\(\s*\{[^}]*\bdevice\b[^}]*\}\s*\)\s*=>/;
+const DEVICE_API = /\bdevice\.(?:getBy\w+|locator|element|tap|swipe|pressKey|launchApp|restartApp|resetApp|terminateApp|openDeepLink|route|waitFor\w*|takeScreenshot|unlock|hideKeyboard)\s*\(/;
 
 function readText(file: string): string | undefined {
   try {
@@ -838,12 +841,12 @@ function resolveRelativeImport(fromFile: string, specifier: string): string | un
 /**
  * Whether a test file is a Tapsmith test: it imports `tapsmith`, directly or
  * through a local module one import away (the fixtures module AGENTS.md
- * recommends), or it uses the `device` fixture.
+ * recommends), or it drives the `device` fixture.
  */
 function importsTapsmith(file: string): boolean {
   const source = readText(file);
   if (source === undefined) return false;
-  if (TAPSMITH_IMPORT.test(source) || DEVICE_FIXTURE.test(source)) return true;
+  if (TAPSMITH_IMPORT.test(source) || (DEVICE_FIXTURE.test(source) && DEVICE_API.test(source))) return true;
   for (const [, specifier] of source.matchAll(RELATIVE_IMPORT)) {
     const target = resolveRelativeImport(file, specifier);
     const imported = target ? readText(target) : undefined;

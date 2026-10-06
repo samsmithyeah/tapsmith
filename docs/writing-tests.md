@@ -483,9 +483,9 @@ e2e/
     checkout.screen.ts
     settings.screen.ts
   tests/
-    login.test.ts
-    checkout.test.ts
-    settings.test.ts
+    login.tapsmith.ts
+    checkout.tapsmith.ts
+    settings.tapsmith.ts
   utils/
     test-data.ts
   tapsmith.config.ts

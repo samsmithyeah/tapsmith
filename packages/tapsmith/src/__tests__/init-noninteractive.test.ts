@@ -708,16 +708,21 @@ describe('executeInitPlan()', () => {
       fs.writeFileSync(path.join(tmp, 'e2e', 'alias.test.ts'),
         "import { test, expect } from '@/e2e/fixtures'\n\ntest('signs in', async ({ device }) => {\n  await device.getByText('Hi').tap()\n})\n");
       fs.writeFileSync(path.join(tmp, 'e2e', 'hook.spec.ts'),
-        "import { test } from '~/support'\ntest.beforeEach(async ({ device, page }) => {})\n");
-      // A Jest test that merely mentions a device is not one.
+        "import { test } from '~/support'\ntest.beforeEach(async ({ device, page }) => {\n  await device.restartApp()\n})\n");
+      // A Jest test that merely mentions a device is not one, even one that
+      // destructures a `device` key in a table test or a factory.
       fs.writeFileSync(path.join(tmp, 'e2e', 'unit.test.ts'),
         "test('formats a device name', () => { const device = { name: 'x' }; expect(device.name).toBe('x') })\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'table.test.ts'),
+        "it.each([{ device: 'ios' }])('labels $device', ({ device }) => { expect(label(device)).toBe(device.toUpperCase()) })\n"
+        + "const row = ({ device }) => device.name\n");
       const args = initArgs({ yes: true, platform: 'android' });
       const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
       const warning = executeInitPlan(plan, args, tmp).warnings.find((w) => w.includes('.tapsmith.ts'));
       expect(warning).toContain('e2e/alias.test.ts');
       expect(warning).toContain('e2e/hook.spec.ts');
       expect(warning).not.toContain('unit.test.ts');
+      expect(warning).not.toContain('table.test.ts');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
