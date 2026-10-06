@@ -216,6 +216,7 @@ class WaitEngine(private val device: UiDevice) {
         val parts = mutableListOf<String>()
         selector.role?.let { parts.add("role=$it") }
         selector.name?.let { parts.add("name=$it") }
+        if (selector.name != null && selector.nameExact) parts.add("exact=true")
         selector.text?.let { parts.add("text=$it") }
         selector.textContains?.let { parts.add("textContains=$it") }
         selector.contentDesc?.let { parts.add("contentDesc=$it") }

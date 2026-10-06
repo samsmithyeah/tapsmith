@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as os from 'node:os';
 import type { EnvScan } from '../env-scan.js';
+import type { ExpoProject } from '../init-detect.js';
 
 // ─── Mocks ───
 
@@ -307,5 +308,58 @@ describe('configureIos() build detection (PILOT-513)', () => {
     expect(ids.length).toBeGreaterThan(0);
     expect(ids[0].initial).toBeUndefined();
     expect(JSON.stringify(questions)).not.toContain('com.example');
+  });
+});
+
+describe('configureIos() on an Expo project (PILOT-557)', () => {
+  const expo: ExpoProject = { iosBundleId: 'com.acme.expo', hasAndroidDir: false, hasIosDir: false, usesTapsmithHooks: false };
+  let logged: string[] = [];
+
+  beforeEach(() => {
+    answers.clear();
+    asked.length = 0;
+    questions.length = 0;
+    bundleIds.clear();
+    simCandidates = [];
+    deviceCandidates = [];
+    logged = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logged.push(args.join(' ')); });
+  });
+
+  it('with no simulator build found, gives the Expo prebuild + xcodebuild path and the hooks flag', async () => {
+    script('simulators', [[/bundle identifier/, 'com.acme.expo']]);
+
+    await configureIos(env, expo);
+
+    const out = logged.join('\n');
+    expect(out).toContain('npx expo prebuild --platform ios');
+    expect(out).toContain('-derivedDataPath build');
+    expect(out).toContain('EXPO_PUBLIC_TAPSMITH_HOOKS=1');
+  });
+
+  it('physical devices on a managed project: says to generate ios/ before the iphoneos build', async () => {
+    script('physical', [[/bundle identifier/, 'com.acme.expo']]);
+
+    await configureIos(env, expo);
+
+    expect(logged.join('\n')).toContain('this Expo project has no ios/ yet. Generate it with `npx expo prebuild --platform ios`');
+  });
+
+  it('prefills the bundle id prompt from the app config when the build cannot be read', async () => {
+    script('simulators', [[/bundle identifier/, (q: { initial?: unknown }) => q.initial]]);
+
+    const ios = await configureIos(env, expo);
+
+    expect(questions.find((q) => /bundle identifier/.test(q.message))?.initial).toBe('com.acme.expo');
+    expect(ios.bundleId).toBe('com.acme.expo');
+  });
+
+  it('a bundle id read from the other build is still the prefill over the app config', async () => {
+    bundleIds.set(DEVICE_APP, 'com.acme.device');
+    script('both', [[/bundle identifier/, (q: { initial?: unknown }) => q.initial]]);
+
+    await configureIos(env, expo);
+
+    expect(questions.find((q) => /simulator build's bundle identifier/.test(q.message))?.initial).toBe('com.acme.device');
   });
 });

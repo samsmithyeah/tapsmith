@@ -8,6 +8,7 @@
 
 import {
   type Selector,
+  type RoleLocatorOptions,
   _text,
   _textContains,
   _role,
@@ -410,7 +411,7 @@ export class Device {
   }
 
   /** Locate an element by accessibility role, optionally filtering by name or state. */
-  getByRole(role: string, options?: { name?: string; checked?: boolean; disabled?: boolean; selected?: boolean; expanded?: boolean }): ElementHandle {
+  getByRole(role: string, options?: RoleLocatorOptions): ElementHandle {
     return this._handle(_role(role, options));
   }
 

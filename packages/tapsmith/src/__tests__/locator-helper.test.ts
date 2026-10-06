@@ -54,6 +54,11 @@ describe('parseSelectorToInternal', () => {
     expect(selectorToProto(selector)).toEqual({ role: { role: 'button', name: 'Sign in' } });
   });
 
+  it('maps getByRole { exact: true } to an exact role name (PILOT-549)', () => {
+    const { selector } = parseSelectorToInternal('device.getByRole("button", { name: "Sign In", exact: true })');
+    expect(selectorToProto(selector)).toEqual({ role: { role: 'button', name: 'Sign In', exact: true } });
+  });
+
   it('throws on invalid locator strings', () => {
     expect(() => parseSelectorToInternal('not a locator')).toThrow(/Invalid locator/);
   });
