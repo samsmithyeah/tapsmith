@@ -16,8 +16,7 @@ import {
   preferDebugApk,
   type ExpoProject,
 } from './init-detect.js';
-import { ADB_FIX } from './adb-devices.js';
-import { androidSdkRoots } from './emulator.js';
+import { adbMissingFix } from './toolchain.js';
 import type { InitCommandOptions } from './cli-program.js';
 import { formatJson, jsonError } from './cli-json.js';
 import { avdCaptureSupport, avdCaptureWarning, noAvdsListedMessage, type AvdImageInfo } from './avd-images.js';
@@ -250,21 +249,6 @@ export function androidEmulatorCaptureLine(avd: string | undefined, avdImages: A
   return warning
     ? `  ${YELLOW}⚠${RESET} Android emulator — ${warning}`
     : `  ${green('✓')} Android emulator (${avd}) — works automatically`;
-}
-
-/**
- * The fix for a missing adb: concrete when an SDK where Android Studio puts
- * it (or `$ANDROID_HOME`) has platform-tools that just aren't on PATH.
- */
-function adbMissingFix(): string {
-  const win = process.platform === 'win32';
-  for (const root of androidSdkRoots()) {
-    const platformTools = path.join(root, 'platform-tools');
-    if (!fs.existsSync(path.join(platformTools, win ? 'adb.exe' : 'adb'))) continue;
-    const example = win ? '' : ` (e.g. export PATH="${platformTools}:$PATH" in your shell profile)`;
-    return `adb is in ${platformTools} but not on PATH — add that directory to PATH${example}`;
-  }
-  return ADB_FIX;
 }
 
 /**

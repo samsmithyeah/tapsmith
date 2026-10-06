@@ -255,6 +255,7 @@ describe('runListDevices --json', () => {
         fetchDevices: async () => [],
         enrich: () => ({ physical: [], usbAttached: new Set() }),
         claims: () => new Map(),
+        toolchain: () => ({ android: undefined, ios: undefined }),
         stdout: (t) => { out += t; },
         stderr: (t) => { err += t; },
         ...deps,
@@ -275,6 +276,37 @@ describe('runListDevices --json', () => {
       ready: true, platform: 'android-emu', serial: 'emulator-5554', name: 'Pixel 9', osLabel: 'Android 15', blockers: [], inUseBy: null,
     }]);
     expect(h.err()).toBe('');
+  });
+
+  // With nothing found, the hint must match the machine: no `xcrun simctl
+  // boot` without Xcode, no "start an emulator" without adb (PILOT-558).
+  describe('with no devices', () => {
+    const plainOut = async (toolchain: ReturnType<ListDevicesDeps['toolchain']>): Promise<string> => {
+      const h = capture({ toolchain: () => toolchain });
+      expect(await runListDevices({ json: false }, h.deps)).toBe(0);
+      return h.out().replace(/\x1b\[[0-9;]*m/g, '');
+    };
+
+    it('says how to start a device on each platform when both toolchains are there', async () => {
+      const out = await plainOut({ android: undefined, ios: undefined });
+      expect(out).toContain('No devices detected.');
+      expect(out).toContain('Android: start an emulator, or connect a device with USB debugging enabled.');
+      expect(out).toContain('iOS: boot a simulator (xcrun simctl boot "<name>"), or plug in an iPhone.');
+    });
+
+    it('says what to install when a toolchain is missing, instead of how to use it', async () => {
+      const out = await plainOut({ android: 'ADB is not on PATH: Install Android Studio', ios: 'Xcode is not installed: Install Xcode' });
+      expect(out).toContain('Android: ADB is not on PATH: Install Android Studio.');
+      expect(out).toContain('iOS: Xcode is not installed: Install Xcode.');
+      expect(out).not.toContain('simctl');
+      expect(out).not.toContain('start an emulator');
+    });
+
+    it('--json is still just { devices: [] }', async () => {
+      const h = capture({ toolchain: () => ({ android: 'x', ios: 'y' }) });
+      expect(await runListDevices({ json: true }, h.deps)).toBe(0);
+      expect(JSON.parse(h.out())).toEqual({ devices: [] });
+    });
   });
 
   it('lists an unauthorized phone as not ready, with the fix, instead of "No devices detected"', async () => {

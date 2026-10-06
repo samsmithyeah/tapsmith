@@ -15,40 +15,68 @@ import {
 // (PILOT-400).
 describe('noDeviceAdvice()', () => {
   it('suggests setting `avd` when none is configured', () => {
-    expect(noDeviceAdvice({ avd: undefined, launchEmulators: false }))
+    expect(noDeviceAdvice({ avd: undefined, launchEmulators: false }, undefined))
       .toBe('Connect a device, start an emulator, or set `avd` in your config to auto-launch emulators.');
   });
 
   it('points at `launchEmulators: false` when `avd` is set but launching is off', () => {
-    const advice = noDeviceAdvice({ avd: 'Pixel_6', launchEmulators: false });
+    const advice = noDeviceAdvice({ avd: 'Pixel_6', launchEmulators: false }, undefined);
     expect(advice).not.toMatch(/set `avd`/);
     expect(advice).toContain('"Pixel_6"');
     expect(advice).toContain('`launchEmulators` is false');
   });
 
   it('says the configured emulator did not come online when Tapsmith tried to boot it', () => {
-    const advice = noDeviceAdvice({ avd: 'Pixel_6', launchEmulators: true });
+    const advice = noDeviceAdvice({ avd: 'Pixel_6', launchEmulators: true }, undefined);
     expect(advice).not.toMatch(/set `avd`/);
     expect(advice).toContain('"Pixel_6"');
     expect(advice).toContain('tapsmith doctor');
   });
 });
 
+// A machine without the platform's toolchain can do nothing the config advice
+// says: setting `avd` needs an SDK, booting simulators needs Xcode (PILOT-558).
+describe('advice on a machine without the toolchain (PILOT-558)', () => {
+  const NO_ADB = 'ADB is not on PATH and no Android SDK was found, so Tapsmith cannot reach any Android device: Install Android Studio (see https://tapsmith.dev/getting-started/#prerequisites)';
+  const NO_XCODE = 'Xcode is not installed, so there are no iOS simulators: Install Xcode';
+
+  it('says what is missing instead of "set `avd`", whatever the config', () => {
+    for (const config of [
+      { avd: undefined, launchEmulators: false },
+      { avd: 'Pixel_6', launchEmulators: false },
+      { avd: 'Pixel_6', launchEmulators: true },
+    ]) {
+      expect(noDeviceAdvice(config, NO_ADB)).toBe(`${NO_ADB}.`);
+    }
+  });
+
+  it('carries into the no-online-device error, after any attached device', () => {
+    const config = { avd: undefined, launchEmulators: false };
+    expect(noOnlineDeviceMessage(config, [], NO_ADB)).toBe(`No online devices found. ${NO_ADB}.`);
+    expect(noOnlineDeviceMessage(config, [], NO_ADB)).not.toMatch(/set `avd`|start an emulator/);
+  });
+
+  it('replaces the more-devices advice on either platform', () => {
+    expect(moreDevicesAdvice({ platform: 'android', avd: undefined, launchEmulators: false }, NO_ADB)).toBe(`${NO_ADB}.`);
+    expect(moreDevicesAdvice({ platform: 'ios', avd: undefined, launchEmulators: false }, NO_XCODE)).toBe(`${NO_XCODE}.`);
+  });
+});
+
 describe('moreDevicesAdvice()', () => {
   it('keeps the `avd` suggestion only when `avd` is unset', () => {
-    expect(moreDevicesAdvice({ platform: 'android', avd: undefined, launchEmulators: false }))
+    expect(moreDevicesAdvice({ platform: 'android', avd: undefined, launchEmulators: false }, undefined))
       .toBe('Connect more devices, set `avd` so emulators can be launched, or pin members with `device`.');
-    expect(moreDevicesAdvice({ platform: 'android', avd: 'Pixel_6', launchEmulators: true }))
+    expect(moreDevicesAdvice({ platform: 'android', avd: 'Pixel_6', launchEmulators: true }, undefined))
       .not.toMatch(/set `avd`/);
   });
 
   it('names `launchEmulators` when it is what stops Tapsmith booting more', () => {
-    expect(moreDevicesAdvice({ platform: 'android', avd: 'Pixel_6', launchEmulators: false }))
+    expect(moreDevicesAdvice({ platform: 'android', avd: 'Pixel_6', launchEmulators: false }, undefined))
       .toContain('`launchEmulators: false`');
   });
 
   it('talks about simulators on iOS', () => {
-    expect(moreDevicesAdvice({ platform: 'ios', avd: undefined, launchEmulators: false }))
+    expect(moreDevicesAdvice({ platform: 'ios', avd: undefined, launchEmulators: false }, undefined))
       .toBe('Boot more simulators matching `simulator`, or pin members with `device`.');
   });
 });
@@ -90,30 +118,30 @@ describe('noOnlineDeviceMessage()', () => {
   const config = { avd: undefined, launchEmulators: false };
 
   it('is the config advice alone when nothing unusable is attached', () => {
-    expect(noOnlineDeviceMessage(config, [])).toBe(`No online devices found. ${noDeviceAdvice(config)}`);
-    expect(noOnlineDeviceMessage(config, [{ serial: 'emulator-5554', state: 'device' }]))
-      .toBe(`No online devices found. ${noDeviceAdvice(config)}`);
+    expect(noOnlineDeviceMessage(config, [], undefined)).toBe(`No online devices found. ${noDeviceAdvice(config, undefined)}`);
+    expect(noOnlineDeviceMessage(config, [{ serial: 'emulator-5554', state: 'device' }], undefined))
+      .toBe(`No online devices found. ${noDeviceAdvice(config, undefined)}`);
   });
 
   it('names every attached-but-unusable device before the config advice', () => {
     const msg = noOnlineDeviceMessage(config, [
       { serial: 'R5CR1234XYZ', state: 'unauthorized' },
       { serial: '0123456789ABCDEF', state: NO_PERMISSIONS },
-    ]);
+    ], undefined);
     expect(msg.startsWith('No online devices found. R5CR1234XYZ is attached, but adb reports it unauthorized. Accept the USB debugging prompt on the device. ')).toBe(true);
     expect(msg).toContain('0123456789ABCDEF is attached');
-    expect(msg.endsWith(noDeviceAdvice(config))).toBe(true);
+    expect(msg.endsWith(noDeviceAdvice(config, undefined))).toBe(true);
   });
 
   it('is built on attachedDeviceAdvice, which the bucket failure appends', () => {
     const attached = [{ serial: 'R5CR1234XYZ', state: 'unauthorized' }];
-    expect(noOnlineDeviceMessage(config, attached)).toBe(`No online devices found. ${attachedDeviceAdvice(config, attached)}`);
-    expect(attachedDeviceAdvice(config, [])).toBe(noDeviceAdvice(config));
+    expect(noOnlineDeviceMessage(config, attached, undefined)).toBe(`No online devices found. ${attachedDeviceAdvice(config, attached, undefined)}`);
+    expect(attachedDeviceAdvice(config, [], undefined)).toBe(noDeviceAdvice(config, undefined));
   });
 
   it('ignores iOS entries (the daemon lists every platform)', () => {
-    expect(noOnlineDeviceMessage(config, [{ serial: 'SIM', state: 'Shutdown', platform: 'ios' }]))
-      .toBe(`No online devices found. ${noDeviceAdvice(config)}`);
+    expect(noOnlineDeviceMessage(config, [{ serial: 'SIM', state: 'Shutdown', platform: 'ios' }], undefined))
+      .toBe(`No online devices found. ${noDeviceAdvice(config, undefined)}`);
   });
 });
 
