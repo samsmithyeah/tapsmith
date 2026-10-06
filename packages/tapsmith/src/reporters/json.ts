@@ -26,6 +26,8 @@ interface JsonTestEntry {
   project?: string
   retry?: number
   warnings?: string[]
+  /** The entry stands for a whole file that failed to load (PILOT-545). */
+  fileLevelFailure?: boolean
 }
 
 interface JsonSuiteEntry {
@@ -111,6 +113,7 @@ function serializeSuite(suite: SuiteResult): JsonSuiteEntry {
       project: t.project,
       retry: t.retry,
       warnings: t.warnings,
+      ...(t.fileLevelFailure ? { fileLevelFailure: true } : {}),
     })),
     suites: suite.suites.map((s) => serializeSuite(s)),
   };

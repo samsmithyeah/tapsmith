@@ -864,6 +864,25 @@ describe('JsonReporter', () => {
     fs.rmSync(tmpDir, { recursive: true });
   });
 
+  it('writes the file-level failure flag of a file that failed to load (PILOT-545)', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-json-'));
+    const outputFile = path.join(tmpDir, 'results.json');
+    const { JsonReporter } = await import('../reporters/json.js');
+    const reporter = new JsonReporter({ outputFile });
+    const loadFailure = makeTestResult({ status: 'failed', fullName: 'a.test.ts — failed to load', error: new Error('Cannot find module'), fileLevelFailure: true });
+    const ordinary = makeTestResult({ status: 'passed', fullName: 'test a' });
+    reporter.onRunStart!(makeConfig({ rootDir: '/' }), 1);
+    await reporter.onRunEnd!(makeFullResult({ tests: [loadFailure, ordinary], suites: [{ name: 'suite', durationMs: 1, tests: [loadFailure, ordinary], suites: [] }] }));
+
+    const report = JSON.parse(fs.readFileSync(outputFile, 'utf-8'));
+    expect(report.suites[0].tests[0].fileLevelFailure).toBe(true);
+    expect(report.suites[0].tests[1]).not.toHaveProperty('fileLevelFailure');
+    fs.rmSync(tmpDir, { recursive: true });
+  });
+
   it('honors TAPSMITH_JSON_OUTPUT_FILE over the outputFile option', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');

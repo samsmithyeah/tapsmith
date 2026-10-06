@@ -481,6 +481,8 @@ export interface SerializedTestResult {
   _willRetry?: boolean
   filePath?: string
   warnings?: string[]
+  /** The result stands for a whole file that failed to load (PILOT-545). */
+  fileLevelFailure?: boolean
 }
 
 export interface SerializedSuiteResult {
@@ -514,6 +516,7 @@ export function serializeTestResult(result: TestResult, workerIndex: number): Se
     _willRetry: result._willRetry,
     filePath: result.filePath,
     ...(result.warnings?.length ? { warnings: result.warnings } : {}),
+    ...(result.fileLevelFailure ? { fileLevelFailure: true } : {}),
   };
 }
 
@@ -548,6 +551,7 @@ export function deserializeTestResult(s: SerializedTestResult): TestResult & { w
     _willRetry: s._willRetry,
     filePath: s.filePath,
     ...(s.warnings?.length ? { warnings: s.warnings } : {}),
+    ...(s.fileLevelFailure ? { fileLevelFailure: true } : {}),
   };
 }
 

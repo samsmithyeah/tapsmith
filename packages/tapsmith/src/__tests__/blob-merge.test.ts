@@ -292,6 +292,14 @@ describe('BlobReporter output directory', () => {
     expect(mergeBlobs(outputDir).tests[0].warnings).toEqual(['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it.']);
   });
 
+  it('keeps the file-level failure flag through merge-reports (PILOT-545)', async () => {
+    const outputDir = path.join(tmpDir, 'blob-report');
+    const reporter = new BlobReporter({ outputDir });
+    reporter.onRunStart(makeConfig(), 1);
+    await reporter.onRunEnd(makeResult([makeTest({ fullName: 'a.test.ts — failed to load', status: 'failed', fileLevelFailure: true })]));
+    expect(mergeBlobs(outputDir).tests[0].fileLevelFailure).toBe(true);
+  });
+
   it('clears stale attachments from a previous run too', async () => {
     const outputDir = path.join(tmpDir, 'blob-report');
     fs.mkdirSync(outputDir);

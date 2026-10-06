@@ -48,7 +48,7 @@ function appendDiscoveryErrors(failures: DiscoveryError[], lines: string[]): voi
   if (lines.length > 0) lines.push('');
   lines.push(
     `WARNING: ${failures.length} test file(s) failed to load and are missing from the list above. `
-    + 'They cannot be run until the error is fixed.',
+    + 'Running one reports a single "failed to load" failure until the error is fixed.',
   );
   for (const failure of failures.slice(0, MAX_LISTED_DISCOVERY_ERRORS)) {
     lines.push(`  ${failure.filePath}: ${failure.error}`);

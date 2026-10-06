@@ -2434,8 +2434,16 @@ interface TestResult {
   retry?: number; // zero-based attempt number this result was recorded on (omitted for a first-attempt pass)
   filePath?: string; // path to the test file this result belongs to
   warnings?: string[]; // things that did not fail the test but a reader should know, e.g. the app's own ANR dialog the preflight closed
+  fileLevelFailure?: boolean; // the result stands for a whole file that failed to load, not a test in it
 }
 ```
+
+A test file that fails to load — a missing module, an error thrown while it is
+imported or inside a `describe()` callback — reports a single failed result in
+place of its tests: `name` and `fullName` are `"<file name> — failed to load"` (e.g. `"login.test.ts — failed to load"`),
+`fileLevelFailure` is `true`, `filePath` names the file, and `error` is the load
+error. None of the file's tests run; every other file still does, and the run
+counts it as a failure.
 
 For a **flaky** test (failed, then passed on retry) the final result links the
 **first failed attempt's** trace, screenshot, and video — the failure is what
