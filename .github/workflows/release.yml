@@ -288,7 +288,18 @@ jobs:
       - name: Publish
         if: steps.core_exists.outputs.exists != 'true'
         working-directory: npm-packages/${{ matrix.pkg }}
-        run: npm publish --access public
+        # npm 11 refuses a prerelease without --tag (PILOT-541); every package
+        # of one release goes under the same tag (latest, or beta for -beta.N).
+        # `latest` is left implicit: an explicit `--tag latest` turns off npm's
+        # refusal to move latest to a lower version (a hand-tagged backport).
+        run: |
+          DIST_TAG=$(node "$GITHUB_WORKSPACE/packages/tapsmith/scripts/npm-dist-tag.mjs" "${GITHUB_REF_NAME#v}")
+          echo "Publishing ${GITHUB_REF_NAME#v} under dist-tag '$DIST_TAG'."
+          if [ "$DIST_TAG" = latest ]; then
+            npm publish --access public
+          else
+            npm publish --access public --tag "$DIST_TAG"
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -372,7 +383,18 @@ jobs:
       - name: Publish
         if: steps.ios_exists.outputs.exists != 'true'
         working-directory: npm-packages/${{ matrix.pkg }}
-        run: npm publish --access public
+        # npm 11 refuses a prerelease without --tag (PILOT-541); every package
+        # of one release goes under the same tag (latest, or beta for -beta.N).
+        # `latest` is left implicit: an explicit `--tag latest` turns off npm's
+        # refusal to move latest to a lower version (a hand-tagged backport).
+        run: |
+          DIST_TAG=$(node "$GITHUB_WORKSPACE/packages/tapsmith/scripts/npm-dist-tag.mjs" "${GITHUB_REF_NAME#v}")
+          echo "Publishing ${GITHUB_REF_NAME#v} under dist-tag '$DIST_TAG'."
+          if [ "$DIST_TAG" = latest ]; then
+            npm publish --access public
+          else
+            npm publish --access public --tag "$DIST_TAG"
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -426,7 +448,18 @@ jobs:
 
       - name: Publish
         if: steps.rn_exists.outputs.exists != 'true'
-        run: npm publish --access public
+        # npm 11 refuses a prerelease without --tag (PILOT-541); every package
+        # of one release goes under the same tag (latest, or beta for -beta.N).
+        # `latest` is left implicit: an explicit `--tag latest` turns off npm's
+        # refusal to move latest to a lower version (a hand-tagged backport).
+        run: |
+          DIST_TAG=$(node "$GITHUB_WORKSPACE/packages/tapsmith/scripts/npm-dist-tag.mjs" "${GITHUB_REF_NAME#v}")
+          echo "Publishing ${GITHUB_REF_NAME#v} under dist-tag '$DIST_TAG'."
+          if [ "$DIST_TAG" = latest ]; then
+            npm publish --access public
+          else
+            npm publish --access public --tag "$DIST_TAG"
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -482,7 +515,18 @@ jobs:
       - name: Publish
         if: steps.android_exists.outputs.exists != 'true'
         working-directory: npm-packages/agent-android
-        run: npm publish --access public
+        # npm 11 refuses a prerelease without --tag (PILOT-541); every package
+        # of one release goes under the same tag (latest, or beta for -beta.N).
+        # `latest` is left implicit: an explicit `--tag latest` turns off npm's
+        # refusal to move latest to a lower version (a hand-tagged backport).
+        run: |
+          DIST_TAG=$(node "$GITHUB_WORKSPACE/packages/tapsmith/scripts/npm-dist-tag.mjs" "${GITHUB_REF_NAME#v}")
+          echo "Publishing ${GITHUB_REF_NAME#v} under dist-tag '$DIST_TAG'."
+          if [ "$DIST_TAG" = latest ]; then
+            npm publish --access public
+          else
+            npm publish --access public --tag "$DIST_TAG"
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -548,7 +592,18 @@ jobs:
 
       - name: Publish
         if: steps.tapsmith_exists.outputs.exists != 'true'
-        run: npm publish --access public
+        # npm 11 refuses a prerelease without --tag (PILOT-541); every package
+        # of one release goes under the same tag (latest, or beta for -beta.N).
+        # `latest` is left implicit: an explicit `--tag latest` turns off npm's
+        # refusal to move latest to a lower version (a hand-tagged backport).
+        run: |
+          DIST_TAG=$(node "$GITHUB_WORKSPACE/packages/tapsmith/scripts/npm-dist-tag.mjs" "${GITHUB_REF_NAME#v}")
+          echo "Publishing ${GITHUB_REF_NAME#v} under dist-tag '$DIST_TAG'."
+          if [ "$DIST_TAG" = latest ]; then
+            npm publish --access public
+          else
+            npm publish --access public --tag "$DIST_TAG"
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -577,11 +632,25 @@ jobs:
             # Pin the notes base to the previous tag by semver order. Auto-detection
             # picks the base from git ancestry, which silently re-lists an earlier
             # release's changes when tags aren't linear ancestors.
-            PREV=$(git tag --list 'v*' --sort=-version:refname | awk -v cur="$TAG" '$0==cur{f=1;next} f{print;exit}')
+            # versionsort.suffix=- sorts v0.6.0-beta.1 before v0.6.0 (git's default
+            # puts it after). A prerelease's notes start at the tag before it; a
+            # stable release's start at the previous stable one, so v0.6.0 lists
+            # everything since v0.5.0 rather than since its last beta.
+            if [[ "$TAG" == *-* ]]; then
+              CANDIDATES=$(git -c versionsort.suffix=- tag --list 'v*' --sort=-version:refname)
+            else
+              CANDIDATES=$(git -c versionsort.suffix=- tag --list 'v*' --sort=-version:refname | grep -v -e '-' || true)
+            fi
+            PREV=$(echo "$CANDIDATES" | awk -v cur="$TAG" '$0==cur{f=1;next} f{print;exit}')
             NOTES_ARGS=(--generate-notes)
             if [ -n "$PREV" ]; then
               NOTES_ARGS+=(--notes-start-tag "$PREV")
               echo "Generating notes from $PREV to $TAG."
+            fi
+            # A prerelease (v0.6.0-beta.1) is marked as one, so GitHub never
+            # labels it the repo's Latest release (PILOT-541).
+            if [[ "$TAG" == *-* ]]; then
+              NOTES_ARGS+=(--prerelease)
             fi
             # Notes are grouped per .github/release.yml (read from the default branch).
             gh release create "$TAG" --title "$TAG" --verify-tag "${NOTES_ARGS[@]}"
@@ -605,7 +674,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          PREV=$(git tag --list 'v*' --sort=-version:refname | awk -v cur="$TAG" '$0==cur{f=1;next} f{print;exit}')
+          # The tag before this one, prereleases included: a beta that already
+          # re-rendered the video makes a re-render for the stable release moot.
+          PREV=$(git -c versionsort.suffix=- tag --list 'v*' --sort=-version:refname | awk -v cur="$TAG" '$0==cur{f=1;next} f{print;exit}')
           if [ -n "$PREV" ] && git diff --quiet "$PREV" "$TAG" -- tools/promo ':!tools/promo/README.md' ':!tools/promo/docs-shots'; then
             echo "tools/promo unchanged since $PREV; keeping the published video."
           else

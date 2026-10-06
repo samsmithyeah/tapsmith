@@ -28,10 +28,12 @@ test("can navigate to settings", async ({ device }) => {
 ## Quick Start
 
 ```bash
-npm install tapsmith
+npm install -D tapsmith@beta
 npx tapsmith init
 npx tapsmith test
 ```
+
+Tapsmith 0.6 is in beta, published under npm's `beta` tag. Until it is released, a plain `npm install tapsmith` installs the previous stable release (0.5).
 
 The `init` wizard detects your environment, walks through platform configuration, and generates your config file and an example test.
 
