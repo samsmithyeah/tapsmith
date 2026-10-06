@@ -812,6 +812,14 @@ const IMPORT_PREFIX = String.raw`(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s
 const TAPSMITH_IMPORT = new RegExp(`${IMPORT_PREFIX}['"]tapsmith(?:/[^'"]*)?['"]`);
 const RELATIVE_IMPORT = new RegExp(`${IMPORT_PREFIX}['"](\\.{1,2}/[^'"]+)['"]`, 'g');
 
+/**
+ * A test or hook body that destructures Tapsmith's `device` fixture:
+ * `async ({ device }) =>`, `async ({ device, page }) =>`. Jest and Vitest
+ * callbacks take no fixture object, so this marks a Tapsmith test whatever
+ * module path (an alias, a chain of fixture modules) brings `tapsmith` in.
+ */
+const DEVICE_FIXTURE = /\(\s*\{[^}]*\bdevice\b[^}]*\}\s*\)\s*=>/;
+
 function readText(file: string): string | undefined {
   try {
     return fs.readFileSync(file, 'utf8');
@@ -828,13 +836,14 @@ function resolveRelativeImport(fromFile: string, specifier: string): string | un
 }
 
 /**
- * Whether a test file imports `tapsmith`, directly or through a local module
- * one import away (the fixtures module AGENTS.md recommends).
+ * Whether a test file is a Tapsmith test: it imports `tapsmith`, directly or
+ * through a local module one import away (the fixtures module AGENTS.md
+ * recommends), or it uses the `device` fixture.
  */
 function importsTapsmith(file: string): boolean {
   const source = readText(file);
   if (source === undefined) return false;
-  if (TAPSMITH_IMPORT.test(source)) return true;
+  if (TAPSMITH_IMPORT.test(source) || DEVICE_FIXTURE.test(source)) return true;
   for (const [, specifier] of source.matchAll(RELATIVE_IMPORT)) {
     const target = resolveRelativeImport(file, specifier);
     const imported = target ? readText(target) : undefined;
@@ -847,7 +856,7 @@ function importsTapsmith(file: string): boolean {
  * Tapsmith tests already in the project under the old `*.test.ts` /
  * `*.spec.ts` names (an earlier init's scaffold, say), which the generated
  * config's GENERATED_TEST_MATCH no longer runs (PILOT-554). A file counts when
- * it imports `tapsmith` (see importsTapsmith()), so the project's own Jest or
+ * it looks like a Tapsmith test (see importsTapsmith()), so the project's own Jest or
  * Vitest tests don't. Paths are relative to `cwd`, with `/` separators, sorted.
  */
 export function tapsmithTestsOutsideGeneratedMatch(cwd: string): string[] {

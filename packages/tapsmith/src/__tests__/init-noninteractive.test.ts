@@ -701,6 +701,28 @@ describe('executeInitPlan()', () => {
     }
   });
 
+  it("counts specs that reach tapsmith through a path alias or a chain of modules, by the device fixture they use", () => {
+    const tmp = makeTmp();
+    try {
+      fs.mkdirSync(path.join(tmp, 'e2e'));
+      fs.writeFileSync(path.join(tmp, 'e2e', 'alias.test.ts'),
+        "import { test, expect } from '@/e2e/fixtures'\n\ntest('signs in', async ({ device }) => {\n  await device.getByText('Hi').tap()\n})\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'hook.spec.ts'),
+        "import { test } from '~/support'\ntest.beforeEach(async ({ device, page }) => {})\n");
+      // A Jest test that merely mentions a device is not one.
+      fs.writeFileSync(path.join(tmp, 'e2e', 'unit.test.ts'),
+        "test('formats a device name', () => { const device = { name: 'x' }; expect(device.name).toBe('x') })\n");
+      const args = initArgs({ yes: true, platform: 'android' });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const warning = executeInitPlan(plan, args, tmp).warnings.find((w) => w.includes('.tapsmith.ts'));
+      expect(warning).toContain('e2e/alias.test.ts');
+      expect(warning).toContain('e2e/hook.spec.ts');
+      expect(warning).not.toContain('unit.test.ts');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('gives no such warning in a project without Tapsmith tests', () => {
     const tmp = makeTmp();
     try {
