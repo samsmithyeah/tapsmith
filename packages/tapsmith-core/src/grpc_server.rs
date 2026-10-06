@@ -2689,7 +2689,6 @@ impl TapsmithServiceImpl {
     }
 }
 
-/// Convert a protobuf Selector into a JSON value for the agent protocol.
 /// A getBy* RegExp (PILOT-520) as the agents read it: the SDK-translated
 /// pattern, its `i` flag, and the literal for messages.
 fn text_regex_to_json(re: &proto::TextRegex) -> Value {
@@ -2700,6 +2699,7 @@ fn text_regex_to_json(re: &proto::TextRegex) -> Value {
     })
 }
 
+/// Convert a protobuf Selector into a JSON value for the agent protocol.
 pub(crate) fn selector_to_json(selector: &proto::Selector) -> Value {
     let mut obj = json!({});
 
