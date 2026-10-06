@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+
+vi.mock('node:child_process', () => ({ execFileSync: vi.fn(() => '1\n') }));
 import { appleArch, hostArch, nodeUnderRosetta, rosettaNodeWarning } from '../host-arch.js';
 import { defaultAbi } from '../avd-defaults.js';
 
@@ -55,5 +58,12 @@ describe('rosettaNodeWarning', () => {
   it('is undefined for a native Node', () => {
     expect(rosettaNodeWarning(intelMac)).toBeUndefined();
     expect(rosettaNodeWarning(appleSiliconNative)).toBeUndefined();
+  });
+});
+
+describe('sysctl lookup', () => {
+  it('asks /usr/sbin/sysctl by absolute path, so a PATH without /usr/sbin cannot hide Rosetta', () => {
+    expect(nodeUnderRosetta({ platform: 'darwin', arch: 'x64' })).toBe(true);
+    expect(vi.mocked(execFileSync)).toHaveBeenCalledWith('/usr/sbin/sysctl', ['-n', 'sysctl.proc_translated'], expect.anything());
   });
 });

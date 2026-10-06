@@ -22,10 +22,14 @@ export interface HostArchDeps {
   translated: () => boolean;
 }
 
+const SYSCTL = '/usr/sbin/sysctl';
+
 /** Whether `sysctl.proc_translated` says this process is translated by Rosetta. */
 function sysctlTranslated(): boolean {
   try {
-    const out = execFileSync('sysctl', ['-n', 'sysctl.proc_translated'], {
+    // By absolute path: /usr/sbin is not always on PATH (sanitised task
+    // runners), and a missing sysctl would read as "not translated".
+    const out = execFileSync(SYSCTL, ['-n', 'sysctl.proc_translated'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 5_000,
