@@ -462,14 +462,14 @@ const response = await responsePromise
 
 ### File naming conventions
 
-Tapsmith discovers test files matching `**/*.test.ts` and `**/*.spec.ts` by default. Use either convention consistently:
+Tapsmith finds test files with `testMatch`. A config from `tapsmith init` sets it to `**/*.tapsmith.ts`, a suffix Jest and Vitest don't run, so the app's unit-test suite and Tapsmith never pick up each other's files ([more](getting-started.md#tapsmith-tests-and-your-unit-tests)). Without `testMatch`, Tapsmith runs `**/*.test.ts` and `**/*.spec.ts` files. Use one convention consistently:
 
 ```
 tests/
-  login.test.ts
-  checkout.test.ts
-  settings.test.ts
-  device-management.android.test.ts    # platform-specific tests
+  login.tapsmith.ts
+  checkout.tapsmith.ts
+  settings.tapsmith.ts
+  device-management.android.tapsmith.ts    # platform-specific tests
 ```
 
 ### Folder structure

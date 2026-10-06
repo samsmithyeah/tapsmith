@@ -808,14 +808,47 @@ export function writeExampleTest(cwd: string): 'created' | 'exists' {
   return 'created';
 }
 
-const TAPSMITH_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)['"]tapsmith(?:\/[^'"]*)?['"]/;
+const IMPORT_PREFIX = String.raw`(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)`;
+const TAPSMITH_IMPORT = new RegExp(`${IMPORT_PREFIX}['"]tapsmith(?:/[^'"]*)?['"]`);
+const RELATIVE_IMPORT = new RegExp(`${IMPORT_PREFIX}['"](\\.{1,2}/[^'"]+)['"]`, 'g');
+
+function readText(file: string): string | undefined {
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/** The file a relative TypeScript import names: `./fixtures`, `./fixtures.js` or a directory's index. */
+function resolveRelativeImport(fromFile: string, specifier: string): string | undefined {
+  const base = path.resolve(path.dirname(fromFile), specifier).replace(/\.[cm]?js$/, '');
+  return [base, `${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts')]
+    .find((candidate) => /\.tsx?$/.test(candidate) && fs.statSync(candidate, { throwIfNoEntry: false })?.isFile());
+}
+
+/**
+ * Whether a test file imports `tapsmith`, directly or through a local module
+ * one import away (the fixtures module AGENTS.md recommends).
+ */
+function importsTapsmith(file: string): boolean {
+  const source = readText(file);
+  if (source === undefined) return false;
+  if (TAPSMITH_IMPORT.test(source)) return true;
+  for (const [, specifier] of source.matchAll(RELATIVE_IMPORT)) {
+    const target = resolveRelativeImport(file, specifier);
+    const imported = target ? readText(target) : undefined;
+    if (imported !== undefined && TAPSMITH_IMPORT.test(imported)) return true;
+  }
+  return false;
+}
 
 /**
  * Tapsmith tests already in the project under the old `*.test.ts` /
  * `*.spec.ts` names (an earlier init's scaffold, say), which the generated
  * config's GENERATED_TEST_MATCH no longer runs (PILOT-554). A file counts when
- * it imports `tapsmith`, so the project's own Jest or Vitest tests don't.
- * Paths are relative to `cwd`, with `/` separators, sorted.
+ * it imports `tapsmith` (see importsTapsmith()), so the project's own Jest or
+ * Vitest tests don't. Paths are relative to `cwd`, with `/` separators, sorted.
  */
 export function tapsmithTestsOutsideGeneratedMatch(cwd: string): string[] {
   const candidates = globSync(['**/*.test.ts', '**/*.spec.ts'], {
@@ -827,13 +860,7 @@ export function tapsmithTestsOutsideGeneratedMatch(cwd: string): string[] {
   });
   return candidates
     .filter((file) => !GENERATED_TEST_MATCH.some((glob) => minimatch(file, glob)))
-    .filter((file) => {
-      try {
-        return TAPSMITH_IMPORT.test(fs.readFileSync(path.join(cwd, file), 'utf8'));
-      } catch {
-        return false;
-      }
-    })
+    .filter((file) => importsTapsmith(path.join(cwd, file)))
     .sort();
 }
 

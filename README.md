@@ -86,7 +86,7 @@ npx tapsmith verify
 
 ### 3. Write a test
 
-Create `tests/login.test.ts`:
+Create `tests/login.tapsmith.ts` (`tapsmith init` sets `testMatch` to `*.tapsmith.ts`, so your Jest or Vitest run leaves Tapsmith tests alone):
 
 ```typescript
 import { test, describe, expect, beforeEach } from "tapsmith";

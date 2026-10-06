@@ -675,6 +675,32 @@ describe('executeInitPlan()', () => {
     }
   });
 
+  // The AGENTS.md section recommends importing through a fixtures module, so
+  // a spec that imports `tapsmith` one module away is a Tapsmith test too.
+  it('counts specs that import tapsmith through a local fixtures module, or for side effects', () => {
+    const tmp = makeTmp();
+    try {
+      fs.mkdirSync(path.join(tmp, 'e2e', 'support'), { recursive: true });
+      fs.mkdirSync(path.join(tmp, 'e2e', 'fixtures'));
+      fs.writeFileSync(path.join(tmp, 'e2e', 'fixtures.ts'), "export { test, expect } from 'tapsmith'\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'fixtures', 'index.ts'), "import { test as base } from 'tapsmith'\nexport const test = base\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'support', 'helpers.ts'), 'export const x = 1\n');
+      fs.writeFileSync(path.join(tmp, 'e2e', 'login.test.ts'), "import { test, expect } from './fixtures.js'\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'cart.test.ts'), "import { test } from './fixtures/index'\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'setup.spec.ts'), "import 'tapsmith'\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'unit.test.ts'), "import { x } from './support/helpers'\n");
+      const args = initArgs({ yes: true, platform: 'android' });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const warning = executeInitPlan(plan, args, tmp).warnings.find((w) => w.includes('.tapsmith.ts'));
+      expect(warning).toContain('e2e/login.test.ts');
+      expect(warning).toContain('e2e/cart.test.ts');
+      expect(warning).toContain('e2e/setup.spec.ts');
+      expect(warning).not.toContain('unit.test.ts');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('gives no such warning in a project without Tapsmith tests', () => {
     const tmp = makeTmp();
     try {
