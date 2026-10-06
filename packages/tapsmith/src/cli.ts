@@ -1,9 +1,10 @@
 #!/usr/bin/env -S node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON
 
 /**
- * CLI entry point for `npx tapsmith`. The command tree, flags and help live
- * in `cli-program.ts`; this file holds what the commands do, above all the
- * `tapsmith test` run body.
+ * The CLI. `npx tapsmith` runs `bin.ts`, which checks the Node.js version
+ * and then imports this file; the shebang here serves only running dist/cli.js
+ * directly. The command tree, flags and help live in `cli-program.ts`; this
+ * file holds what the commands do, above all the `tapsmith test` run body.
  */
 
 import * as path from 'node:path';

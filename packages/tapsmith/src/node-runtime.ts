@@ -1,0 +1,39 @@
+/**
+ * The Node.js floor, and what the CLI's entry does about the runtime before
+ * loading anything else (PILOT-542).
+ *
+ * This module is imported by `bin.ts` ahead of the CLI, on whatever Node the
+ * user happens to run, so it must stay import-free and use nothing newer than
+ * the oldest Node it is meant to turn away.
+ */
+
+/** The oldest Node.js major Tapsmith runs on. Matches `engines.node` in package.json. */
+export const MIN_NODE_MAJOR = 22;
+
+export function isSupportedNodeVersion(version: string): boolean {
+  const major = parseInt(version.split('.')[0], 10);
+  return major >= MIN_NODE_MAJOR;
+}
+
+/** What the CLI prints, before doing anything else, on an unsupported Node. */
+export function unsupportedNodeMessage(version: string): string {
+  return `You are running Node.js ${version}. Tapsmith requires Node.js ${MIN_NODE_MAJOR} or newer.\n`
+    + `Install Node.js ${MIN_NODE_MAJOR} or newer (https://nodejs.org), then run the command again.`;
+}
+
+/**
+ * Drop Node's MODULE_TYPELESS_PACKAGE_JSON warnings for the rest of the
+ * process: the runtime equivalent of `--disable-warning=MODULE_TYPELESS_PACKAGE_JSON`,
+ * which the bin cannot put in its shebang because Node before 20.11 rejects
+ * the flag ("node: bad option") before the version check could explain why.
+ * It fires when a user's typeless project has ES-module `.js` files (the
+ * config, plain-JS tests) and advises adding `"type": "module"`, which can
+ * break an Expo/React Native app. Every other warning passes through.
+ */
+export function ignoreTypelessPackageWarnings(): void {
+  const emit = process.emit as (event: string | symbol, ...args: unknown[]) => boolean;
+  process.emit = function (this: NodeJS.Process, event: string | symbol, ...args: unknown[]): boolean {
+    if (event === 'warning' && (args[0] as { code?: unknown } | undefined)?.code === 'MODULE_TYPELESS_PACKAGE_JSON') return false;
+    return emit.call(this, event, ...args);
+  } as typeof process.emit;
+}
