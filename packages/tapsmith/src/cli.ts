@@ -65,6 +65,7 @@ import { findDaemonBin } from './daemon-bin.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary } from './daemon-start.js';
 import { splitHeadline } from './error-detail.js';
 import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage, pinnedDeviceUnusableMessage, waitForPinnedDeviceAuthorization } from './device-advice.js';
+import { rosettaNodeWarning } from './host-arch.js';
 import { androidToolchainBlocker, assertAdbForEmulatorLaunch, iosToolchainBlocker, toolchainBlocker } from './toolchain.js';
 import {
   createUiLaunchSteps,
@@ -2157,6 +2158,11 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     reExecWithTsx(forwardArgs);
     return;
   }
+
+  // An x64 Node under Rosetta (PILOT-559) runs, translated, but should not
+  // pass unremarked. After the tsx re-exec, so it prints once.
+  const rosettaWarning = rosettaNodeWarning();
+  if (rosettaWarning) console.error(yellow(`⚠ ${rosettaWarning}`));
 
   // Retry-only video/trace modes start no recorder on attempt 0, so with
   // `retries: 0` they can never produce an artifact. Warn at run start —

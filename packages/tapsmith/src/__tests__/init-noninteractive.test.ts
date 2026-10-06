@@ -17,6 +17,7 @@ function initArgs(over: Partial<InitCommandOptions>) {
 
 const baseEnv: EnvScan = {
   nodeVersion: '22.0.0',
+  rosettaWarning: undefined,
   daemonBin: '/bin/tapsmith-core',
   agentApk: true,
   agentTestApk: true,
@@ -241,6 +242,13 @@ describe('resolveInitPlan()', () => {
   it('does not build the simulator agent for an Android-only plan (PILOT-465)', () => {
     const plan = resolveInitPlan(initArgs({ yes: true, platform: 'android' }), baseEnv, detectStubs);
     expect(needsSimulatorAgent(plan.ios)).toBe(false);
+  });
+
+  it('warns when Node runs under Rosetta (PILOT-559)', () => {
+    const rosettaWarning = 'Node.js is running under Rosetta (x64) on this Apple Silicon Mac. Install an arm64 Node';
+    const plan = resolveInitPlan(initArgs({ yes: true, platform: 'android' }), { ...baseEnv, rosettaWarning }, detectStubs);
+    expect(plan.warnings).toEqual([rosettaWarning]);
+    expect(resolveInitPlan(initArgs({ yes: true, platform: 'android' }), baseEnv, detectStubs).warnings).toEqual([]);
   });
 
   it('omits avd with a warning when none available', () => {

@@ -25,6 +25,17 @@ vi.mock('node:os', async () => {
   return { ...actual, homedir };
 });
 
+// The host's arch, as host-arch.ts reports it (arm64 under Rosetta). Pinned,
+// so these tests mean the same on an x64 CI runner.
+const { hostArch } = vi.hoisted(() => ({
+  hostArch: vi.fn(() => 'arm64'),
+}));
+
+vi.mock('../host-arch.js', async () => {
+  const actual = await vi.importActual<typeof import('../host-arch.js')>('../host-arch.js');
+  return { ...actual, hostArch, appleArch: (arch: string = hostArch()) => actual.appleArch(arch) };
+});
+
 const existsSync = vi.mocked(fs.existsSync);
 const readdirSync = vi.mocked(fs.readdirSync);
 const statSync = vi.mocked(fs.statSync);
@@ -33,7 +44,7 @@ const execFileSyncMock = vi.mocked(execFileSync);
 // ─── extractSdkVersion (pure function, no mocks needed) ────────────────
 
 // Static import is fine — extractSdkVersion does not touch fs/os/module.
-import { extractSdkVersion } from '../ios-device-resolve.js';
+import { extractSdkVersion, xctestrunArchs } from '../ios-device-resolve.js';
 
 describe('extractSdkVersion()', () => {
   it('extracts SDK version from simulator xctestrun filename', () => {
@@ -106,6 +117,7 @@ describe('findSimulatorXctestrun() SDK-aware resolution', () => {
     mockResolve.mockReset();
     execFileSyncMock.mockReset();
     homedir.mockReturnValue('/Users/test');
+    hostArch.mockReturnValue('arm64');
   });
 
   /**
@@ -225,5 +237,78 @@ describe('findSimulatorXctestrun() SDK-aware resolution', () => {
 
     const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
     expect(findSimulatorXctestrun()).toBeUndefined();
+  });
+
+  // ─── Host architecture (PILOT-559) ───
+
+  it('looks for the arm64 package under Rosetta, not the x64 one npm installed', async () => {
+    execFileSyncMock.mockReturnValue('26.0\n');
+    mockResolve.mockImplementation(() => { throw new Error('MODULE_NOT_FOUND'); });
+    mockDirs({});
+    existsSync.mockReturnValue(false);
+
+    const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
+    expect(findSimulatorXctestrun()).toBeUndefined();
+    expect(mockResolve).toHaveBeenCalledWith('@tapsmith/agent-ios-simulator-arm64/package.json');
+    expect(mockResolve).not.toHaveBeenCalledWith('@tapsmith/agent-ios-simulator-x64/package.json');
+  });
+
+  it('skips an x86_64 auto-build cache on an arm64 host, so the agent is rebuilt', async () => {
+    execFileSyncMock.mockReturnValue('26.0\n');
+    vi.mocked(fs.readFileSync).mockReturnValue('26.0');
+    mockResolve.mockImplementation(() => { throw new Error('MODULE_NOT_FOUND'); });
+    const cacheDir = path.join('/Users/test', '.tapsmith', 'ios-simulator-agent');
+    mockDirs({
+      [cacheDir]: ['TapsmithAgentUITests_iphonesimulator26.0-x86_64.xctestrun', 'Debug-iphonesimulator'],
+      ...productsDirs(cacheDir),
+    });
+    statSync.mockReturnValue({ mtimeMs: Date.now() } as fs.Stats);
+
+    const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
+    expect(findSimulatorXctestrun()).toBeUndefined();
+  });
+
+  it('keeps an arm64 or universal cache on an arm64 host, and an x86_64 one on an Intel Mac', async () => {
+    execFileSyncMock.mockReturnValue('26.0\n');
+    vi.mocked(fs.readFileSync).mockReturnValue('26.0');
+    mockResolve.mockImplementation(() => { throw new Error('MODULE_NOT_FOUND'); });
+    const cacheDir = path.join('/Users/test', '.tapsmith', 'ios-simulator-agent');
+    statSync.mockReturnValue({ mtimeMs: Date.now() } as fs.Stats);
+    const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
+
+    for (const [arch, name] of [
+      ['arm64', 'TapsmithAgentUITests_iphonesimulator26.0-arm64.xctestrun'],
+      ['arm64', 'TapsmithAgentUITests_iphonesimulator26.0-arm64-x86_64.xctestrun'],
+      ['x64', 'TapsmithAgentUITests_iphonesimulator26.0-x86_64.xctestrun'],
+      ['arm64', 'TapsmithAgent.xctestrun'],
+    ] as const) {
+      hostArch.mockReturnValue(arch);
+      mockDirs({ [cacheDir]: [name, 'Debug-iphonesimulator'], ...productsDirs(cacheDir) });
+      expect(findSimulatorXctestrun(), `${arch} host, ${name}`).toBe(path.join(cacheDir, name));
+    }
+  });
+
+  it('passes over an x86_64 build in a DerivedData scan on an arm64 host', async () => {
+    execFileSyncMock.mockReturnValue('26.0\n');
+    mockResolve.mockImplementation(() => { throw new Error('MODULE_NOT_FOUND'); });
+    const products = path.join('/Users/test', 'Library', 'Developer', 'Xcode', 'DerivedData', 'TapsmithAgent-abc', 'Build', 'Products');
+    mockDirs({
+      [path.join('/Users/test', 'Library', 'Developer', 'Xcode', 'DerivedData')]: ['TapsmithAgent-abc'],
+      [products]: ['TapsmithAgentUITests_iphonesimulator26.0-x86_64.xctestrun', 'Debug-iphonesimulator'],
+      ...productsDirs(products),
+    });
+    statSync.mockReturnValue({ mtimeMs: Date.now() } as fs.Stats);
+
+    const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
+    expect(findSimulatorXctestrun()).toBeUndefined();
+  });
+});
+
+describe('xctestrunArchs()', () => {
+  it('reads the architectures from the file name', () => {
+    expect(xctestrunArchs('/x/T_iphonesimulator26.0-arm64.xctestrun')).toEqual(['arm64']);
+    expect(xctestrunArchs('/x/T_iphonesimulator26.0-x86_64.xctestrun')).toEqual(['x86_64']);
+    expect(xctestrunArchs('/x/T_iphonesimulator26.0-arm64-x86_64.xctestrun')).toEqual(['arm64', 'x86_64']);
+    expect(xctestrunArchs('/x/TapsmithAgent.xctestrun')).toBeUndefined();
   });
 });

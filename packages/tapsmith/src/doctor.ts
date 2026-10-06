@@ -22,6 +22,7 @@ import { androidUnusableDeviceFix, parseAdbDevicesOutput, type AdbDevice } from 
 import { isTapsmithNotInstalledError, type TapsmithConfig } from './config.js';
 import { MIN_NODE_MAJOR, isSupportedNodeVersion } from './node-runtime.js';
 import { emulatorNotFoundMessage, resolveEmulatorBinary, type EmulatorBinary } from './emulator.js';
+import { hostArch, nodeUnderRosetta, ROSETTA_NODE_FIX } from './host-arch.js';
 import { adbMissingFix, XCODE_FIX } from './toolchain.js';
 
 // ─── ANSI helpers ───
@@ -163,6 +164,19 @@ function checkNodeVersion(report: Reporter): void {
   } catch {
     fail(report, 'node', 'Node.js version check failed', `Install Node.js ${MIN_NODE_MAJOR} or newer (https://nodejs.org)`);
   }
+}
+
+/**
+ * An x64 Node on Apple Silicon (PILOT-559). Tapsmith picks arm64 simulator
+ * agents and emulator images anyway, but npm installed the x64 builds of its
+ * packages, which run translated, and the prebuilt simulator agent among
+ * them cannot run on arm64 simulators. Nothing to say for a native Node.
+ */
+function checkNodeArch(report: Reporter): void {
+  if (!nodeUnderRosetta()) return;
+  warn(report, 'node-arch',
+    'Node.js is x64, running under Rosetta on Apple Silicon — Tapsmith\'s packages run translated and the prebuilt iOS simulator agent cannot be used',
+    ROSETTA_NODE_FIX);
 }
 
 function checkDaemonBin(report: Reporter): void {
@@ -502,9 +516,12 @@ async function checkSimulatorXctestrun(report: Reporter): Promise<void> {
     const found = findSimulatorXctestrun();
     if (!found) {
       // The first simulator run builds it (ensureSimulatorAgent); the npm
-      // package is an optional dependency for this host's arch only.
-      const pkg = `@tapsmith/agent-ios-simulator-${process.arch}`;
-      warn(report, 'ios-sim-agent', 'No simulator xctestrun found', `Nothing to run now: your first iOS simulator test run builds it from source (a few minutes, needs Xcode). To skip the build: npm install ${pkg}`);
+      // package is an optional dependency for Node's arch only, so under
+      // Rosetta npm cannot install the arm64 one the simulators need.
+      const skip = nodeUnderRosetta()
+        ? 'To skip the build, use an arm64 Node (see the Node.js warning above)'
+        : `To skip the build: npm install @tapsmith/agent-ios-simulator-${hostArch()}`;
+      warn(report, 'ios-sim-agent', 'No simulator xctestrun found', `Nothing to run now: your first iOS simulator test run builds it from source (a few minutes, needs Xcode). ${skip}`);
       return;
     }
 
@@ -1037,6 +1054,7 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
     console.log(`  ${bold('Core')}`);
   }
   checkNodeVersion(report);
+  checkNodeArch(report);
   checkDaemonBin(report);
   checkConfigFile(report, configFile, findConfigFile);
   // A config's own platforms already fail when none can run (planPlatform);

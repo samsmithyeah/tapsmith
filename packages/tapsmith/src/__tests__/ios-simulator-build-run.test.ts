@@ -26,9 +26,17 @@ vi.mock('../ios-device-resolve.js', () => ({
   extractSdkVersion: (p: string) => /iphonesimulator(\d+\.\d+)/.exec(p)?.[1],
 }));
 
+// The machine's arch as host-arch.ts reports it: arm64 under Rosetta too.
+const { hostArch } = vi.hoisted(() => ({ hostArch: vi.fn(() => 'arm64') }));
+vi.mock('../host-arch.js', async () => {
+  const actual = await vi.importActual<typeof import('../host-arch.js')>('../host-arch.js');
+  return { ...actual, hostArch, appleArch: (arch: string = hostArch()) => actual.appleArch(arch) };
+});
+
 const XCTESTRUN = 'TapsmithAgentUITests_TapsmithAgentUITests_iphonesimulator27.0-arm64.xctestrun';
 
 const FAKE_XCODEBUILD = `#!/bin/sh
+[ -n "$FAKE_XCB_ARGS" ] && echo "$@" > "$FAKE_XCB_ARGS"
 dd=""
 while [ $# -gt 0 ]; do
   case "$1" in -derivedDataPath) dd="$2"; shift;; esac
@@ -143,6 +151,17 @@ async function buildError(mode: string, options?: { timeoutMs?: number }): Promi
 }
 
 describe('buildSimulatorAgent() xcodebuild output handling', () => {
+  it('builds for the machine\'s arch, not Node\'s (PILOT-559: arm64 under Rosetta)', async () => {
+    const argsFile = path.join(home, 'xcodebuild-args');
+    process.env.FAKE_XCB_ARGS = argsFile;
+    onTestFinished(() => { delete process.env.FAKE_XCB_ARGS; hostArch.mockReturnValue('arm64'); });
+    for (const [arch, archs] of [['arm64', 'ARCHS=arm64'], ['x64', 'ARCHS=x86_64']] as const) {
+      hostArch.mockReturnValue(arch);
+      await build('big-ok');
+      expect(fs.readFileSync(argsFile, 'utf8').split(' ')).toContain(archs);
+    }
+  }, 60_000);
+
   it('succeeds when xcodebuild prints more output than any buffer would hold', async () => {
     const xctestrun = await build('big-ok');
     expect(xctestrun).toBe(path.join(cacheDir(), XCTESTRUN));

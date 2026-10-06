@@ -299,7 +299,14 @@ async fn start_agent_impl(
                 // sim-side runner (`simctl terminate`) but has no equivalent
                 // for a physical device — an orphaned attempt-1 runner there
                 // could keep the agent port bound and burn the whole deadline.
-                if !is_physical && relaunches_left > 0 && remaining > Duration::from_secs(30) {
+                let arch_hint = architecture_mismatch_hint(&out_lines, &err_lines);
+                // An agent built for the wrong architecture fails the same way
+                // every time: relaunching it only delays the error.
+                if arch_hint.is_none()
+                    && !is_physical
+                    && relaunches_left > 0
+                    && remaining > Duration::from_secs(30)
+                {
                     relaunches_left -= 1;
                     warn!(
                         udid,
@@ -326,9 +333,10 @@ async fn start_agent_impl(
                 drop(iproxy_handle);
                 bail!(
                     "xcodebuild exited with {status} before the iOS agent became \
-                     ready on {target_kind} {udid}.\n\
+                     ready on {target_kind} {udid}.{hint}\n\
                      xcodebuild output (last lines):\n{out_lines}\n\
-                     xcodebuild stderr (last lines):\n{err_lines}"
+                     xcodebuild stderr (last lines):\n{err_lines}",
+                    hint = arch_hint.map(|h| format!("\n{h}")).unwrap_or_default()
                 );
             }
             Ok(None) => {} // still running, continue probing
@@ -361,6 +369,24 @@ async fn start_agent_impl(
             }
         }
     }
+}
+
+/// What to do when xcodebuild refused the agent because it was built for an
+/// architecture the destination cannot run — on Apple Silicon, an x86_64
+/// agent, which is what an x64 Node under Rosetta used to install or build
+/// (PILOT-559). Xcode says so as "No architectures intersection" (log line)
+/// and "architectures (…) include none that <device> can execute" (error).
+fn architecture_mismatch_hint(stdout_tail: &str, stderr_tail: &str) -> Option<&'static str> {
+    let mismatch = [stdout_tail, stderr_tail].iter().any(|tail| {
+        tail.contains("No architectures intersection") || tail.contains("include none that")
+    });
+    mismatch.then_some(
+        "The iOS agent was built for a CPU architecture this simulator or device cannot \
+         run (an x86_64 agent on an Apple Silicon Mac). That happens when Node runs under \
+         Rosetta (x64): install an arm64 Node, then reinstall your dependencies \
+         (rm -rf node_modules && npm install) — `npx tapsmith doctor` checks it. If \
+         `iosXctestrun` is set in your config, point it at an arm64 build.",
+    )
 }
 
 type OutputTail = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
@@ -945,6 +971,31 @@ async fn ping_agent(port: u16) -> Result<()> {
 #[cfg(target_os = "macos")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn architecture_mismatch_hint_reads_xcodes_refusal() {
+        // As xcodebuild 27 prints it for an x86_64 agent on an arm64 simulator.
+        let stderr = "2026-10-06 17:23:25.190 xcodebuild[94771:85729760] [MT] DVTDevice: \
+                      No architectures intersection between iPhone 17 ({(\n\
+                      xcodebuild: error: Failed to build workspace TapsmithAgent with scheme \
+                      TapsmithAgentUITests.: Cannot test target \u{201c}TapsmithAgentUITests\u{201d} \
+                      on \u{201c}iPhone 17\u{201d}: iPhone 17 cannot run TapsmithAgentUITests. \
+                      TapsmithAgentUITests's architectures (Intel 64-bit) include none that \
+                      iPhone 17 can execute (arm64).";
+        let hint = architecture_mismatch_hint("", stderr).expect("a hint");
+        assert!(hint.contains("Rosetta"));
+        assert!(hint.contains("arm64 Node"));
+        assert!(
+            architecture_mismatch_hint("include none that iPhone 17 can execute", "").is_some()
+        );
+    }
+
+    #[test]
+    fn architecture_mismatch_hint_ignores_other_failures() {
+        assert!(
+            architecture_mismatch_hint("** TEST EXECUTE FAILED **", "Testing failed").is_none()
+        );
+    }
 
     /// Minimal xctestrun fixture: only the keys patch_xctestrun touches must
     /// exist in the parent path. Empty EnvironmentVariables/TestingEnvironmentVariables

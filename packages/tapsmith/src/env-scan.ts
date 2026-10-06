@@ -4,6 +4,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { findDaemonBin } from './daemon-bin.js';
+import { rosettaNodeWarning } from './host-arch.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { scanAvdImageTags, type AvdImageInfo } from './avd-images.js';
 import { resolveEmulatorBinary } from './emulator.js';
@@ -26,6 +27,8 @@ export function tryExec(cmd: string, args: string[]): string | undefined {
 
 export interface EnvScan {
   nodeVersion: string;
+  /** Why an x64 Node under Rosetta is a problem, with the fix; undefined for a native Node (PILOT-559). */
+  rosettaWarning: string | undefined;
   daemonBin: string | undefined;
   agentApk: boolean;
   agentTestApk: boolean;
@@ -82,6 +85,7 @@ export function parseSimctlDevicesJson(output: string): SimulatorInfo[] {
 export function scanEnvironment(): EnvScan {
   const isMacOS = process.platform === 'darwin';
   const nodeVersion = process.versions.node;
+  const rosettaWarning = rosettaNodeWarning();
 
   let daemonBin: string | undefined;
   try {
@@ -127,5 +131,5 @@ export function scanEnvironment(): EnvScan {
 
   const avdImages = scanAvdImageTags();
 
-  return { nodeVersion, daemonBin, agentApk, agentTestApk, adbVersion, androidHome, xcodeVersion, simulators, avds, avdImages, isMacOS };
+  return { nodeVersion, rosettaWarning, daemonBin, agentApk, agentTestApk, adbVersion, androidHome, xcodeVersion, simulators, avds, avdImages, isMacOS };
 }
