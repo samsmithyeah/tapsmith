@@ -16,6 +16,12 @@ Before you begin, make sure you have the following installed:
 | ADB (Android Debug Bridge) | Any recent version | `adb --version` |
 | Android device or emulator | Android 8.0+ (API 26+) | `adb devices` |
 
+ADB comes with the Android SDK. If you don't have one yet, install
+[Android Studio](https://developer.android.com/studio) (or the Android command-line tools, then
+`sdkmanager platform-tools`), set `ANDROID_HOME` to the SDK location (Android Studio's default is
+`~/Library/Android/sdk` on macOS and `~/Android/Sdk` on Linux), and add `$ANDROID_HOME/platform-tools`
+to `PATH`.
+
 If you are using a single emulator or device, you can start it yourself and let
 Tapsmith detect it automatically. Tapsmith can also launch emulator instances for you
 when configured with `launchEmulators` and `avd`.
@@ -27,6 +33,9 @@ when configured with `launchEmulators` and `avd`.
 | Node.js | 22+ | `node --version` |
 | Xcode | 15+ | `xcodebuild -version` |
 | iOS Simulator | iOS 17+ | `xcrun simctl list devices` |
+
+Install Xcode from the Mac App Store (the Command Line Tools alone have no simulators), open it once
+to finish setup, then select it: `sudo xcode-select -s /Applications/Xcode.app`.
 
 Tapsmith manages iOS simulators automatically. Set the `simulator` config option to
 the simulator to boot (for example `simulator: "iPhone 17"`; `xcrun simctl list devices`
@@ -168,7 +177,7 @@ Tapsmith Doctor
 14 checks passed, 1 warning
 ```
 
-A warning (`⚠`) or error (`✗`) that Tapsmith knows how to fix is followed by a `↳` line saying how, often the exact command to run. `tapsmith doctor --json` prints the same checks for scripts and AI agents, with a `fix` field wherever there is one. The command exits 1 if any check is an error. Run it whenever tests fail in unexpected ways to rule out setup issues.
+A warning (`⚠`) or error (`✗`) that Tapsmith knows how to fix is followed by a `↳` line saying how, often the exact command to run. `tapsmith doctor --json` prints the same checks for scripts and AI agents, with a `fix` field wherever there is one. The command exits 1 if any check is an error, including when neither Android nor iOS can run on the machine. Run it whenever tests fail in unexpected ways to rule out setup issues.
 
 Then prove the whole loop works before writing tests:
 
