@@ -38,7 +38,6 @@ describe('discoverTestNames', { timeout: 60_000 }, () => {
       `import * as fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(marker)}, String(process.pid));\nsetInterval(() => {}, 1000);\nawait new Promise(() => {});\n`);
     const names = await discoverTestNames([hang], 3_000);
     expect([...names]).toEqual([[hang, undefined]]);
-    if (!fs.existsSync(marker)) throw new Error(fs.readFileSync(path.join(dir, 'driver.log'), 'utf-8'));
     const pid = Number(fs.readFileSync(marker, 'utf-8'));
     // The process importing the file — under tsx, a grandchild — is gone too.
     await new Promise((r) => setTimeout(r, 500));

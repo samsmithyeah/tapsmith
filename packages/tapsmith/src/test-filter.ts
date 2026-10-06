@@ -110,7 +110,7 @@ export function noTestsMatchFilterMessage(
   const files = `${miss.fileCount} test file${miss.fileCount === 1 ? '' : 's'}`;
   const lines = [`${NO_TESTS_MATCH_FILTER_PREFIX} ${filters}.`];
   lines.push(
-    `Checked ${miss.testNames.length} test${miss.testNames.length === 1 ? '' : 's'} in ${files}; `
+    `Checked ${miss.testNames.length} test name${miss.testNames.length === 1 ? '' : 's'} in ${files}; `
     + 'the patterns match against the full "describe > test" name. The tests are:',
   );
   for (const name of miss.testNames.slice(0, MAX_LISTED_TESTS)) lines.push(`  - ${name}`);

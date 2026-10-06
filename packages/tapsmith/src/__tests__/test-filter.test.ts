@@ -107,7 +107,7 @@ describe('noTestsMatchFilterMessage', () => {
       [/wip/, /slow/i],
     );
     expect(message).toMatch(/^No tests found: no test matches grep \/zzzz\/, grep-invert \/wip\/, \/slow\/i\./);
-    expect(message).toContain('Checked 2 tests in 2 test files');
+    expect(message).toContain('Checked 2 test names in 2 test files');
     expect(message).toContain('"describe > test"');
     expect(message).toContain('  - logs in\n  - checkout > pays');
   });
