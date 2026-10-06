@@ -250,14 +250,14 @@ export default defineConfig({
     },
     {
       name: "default",
-      testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/auth-gate.test.ts"],
+      testMatch: ["**/*.tapsmith.ts"],
+      testIgnore: ["**/auth-gate.tapsmith.ts"],
     },
     {
       name: "authenticated",
       dependencies: ["setup"],
       use: { appState: "./tapsmith-results/auth-state-setup.tar.gz" },
-      testMatch: ["**/auth-gate.test.ts"],
+      testMatch: ["**/auth-gate.tapsmith.ts"],
     },
   ],
 })
@@ -279,13 +279,13 @@ export default defineConfig({
       name: "android:authenticated",
       dependencies: ["android:auth-setup"],
       use: { platform: "android", appState: "./tapsmith-results/auth-state-android-auth-setup.tar.gz" },
-      testMatch: ["**/auth-gate.test.ts"],
+      testMatch: ["**/auth-gate.tapsmith.ts"],
     },
     {
       name: "ios:authenticated",
       dependencies: ["ios:auth-setup"],
       use: { platform: "ios", appState: "./tapsmith-results/auth-state-ios-auth-setup.tar.gz" },
-      testMatch: ["**/auth-gate.test.ts"],
+      testMatch: ["**/auth-gate.tapsmith.ts"],
     },
   ],
 })
@@ -500,12 +500,12 @@ export default defineConfig({
   projects: [
     {
       name: "smoke",
-      testMatch: ["**/smoke-*.test.ts"],
+      testMatch: ["**/smoke-*.tapsmith.ts"],
     },
     {
       name: "full",
-      testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/smoke-*.test.ts"],
+      testMatch: ["**/*.tapsmith.ts"],
+      testIgnore: ["**/smoke-*.tapsmith.ts"],
     },
   ],
 })
@@ -555,7 +555,7 @@ export default defineConfig({
     {
       name: "ios",
       use: { platform: "ios" },
-      testIgnore: ["**/*.android.test.ts"],
+      testIgnore: ["**/*.android.tapsmith.ts"],
     },
     {
       name: "android",
