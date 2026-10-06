@@ -24,6 +24,7 @@ import { isTapsmithResolvableFrom, tapsmithInstallCommand, type InstallCommand }
 import { globSync } from 'glob';
 import { minimatch } from 'minimatch';
 import { DEFAULT_TEST_IGNORE } from './test-file-discovery.js';
+import { confirmQuestion } from './confirm-prompt.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -418,11 +419,7 @@ export async function configureIos(env: EnvScan, expo?: ExpoProject): Promise<Io
       console.log(`  ${YELLOW}⚠${RESET} Could not run preflight: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    const buildAgent = await ask<boolean>({
-      type: 'confirm',
-      message: 'Build the iOS agent for physical devices? (requires Xcode, ~30s)',
-      initial: true,
-    });
+    const buildAgent = await ask<boolean>(confirmQuestion('Build the iOS agent for physical devices? (requires Xcode, ~30s)', true));
 
     if (buildAgent) {
       console.log(dim('  Building iOS agent...'));
@@ -491,11 +488,7 @@ async function setupNetworkCapture(
   androidConfig: AndroidConfig | undefined,
   iosHasPhysicalDevice: boolean,
 ): Promise<boolean> {
-  const enableNetwork = await ask<boolean>({
-    type: 'confirm',
-    message: 'Enable network trace capture? (records HTTP/HTTPS traffic during tests)',
-    initial: true,
-  });
+  const enableNetwork = await ask<boolean>(confirmQuestion('Enable network trace capture? (records HTTP/HTTPS traffic during tests)', true));
 
   if (!enableNetwork) return false;
 
@@ -595,11 +588,7 @@ export async function offerTapsmithInstall(
   const install = await tapsmithInstallCommand(cwd);
   if (!fs.existsSync(path.join(cwd, 'package.json'))) return install.display;
 
-  const go = await ask<boolean>({
-    type: 'confirm',
-    message: `Tapsmith isn't installed in this project, and the config imports it. Install it now (${install.display})?`,
-    initial: true,
-  });
+  const go = await ask<boolean>(confirmQuestion(`Tapsmith isn't installed in this project, and the config imports it. Install it now (${install.display})?`, true));
   if (!go) return install.display;
 
   console.log(dim(`  Running ${install.display}...`));
@@ -1002,11 +991,7 @@ async function runInitInner(): Promise<void> {
   const configNames = ['tapsmith.config.ts', 'tapsmith.config.mjs', 'tapsmith.config.js'];
   const existingConfig = configNames.find((name) => fs.existsSync(path.resolve(process.cwd(), name)));
   if (existingConfig) {
-    const overwrite = await ask<boolean>({
-      type: 'confirm',
-      message: `Found existing ${existingConfig}. Overwrite it?`,
-      initial: false,
-    });
+    const overwrite = await ask<boolean>(confirmQuestion(`Found existing ${existingConfig}. Overwrite it?`, false));
     if (!overwrite) {
       console.log(dim('  Keeping existing config. Run `npx tapsmith doctor` to verify your setup.'));
       return;
@@ -1058,11 +1043,7 @@ async function runInitInner(): Promise<void> {
       const { findSimulatorXctestrun } = await import('./ios-device-resolve.js');
       const xctestrun = findSimulatorXctestrun();
       if (!xctestrun) {
-        const buildSim = await ask<boolean>({
-          type: 'confirm',
-          message: 'No iOS simulator agent found. Build it now? (~30s, requires Xcode)',
-          initial: true,
-        });
+        const buildSim = await ask<boolean>(confirmQuestion('No iOS simulator agent found. Build it now? (~30s, requires Xcode)', true));
 
         if (buildSim) {
           console.log(dim('  Building iOS simulator agent...'));
@@ -1094,11 +1075,7 @@ async function runInitInner(): Promise<void> {
   }
 
   // Step 8: Example test
-  const createTest = await ask<boolean>({
-    type: 'confirm',
-    message: 'Generate example test file?',
-    initial: true,
-  });
+  const createTest = await ask<boolean>(confirmQuestion('Generate example test file?', true));
 
   if (createTest) {
     try {
@@ -1113,11 +1090,7 @@ async function runInitInner(): Promise<void> {
   }
 
   // Step 8.5: AGENTS.md for coding agents
-  const writeAgents = await ask<boolean>({
-    type: 'confirm',
-    message: 'Add a Tapsmith section to AGENTS.md? (helps AI coding agents use Tapsmith correctly)',
-    initial: true,
-  });
+  const writeAgents = await ask<boolean>(confirmQuestion('Add a Tapsmith section to AGENTS.md? (helps AI coding agents use Tapsmith correctly)', true));
   if (writeAgents) {
     const { writeAgentsMd } = await import('./agents-md.js');
     writeAgentsMd(process.cwd());

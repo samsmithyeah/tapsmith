@@ -34,6 +34,7 @@ import Enquirer from 'enquirer';
 import { avdHomeDir, scanAvdImageTags } from './avd-images.js';
 import { DEFAULT_API_LEVEL, DEFAULT_DEVICE_PROFILE, defaultAbi, defaultAvdName } from './avd-defaults.js';
 import type { CreateAvdCommandOptions } from './cli-program.js';
+import { confirmQuestion } from './confirm-prompt.js';
 
 const enquirer = new Enquirer();
 
@@ -320,10 +321,8 @@ async function ensureSdkTools(opts: CreateAvdOptions, sdkRoot: string | undefine
   if (!consented && process.stdin.isTTY && process.stdout.isTTY) {
     try {
       const answer = await enquirer.prompt({
-        type: 'confirm',
+        ...confirmQuestion(`Download and install them into ${path.join(sdkRoot, 'cmdline-tools', 'latest')} now?`, true),
         name: 'install',
-        message: `Download and install them into ${path.join(sdkRoot, 'cmdline-tools', 'latest')} now?`,
-        initial: true,
       }) as { install: boolean };
       consented = answer.install;
     } catch {

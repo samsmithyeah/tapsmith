@@ -10,9 +10,11 @@ import type { ExpoProject } from '../init-detect.js';
 interface Question {
   type: string;
   message: string;
-  initial?: unknown;
-  choices?: Array<{ name: string; message: string }>;
+  choices?: Array<{ name: string; message: string; hint?: string }>;
   validate?: (val: string) => true | string;
+  format?: unknown;
+  initial?: unknown;
+  limit?: number;
 }
 const answers = new Map<RegExp, unknown>();
 const asked: string[] = [];
@@ -103,6 +105,8 @@ describe('configureIos() (PILOT-251)', () => {
     const ios = await configureIos(env);
 
     expect(asked.some((m) => /simulator build|Which simulator/.test(m))).toBe(false);
+    // Rendered as yes/no, not `(Y/n) › true` (PILOT-562).
+    expect(questions.find((q) => /Build the iOS agent/.test(q.message))?.format).toBeTypeOf('function');
     expect(ios).toEqual({
       appPath: undefined,
       bundleId: 'com.example.device',
