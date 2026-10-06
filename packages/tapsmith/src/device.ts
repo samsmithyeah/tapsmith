@@ -404,9 +404,10 @@ export class Device {
 
   /**
    * Locate an element by visible text. Substring match by default; pass
-   * `{ exact: true }` for an exact match.
+   * `{ exact: true }` for an exact match, or a RegExp to test the element's
+   * text with (PILOT-520).
    */
-  getByText(text: string, options?: { exact?: boolean }): ElementHandle {
+  getByText(text: string | RegExp, options?: { exact?: boolean }): ElementHandle {
     return this._handle(options?.exact ? _text(text) : _textContains(text));
   }
 
@@ -441,8 +442,10 @@ export class Device {
    * - Android: follows `labelFor`/`labeledBy` relationships, or matches inputs
    *   whose `contentDescription` equals the label text.
    * - iOS: matches input elements whose `accessibilityLabel` equals the text.
+   *
+   * A RegExp is tested against the label text instead (PILOT-520).
    */
-  getByLabel(text: string): ElementHandle {
+  getByLabel(text: string | RegExp): ElementHandle {
     return this._handle(_label(text));
   }
 

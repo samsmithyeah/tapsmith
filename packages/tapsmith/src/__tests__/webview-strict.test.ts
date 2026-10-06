@@ -337,6 +337,26 @@ describe('WebView strict mode (PILOT-227)', () => {
       await texpect(handle.getByText('Welcome')).toHaveText('Welcome');
     });
 
+    it('toHaveText(RegExp) tests the text (PILOT-548)', async () => {
+      const { handle } = makeHandle([{ tag: 'h1', text: 'Welcome' }], 'Welcome back');
+      await texpect(handle.getByText('Welcome')).toHaveText(/^welcome\sBACK$/i);
+      await expect(
+        texpect(handle.getByText('Welcome')).toHaveText(/^back/, { timeout: 100 }),
+      ).rejects.toThrow('to have text /^back/');
+    });
+
+    it('array texts are refused at once in a WebView (PILOT-548)', async () => {
+      const { handle } = makeHandle([{ text: 'A' }], 'A');
+      const start = Date.now();
+      await expect(
+        texpect(handle.getByText('A')).toHaveText(['A'] as unknown as string),
+      ).rejects.toThrow(/WebView toHaveText\(\) does not support an array of texts yet/);
+      await expect(
+        texpect(handle.getByText('A')).toContainText(['A'] as unknown as string),
+      ).rejects.toThrow(/WebView toContainText\(\) does not support an array of texts yet/);
+      expect(Date.now() - start).toBeLessThan(TIMEOUT_MS);
+    });
+
     it('toHaveText() on a positional locator reads the narrowed target without a strict throw', async () => {
       const { handle } = makeHandle([{ text: 'A' }, { text: 'A' }], 'second');
       await texpect(handle.getByText('A').nth(1)).toHaveText('second');

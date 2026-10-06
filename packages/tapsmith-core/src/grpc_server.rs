@@ -2689,6 +2689,16 @@ impl TapsmithServiceImpl {
     }
 }
 
+/// A getBy* RegExp (PILOT-520) as the agents read it: the SDK-translated
+/// pattern, its `i` flag, and the literal for messages.
+fn text_regex_to_json(re: &proto::TextRegex) -> Value {
+    json!({
+        "pattern": re.pattern,
+        "ignoreCase": re.ignore_case,
+        "display": re.display,
+    })
+}
+
 /// Convert a protobuf Selector into a JSON value for the agent protocol.
 pub(crate) fn selector_to_json(selector: &proto::Selector) -> Value {
     let mut obj = json!({});
@@ -2704,6 +2714,10 @@ pub(crate) fn selector_to_json(selector: &proto::Selector) -> Value {
                 // Playwright default: case-insensitive substring.
                 if role_sel.exact {
                     obj["role"]["exact"] = json!(true);
+                }
+                // getByRole `{ name: RegExp }` (PILOT-520).
+                if let Some(ref re) = role_sel.name_regex {
+                    obj["role"]["nameRegex"] = text_regex_to_json(re);
                 }
                 if let Some(checked) = role_sel.checked {
                     obj["checked"] = json!(checked);
@@ -2744,6 +2758,12 @@ pub(crate) fn selector_to_json(selector: &proto::Selector) -> Value {
             }
             proto::selector::Selector::Label(t) => {
                 obj["label"] = json!(t);
+            }
+            proto::selector::Selector::TextRegex(re) => {
+                obj["textRegex"] = text_regex_to_json(re);
+            }
+            proto::selector::Selector::LabelRegex(re) => {
+                obj["labelRegex"] = text_regex_to_json(re);
             }
         }
     }
@@ -9118,6 +9138,7 @@ mod tests {
                 selected: None,
                 expanded: None,
                 exact: false,
+                name_regex: None,
             })),
             parent: None,
         };
@@ -9139,12 +9160,75 @@ mod tests {
                 selected: None,
                 expanded: None,
                 exact: true,
+                name_regex: None,
             })),
             parent: None,
         };
         let j = selector_to_json(&sel);
         assert_eq!(j["role"]["name"], "Sign In");
         assert_eq!(j["role"]["exact"], true);
+    }
+
+    fn text_regex(pattern: &str, ignore_case: bool, display: &str) -> proto::TextRegex {
+        proto::TextRegex {
+            pattern: pattern.into(),
+            ignore_case,
+            display: display.into(),
+        }
+    }
+
+    #[test]
+    fn selector_to_json_text_regex() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::TextRegex(text_regex(
+                "\\Asave", true, "/^save/i",
+            ))),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(
+            j["textRegex"],
+            json!({"pattern": "\\Asave", "ignoreCase": true, "display": "/^save/i"})
+        );
+        assert!(j.get("text").is_none());
+    }
+
+    #[test]
+    fn selector_to_json_label_regex() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::LabelRegex(text_regex(
+                "name", false, "/name/",
+            ))),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(
+            j["labelRegex"],
+            json!({"pattern": "name", "ignoreCase": false, "display": "/name/"})
+        );
+    }
+
+    #[test]
+    fn selector_to_json_role_name_regex() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::Role(proto::RoleSelector {
+                role: "button".into(),
+                name: String::new(),
+                checked: None,
+                disabled: None,
+                selected: None,
+                expanded: None,
+                exact: false,
+                name_regex: Some(text_regex("save", true, "/save/i")),
+            })),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["role"]["role"], "button");
+        assert_eq!(
+            j["role"]["nameRegex"],
+            json!({"pattern": "save", "ignoreCase": true, "display": "/save/i"})
+        );
     }
 
     #[test]
@@ -9158,6 +9242,7 @@ mod tests {
                 selected: None,
                 expanded: Some(false),
                 exact: false,
+                name_regex: None,
             })),
             parent: None,
         };

@@ -126,6 +126,9 @@ class SnapshotElementFinder {
 
     /// Find all elements from a pre-taken snapshot (avoids an extra IPC).
     func findElements(_ selector: ElementSelector, fromSnapshot resolvedSnapshot: XCUIElementSnapshot) throws -> [ElementInfo] {
+        if let regexError = selector.regexError {
+            throw AgentError.invalidSelector(regexError)
+        }
         // Convert to string-keyed dict for easier processing
         var snapshotDict = convertKeys(resolvedSnapshot.dictionaryRepresentation)
         SnapshotElementFinder.annotateTraits(dict: &snapshotDict, snapshot: resolvedSnapshot)
@@ -135,10 +138,11 @@ class SnapshotElementFinder {
         let keyboardVisibleInSnapshot = hasKeyboardInTree(snapshotDict)
 
         // Number the app's descendants in pre-order (XCUIElementQuery order)
-        // so a role+name match can be re-resolved by its index within the
-        // live query that finds it again (cacheQueryElement, PILOT-549).
+        // so a role+name or RegExp match can be re-resolved by its index
+        // within the live query that finds it again (cacheQueryElement,
+        // PILOT-549, PILOT-520).
         var queryNodes: [QueryNode] = []
-        if selector.role != nil, selector.name != nil {
+        if selector.reResolvesByLabel {
             SnapshotElementFinder.numberDescendants(of: &snapshotDict, into: &queryNodes)
         }
         var liveFocusedTextInputFetched = false
@@ -1074,6 +1078,15 @@ class SnapshotElementFinder {
             if !exactMatch && !containsAsChild && !punctuationMatch { return false }
         }
 
+        // getByText(RegExp) (PILOT-520): tested against the raw label, title
+        // or value, as Playwright tests the element's full text. Not split
+        // into ", "-joined child labels: a RegExp sees the whole label.
+        if let textRegex = selector.textRegex {
+            if !textRegex.matches(label) && !textRegex.matches(title) && !textRegex.matches(value) {
+                return false
+            }
+        }
+
         // TextContains selector
         if let textContains = selector.textContains {
             if !TextMatch.contains(label, textContains) && !TextMatch.contains(title, textContains)
@@ -1128,6 +1141,9 @@ class SnapshotElementFinder {
                     && !TextMatch.nameMatches(title, name, exact: exact) {
                     return false
                 }
+            } else if let nameRegex = selector.nameRegex {
+                // A RegExp tests the whitespace-normalized name (PILOT-520).
+                if !nameRegex.nameMatches(label) && !nameRegex.nameMatches(title) { return false }
             }
         }
 
@@ -1178,17 +1194,18 @@ class SnapshotElementFinder {
 
         // Label selector: match input-type elements whose label matches.
         if let labelSelector = selector.label {
-            let inputTypes: Set<XCUIElement.ElementType> = [
-                .textField, .secureTextField, .textView,
-                .switch, .slider, .stepper, .picker,
-                .checkBox, .radioButton,
-            ]
-            if !inputTypes.contains(elType) { return false }
+            if !ElementFinder.labelInputTypes.contains(elType) { return false }
             if !TextMatch.equals(label, labelSelector) && !TextMatch.equals(title, labelSelector) { return false }
+        }
+        // getByLabel(RegExp) (PILOT-520): tested against the raw label text.
+        if let labelRegex = selector.labelRegex {
+            if !ElementFinder.labelInputTypes.contains(elType) { return false }
+            if !labelRegex.matches(label) && !labelRegex.matches(title) { return false }
         }
 
         // Must have at least one positive match criterion
         let hasAnySelector = selector.text != nil || selector.textContains != nil
+            || selector.textRegex != nil || selector.labelRegex != nil
             || selector.contentDesc != nil || selector.testId != nil
             || selector.id != nil || selector.hint != nil
             || selector.role != nil || selector.className != nil
@@ -1349,12 +1366,13 @@ class SnapshotElementFinder {
             element = resolve(labelQuery(predicate))
         } else if let contentDesc = selector.contentDesc {
             element = resolve(labelQuery(concatenatedLabelPredicate(contentDesc)))
-        } else if selector.role != nil, selector.name != nil {
-            // Role + name: e.g. role("button", "Sign in")
+        } else if selector.reResolvesByLabel {
+            // Role + name, e.g. role("button", "Sign in"), or a RegExp locator.
             // The name is a case-insensitive substring by default (PILOT-549),
-            // so a name query would also match unrelated earlier labels that
-            // merely contain it (a header above the button) and shift the
-            // positional index. Re-resolve by the matched node's own label
+            // and a RegExp (PILOT-520) matches whatever it matches, so a query
+            // built from the selector would also match unrelated earlier
+            // labels (a header above the button) and shift the positional
+            // index. Re-resolve by the matched node's own label
             // (and identifier), at its index among every node of the tree
             // this query returns (QueryIndex.liveIndex).
             let nodeLabel = snapshotNode?["label"] as? String ?? ""
@@ -1481,8 +1499,11 @@ class SnapshotElementFinder {
         if let v = selector.role { parts.append("role=\(v)") }
         if let v = selector.name { parts.append("name=\(v)") }
         if selector.name != nil && selector.nameExact { parts.append("exact=true") }
+        if let v = selector.nameRegex { parts.append("name=\(v.display)") }
         if let v = selector.text { parts.append("text=\(v)") }
         if let v = selector.textContains { parts.append("textContains=\(v)") }
+        if let v = selector.textRegex { parts.append("text=\(v.display)") }
+        if let v = selector.labelRegex { parts.append("label=\(v.display)") }
         if let v = selector.contentDesc { parts.append("contentDesc=\(v)") }
         if let v = selector.hint { parts.append("hint=\(v)") }
         if let v = selector.className { parts.append("className=\(v)") }

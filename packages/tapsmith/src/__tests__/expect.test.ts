@@ -245,6 +245,112 @@ describe("toHaveText()", () => {
   });
 });
 
+// ─── toHaveText / toContainText: RegExp and arrays (PILOT-548) ───
+
+describe("toHaveText() / toContainText() with RegExp and arrays (PILOT-548)", () => {
+  const one = (text: string) => makeMockClient(async () => ({
+    requestId: "1", found: true, element: makeElementInfo({ text }), errorMessage: "",
+  }));
+  /** Several distinct elements, in document order. */
+  const many = (...texts: string[]) => makeMockClient(
+    async () => ({ requestId: "1", found: false, errorMessage: "" }),
+    async () => ({
+      requestId: "1",
+      errorMessage: "",
+      elements: texts.map((text, i) => makeElementInfo({
+        elementId: `el-${i}`, text, bounds: { left: 0, top: i * 100, right: 100, bottom: i * 100 + 50 },
+      })),
+    }),
+  );
+
+  it("toHaveText(RegExp) tests the element's text", async () => {
+    await tapsmithExpect(makeHandle(one("Try editing"))).toHaveText(/^Try/, { timeout: 50 });
+    await tapsmithExpect(makeHandle(one("Try editing"))).toHaveText(/EDITING$/i, { timeout: 50 });
+  });
+
+  it("toHaveText(RegExp) prints the RegExp as a literal when it fails", async () => {
+    await vitestExpect(
+      tapsmithExpect(makeHandle(one("Try editing"))).toHaveText(/^editing/, { timeout: 50 }),
+    ).rejects.toThrow('to have text /^editing/, but got "Try editing"');
+  });
+
+  it("not.toHaveText(RegExp)", async () => {
+    await tapsmithExpect(makeHandle(one("Try editing"))).not.toHaveText(/^editing/, { timeout: 50 });
+    await vitestExpect(
+      tapsmithExpect(makeHandle(one("Try editing"))).not.toHaveText(/Try/, { timeout: 50 }),
+    ).rejects.toThrow("NOT to have text /Try/");
+  });
+
+  it("a RegExp with the g flag is tested afresh on every poll", async () => {
+    const re = /Try/g;
+    await tapsmithExpect(makeHandle(one("Try editing"))).toHaveText(re, { timeout: 50 });
+    await tapsmithExpect(makeHandle(one("Try editing"))).toHaveText(re, { timeout: 50 });
+  });
+
+  it("toHaveText(RegExp) is still strict about several matches", async () => {
+    await vitestExpect(
+      tapsmithExpect(makeHandle(many("Item 1", "Item 2"))).toHaveText(/Item/, { timeout: 50 }),
+    ).rejects.toThrow(/^strict mode violation/);
+  });
+
+  it("toHaveText(array) asserts every match's text, in order", async () => {
+    await tapsmithExpect(makeHandle(many("Item 1", "Item 2"))).toHaveText(["Item 1", /2$/], { timeout: 50 });
+  });
+
+  it("toHaveText(array) fails on order, count and text, listing every text", async () => {
+    await vitestExpect(
+      tapsmithExpect(makeHandle(many("Item 1", "Item 2"))).toHaveText(["Item 2", "Item 1"], { timeout: 50 }),
+    ).rejects.toThrow('to have texts ["Item 2", "Item 1"], but got ["Item 1", "Item 2"]');
+    await vitestExpect(
+      tapsmithExpect(makeHandle(many("Item 1", "Item 2"))).toHaveText(["Item 1"], { timeout: 50 }),
+    ).rejects.toThrow('to have texts ["Item 1"], but got ["Item 1", "Item 2"]');
+    await vitestExpect(
+      tapsmithExpect(makeHandle(many("Item 1"))).toHaveText(["Item 1", /Item/], { timeout: 50 }),
+    ).rejects.toThrow('to have texts ["Item 1", /Item/], but got ["Item 1"]');
+  });
+
+  it("toHaveText([]) passes when nothing matches", async () => {
+    await tapsmithExpect(makeHandle(many())).toHaveText([], { timeout: 50 });
+    await vitestExpect(
+      tapsmithExpect(makeHandle(many("x"))).toHaveText([], { timeout: 50 }),
+    ).rejects.toThrow("to have texts [], but got [\"x\"]");
+  });
+
+  it("not.toHaveText(array)", async () => {
+    await tapsmithExpect(makeHandle(many("a", "b"))).not.toHaveText(["b", "a"], { timeout: 50 });
+    await vitestExpect(
+      tapsmithExpect(makeHandle(many("a", "b"))).not.toHaveText(["a", "b"], { timeout: 50 }),
+    ).rejects.toThrow('NOT to have texts ["a", "b"]');
+  });
+
+  it("toContainText(array) finds the items in order, other elements allowed between", async () => {
+    const handle = () => makeHandle(many("Apple pie", "Banana", "Cherry tart"));
+    await tapsmithExpect(handle()).toContainText(["Apple", /cherry/i], { timeout: 50 });
+    await tapsmithExpect(handle()).toContainText([], { timeout: 50 });
+    await vitestExpect(
+      tapsmithExpect(handle()).toContainText(["Cherry", "Apple"], { timeout: 50 }),
+    ).rejects.toThrow('to contain texts ["Cherry", "Apple"], but got ["Apple pie", "Banana", "Cherry tart"]');
+    await vitestExpect(
+      tapsmithExpect(handle()).toContainText(["Banana", "Banana"], { timeout: 50 }),
+    ).rejects.toThrow("to contain texts");
+  });
+
+  it("not.toContainText(array)", async () => {
+    await tapsmithExpect(makeHandle(many("a", "b"))).not.toContainText(["b", "a"], { timeout: 50 });
+  });
+
+  it("an expected value of the wrong type throws at once instead of waiting", async () => {
+    const started = Date.now();
+    await vitestExpect(
+      tapsmithExpect(makeHandle(one("x"))).toHaveText(42 as unknown as string, { timeout: 5_000 }),
+    ).rejects.toThrow(/toHaveText\(\) expects a string, a RegExp or an array of them, got a number/);
+    await vitestExpect(
+      tapsmithExpect(makeHandle(one("x"))).toContainText([/x/, null] as unknown as string[], { timeout: 5_000 }),
+    ).rejects.toThrow(/toContainText\(\) expects a string, a RegExp or an array of them/);
+    vitestExpect(Date.now() - started).toBeLessThan(1_000);
+  });
+});
+
 // ─── toExist() ───
 
 describe("toExist()", () => {

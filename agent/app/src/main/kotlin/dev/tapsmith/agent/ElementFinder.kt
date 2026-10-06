@@ -25,8 +25,12 @@ data class ElementSelector(
     val name: String? = null,
     /** getByRole `{ exact: true }`: match [name] case-sensitively and whole. */
     val nameExact: Boolean = false,
+    /** getByRole `{ name: RegExp }` (PILOT-520); the parser then leaves [name] null. */
+    val nameRegex: TextRegex? = null,
     val text: String? = null,
     val textContains: String? = null,
+    /** getByText(RegExp) (PILOT-520), tested against the element's own text. */
+    val textRegex: TextRegex? = null,
     val contentDesc: String? = null,
     val hint: String? = null,
     val className: String? = null,
@@ -34,6 +38,8 @@ data class ElementSelector(
     val id: String? = null,
     val xpath: String? = null,
     val label: String? = null,
+    /** getByLabel(RegExp) (PILOT-520), tested against the label text. */
+    val labelRegex: TextRegex? = null,
     val enabled: Boolean? = null,
     val checked: Boolean? = null,
     val focused: Boolean? = null,
@@ -509,7 +515,10 @@ class ElementFinder(private val device: UiDevice) {
         // Strategy: find inputs whose contentDescription matches, OR inputs labeled by a
         // TextView with matching text (via AccessibilityNodeInfo.getLabeledBy).
         if (selector.label != null) {
-            return findByLabel(selector.label, parent)
+            return findByLabel(parent) { TextMatch.equalsNormalized(it, selector.label) }
+        }
+        if (selector.labelRegex != null) {
+            return findByLabel(parent) { selector.labelRegex.matches(it) }
         }
 
         val bySelector =
@@ -555,8 +564,8 @@ class ElementFinder(private val device: UiDevice) {
                             false
                         }
                     }
-                return if (selector.name != null) {
-                    byTrait.filter { matchesAccessibleName(it, selector.name, selector.nameExact) }
+                return if (selector.name != null || selector.nameRegex != null) {
+                    byTrait.filter { matchesAccessibleName(it, selector) }
                 } else {
                     byTrait
                 }
@@ -566,10 +575,11 @@ class ElementFinder(private val device: UiDevice) {
         // Post-filter by role name: match contentDescription, text, or the
         // joined descendant text. Like Playwright, a case-insensitive
         // substring by default and a case-sensitive whole-string match with
-        // `exact` (PILOT-549).
+        // `exact` (PILOT-549); a RegExp tested against the normalized name
+        // (PILOT-520).
         val byName =
-            if (selector.role != null && selector.name != null) {
-                results.filter { matchesAccessibleName(it, selector.name, selector.nameExact) }
+            if (selector.role != null && (selector.name != null || selector.nameRegex != null)) {
+                results.filter { matchesAccessibleName(it, selector) }
             } else {
                 results
             }
@@ -660,6 +670,12 @@ class ElementFinder(private val device: UiDevice) {
         }
         if (selector.textContains != null) {
             val pattern = TextMatch.containsPattern(selector.textContains)
+            by = if (by != null) by.text(pattern) else By.text(pattern)
+        }
+        // A RegExp is tested against the raw text, as Playwright tests it
+        // against the element's full text (PILOT-520).
+        if (selector.textRegex != null) {
+            val pattern = selector.textRegex.fullMatchPattern()
             by = if (by != null) by.text(pattern) else By.text(pattern)
         }
 
@@ -769,8 +785,8 @@ class ElementFinder(private val device: UiDevice) {
      *    labeledBy/labelFor relationship (native Android labelFor pattern).
      */
     private fun findByLabel(
-        labelText: String,
         parent: UiObject2?,
+        labelMatches: (CharSequence?) -> Boolean,
     ): List<UiObject2> {
         val results = mutableListOf<UiObject2>()
 
@@ -794,7 +810,7 @@ class ElementFinder(private val device: UiDevice) {
 
         for (input in allInputs) {
             // Strategy 1: contentDescription matches the label text
-            if (TextMatch.equalsNormalized(input.contentDescription, labelText)) {
+            if (labelMatches(input.contentDescription)) {
                 results.add(input)
                 continue
             }
@@ -803,7 +819,7 @@ class ElementFinder(private val device: UiDevice) {
             try {
                 val labelNode = nodeInfo.labeledBy ?: continue
                 try {
-                    if (TextMatch.equalsNormalized(labelNode.text, labelText)) {
+                    if (labelMatches(labelNode.text)) {
                         results.add(input)
                     }
                 } finally {
@@ -1003,8 +1019,7 @@ class ElementFinder(private val device: UiDevice) {
      */
     private fun matchesAccessibleName(
         obj: UiObject2,
-        name: String,
-        exact: Boolean,
+        selector: ElementSelector,
     ): Boolean {
         val text = obj.text
         // An empty EditText reports its hint as its text; that hint is a
@@ -1013,13 +1028,24 @@ class ElementFinder(private val device: UiDevice) {
             text != null &&
                 EDIT_TEXT_HINT_CLASS_PATTERN.matcher(obj.className ?: "").matches() &&
                 text.toString() != extractHint(obj)
+        val regex = selector.nameRegex
+        if (regex != null) {
+            return TextMatch.accessibleNameMatches(
+                contentDescription = obj.contentDescription,
+                text = text,
+                textIsValue = textIsValue,
+                descendantText = { collectDescendantText(obj) },
+                regex = regex,
+            )
+        }
+        val name = selector.name ?: return true
         return TextMatch.accessibleNameMatches(
             contentDescription = obj.contentDescription,
             text = text,
             textIsValue = textIsValue,
             descendantText = { collectDescendantText(obj) },
             name = name,
-            exact = exact,
+            exact = selector.nameExact,
         )
     }
 
@@ -1168,8 +1194,11 @@ class ElementFinder(private val device: UiDevice) {
         selector.role?.let { parts.add("role=$it") }
         selector.name?.let { parts.add("name=$it") }
         if (selector.name != null && selector.nameExact) parts.add("exact=true")
+        selector.nameRegex?.let { parts.add("name=$it") }
         selector.text?.let { parts.add("text=$it") }
         selector.textContains?.let { parts.add("textContains=$it") }
+        selector.textRegex?.let { parts.add("text=$it") }
+        selector.labelRegex?.let { parts.add("label=$it") }
         selector.contentDesc?.let { parts.add("contentDesc=$it") }
         selector.hint?.let { parts.add("hint=$it") }
         selector.className?.let { parts.add("className=$it") }
