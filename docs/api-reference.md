@@ -8,16 +8,36 @@ Locators identify UI elements on the device. They are exposed as Playwright-styl
 
 See the [Locators Guide](locators.md) for a deeper discussion of when to use each one.
 
-### `device.getByText(text: string, options?: { exact?: boolean }): ElementHandle`
+### `device.getByText(text: string | RegExp, options?: { exact?: boolean }): ElementHandle`
 
-Locate an element by its visible text. **Substring match by default**, like Playwright. Pass `{ exact: true }` for an exact match.
+Locate an element by its visible text. **Substring match by default**, like Playwright. Pass `{ exact: true }` for an exact match, or a regular expression to test the text with.
 
 ```typescript
 device.getByText("Welcome")                          // substring
 device.getByText("Sign In", { exact: true })         // exact
+device.getByText(/^welcome to\sexpo$/i)              // RegExp
 ```
 
-Whitespace is normalized on both sides before comparing, exact or not, as in Playwright: runs of whitespace — including non-breaking spaces (`&nbsp;`, U+00A0), other Unicode spaces and line breaks — collapse to one space, and leading and trailing whitespace is ignored. So `getByText("Welcome to Expo", { exact: true })` matches text rendered as `Welcome to&nbsp;Expo` or split over two lines. The same applies to `getByRole`'s `name` and to `getByLabel`. `getByText` matching is case-sensitive, and `text` must be a string: a regular expression throws a `TypeError`.
+Whitespace is normalized on both sides before comparing a string, exact or not, as in Playwright: runs of whitespace — including non-breaking spaces (`&nbsp;`, U+00A0), other Unicode spaces and line breaks — collapse to one space, and leading and trailing whitespace is ignored. So `getByText("Welcome to Expo", { exact: true })` matches text rendered as `Welcome to&nbsp;Expo` or split over two lines. The same applies to `getByRole`'s `name` and to `getByLabel`. String matching is case-sensitive.
+
+#### Regular expressions
+
+`getByText`, `getByLabel` and `getByRole`'s `name` accept a `RegExp`, as in Playwright. It is matched on the device with JavaScript's semantics, so it behaves the way it would in a browser:
+
+- **`\s` is JavaScript's whitespace**, including non-breaking and other Unicode spaces: `/Welcome to\sExpo/` matches `Welcome to&nbsp;Expo`. A literal space in the pattern matches only a space. `\d`, `\w` and `\b` are ASCII, as in JavaScript.
+- **The text is tested as it is**, the way Playwright tests an element's text: `getByText` and `getByLabel` don't normalize whitespace first, so `^` and `$` anchor the whole text, and a line break needs `\s` or the `m` flag (`/^Line two$/m`). A `getByRole` name is whitespace-normalized first, as Playwright normalizes accessible names.
+- **Flags:** `i`, `m`, `s` and `u` work as in JavaScript; `g` and `d` are accepted and have no effect. `y` and `v` throw a `TypeError` when the locator is built.
+- `{ exact: true }` is ignored with a RegExp, as in Playwright.
+- A lookbehind must have a bounded length (no `*`, `+`, `{n,}` or backreference inside `(?<=…)`/`(?<!…)`) — the device regex engines can't run an unbounded one, so it throws a `TypeError`.
+- On iOS, a control that merges its children's text into one label joined by `", "` is tested as that whole label.
+
+```typescript
+device.getByText(/\d+ items? in cart/)
+device.getByRole("button", { name: /^save( draft)?$/i })
+device.getByLabel(/e-?mail/i)
+```
+
+Any other value (a number, `null`, …) throws a `TypeError`.
 
 > Because the default is a substring match, `getByText("Sign in")` also matches longer text like `"Sign in to continue"`. When that happens, acting on the locator throws a [strict mode](#strict-mode) violation — add `{ exact: true }` or use `getByRole(role, { name, exact: true })` to pin a single element.
 
@@ -41,8 +61,8 @@ device.getByRole("button", { name: "Details", expanded: true })
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `name` | `string` | Filter by accessible name. **Case-insensitive substring match by default**, like Playwright; whitespace is normalized like `getByText` |
-| `exact` | `boolean` | Match `name` case-sensitively and as the whole string (whitespace still normalized). Ignored without `name` |
+| `name` | `string \| RegExp` | Filter by accessible name. **Case-insensitive substring match by default**, like Playwright; whitespace is normalized like `getByText`. A [RegExp](#regular-expressions) is tested against the whitespace-normalized name |
+| `exact` | `boolean` | Match a string `name` case-sensitively and as the whole string (whitespace still normalized). Ignored without `name`, and for a RegExp |
 | `checked` | `boolean` | Filter by checked state (checkbox, switch, radio) |
 | `disabled` | `boolean` | Filter by disabled state |
 | `selected` | `boolean` | Filter by selected state (tab, option) |
@@ -76,17 +96,18 @@ Locate an element by its dedicated test identifier.
 device.getByTestId("submit-button")
 ```
 
-### `device.getByLabel(text: string): ElementHandle`
+### `device.getByLabel(text: string | RegExp): ElementHandle`
 
 Locate an input element by its associated label text. Finds form controls (text fields, checkboxes, switches, etc.) whose accessible name matches the label.
 
 - **Android**: matches inputs whose `contentDescription` equals the text, or inputs linked via `labelFor`/`labeledBy`.
 - **iOS**: matches input elements (text fields, switches, sliders, etc.) whose `accessibilityLabel` equals the text.
 
-The comparison normalizes whitespace like `getByText`.
+The comparison normalizes whitespace like `getByText`. A [RegExp](#regular-expressions) is tested against the label text instead.
 
 ```typescript
 device.getByLabel("Email")           // finds the email text field
+device.getByLabel(/^e-?mail$/i)      // RegExp
 device.getByLabel("Dark Mode")       // finds the Dark Mode switch
 device.getByLabel("Volume")          // finds the Volume slider
 ```
@@ -754,7 +775,7 @@ An `ElementHandle` is a lazy reference to a UI element. It is returned by every 
 
 | Method | Description |
 |---|---|
-| `getByText(text, options?)` | Substring (default) or exact text match within the parent. |
+| `getByText(text, options?)` | Substring (default), exact or RegExp text match within the parent. |
 | `getByRole(role, options?)` | Accessibility role within the parent. |
 | `getByDescription(text)` | Accessibility description within the parent. |
 | `getByPlaceholder(text)` | Placeholder / hint text within the parent. |
@@ -1535,17 +1556,25 @@ await expect(device.getByText("Footer", { exact: true })).toBeInViewport();
 await expect(device.getByText("Footer", { exact: true })).toBeInViewport({ ratio: 0.5 }); // at least 50% visible
 ```
 
-#### `.toHaveText(expected: string, options?): Promise<void>`
+#### `.toHaveText(expected: string | RegExp | Array<string | RegExp>, options?): Promise<void>`
 
-Assert that the element's text content matches the expected string exactly.
+Assert that the element's text equals the expected string exactly, or matches a regular expression.
+
+With an array, the locator may match several elements (no strict-mode violation): it must match exactly as many elements as there are items, and each element's text must match its item, in order. `toHaveText([])` asserts that nothing matches.
 
 ```typescript
 await expect(device.locator({ id: "counter" })).toHaveText("42");
+await expect(device.getByTestId("status")).toHaveText(/^\d+ items$/);
+await expect(device.getByRole("listitem")).toHaveText(["Apples", "Bananas", /^Cherries/]);
 ```
 
-#### `.toContainText(expected: string | RegExp, options?): Promise<void>`
+#### `.toContainText(expected: string | RegExp | Array<string | RegExp>, options?): Promise<void>`
 
 Assert that the element's text contains the given substring or matches a regex. Unlike `toHaveText()` which requires an exact match, this allows partial matching.
+
+With an array, the locator may match several elements: each item must match one of them, in order, and other elements may come between (`["Apples", "Cherries"]` passes for *Apples, Bananas, Cherries*).
+
+A RegExp is tested afresh on every poll, so a `g` flag can't make it skip a match. Any expected value other than a string, a RegExp or an array of them throws a `TypeError` at once. The string forms compare the text as it is (no whitespace normalization).
 
 When the matched element has no own text (e.g. a wrapping `View` around `<Text>` children, common in React Native), the agents aggregate descendant text/labels so the assertion sees the visible string.
 
@@ -3306,11 +3335,14 @@ for (const row of await rows.all()) {
 await expect(webview.locator(".header")).toBeVisible()
 await expect(webview.locator(".header")).toHaveText("Welcome")
 await expect(webview.locator(".header")).toContainText("Welc")
+await expect(webview.locator(".header")).toHaveText(/^Welcome/)
 await expect(webview.locator(".error")).toBeHidden()
 await expect(webview.locator("#email")).toExist()
 await expect(webview.locator("#email")).toHaveValue("user@test.com")
 await expect(webview.locator("a")).toHaveAttribute("href", "/about")
 ```
+
+`toHaveText` and `toContainText` take a string or a RegExp here; an array of texts throws a `TypeError` (not supported for WebView locators yet).
 
 All assertions support `.not` and a `{ timeout }` option:
 
