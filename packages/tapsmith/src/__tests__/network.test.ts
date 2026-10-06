@@ -426,6 +426,19 @@ describe('NetworkRouteManager route scopes', () => {
     expect(manager.hasRoutes).toBe(false);
   });
 
+  it('opens the route stream outside the scope of the beforeAll that first needs it', async () => {
+    // Callbacks the stream drives (route handlers) must not inherit the
+    // scope, or a route a handler registers mid-test would outlive the test.
+    let scopeAtOpen: RouteScope | undefined | 'not-opened' = 'not-opened';
+    const stream = new AutoAckStream();
+    const client = {
+      networkRouteStream: () => { scopeAtOpen = currentRouteScope(); return stream; },
+    } as unknown as TapsmithGrpcClient;
+    const manager = new NetworkRouteManager(client);
+    await runInRouteScope({ label: 'Suite' }, () => manager.addRoute('**/a', () => {}));
+    expect(scopeAtOpen).toBeUndefined();
+  });
+
   it('removeAllRoutes (device.unrouteAll) still removes scoped routes', async () => {
     const { manager } = makeManager();
     await runInRouteScope({ label: 'Suite' }, () => manager.addRoute('**/a', () => {}));

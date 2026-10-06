@@ -127,6 +127,16 @@ function allDevices(opts: RunOptions): Device[] {
  */
 const PRE_TEST_IDLE_TIMEOUT_MS = 1_000;
 
+/**
+ * Whether the device still holds routes a `beforeAll`/`afterAll` registered
+ * (the test's own were removed at test end): its route manager must then
+ * survive the per-test disposal, or an untraced attempt (`on-first-retry`)
+ * would drop the scope's mocks for every later test (PILOT-534).
+ */
+function keepsScopedRoutes(d: Device): boolean {
+  return d._routeManager?.hasRoutes === true;
+}
+
 /** Run `fn` against every device concurrently, swallowing per-device errors. */
 async function forEachDeviceBestEffort(opts: RunOptions, fn: (device: Device) => Promise<unknown> | unknown): Promise<void> {
   await Promise.allSettled(allDevices(opts).map(async (d) => { await fn(d); }));
@@ -2605,7 +2615,7 @@ async function runSuiteContext(
           // Keep the route stream installed while network capture is being
           // reused across tests. Registered routes were removed above, and the
           // file-level hard teardown disposes the stream after stopping capture.
-          if (!traceConfig.network && d._disposeRouteManager) {
+          if (!traceConfig.network && d._disposeRouteManager && !keepsScopedRoutes(d)) {
             await d._disposeRouteManager();
           }
           // Return to the native context but keep the WebView connection cached
@@ -2703,7 +2713,7 @@ async function runSuiteContext(
         // traced path above / PILOT-288).
         for (const d of devices) {
           if (!d._disposeRouteManager) continue;
-          await d._disposeRouteManager();
+          if (!keepsScopedRoutes(d)) await d._disposeRouteManager();
           if (d._resetWebViewContext) {
             d._resetWebViewContext();
           }

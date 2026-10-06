@@ -509,7 +509,11 @@ export class NetworkRouteManager {
     if (this._disposed) throw new Error('NetworkRouteManager is disposed');
     if (this._stream) return this._stream;
 
-    const stream = this._client.networkRouteStream();
+    // Opened outside any route scope: the stream outlives the beforeAll that
+    // may open it, and callbacks it drives (route handlers) must not inherit
+    // that scope, or a route a handler registers mid-test would be kept as
+    // the scope's instead of removed after the test (PILOT-534).
+    const stream = routeScopeStorage.exit(() => this._client.networkRouteStream());
     this._stream = stream;
 
     stream.on('data', (msg: ServerMessage) => {

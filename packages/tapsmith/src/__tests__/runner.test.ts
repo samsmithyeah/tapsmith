@@ -2733,26 +2733,37 @@ describe('route scopes (PILOT-534)', () => {
       });
       return true;
     }
-    end(): void { this.emit('end'); }
+    // The daemon drops a stream's routes when the stream closes.
+    end(): void { this.live.clear(); this.emit('end'); }
   }
 
-  /** A Device double whose routes go through a real NetworkRouteManager. */
+  /**
+   * A Device double whose routes go through a real NetworkRouteManager, and
+   * whose `_disposeRouteManager` really disposes it like Device's does — the
+   * runner disposes the manager after untraced attempts.
+   */
   const makeDevice = () => {
     const stream = new AckStream();
-    const manager = new NetworkRouteManager({ networkRouteStream: () => stream } as unknown as TapsmithGrpcClient);
-    return {
+    const device = {
       tracing: new Tracing(async () => undefined, async () => undefined),
       waitForIdle: vi.fn(async () => {}),
       _networkProxyRunning: true,
       _takeRouteRegistrations: () => 0,
-      _routeManager: manager,
-      _disposeRouteManager: vi.fn(async () => {}),
+      _routeManager: null as NetworkRouteManager | null,
+      _disposeRouteManager: async () => {
+        await device._routeManager?.dispose();
+        device._routeManager = null;
+      },
       _disposeWebViewManager: vi.fn(async () => {}),
       _resetWebViewContext: vi.fn(),
-      route: (pattern: string) => manager.addRoute(pattern, () => {}),
+      route: (pattern: string) => {
+        device._routeManager ??= new NetworkRouteManager({ networkRouteStream: () => stream } as unknown as TapsmithGrpcClient);
+        return device._routeManager.addRoute(pattern, () => {});
+      },
       /** The patterns the daemon currently has registered, sorted. */
       live: () => [...stream.live.values()].sort(),
     };
+    return device;
   };
   type ScopedDevice = ReturnType<typeof makeDevice>;
   const run = (ctx: ReturnType<typeof popContext>, devices: ScopedDevice[], config: Partial<TapsmithConfig> = {}) =>
@@ -2782,7 +2793,7 @@ describe('route scopes (PILOT-534)', () => {
     // Still there for the scope's own teardown, gone once the scope ends.
     expect(seen.afterAll).toEqual(['**/file']);
     expect(device.live()).toEqual([]);
-    expect(device._routeManager.hasRoutes).toBe(false);
+    expect(device._routeManager?.hasRoutes ?? false).toBe(false);
   });
 
   it('scopes a describe\'s beforeAll routes to that describe, nested describes included', async () => {
@@ -2843,6 +2854,40 @@ describe('route scopes (PILOT-534)', () => {
 
     expect(collectResults(result).map((t) => t.status)).toEqual(['passed']);
     expect(seen).toEqual([['**/file'], ['**/file']]);
+  });
+
+  it('keeps beforeAll routes through an untraced attempt and its traced retry (on-first-retry)', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-route-scope-retry-'));
+    const device = Object.assign(makeDevice(), {
+      _startNetworkCapture: vi.fn(async () => ({ success: true, proxyPort: 1, errorMessage: '' })),
+      _stopNetworkCapture: vi.fn(async () => ({ success: true, entries: [], errorMessage: '' })),
+      _stopDeviceLogStream: vi.fn(),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
+    });
+    const seen: string[][] = [];
+    let attempt = 0;
+    try {
+      pushContext();
+      tapsmithBeforeAll(async () => { await device.route('**/file'); });
+      tapsmithTest('flaky', async () => {
+        seen.push(device.live());
+        if (attempt++ === 0) throw new Error('first attempt fails');
+      });
+      tapsmithTest('next', async () => { seen.push(device.live()); });
+      const result = await run(popContext(), [device], {
+        retries: 1,
+        rootDir: tempRoot,
+        outputDir: 'out',
+        trace: { mode: 'on-first-retry', network: true, screenshots: false, snapshots: false, sources: false, deviceLogs: false },
+      });
+
+      expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed']);
+      expect(seen).toEqual([['**/file'], ['**/file'], ['**/file']]);
+      expect(device.live()).toEqual([]);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('tags beforeAll routes on every device of a group', async () => {
