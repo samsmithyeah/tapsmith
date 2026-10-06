@@ -14,10 +14,10 @@ export interface PreflightRequest {
   files: string[];
 }
 
-export interface PreflightResponse {
-  type: 'names';
-  results: Array<{ file: string; names?: string[]; error?: string }>;
-}
+export type PreflightResponse =
+  /** Sent first: the process that imports the files (under tsx, a grandchild). */
+  | { type: 'pid'; pid: number }
+  | { type: 'names'; results: Array<{ file: string; names?: string[]; error?: string }> };
 
 /** Long enough for a slow machine to import a large suite under tsx. */
 const PREFLIGHT_TIMEOUT_MS = 60_000;
@@ -46,13 +46,10 @@ export function discoverTestNames(
     try {
       child = fork(script, [], {
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-        // Under tsx, its own process group, so the whole tree can be killed:
-        // the file is imported by a grandchild that tsx does not pass SIGKILL
-        // to. Being detached, it also misses the terminal's Ctrl-C, hence the
-        // 'exit' hook below (the CLI runs under tsx then, whose signal handler
-        // exits). Under plain node there is no grandchild, and staying in the
-        // foreground group lets Ctrl-C reach it directly.
-        detached: loader !== undefined,
+        // Not detached: it stays in the terminal's foreground process group,
+        // so Ctrl-C reaches it — and, under tsx, the grandchild that imports
+        // the files — even when the CLI itself dies by the signal, with no
+        // 'exit' event to clean up from.
         ...(loader ? { execPath: loader } : {}),
         env: { ...process.env, NODE_PATH: path.resolve(pkgDir, '..') },
       });
@@ -60,11 +57,14 @@ export function discoverTestNames(
       resolve(unknown);
       return;
     }
+    // Under tsx the files are imported by a grandchild that tsx does not
+    // pass SIGKILL to, so the importer reports its pid and is killed itself.
+    let importerPid: number | undefined;
     const killTree = (): void => {
-      try {
-        if (loader !== undefined && child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
-        else child.kill('SIGKILL');
-      } catch { /* already gone */ }
+      for (const pid of [importerPid, child.pid]) {
+        if (pid === undefined) continue;
+        try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+      }
     };
     let settled = false;
     const settle = (result: Map<string, string[] | undefined>): void => {
@@ -82,8 +82,8 @@ export function discoverTestNames(
     timer.unref?.();
 
     child.on('message', (msg: PreflightResponse) => {
-      if (msg?.type !== 'names') return;
-      settle(new Map(msg.results.map((r) => [r.file, r.names])));
+      if (msg?.type === 'pid') importerPid = msg.pid;
+      else if (msg?.type === 'names') settle(new Map(msg.results.map((r) => [r.file, r.names])));
     });
     child.on('error', () => settle(unknown));
     // 'disconnect', not 'exit': 'exit' can arrive before the names message has

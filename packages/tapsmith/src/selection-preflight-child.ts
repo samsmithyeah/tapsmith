@@ -15,8 +15,11 @@ function testNames(suite: DiscoveredSuite): string[] {
   return [...suite.tests.map((t) => t.fullName), ...suite.suites.flatMap(testNames)];
 }
 
+const hello: PreflightResponse = { type: 'pid', pid: process.pid };
+process.send?.(hello);
+
 process.once('message', async (msg: PreflightRequest) => {
-  const results: PreflightResponse['results'] = [];
+  const results: Extract<PreflightResponse, { type: 'names' }>['results'] = [];
   for (const file of msg.files) {
     try {
       results.push({ file, names: testNames(await discoverTestFile(file)) });
