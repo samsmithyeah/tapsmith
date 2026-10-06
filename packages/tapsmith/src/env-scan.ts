@@ -90,6 +90,40 @@ export function parseSimctlDevicesJson(output: string): SimulatorInfo[] {
   return simulators;
 }
 
+// ─── Simulator choice (PILOT-562) ───
+
+/**
+ * The simulators init offers, best first (PILOT-562): iOS runtimes only
+ * (watchOS, tvOS and visionOS simulators cannot run an iOS app; all of them
+ * when none is named iOS), one per name — a booted one, else the newest
+ * runtime's, as the config names a simulator by name and the runner adopts a
+ * booted one of that name. A booted simulator comes first, as choosing it
+ * avoids a boot, then iPhones, then the rest, each newest runtime first and
+ * in simctl's order within a runtime. The wizard lists them all with the
+ * first selected, and `init --yes` picks the first.
+ */
+export function simulatorChoices(simulators: SimulatorInfo[]): SimulatorInfo[] {
+  const ios = simulators.filter((s) => /^iOS\b/.test(s.runtime));
+  const byName = new Map<string, SimulatorInfo>();
+  for (const sim of ios.length > 0 ? ios : simulators) {
+    const existing = byName.get(sim.name);
+    if (!existing || rank(sim, existing) < 0) byName.set(sim.name, sim);
+  }
+  return [...byName.values()].sort((a, b) =>
+    Number(b.state === 'Booted') - Number(a.state === 'Booted')
+    || Number(b.name.startsWith('iPhone')) - Number(a.name.startsWith('iPhone'))
+    || newestFirst(a, b));
+}
+
+/** Booted first, then the newer runtime. */
+function rank(a: SimulatorInfo, b: SimulatorInfo): number {
+  return Number(b.state === 'Booted') - Number(a.state === 'Booted') || newestFirst(a, b);
+}
+
+function newestFirst(a: SimulatorInfo, b: SimulatorInfo): number {
+  return b.runtime.localeCompare(a.runtime, undefined, { numeric: true });
+}
+
 export function scanEnvironment(): EnvScan {
   const isMacOS = process.platform === 'darwin';
   const nodeVersion = process.versions.node;

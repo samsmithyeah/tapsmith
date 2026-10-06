@@ -367,3 +367,45 @@ describe('configureIos() on an Expo project (PILOT-557)', () => {
     expect(questions.find((q) => /simulator build's bundle identifier/.test(q.message))?.initial).toBe('com.acme.device');
   });
 });
+
+describe('configureIos() simulator picker (PILOT-562)', () => {
+  const picker = (): Question | undefined => questions.find((q) => /Which simulator/.test(q.message));
+  const sim = (name: string, runtime: string, state = 'Shutdown') => ({ name, udid: `${name}-${runtime}`, state, runtime });
+
+  beforeEach(() => {
+    answers.clear();
+    asked.length = 0;
+    questions.length = 0;
+    bundleIds.clear();
+    bundleIds.set(SIM_APP, 'com.example.sim');
+    simCandidates = [];
+    deviceCandidates = [];
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  it('offers every simulator in a scrolling list, with the runtime as a version', async () => {
+    const many = Array.from({ length: 30 }, (_, i) => sim(`iPhone Extra ${i}`, 'iOS 26.5'));
+    script('simulators');
+
+    await configureIos({ ...env, simulators: many });
+
+    const q = picker();
+    expect(q?.type).toBe('select');
+    expect(q?.message).toMatch(/30 available, ↑\/↓ to scroll/);
+    expect(q?.choices).toHaveLength(30);
+    expect(q?.limit).toBeLessThan(30);
+    expect(q?.choices?.[0]).toMatchObject({ name: 'iPhone Extra 0', hint: 'iOS 26.5' });
+  });
+
+  it('selects an already-booted simulator and marks it booted', async () => {
+    script('simulators');
+
+    await configureIos({ ...env, simulators: [sim('iPhone 17 Pro', 'iOS 26.5'), sim('iPhone 16', 'iOS 18.2', 'Booted')] });
+
+    const q = picker();
+    expect(q?.message).toBe('Which simulator?');
+    expect(q?.initial).toBe(0);
+    expect(q?.choices?.[0]).toMatchObject({ name: 'iPhone 16', hint: 'iOS 18.2, booted' });
+    expect(q?.choices?.[1]).toMatchObject({ name: 'iPhone 17 Pro', hint: 'iOS 26.5' });
+  });
+});

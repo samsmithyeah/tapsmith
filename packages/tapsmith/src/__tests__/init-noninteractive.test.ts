@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { initArgsFromOptions, resolveInitPlan, executeInitPlan, assertConfigWritable, InitError, type DetectFns } from '../init-noninteractive.js';
 import type { ExpoProject } from '../init-detect.js';
 import { needsSimulatorAgent } from '../init.js';
-import type { EnvScan } from '../env-scan.js';
+import { simulatorChoices, type EnvScan } from '../env-scan.js';
 import type { InitCommandOptions } from '../cli-program.js';
 
 /** `tapsmith init` flags as the CLI hands them over: every boolean present, value flags only when given. */
@@ -766,5 +766,55 @@ describe('executeInitPlan()', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe('simulatorChoices() (PILOT-562)', () => {
+  const sim = (name: string, runtime: string, state = 'Shutdown', udid = `${name}-${runtime}`) => ({ name, udid, state, runtime });
+
+  it('lists every iOS simulator once, iPhones first, newest runtime first, keeping simctl order within a runtime', () => {
+    const sims = [
+      sim('iPhone 15', 'iOS 17.5'),
+      sim('iPad Air', 'iOS 26.5'),
+      sim('iPhone 17 Pro', 'iOS 26.5'),
+      sim('iPhone 17', 'iOS 26.5'),
+      sim('iPhone 17', 'iOS 26.0'),
+      ...Array.from({ length: 25 }, (_, i) => sim(`iPhone Extra ${i}`, 'iOS 18.0')),
+    ];
+    const names = simulatorChoices(sims).map((s) => s.name);
+    expect(names.slice(0, 3)).toEqual(['iPhone 17 Pro', 'iPhone 17', 'iPhone Extra 0']);
+    expect(names.at(-2)).toBe('iPhone 15');
+    expect(names.at(-1)).toBe('iPad Air');
+    // Never cut short, one entry per name, newest runtime kept.
+    expect(names).toHaveLength(29);
+    expect(new Set(names).size).toBe(29);
+    expect(simulatorChoices(sims).find((s) => s.name === 'iPhone 17')?.runtime).toBe('iOS 26.5');
+  });
+
+  it('puts a booted simulator first, even one on an older runtime than its namesake', () => {
+    const sims = [
+      sim('iPhone 17 Pro', 'iOS 26.5'),
+      sim('iPhone 16', 'iOS 26.5'),
+      sim('iPhone 16', 'iOS 18.2', 'Booted', 'BOOTED-16'),
+    ];
+    const ordered = simulatorChoices(sims);
+    expect(ordered[0]).toMatchObject({ name: 'iPhone 16', udid: 'BOOTED-16', state: 'Booted' });
+    expect(ordered.map((s) => s.name)).toEqual(['iPhone 16', 'iPhone 17 Pro']);
+  });
+
+  it('leaves out watchOS, tvOS and visionOS simulators, which cannot run an iOS app', () => {
+    const sims = [sim('Apple Watch Ultra', 'watchOS 11.0', 'Booted'), sim('Apple TV', 'tvOS 18.0'), sim('Apple Vision Pro', 'xrOS 2.0'), sim('iPhone 17', 'iOS 26.0')];
+    expect(simulatorChoices(sims).map((s) => s.name)).toEqual(['iPhone 17']);
+  });
+
+  it('keeps every simulator when none has an iOS runtime name (an unrecognised simctl shape)', () => {
+    const sims = [sim('Phone A', 'Future 1'), sim('Phone B', 'Future 2')];
+    expect(simulatorChoices(sims).map((s) => s.name)).toEqual(['Phone B', 'Phone A']);
+  });
+
+  it('init --yes picks the booted simulator over the newest iPhone', () => {
+    const env = { ...baseEnv, simulators: [sim('iPhone 17 Pro', 'iOS 26.5'), sim('iPhone 16', 'iOS 18.2', 'Booted')] };
+    const plan = resolveInitPlan(initArgs({ yes: true, platform: 'ios' }), env, detectStubs);
+    expect(plan.ios?.simulator).toBe('iPhone 16');
   });
 });

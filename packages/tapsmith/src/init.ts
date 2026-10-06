@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import Enquirer from 'enquirer';
 import figlet from 'figlet';
-import { tryExec, scanEnvironment, type EnvScan, type SimulatorInfo } from './env-scan.js';
+import { tryExec, scanEnvironment, simulatorChoices, type EnvScan } from './env-scan.js';
 import {
   detectAndroidPackage,
   detectExpoProject,
@@ -326,6 +326,9 @@ export async function configureAndroid(env: EnvScan, expo?: ExpoProject): Promis
  * The iOS questions. `expo` (PILOT-557) swaps the simulator build hint for
  * the Expo one and is the last fallback for the bundle id prompt's prefill.
  */
+/** How many simulators the picker shows at once; the rest scroll into view. */
+const SIMULATOR_PICKER_ROWS = 12;
+
 export async function configureIos(env: EnvScan, expo?: ExpoProject): Promise<IosConfig> {
   console.log(`  ${bold('iOS')}`);
 
@@ -360,18 +363,20 @@ export async function configureIos(env: EnvScan, expo?: ExpoProject): Promise<Io
   let simulator: string | undefined;
   if (useSimulators) {
     if (env.simulators.length > 0) {
-      const seen = new Map<string, SimulatorInfo>();
-      for (const sim of env.simulators) {
-        const existing = seen.get(sim.name);
-        if (!existing || sim.runtime.localeCompare(existing.runtime, undefined, { numeric: true }) > 0) {
-          seen.set(sim.name, sim);
-        }
-      }
-      const unique = [...seen.values()].slice(0, 20);
+      // Every simulator, a booted one first and selected (PILOT-562).
+      const choices = simulatorChoices(env.simulators);
       simulator = await ask<string>({
         type: 'select',
-        message: 'Which simulator?',
-        choices: unique.map((s) => ({ name: s.name, message: s.name, hint: s.runtime })),
+        message: choices.length > SIMULATOR_PICKER_ROWS
+          ? `Which simulator? (${choices.length} available, ↑/↓ to scroll)`
+          : 'Which simulator?',
+        choices: choices.map((s) => ({
+          name: s.name,
+          message: s.name,
+          hint: s.state === 'Booted' ? `${s.runtime}, booted` : s.runtime,
+        })),
+        initial: 0,
+        limit: SIMULATOR_PICKER_ROWS,
       });
     } else {
       console.log(`  ${YELLOW}⚠${RESET} No iOS simulators found. Install one via Xcode.`);

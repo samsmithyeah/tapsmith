@@ -6,7 +6,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { EnvScan, SimulatorInfo } from './env-scan.js';
+import { simulatorChoices, type EnvScan } from './env-scan.js';
 import type { AndroidConfig, IosConfig, Platform } from './init.js';
 import { EXAMPLE_TEST_PATH, generateConfig, tapsmithTestsOutsideGeneratedMatch, testsOutsideGeneratedMatchWarning, writeExampleTest } from './init.js';
 import { writeAgentsMd } from './agents-md.js';
@@ -120,19 +120,6 @@ export function initArgsFromOptions(opts: InitCommandOptions): InitArgs {
 }
 
 // ─── Resolution ───
-
-function pickNewestSimulator(simulators: SimulatorInfo[]): string | undefined {
-  const seen = new Map<string, SimulatorInfo>();
-  for (const sim of simulators) {
-    const existing = seen.get(sim.name);
-    if (!existing || sim.runtime.localeCompare(existing.runtime, undefined, { numeric: true }) > 0) {
-      seen.set(sim.name, sim);
-    }
-  }
-  const sorted = [...seen.values()].sort((a, b) => b.runtime.localeCompare(a.runtime, undefined, { numeric: true }));
-  const iphone = sorted.find((s) => s.name.startsWith('iPhone'));
-  return (iphone ?? sorted[0])?.name;
-}
 
 export function resolveInitPlan(
   args: InitArgs,
@@ -293,7 +280,7 @@ export function resolveInitPlan(
 
     let simulator = args.simulator;
     if (!simulator) {
-      simulator = pickNewestSimulator(env.simulators);
+      simulator = simulatorChoices(env.simulators)[0]?.name;
       if (!simulator) {
         simulator = 'iPhone 17';
         warnings.push('No iOS simulators found — install one via Xcode; defaulting to "iPhone 17"');
