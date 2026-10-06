@@ -652,13 +652,15 @@ await device.route('**/api/posts*', async (route) => {
 })
 ```
 
+A route lasts as long as the scope that registered it: one registered in a test, `beforeEach`, `afterEach` or a test fixture is removed when the test ends; one registered in `beforeAll` (or `afterAll`) stays for every test of its `describe` block, or of the file at the top level, and is removed when that block ends. See [Route lifetime](network.md#route-lifetime).
+
 #### `device.unroute(url, handler?): Promise<void>`
 
 Remove a previously registered route handler. If `handler` is omitted, all handlers for the pattern are removed.
 
 #### `device.unrouteAll(): Promise<void>`
 
-Remove all registered route handlers.
+Remove all registered route handlers, including those registered in `beforeAll`.
 
 #### `device.waitForRequest(urlOrPredicate, options?): Promise<TapsmithRequest>`
 
