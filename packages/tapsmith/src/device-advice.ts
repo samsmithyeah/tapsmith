@@ -10,8 +10,13 @@ import { androidStateBlocker, type AdbDevice } from './adb-devices.js';
 
 type AdviceConfig = Pick<TapsmithConfig, 'avd' | 'launchEmulators'>;
 
-/** Advice for "no online Android device was found". */
-export function noDeviceAdvice(config: AdviceConfig): string {
+/**
+ * Advice for "no online Android device was found". `toolchainBlocker` is
+ * `androidToolchainBlocker()`: when adb itself is missing, that is all the
+ * user needs to hear — no setting can help yet (PILOT-558).
+ */
+export function noDeviceAdvice(config: AdviceConfig, toolchainBlocker: string | undefined): string {
+  if (toolchainBlocker) return `${toolchainBlocker}.`;
   if (!config.avd) {
     return 'Connect a device, start an emulator, or set `avd` in your config to auto-launch emulators.';
   }
@@ -23,8 +28,12 @@ export function noDeviceAdvice(config: AdviceConfig): string {
     + 'Check that it boots from Android Studio\'s Device Manager, or run `tapsmith doctor`.';
 }
 
-/** Advice for a `use.devices` group that is short of devices. */
-export function moreDevicesAdvice(config: AdviceConfig & Pick<TapsmithConfig, 'platform'>): string {
+/**
+ * Advice for a `use.devices` group that is short of devices.
+ * `toolchainBlocker` is `toolchainBlocker(config.platform)`.
+ */
+export function moreDevicesAdvice(config: AdviceConfig & Pick<TapsmithConfig, 'platform'>, toolchainBlocker: string | undefined): string {
+  if (toolchainBlocker) return `${toolchainBlocker}.`;
   if (config.platform === 'ios') {
     return 'Boot more simulators matching `simulator`, or pin members with `device`.';
   }
@@ -82,13 +91,13 @@ export function describeUnusableAndroidDevices(devices: readonly AdbStateEntry[]
  * the phone whose USB-debugging prompt was never accepted is the likeliest
  * reason a first run finds nothing.
  */
-export function attachedDeviceAdvice(config: AdviceConfig, attached: readonly AdbStateEntry[]): string {
-  return [...describeUnusableAndroidDevices(attached), noDeviceAdvice(config)].join(' ');
+export function attachedDeviceAdvice(config: AdviceConfig, attached: readonly AdbStateEntry[], toolchainBlocker: string | undefined): string {
+  return [...describeUnusableAndroidDevices(attached), noDeviceAdvice(config, toolchainBlocker)].join(' ');
 }
 
 /** "No online devices found." for an Android run, with {@link attachedDeviceAdvice}. */
-export function noOnlineDeviceMessage(config: AdviceConfig, attached: readonly AdbStateEntry[]): string {
-  return `No online devices found. ${attachedDeviceAdvice(config, attached)}`;
+export function noOnlineDeviceMessage(config: AdviceConfig, attached: readonly AdbStateEntry[], toolchainBlocker: string | undefined): string {
+  return `No online devices found. ${attachedDeviceAdvice(config, attached, toolchainBlocker)}`;
 }
 
 /**

@@ -172,7 +172,7 @@ describe('configureAndroid() build detection (PILOT-513)', () => {
     expect(JSON.stringify(questions)).not.toContain('com.example');
   });
 
-  it('warns with the PATH fix when ADB is missing', async () => {
+  it('says to install an Android SDK when ADB is missing and there is none (PILOT-558)', async () => {
     apkCandidates = [DEBUG_APK];
     packages.set(DEBUG_APK, 'com.acme.app');
     script([[/Where is your Android APK/, DEBUG_APK]]);
@@ -181,7 +181,8 @@ describe('configureAndroid() build detection (PILOT-513)', () => {
 
     const out = logged.join('\n');
     expect(out).toMatch(/ADB not found/);
-    expect(out).toContain('Install Android platform-tools');
+    expect(out).toContain('Install Android Studio');
+    expect(out).toContain('https://tapsmith.dev/getting-started/#prerequisites');
   });
 
   it('names the installed platform-tools directory when adb is under ANDROID_HOME but not on PATH', async () => {

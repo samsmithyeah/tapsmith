@@ -777,7 +777,7 @@ interface ResolveEmulatorDeps {
  * Whether `command` is on `env.PATH`, found by looking in each directory —
  * not by running `which`, which slim images may not have.
  */
-function isOnPath(
+export function isOnPath(
   command: string,
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,

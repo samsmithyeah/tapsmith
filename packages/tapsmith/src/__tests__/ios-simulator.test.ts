@@ -433,6 +433,43 @@ describe('provisionSimulator', () => {
     expect(listCalls).toBe(3);
   });
 
+  it('says Xcode is missing, not "run xcrun simctl", when no simulator is found on a Mac without it (PILOT-558)', () => {
+    const savedPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...savedPlatform, value: 'darwin' });
+    try {
+      mockedExecFileSync.mockImplementation((cmd: string) => {
+        // Only the command-line tools: xcrun has no simctl, xcodebuild refuses.
+        if (cmd === 'xcrun' || cmd === 'xcodebuild') throw new Error('requires Xcode');
+        return '' as unknown as Buffer;
+      });
+      let message = '';
+      try {
+        provisionSimulator('iPhone 17', { attempts: 1, delayMs: 1 });
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toMatch(/^Xcode is not installed, so there are no iOS simulators: Install Xcode .*xcode-select -s/);
+      expect(message).not.toContain('xcrun simctl list');
+    } finally {
+      Object.defineProperty(process, 'platform', savedPlatform);
+    }
+  });
+
+  it('keeps the simctl advice when Xcode is installed and the simulator is just missing', () => {
+    const savedPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...savedPlatform, value: 'darwin' });
+    try {
+      mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'xcrun' && args?.[1] === 'list') return makeSimctlOutput([]) as unknown as Buffer;
+        return '' as unknown as Buffer;
+      });
+      expect(() => provisionSimulator('iPhone 99', { attempts: 1, delayMs: 1 }))
+        .toThrow("No iOS simulator found matching 'iPhone 99'. Run 'xcrun simctl list devices' to see available simulators.");
+    } finally {
+      Object.defineProperty(process, 'platform', savedPlatform);
+    }
+  });
+
   it('retries the lookup when simctl transiently returns no devices', () => {
     // CoreSimulator under load can fail or return an empty set for a beat —
     // the simulator "reappears" on the next list (seen on CI as a fatal
