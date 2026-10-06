@@ -18,9 +18,13 @@
 // Outside `runTestFile` nothing changes: the CLI's fatal handlers (which ask
 // `runnerOwnsUnhandledErrors()` first) still tear a crashed run down cleanly.
 
+import { currentAttemptToken, isTestEndedError, type AttemptToken } from './attempt-fence.js';
+
 /** Errors raised, unhandled, while a test attempt or a beforeAll phase ran. */
 export interface ErrorScope {
   readonly errors: Error[];
+  /** The attempt-fence token of the test attempt this scope belongs to. */
+  attempt?: AttemptToken;
 }
 
 let ownerCount = 0;
@@ -42,14 +46,26 @@ function describeValue(value: unknown): string {
 }
 
 function record(kind: 'rejection' | 'exception', reason: unknown): void {
+  // A device call fenced off from a test that already ended: that test has
+  // already failed (it timed out), and this says nothing new.
+  if (isTestEndedError(reason)) return;
   const err = toError(reason);
-  if (activeScope) {
+  // Node runs these listeners in the async context of the promise that
+  // rejected (or of the callback that threw), so a leftover from a test
+  // body that has already ended — an action it forgot to await, failing
+  // late — is told apart from an error of the test running now.
+  const origin = currentAttemptToken();
+  const fromEndedTest = origin?.closed === true && origin !== activeScope?.attempt;
+  if (activeScope && !fromEndedTest) {
     activeScope.errors.push(err);
     return;
   }
   const where = activeFile ? ` in ${activeFile}` : '';
+  const what = fromEndedTest
+    ? `from a test that has already ended${where} (a call it did not await?)`
+    : `outside a test${where}`;
   process.stderr.write(
-    `[tapsmith] Unhandled ${kind} outside a test${where} (not attributed to any test):\n`
+    `[tapsmith] Unhandled ${kind} ${what}, not attributed to any test:\n`
     + `${err.stack ?? err.message}\n`,
   );
 }

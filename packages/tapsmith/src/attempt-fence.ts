@@ -68,6 +68,15 @@ export function runInAttemptContext<T>(token: AttemptToken, fn: () => Promise<T>
 }
 
 /**
+ * @internal The attempt token of the calling async context, if any. Node runs
+ * `unhandledRejection` listeners in the context of the promise that rejected,
+ * so this tells which attempt left a rejection behind (PILOT-543).
+ */
+export function currentAttemptToken(): AttemptToken | undefined {
+  return attemptStorage.getStore();
+}
+
+/**
  * @internal True when the calling async context belongs to a test attempt
  * whose token has been closed. Code outside any attempt context (runner,
  * hooks, reporters) always reads false.

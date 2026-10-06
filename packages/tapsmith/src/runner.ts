@@ -2387,6 +2387,7 @@ async function runSuiteContext(
           let onTestAbort: (() => void) | undefined;
           const abortSignal = opts.abortSignal;
           const attemptToken: AttemptToken = { closed: false };
+          attemptErrors.attempt = attemptToken;
           // Time spent inside progress-tracked device actions does not count
           // toward the test timeout: those actions carry their own bounded
           // deadlines (agent budgets, gRPC deadlines, daemon-side recovery

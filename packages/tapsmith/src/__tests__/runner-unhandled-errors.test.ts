@@ -188,6 +188,55 @@ describe('runTestFile — unhandled errors during a test (PILOT-543)', () => {
     expect(printed).toContain('rejected during afterAll');
   });
 
+  it('does not blame the running test for a leftover of a test that already ended', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const filePath = writeFile('j.test.mjs', `
+      test('forgets to await an action', async () => {
+        // Stands in for an un-awaited device action that fails late.
+        new Promise((_, reject) => setTimeout(() => reject(new Error('late tap failure')), 30));
+      });
+      test('is running when it fails', async () => {
+        await new Promise((r) => setTimeout(r, 80));
+      });
+    `);
+
+    const results = collectResults(await runTestFile(filePath, makeOpts()));
+
+    expect(results.map((r) => r.status)).toEqual(['passed', 'passed']);
+    const printed = stderr.mock.calls.map((c) => String(c[0])).join('');
+    expect(printed).toContain(`Unhandled rejection from a test that has already ended in ${filePath}`);
+    expect(printed).toContain('late tap failure');
+  });
+
+  it('still fails the test whose own leftover rejects during its afterEach', async () => {
+    const filePath = writeFile('k.test.mjs', `
+      test.afterEach(async () => { await new Promise((r) => setTimeout(r, 80)); });
+      test('leftover rejects after the body', async () => {
+        new Promise((_, reject) => setTimeout(() => reject(new Error('rejected during afterEach')), 20));
+      });
+    `);
+
+    const [result] = collectResults(await runTestFile(filePath, makeOpts()));
+
+    expect(result.status).toBe('failed');
+    expect(result.error!.message).toBe('rejected during afterEach');
+  });
+
+  it('ignores a rejected call that the attempt fence refused', async () => {
+    const fenceUrl = pathToFileURL(path.resolve('src/attempt-fence.ts')).href;
+    const filePath = writeFile('l.test.mjs', `
+      import { TestEndedError } from ${JSON.stringify(fenceUrl)};
+      test('a fenced call nobody awaited', async () => {
+        Promise.reject(new TestEndedError("'tap'"));
+        ${SETTLE}
+      });
+    `);
+
+    const [result] = collectResults(await runTestFile(filePath, makeOpts()));
+
+    expect(result.status).toBe('passed');
+  });
+
   it('owns unhandled errors only while a file runs', async () => {
     const filePath = writeFile('h.test.mjs', `
       test('observes ownership', async () => {
