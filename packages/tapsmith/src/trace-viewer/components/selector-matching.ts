@@ -8,6 +8,8 @@ export interface ParsedSelector {
   type: string
   value: string
   name?: string
+  /** getByRole `{ exact: true }`: the name matches case-sensitively and whole. */
+  exact?: boolean
   index?: number | 'first' | 'last'
 }
 
@@ -146,7 +148,9 @@ function mapDeviceMethod(method: string, value: string, name?: string, exact?: b
     // (device.ts getByText → textContains). The playground must agree, or a
     // selector validated here taps a different element at runtime (PILOT-226).
     case 'Text': return exact ? { type: 'text', value } : { type: 'textContains', value };
-    case 'Role': return { type: 'role', value, name };
+    // Role names match like the agents (PILOT-549): a case-insensitive
+    // substring unless { exact: true } is passed.
+    case 'Role': return { type: 'role', value, name, ...(exact && name ? { exact: true } : {}) };
     case 'Description': return { type: 'contentDesc', value };
     case 'Placeholder': return { type: 'hint', value };
     case 'TestId': return { type: 'testId', value };
@@ -215,6 +219,57 @@ function normalizeWhitespace(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
 }
 
+// The Android agent's EDIT_TEXT_HINT_CLASS_PATTERN and MAX_DESCENDANT_TEXT_DEPTH.
+const ANDROID_EDIT_TEXT_CLASSES = new Set([
+  'android.widget.EditText',
+  'android.widget.AutoCompleteTextView',
+  'com.google.android.material.textfield.TextInputEditText',
+  'androidx.appcompat.widget.AppCompatEditText',
+]);
+const MAX_DESCENDANT_TEXT_DEPTH = 6;
+
+/** The Android agent's joined descendant text: each child's text, else its content-desc, else its own descendants'. */
+function descendantText(node: HierarchyNode, depth = 0): string[] {
+  if (depth >= MAX_DESCENDANT_TEXT_DEPTH) return [];
+  const parts: string[] = [];
+  for (const child of node.children) {
+    const own = child.attributes.get('text') || child.attributes.get('content-desc');
+    if (own) parts.push(own);
+    else parts.push(...descendantText(child, depth + 1));
+  }
+  return parts;
+}
+
+/**
+ * Whether a node's accessible name matches a getByRole `name` the way the
+ * agents match it (PILOT-549): any of its name sources — Android
+ * content-desc, text and joined descendant text; iOS label and title —
+ * case-insensitively by substring, or whole and case-sensitively with
+ * `exact` (on iOS, also one whole child of a ", "-joined label). An Android
+ * EditText's text is its typed value unless it equals the hint (an empty
+ * field reports its hint as text), and a typed value is only compared whole.
+ */
+function roleNameMatches(node: HierarchyNode, name: string, exact: boolean): boolean {
+  const query = normalizeWhitespace(name);
+  const matches = (actual: string | undefined, wholeOnly: boolean): boolean => {
+    if (actual === undefined || actual === '') return false;
+    const value = normalizeWhitespace(actual);
+    return wholeOnly ? value === query : value.toLowerCase().includes(query.toLowerCase());
+  };
+  const isAndroid = node.attributes.has('class');
+  const text = node.attributes.get('text');
+  const textIsValue = text !== undefined && ANDROID_EDIT_TEXT_CLASSES.has(node.attributes.get('class') ?? '')
+    && text !== node.attributes.get('hint');
+  const iosChildLabel = (label: string | undefined): boolean =>
+    exact && label !== undefined && normalizeWhitespace(label).split(', ').includes(query);
+  return matches(node.attributes.get('content-desc'), exact)
+    || matches(node.attributes.get('label'), exact)
+    || matches(node.attributes.get('title'), exact)
+    || matches(text, exact || textIsValue)
+    || (!isAndroid && (iosChildLabel(node.attributes.get('label')) || iosChildLabel(node.attributes.get('title'))))
+    || (isAndroid && matches(descendantText(node).join(' '), exact));
+}
+
 function isWebViewNode(node: HierarchyNode): boolean {
   return node.attributes.get('webview') === 'true';
 }
@@ -254,9 +309,7 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
     case 'role': {
       const role = getNodeRole(node);
       if (role !== selector.value) return false;
-      if (selector.name) {
-        return normalizeWhitespace(getNodeAccessibleName(node)) === normalizeWhitespace(selector.name);
-      }
+      if (selector.name) return roleNameMatches(node, selector.name, selector.exact === true);
       return true;
     }
     default:

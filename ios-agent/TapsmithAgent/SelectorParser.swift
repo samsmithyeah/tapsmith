@@ -17,6 +17,8 @@ enum SelectorParser {
 
         let role = nonEmpty(source["role"] as? String)
         let name = nonEmpty(source["name"] as? String)
+        // getByRole `{ exact: true }` rides inside the role object (PILOT-549).
+        let nameExact = (roleObj as? [String: Any])?["exact"] as? Bool ?? false
 
         // Handle "resourceId" (sent by daemon) or "id" (legacy)
         let resourceId = nonEmpty(params["resourceId"] as? String) ?? nonEmpty(params["id"] as? String)
@@ -24,6 +26,7 @@ enum SelectorParser {
         return ElementSelector(
             role: role,
             name: name,
+            nameExact: nameExact,
             text: nonEmpty(params["text"] as? String),
             textContains: nonEmpty(params["textContains"] as? String),
             contentDesc: nonEmpty(params["contentDesc"] as? String),

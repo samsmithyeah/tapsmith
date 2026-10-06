@@ -75,6 +75,12 @@ await device.getByRole("checkbox", { name: "Remember me" }).tap()
 await device.getByRole("switch", { name: "Dark mode" }).tap()
 ```
 
+As in Playwright, `name` is a **case-insensitive substring match** by default, so `{ name: "sign in" }` finds a button labelled `SIGN IN` (how Android renders React Native's `<Button title="Sign In">`) or `Sign in now`. Pass `exact: true` for a case-sensitive, whole-string match — needed when one name is part of another on the same screen:
+
+```typescript
+await device.getByRole("button", { name: "Show overlay", exact: true }).tap()  // not "Show overlay briefly"
+```
+
 Supported roles map to platform-native element types. On iOS, many React Native components render as `XCUIElementTypeOther` — Tapsmith identifies roles from accessibility traits (e.g. a `Pressable` with `accessibilityRole="button"` gets the button trait) and falls back to matching `.other` elements by name. Native iOS and Android apps use typed elements that map directly.
 
 | Role | Android classes | iOS types |
@@ -149,7 +155,7 @@ await expect(device.getByText("3 items")).toBeVisible()
 
 Whitespace differences don't matter: non-breaking spaces, line breaks and runs of spaces in the element's text (or in your query) are treated as a single space, and leading and trailing whitespace is ignored — the same normalization Playwright applies. `getByText("Welcome to Expo")` finds a heading rendered as `Welcome to&nbsp;Expo`.
 
-> **Strict mode:** because of the substring default, `getByText("Sign in")` also matches longer text such as `"Sign in to continue"`. A locator that resolves to more than one element throws a `strict mode violation` when you act or assert on it (instead of silently using the first match). Disambiguate with `{ exact: true }`, `getByRole(role, { name })`, `getByTestId()`, or `.first()/.nth()/.last()`. Absence checks (`toBeHidden`, `not.toBeVisible`, `waitFor({ state: "hidden" })`) and multi-element APIs (`count()`, `all()`, `toHaveCount`) are exempt. See the [API reference](api-reference.md#strict-mode) for the full rules. WebView locators (`webview.getBy*`, `webview.locator(css)`) enforce the same rules.
+> **Strict mode:** because of the substring default, `getByText("Sign in")` also matches longer text such as `"Sign in to continue"`. A locator that resolves to more than one element throws a `strict mode violation` when you act or assert on it (instead of silently using the first match). Disambiguate with `{ exact: true }`, `getByRole(role, { name, exact: true })`, `getByTestId()`, or `.first()/.nth()/.last()`. Absence checks (`toBeHidden`, `not.toBeVisible`, `waitFor({ state: "hidden" })`) and multi-element APIs (`count()`, `all()`, `toHaveCount`) are exempt. See the [API reference](api-reference.md#strict-mode) for the full rules. WebView locators (`webview.getBy*`, `webview.locator(css)`) enforce the same rules.
 
 ### `getByDescription(text)`
 

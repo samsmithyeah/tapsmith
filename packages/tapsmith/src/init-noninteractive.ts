@@ -72,6 +72,8 @@ export interface DetectFns {
   detectAndroidPackage: (apkPath: string) => string | undefined;
   findIosAppCandidates: (cwd: string) => string[];
   detectIosBundleId: (appPath: string) => string | undefined;
+  /** Optional so callers that stub the build detectors need not stub this too (PILOT-557). */
+  detectExpoProject?: (cwd: string) => detectDefaults.ExpoProject | undefined;
 }
 
 // ─── Flag validation ───
@@ -140,6 +142,14 @@ export function resolveInitPlan(
 ): InitPlan {
   const warnings: string[] = [];
 
+  // Expo (PILOT-557): only needed for a missing build or id, and reading a
+  // dynamic app config runs the project's Expo CLI, so detected on demand.
+  let expoMemo: { value: detectDefaults.ExpoProject | undefined } | undefined;
+  const expo = (): detectDefaults.ExpoProject | undefined => {
+    expoMemo ??= { value: (detect.detectExpoProject ?? detectDefaults.detectExpoProject)(cwd) };
+    return expoMemo.value;
+  };
+
   // Platform: explicit flag, else infer from project layout.
   let platforms = args.platforms;
   if (!platforms) {
@@ -147,6 +157,13 @@ export function resolveInitPlan(
     if (fs.existsSync(path.join(cwd, 'android'))) inferred.push('android');
     if (env.isMacOS && fs.existsSync(path.join(cwd, 'ios'))) inferred.push('ios');
     if (inferred.length === 0) {
+      const expoProject = expo();
+      if (expoProject) {
+        const buildable: Array<'android' | 'ios'> = env.isMacOS ? ['android', 'ios'] : ['android'];
+        throw new InitError('NO_PLATFORM', 'Could not infer target platform: this Expo project has no android/ or ios/ directory yet, so there is no build to test', {
+          fix: `Build the app, then re-run init. ${detectDefaults.expoBuildHint(buildable, expoProject, 'Or pass --platform with --apk/--app pointing at an existing build.')}`,
+        });
+      }
       throw new InitError('NO_PLATFORM', 'Could not infer target platform (no android/ or ios/ directory found)', {
         fix: 'Pass --platform android, --platform ios, or --platform android,ios',
       });
@@ -167,6 +184,12 @@ export function resolveInitPlan(
       const prefer = detect.preferDebugApk ?? detectDefaults.preferDebugApk;
       const candidates = prefer(detect.findApkCandidates(cwd));
       if (candidates.length === 0) {
+        const expoProject = expo();
+        if (expoProject) {
+          throw new InitError('NO_APK', 'No Android APK found under android/**/build/outputs/apk/', {
+            fix: detectDefaults.expoBuildHint(['android'], expoProject, 'Or pass --apk <path>.'),
+          });
+        }
         throw new InitError('NO_APK', 'No Android APK found under android/**/build/outputs/apk/', {
           fix: 'Build your app (e.g. cd android && ./gradlew assembleDebug; a React Native Debug build also needs Metro running, see https://tapsmith.dev/getting-started/#build-the-app-under-test), or pass --apk <path>',
         });
@@ -180,7 +203,16 @@ export function resolveInitPlan(
       apkPath = candidates[0];
     }
 
-    const packageName = args.packageName ?? detect.detectAndroidPackage(path.resolve(cwd, apkPath));
+    const apkAbs = path.resolve(cwd, apkPath);
+    let packageName = args.packageName ?? detect.detectAndroidPackage(apkAbs);
+    // The app config's id stands in only for a build that exists: a missing
+    // APK still fails here, and a stand-in is said, since a build variant
+    // (applicationIdSuffix) can carry another id (PILOT-557).
+    const configPackage = !packageName && fs.existsSync(apkAbs) ? expo()?.androidPackage : undefined;
+    if (configPackage) {
+      packageName = configPackage;
+      warnings.push(`Could not read the package name from ${apkPath} (needs aapt2 from the Android SDK build-tools), so used ${configPackage} from the Expo app config — check it matches this build, or pass --package <id>`);
+    }
     if (!packageName) {
       throw new InitError('NO_PACKAGE', `Could not detect package name from ${apkPath} (aapt2 unavailable or APK missing)`, {
         fix: 'Pass --package <id>',
@@ -227,6 +259,12 @@ export function resolveInitPlan(
     if (!appPath) {
       const candidates = detect.findIosAppCandidates(cwd);
       if (candidates.length === 0) {
+        const expoProject = expo();
+        if (expoProject) {
+          throw new InitError('NO_IOS_APP', 'No simulator .app bundle found under ios/', {
+            fix: detectDefaults.expoBuildHint(['ios'], expoProject, 'Or pass --app <path>.'),
+          });
+        }
         throw new InitError('NO_IOS_APP', 'No simulator .app bundle found under ios/', {
           fix: 'Build your app for the simulator (in ios/: xcodebuild -workspace <App>.xcworkspace -scheme <App> -sdk iphonesimulator -derivedDataPath build; see https://tapsmith.dev/getting-started/#build-the-app-under-test), or pass --app <path>',
         });
@@ -240,7 +278,13 @@ export function resolveInitPlan(
       appPath = candidates[0];
     }
 
-    const bundleId = args.bundleId ?? detect.detectIosBundleId(path.resolve(cwd, appPath));
+    const appAbs = path.resolve(cwd, appPath);
+    let bundleId = args.bundleId ?? detect.detectIosBundleId(appAbs);
+    const configBundleId = !bundleId && fs.existsSync(appAbs) ? expo()?.iosBundleId : undefined;
+    if (configBundleId) {
+      bundleId = configBundleId;
+      warnings.push(`Could not read the bundle identifier from ${appPath}, so used ${configBundleId} from the Expo app config — check it matches this build, or pass --bundle-id <id>`);
+    }
     if (!bundleId) {
       throw new InitError('NO_BUNDLE_ID', `Could not detect bundle identifier from ${appPath}`, {
         fix: 'Pass --bundle-id <id>',

@@ -99,7 +99,7 @@ cd ios && xcodebuild -workspace MyApp.xcworkspace -scheme MyApp \
 
 When a debug APK is also lying around, the wizard lists it first and `tapsmith init --yes` picks it over the release one: choose the release APK in the wizard, or pass `--apk android/app/build/outputs/apk/release/app-release.apk`.
 
-**Expo** projects have no `android/` or `ios/` folder until you generate them:
+**Expo** projects have no `android/` or `ios/` folder until you generate them (`tapsmith init` recognises an Expo project and suggests these commands when it finds no build):
 
 - `npx expo prebuild` generates the native projects; then build them with the commands above.
 - `npx expo run:android --variant release` generates, builds and installs in one step, leaving the APK in `android/app/build/outputs/apk/release/`. `npx expo run:ios --configuration Release` does the same for iOS, but builds into Xcode's default DerivedData folder (the path above), where `tapsmith init` does not look: enter that path, or build with the `xcodebuild … -derivedDataPath build` command above after `expo prebuild`.
@@ -119,8 +119,8 @@ The wizard walks through these steps:
 
 1. **Environment detection** — checks for ADB, Xcode, simulators, emulators, and reports what's available
 2. **Platform selection** — choose Android, iOS, or both
-3. **Android** — pick your APK from the builds the wizard finds under `android/` (the same ones `init --yes` looks for) or enter a path, which must exist; the wizard reads the package name from the APK and asks only when it can't. Then choose emulators, physical devices or both, and, for emulators, the AVD Tapsmith should launch
-4. **iOS** — choose simulators, physical devices or both. For simulators, pick your simulator `.app` the same way and the simulator to boot. For physical devices, the wizard runs a code-signing preflight, offers to build the device agent, and asks for your device-signed (`iphoneos`) `.app`. It reads each build's bundle ID and asks only when it can't. Choosing both writes two projects, `ios` (simulator) and `ios-device` (physical device), so `npx tapsmith test --project ios-device` runs on the device alone (the layout of [Running simulator and device together](./ios-physical-devices.md#running-simulator-and-device-together), with these project names)
+3. **Android** — pick your APK from the builds the wizard finds under `android/` (the same ones `init --yes` looks for) or enter a path, which must exist; the wizard reads the package name from the APK and asks only when it can't (in an Expo project, with `expo.android.package` from the app config pre-filled). Then choose emulators, physical devices or both, and, for emulators, the AVD Tapsmith should launch
+4. **iOS** — choose simulators, physical devices or both. For simulators, pick your simulator `.app` the same way and the simulator to boot. For physical devices, the wizard runs a code-signing preflight, offers to build the device agent, and asks for your device-signed (`iphoneos`) `.app`. It reads each build's bundle ID and asks only when it can't (in an Expo project, with `expo.ios.bundleIdentifier` pre-filled). Choosing both writes two projects, `ios` (simulator) and `ios-device` (physical device), so `npx tapsmith test --project ios-device` runs on the device alone (the layout of [Running simulator and device together](./ios-physical-devices.md#running-simulator-and-device-together), with these project names)
 5. **Network capture** — optionally record HTTP/HTTPS traffic; saying yes writes `trace: { mode: 'retain-on-failure' }`, which [`device.route()`](network.md#prerequisites) needs, and lists the per-platform setup still to do
 6. **iOS simulator agent** — if no simulator agent build is found, offers to build it now (~30 s)
 7. **Config** — writes `tapsmith.config.ts` with the app, its `package` and, for iOS, `platform: 'ios'` and the simulator

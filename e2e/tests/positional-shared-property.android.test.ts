@@ -39,7 +39,9 @@ describe("positional action on shared-property matches", () => {
     ).toBeVisible();
     expect(
       await device
-        .getByRole("button", { name: "Item 3", selected: true })
+        // exact: a role name is a substring match by default, and "Item 3"
+        // is a substring of the (selected) "Item 30".
+        .getByRole("button", { name: "Item 3", exact: true, selected: true })
         .exists(),
     ).toBe(false);
     await expect(device.getByTestId("selected-count")).toHaveText("1 selected");

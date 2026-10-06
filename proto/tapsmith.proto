@@ -142,6 +142,10 @@ message RoleSelector {
   optional bool disabled = 4;
   optional bool selected = 5;
   optional bool expanded = 6;
+  // getByRole `{ exact: true }`: match `name` case-sensitively and as the
+  // whole string. Unset/false is Playwright's default, a case-insensitive
+  // substring match (whitespace is normalized either way).
+  bool exact = 7;
 }
 
 message ElementInfo {
