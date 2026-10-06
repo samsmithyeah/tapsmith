@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { androidEmulatorCaptureLine, avdPickerChoices, normalizeTypedPath, typedBuildPath, validateBuildPath, generateConfig, generatedProjects, generateExampleTest, runInit } from '../init.js';
+import { EXAMPLE_TEST_PATH, GENERATED_TEST_MATCH, androidEmulatorCaptureLine, avdPickerChoices, normalizeTypedPath, typedBuildPath, validateBuildPath, generateConfig, generatedProjects, generateExampleTest, runInit } from '../init.js';
 import type { AndroidConfig, IosConfig, Platform } from '../init.js';
 import { platformlessIosFields } from '../doctor.js';
 import { _internal } from '../runner.js';
@@ -10,6 +10,7 @@ import type { TapsmithConfig } from '../config.js';
 import type { InitCommandOptions } from '../cli-program.js';
 import type { AvdImageInfo } from '../avd-images.js';
 import { stripAnsi } from '../cli-json.js';
+import { minimatch } from 'minimatch';
 
 interface GeneratedScope {
   platform?: Platform;
@@ -20,6 +21,7 @@ interface GeneratedScope {
   simulator?: string;
 }
 interface GeneratedConfig extends GeneratedScope {
+  testMatch?: string[];
   projects?: Array<{ name: string; testMatch?: string[]; workers?: number; use?: GeneratedScope }>;
 }
 
@@ -129,7 +131,7 @@ describe('generateConfig()', () => {
     );
     const parsed = evaluateConfig(config);
 
-    expect(parsed).toEqual({ platform: 'ios', package: 'com.example.app', app: './MyApp-device.app' });
+    expect(parsed).toEqual({ testMatch: GENERATED_TEST_MATCH, platform: 'ios', package: 'com.example.app', app: './MyApp-device.app' });
   });
 
   it('emits simulator and device projects for single-platform iOS on both (PILOT-251)', () => {
@@ -153,12 +155,10 @@ describe('generateConfig()', () => {
     expect(parsed.projects).toEqual([
       {
         name: 'ios',
-        testMatch: ['**/*.test.ts'],
         use: { platform: 'ios', package: 'com.example.app', app: './MyApp.app', simulator: 'iPhone 17' },
       },
       {
         name: 'ios-device',
-        testMatch: ['**/*.test.ts'],
         workers: 1,
         use: { platform: 'ios', package: 'com.example.app', app: './MyApp-device.app' },
       },
@@ -458,6 +458,48 @@ describe('typedBuildPath() (PILOT-513)', () => {
     const outside = path.join(os.tmpdir(), 'elsewhere', 'app.apk');
     expect(typedBuildPath(outside, project)).toBe(outside);
     expect(typedBuildPath(path.join(os.tmpdir(), 'proj-sibling', 'a.apk'), project)).toBe(path.join(os.tmpdir(), 'proj-sibling', 'a.apk'));
+  });
+});
+
+// ─── The scaffold stays out of the project's own unit-test runner (PILOT-554) ───
+
+describe('example test location vs Jest and Vitest (PILOT-554)', () => {
+  // Their published defaults: Jest's `testMatch` and Vitest's `include`.
+  const JEST_TEST_MATCH = ['**/__tests__/**/*.?([mc])[jt]s?(x)', '**/?(*.)+(spec|test).?([mc])[jt]s?(x)'];
+  const VITEST_INCLUDE = ['**/*.{test,spec}.?(c|m)[jt]s?(x)'];
+  const matches = (globs: string[], file: string): boolean => globs.some((g) => minimatch(file, g, { dot: true }));
+
+  it('these globs do catch the old scaffold, so the checks below can fail', () => {
+    expect(matches(JEST_TEST_MATCH, 'tests/example.test.ts')).toBe(true);
+    expect(matches(VITEST_INCLUDE, 'tests/example.test.ts')).toBe(true);
+  });
+
+  it('scaffolds a file neither Jest nor Vitest runs by default', () => {
+    expect(matches(JEST_TEST_MATCH, EXAMPLE_TEST_PATH)).toBe(false);
+    expect(matches(VITEST_INCLUDE, EXAMPLE_TEST_PATH)).toBe(false);
+  });
+
+  it("the generated testMatch finds the scaffold but not the project's own unit tests", () => {
+    expect(matches(GENERATED_TEST_MATCH, EXAMPLE_TEST_PATH)).toBe(true);
+    expect(matches(GENERATED_TEST_MATCH, 'tests/login/sign-in.tapsmith.ts')).toBe(true);
+    for (const unit of ['src/utils.test.ts', '__tests__/App.test.tsx', 'tests/example.test.ts', 'src/api.spec.ts']) {
+      expect(matches(GENERATED_TEST_MATCH, unit)).toBe(false);
+    }
+  });
+
+  const android: AndroidConfig = { apkPath: './app.apk', packageName: 'com.example.android', useEmulators: true, usePhysicalDevices: false, avd: 'Pixel_7' };
+  const shapes: Array<{ label: string; platforms: Platform[]; android?: AndroidConfig; ios?: IosConfig }> = [
+    { label: 'android', platforms: ['android'], android },
+    { label: 'ios simulator', platforms: ['ios'], ios: { appPath: './MyApp.app', bundleId: 'com.example.ios', simulator: 'iPhone 17', usePhysicalDevice: false } },
+    { label: 'ios device', platforms: ['ios'], ios: { bundleId: 'com.example.ios', usePhysicalDevice: true, deviceAppPath: './MyApp-device.app' } },
+    { label: 'ios simulator + device', platforms: ['ios'], ios: { appPath: './MyApp.app', bundleId: 'com.example.ios', simulator: 'iPhone 17', usePhysicalDevice: true, deviceAppPath: './MyApp-device.app' } },
+    { label: 'android + ios', platforms: ['android', 'ios'], android, ios: { appPath: './MyApp.app', bundleId: 'com.example.ios', simulator: 'iPhone 17', usePhysicalDevice: false } },
+  ];
+
+  it.each(shapes)('$label: the config matches the scaffold at the root, and no project narrows it', ({ platforms, android: a, ios }) => {
+    const parsed = evaluateConfig(generateConfig(platforms, a, ios, false));
+    expect(parsed.testMatch).toEqual(GENERATED_TEST_MATCH);
+    for (const project of parsed.projects ?? []) expect(project.testMatch).toBeUndefined();
   });
 });
 

@@ -226,6 +226,7 @@ describe.skipIf(!DIST_BUILT && !process.env.CI)('tapsmith test selection', { tim
       'export default { platform: "android", package: "com.example", launchEmulators: false, '
       + 'projects: [{ name: "pw", testMatch: ["tests/pw/**/*.test.ts"] }] };\n');
     for (const shard of ['1/2', '2/2']) {
+      fs.rmSync(marker, { force: true });
       const { output, reachedDevice } = run('--grep', 'creates', `--shard=${shard}`);
       expect(output).not.toContain('No tests found');
       expect(reachedDevice).toBe(true);
@@ -274,10 +275,32 @@ describe.skipIf(!DIST_BUILT && !process.env.CI)('tapsmith test selection', { tim
       + 'test.skip("parked feature", async () => {});\n'
       + 'test("runtime skipped", async () => { test.skip(); });\n');
     for (const pattern of ['parked', 'runtime skipped']) {
+      fs.rmSync(marker, { force: true });
       const { output, reachedDevice } = run('--grep', pattern);
       expect(output).not.toContain('No tests found');
       expect(reachedDevice).toBe(true);
     }
+  });
+
+  it('selects within init\'s *.tapsmith.ts testMatch, never the project\'s unit tests', () => {
+    // init's configs match only *.tapsmith.ts (PILOT-554), so a directory or
+    // filter must not pull in a *.test.ts unit test sitting beside the tests.
+    fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'),
+      'export default { platform: "android", package: "com.example", launchEmulators: false, testMatch: ["**/*.tapsmith.ts"] };\n');
+    fs.writeFileSync(path.join(root, 'tests', 'example.tapsmith.ts'), testFile('example', ['opens the app']));
+    const dir = run('tests');
+    expect(dir.output).toContain('1 test file');
+    expect(dir.reachedDevice).toBe(true);
+    fs.rmSync(marker, { force: true });
+    // `login` matches only tests/pw/login.test.ts, which this testMatch leaves out.
+    const filter = run('login');
+    expect(filter.output).toContain('"login" matched no test file');
+    expect(filter.output).toContain('(**/*.tapsmith.ts)');
+    expect(filter.reachedDevice).toBe(false);
+    const grep = run('--grep', 'zzzz');
+    expect(grep.output).toContain('No tests found: no test matches grep /zzzz/.');
+    expect(grep.output).toContain('  - example > opens the app');
+    expect(grep.reachedDevice).toBe(false);
   });
 });
 

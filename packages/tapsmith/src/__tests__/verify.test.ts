@@ -28,6 +28,11 @@ describe('pickVerifyTarget()', () => {
     expect(pickVerifyTarget(files)).toBe('/p/tests/example.test.ts');
   });
 
+  it("prefers init's example.tapsmith.ts (PILOT-554), then an older init's example.test.ts", () => {
+    const files = ['/p/tests/example.test.ts', '/p/tests/login.tapsmith.ts', '/p/tests/example.tapsmith.ts'];
+    expect(pickVerifyTarget(files)).toBe('/p/tests/example.tapsmith.ts');
+  });
+
   it('falls back to the first file', () => {
     expect(pickVerifyTarget(['/p/tests/b.test.ts', '/p/tests/a.test.ts'])).toBe('/p/tests/b.test.ts');
   });
@@ -247,6 +252,28 @@ describe('scaffoldVerifySmokeTest()', () => {
       expect(fs.readFileSync(legacy, 'utf8')).toBe('user test');
       expect(fs.readFileSync(scaffolded.file, 'utf8')).toBe('generated test');
       expect(path.dirname(scaffolded.file)).toBe(scaffolded.tempDir);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // The throwaway file is run by name, and a run with projects runs a named
+  // file only when a project's testMatch covers it (PILOT-553), so its name
+  // follows the config's testMatch: init's configs match only *.tapsmith.ts (PILOT-554).
+  it.each([
+    { testMatch: ['**/*.tapsmith.ts'], name: 'smoke.tapsmith.ts' },
+    { testMatch: ['**/*.test.ts', '**/*.spec.ts'], name: 'smoke.test.ts' },
+    { testMatch: ['**/*.spec.ts'], name: 'smoke.spec.ts' },
+    { testMatch: ['tests/**/*.tapsmith.ts'], name: 'smoke.tapsmith.ts' },
+    // Nothing the scaffold could be called matches: the historical name.
+    { testMatch: ['e2e/**/*.ts'], name: 'smoke.test.ts' },
+  ])('names the smoke test $name for testMatch $testMatch', ({ testMatch, name }) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-verify-test-'));
+    const testDir = path.join(tmp, 'tests');
+    fs.mkdirSync(testDir);
+    try {
+      const scaffolded = scaffoldVerifySmokeTest(testDir, 'generated test', { testMatch, rootDir: tmp });
+      expect(path.basename(scaffolded.file)).toBe(name);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
