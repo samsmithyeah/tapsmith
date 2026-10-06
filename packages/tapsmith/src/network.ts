@@ -347,6 +347,12 @@ interface RegisteredRouteInfo {
 export interface RouteScope {
   /** For debugging only: the scope's describe path, or the file. */
   readonly label: string
+  /**
+   * Set once the scope has ended and its routes are being removed. A route
+   * registered after that (work the hook left running) belongs to whatever
+   * test is running then, so it can never outlive every cleanup.
+   */
+  ended?: boolean
 }
 
 const routeScopeStorage = new AsyncLocalStorage<RouteScope>();
@@ -361,7 +367,8 @@ export function runInRouteScope<T>(scope: RouteScope, fn: () => Promise<T>): Pro
 
 /** @internal The suite scope registering routes now; `undefined` inside a test. */
 export function currentRouteScope(): RouteScope | undefined {
-  return routeScopeStorage.getStore();
+  const scope = routeScopeStorage.getStore();
+  return scope?.ended ? undefined : scope;
 }
 
 // ─── URL Pattern Matching ───
@@ -516,8 +523,11 @@ export class NetworkRouteManager {
     const stream = routeScopeStorage.exit(() => this._client.networkRouteStream());
     this._stream = stream;
 
+    // Route handlers run outside any route scope, whatever async context
+    // the stream's events arrive in: a route a handler registers belongs to
+    // the running test (PILOT-534).
     stream.on('data', (msg: ServerMessage) => {
-      this._onServerMessage(msg);
+      routeScopeStorage.exit(() => this._onServerMessage(msg));
     });
 
     stream.on('error', (err: Error) => {
@@ -661,7 +671,7 @@ export class NetworkRouteManager {
     await this._removeWhere((info) => info.scope === undefined);
   }
 
-  /** Remove the routes `scope`'s hooks registered, once that scope has ended. */
+  /** Remove the routes `scope`'s hooks registered, once that scope has ended (see `RouteScope.ended`). */
   async removeScopeRoutes(scope: RouteScope): Promise<void> {
     await this._removeWhere((info) => info.scope === scope);
   }

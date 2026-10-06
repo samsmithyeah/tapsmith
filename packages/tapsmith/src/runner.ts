@@ -3041,6 +3041,7 @@ async function runSuiteContext(
     // The scope is over — with every early return (failed or skipped
     // beforeAll, a user stop) — so its hooks' routes go, before the next
     // scope or file runs against the same route stream (PILOT-534).
+    routeScope.ended = true;
     await forEachDeviceBestEffort(opts, async (d) => {
       if (d._routeManager?.hasRoutes) await d._routeManager.removeScopeRoutes(routeScope);
     });

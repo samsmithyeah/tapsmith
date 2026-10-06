@@ -439,6 +439,44 @@ describe('NetworkRouteManager route scopes', () => {
     expect(scopeAtOpen).toBeUndefined();
   });
 
+  it('treats a route registered after its scope ended as a test route', async () => {
+    const { manager } = makeManager();
+    const scope: RouteScope = { label: 'Suite' };
+    let late: Promise<void> | undefined;
+    await runInRouteScope(scope, async () => {
+      // Work the hook leaves running, which registers once the scope is over.
+      late = new Promise<void>((resolve) => setTimeout(resolve, 5)).then(() => manager.addRoute('**/late', () => {}));
+    });
+    scope.ended = true;
+    await manager.removeScopeRoutes(scope);
+    await late;
+    expect(manager.hasTestRoutes).toBe(true);
+    await manager.removeTestRoutes();
+    expect(manager.hasRoutes).toBe(false);
+  });
+
+  it('runs route handlers outside any route scope', async () => {
+    const { manager, stream } = makeManager();
+    let scopeInHandler: RouteScope | undefined | 'not-called' = 'not-called';
+    await manager.addRoute('**/a', async (route) => {
+      scopeInHandler = currentRouteScope();
+      await route.continue();
+    });
+    const register = stream.writes.find(
+      (m): m is { registerRoute: { routeId: string } } => typeof m === 'object' && m !== null && 'registerRoute' in m,
+    )!;
+    // Deliver the intercepted request from inside a scope, as a stream
+    // whose events inherited a beforeAll's async context would.
+    await runInRouteScope({ label: 'Suite' }, async () => {
+      stream.emitData({ interceptedRequest: {
+        interceptId: 'i1', routeId: register.registerRoute.routeId, method: 'GET',
+        url: 'https://example.com/a', headers: [], body: Buffer.alloc(0), isHttps: true,
+      } });
+    });
+    await new Promise((r) => setTimeout(r, 1));
+    expect(scopeInHandler).toBeUndefined();
+  });
+
   it('removeAllRoutes (device.unrouteAll) still removes scoped routes', async () => {
     const { manager } = makeManager();
     await runInRouteScope({ label: 'Suite' }, () => manager.addRoute('**/a', () => {}));
