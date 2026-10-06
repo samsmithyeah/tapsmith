@@ -8,6 +8,7 @@
 
 import {
   type Selector,
+  type RoleLocatorOptions,
   selectorToProto,
   formatSelector,
   withParent,
@@ -390,7 +391,7 @@ export const STRICT_MODE_VIOLATION_BRAND = Symbol.for('tapsmith.StrictModeViolat
  * Thrown when a locator used for an action, single-element query, or
  * assertion resolves to more than one element. Mirrors Playwright's strict
  * mode: acting on an ambiguous selector is an error, never a silent
- * first-match. Disambiguate with `{ exact: true }`, `getByRole(role, { name })`,
+ * first-match. Disambiguate with `{ exact: true }`, `getByRole(role, { name, exact: true })`,
  * `getByTestId()`, or `.first()/.nth()/.last()`.
  */
 export class StrictModeViolationError extends Error {
@@ -444,7 +445,12 @@ function suggestSelectorFor(el: ElementInfo): string | undefined {
   const name = el.contentDescription || el.text;
   // Static text elements read better as getByText; real widgets as getByRole.
   if (el.role && el.role !== 'text' && name) {
-    return `device.getByRole("${el.role}", { name: "${escapeForSelector(truncateText(name, 60))}" })`;
+    // Role names match by substring unless exact (PILOT-549): pin a short
+    // name whole; a long one is suggested as its leading part (no ellipsis,
+    // which the name doesn't contain), still a valid substring locator.
+    const exact = name.length <= 60;
+    const shown = exact ? name : name.slice(0, 60);
+    return `device.getByRole("${el.role}", { name: "${escapeForSelector(shown)}"${exact ? ', exact: true' : ''} })`;
   }
   if (el.text) {
     return `device.getByText("${escapeForSelector(truncateText(el.text, 60))}", { exact: true })`;
@@ -485,7 +491,7 @@ export function buildStrictModeViolationError(
   const message =
     `strict mode violation: ${selectorDescription} resolved to ${totalCount} elements:\n` +
     `${lines.join('\n')}\n` +
-    'Hint: use { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last() to target a single element.';
+    'Hint: use { exact: true }, getByRole(role, { name, exact: true }), getByTestId(), or .first()/.nth()/.last() to target a single element.';
   return new StrictModeViolationError(message, elements, totalCount);
 }
 
@@ -672,7 +678,7 @@ export class ElementHandle {
   }
 
   /** Locate a descendant by accessibility role, optionally filtering by name or state. */
-  getByRole(role: string, options?: { name?: string; checked?: boolean; disabled?: boolean; selected?: boolean; expanded?: boolean }): ElementHandle {
+  getByRole(role: string, options?: RoleLocatorOptions): ElementHandle {
     return this._scoped(_role(role, options));
   }
 
