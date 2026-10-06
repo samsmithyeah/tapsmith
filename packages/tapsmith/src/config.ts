@@ -1625,6 +1625,64 @@ async function explainMissingTapsmith(configPath: string, err: unknown): Promise
   return new TapsmithNotInstalledError(configPath, await tapsmithInstallCommand(dir), (err as { cause?: unknown }).cause ?? err);
 }
 
+// ─── Module-type warnings ───
+
+/**
+ * Whether a warning is Node complaining about the module type of a file it
+ * imports natively: MODULE_TYPELESS_PACKAGE_JSON for ESM syntax in a package
+ * without `"type"` (Node reparses it as ESM), or "Failed to load the ES
+ * module" for ESM syntax in a `"type": "commonjs"` package (the load fails
+ * and tsx retries it). Both advise adding `"type": "module"`, which can break
+ * an Expo/RN app, for a config Tapsmith loads either way (PILOT-540).
+ */
+function isModuleTypeWarning(warning: unknown): boolean {
+  if (!(warning instanceof Error)) return false;
+  if ((warning as { code?: unknown }).code === 'MODULE_TYPELESS_PACKAGE_JSON') return true;
+  return warning.message.startsWith('Failed to load the ES module');
+}
+
+let moduleTypeWarningScopes = 0;
+let moduleTypeWarningFilter: typeof process.emit | undefined;
+let emitBeforeFilter: typeof process.emit | undefined;
+
+/**
+ * Run a native config import with Node's module-type warnings dropped.
+ *
+ * Node has no runtime switch for `--disable-warning`, and the CLI's shebang
+ * passes it only when the shebang runs — not for `verify`'s child, a yarn
+ * bin wrapper or `node dist/cli.js` — and it does not cover the CommonJS
+ * warning at all. Both warnings reach `process.emit('warning')`: the CommonJS
+ * one synchronously from Node's loader, the typeless one from
+ * `process.emitWarning` on a later tick — after the import has settled, so
+ * the filter stays until the next macrotask, by which time every warning
+ * queued during the load has been emitted. Every other event and warning
+ * passes through. Native imports are not serialised, so overlapping ones
+ * share one filter, inert once the last of them is done.
+ */
+async function withoutModuleTypeWarnings<T>(load: () => Promise<T>): Promise<T> {
+  if (moduleTypeWarningScopes++ === 0) {
+    const emit = process.emit as (event: string | symbol, ...args: unknown[]) => boolean;
+    emitBeforeFilter = process.emit;
+    moduleTypeWarningFilter = function (this: NodeJS.Process, event: string | symbol, ...args: unknown[]): boolean {
+      if (moduleTypeWarningScopes > 0 && event === 'warning' && isModuleTypeWarning(args[0])) return false;
+      return emit.call(this, event, ...args);
+    } as typeof process.emit;
+    process.emit = moduleTypeWarningFilter;
+  }
+  try {
+    return await load();
+  } finally {
+    await new Promise((resolve) => setImmediate(resolve));
+    // Something that wrapped `process.emit` meanwhile (signal-exit does)
+    // keeps its wrapper; ours stays beneath it, passing everything through.
+    if (--moduleTypeWarningScopes === 0 && process.emit === moduleTypeWarningFilter && emitBeforeFilter) {
+      process.emit = emitBeforeFilter;
+      moduleTypeWarningFilter = undefined;
+      emitBeforeFilter = undefined;
+    }
+  }
+}
+
 /** The native import's error, kept on a tsx-retry failure for `explainMissingTapsmith`. */
 const NATIVE_ERROR = Symbol('tapsmith.nativeConfigError');
 
@@ -1634,7 +1692,9 @@ async function importConfigModuleOnce(configPath: string): Promise<Record<string
     // Not queued: a native import that runs while another load's tsx hooks
     // are registered is compiled by them, and `unwrapCommonJsConfig` gives
     // the same result either way.
-    return unwrapCommonJsConfig((await import(pathToFileURL(configPath).href)) as Record<string, unknown>);
+    return unwrapCommonJsConfig(
+      (await withoutModuleTypeWarnings(() => import(pathToFileURL(configPath).href))) as Record<string, unknown>,
+    );
   } catch (err) {
     // Every loader failure is retried: whether tsx can get past one (an
     // extensionless require of a `.ts` file, a tsconfig `paths` alias) cannot
