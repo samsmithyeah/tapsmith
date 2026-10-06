@@ -73,6 +73,7 @@ import { DeviceReadiness, toWireReadiness, type Candidate, type ReadinessCommand
 import { mergeResetCapabilities, nextCandidate as pickCandidate, policyForFile, type CandidateProject } from './readiness-candidate.js';
 import type { AppResetPolicy, PreparedState, ResetCapabilities } from '../app-reset.js';
 import { DEFAULT_UI_PREFERENCES, type DeviceActivityMessage, type UIPreferences } from './ui-protocol.js';
+import { isFilteredOutSkip } from '../test-filter.js';
 import {
   forkStdioForLaunchProgress,
   pipeForkOutputForLaunchProgress,
@@ -2764,8 +2765,9 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
             }
             case 'test-end': {
               const result = deserializeTestResult(msg.result);
-              const tf = worker.currentFile?.testFilter;
-              if (tf && result.status === 'skipped' && result.fullName !== tf) {
+              // A runtime test.skip() inside a selected group is a real
+              // result; only drop the skips of tests the filter excluded.
+              if (isFilteredOutSkip(result, worker.currentFile?.testFilter)) {
                 break;
               }
               updateTestStatus(

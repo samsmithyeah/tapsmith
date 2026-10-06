@@ -10,3 +10,13 @@
 export function matchesTestFilter(fullName: string, filter: string): boolean {
   return fullName.toLowerCase().includes(filter.toLowerCase());
 }
+
+/**
+ * Whether a test result is only the runner's synthetic skip for a test the
+ * `testFilter` excluded, which a filtered run should not report. A skip of a
+ * test the filter did select (`.skip`, or a runtime `test.skip()` — PILOT-546)
+ * is a real result and must be reported.
+ */
+export function isFilteredOutSkip(result: { status: string; fullName: string }, filter: string | undefined): boolean {
+  return !!filter && result.status === 'skipped' && !matchesTestFilter(result.fullName, filter);
+}
