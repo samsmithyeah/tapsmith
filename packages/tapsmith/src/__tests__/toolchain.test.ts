@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import {
   adbMissingFix,
   androidToolchainBlocker,
+  assertAdbForEmulatorLaunch,
   iosToolchainBlocker,
   XCODE_FIX,
   type ToolchainDeps,
@@ -92,5 +93,19 @@ describe('iosToolchainBlocker()', () => {
     const deps = { ...host({ platform: 'linux' }), xcodeInstalled: () => { asked = true; return true; } };
     expect(iosToolchainBlocker(deps)).toBe('iOS testing needs macOS with Xcode installed');
     expect(asked).toBe(false);
+  });
+});
+
+// Launching an emulator without adb boots it and then waits out the whole boot
+// timeout on an adb that cannot run: refuse before launching instead.
+describe('assertAdbForEmulatorLaunch()', () => {
+  it('throws the adb blocker, naming the platform-tools directory, when adb is off PATH', () => {
+    const tools = path.posix.join(DEFAULT_SDK, 'platform-tools');
+    expect(() => assertAdbForEmulatorLaunch(host({ dirs: [DEFAULT_SDK], files: [`${tools}/adb`] })))
+      .toThrow(`ADB is not on PATH, so Tapsmith cannot reach any Android device: adb is in ${tools} but not on PATH`);
+  });
+
+  it('does nothing when adb is on PATH', () => {
+    expect(() => assertAdbForEmulatorLaunch(host({ env: { PATH: '/tools' }, files: ['/tools/adb'] }))).not.toThrow();
   });
 });

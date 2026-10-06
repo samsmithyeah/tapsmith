@@ -64,7 +64,7 @@ import { findDaemonBin } from './daemon-bin.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary } from './daemon-start.js';
 import { splitHeadline } from './error-detail.js';
 import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage, pinnedDeviceUnusableMessage, waitForPinnedDeviceAuthorization } from './device-advice.js';
-import { androidToolchainBlocker, toolchainBlocker } from './toolchain.js';
+import { androidToolchainBlocker, assertAdbForEmulatorLaunch, iosToolchainBlocker, toolchainBlocker } from './toolchain.js';
 import {
   createUiLaunchSteps,
   UiLaunchProgress,
@@ -1179,6 +1179,7 @@ async function ensureSequentialTargetDevice(
     return { selectedSerial: undefined, launched: [] };
   }
 
+  assertAdbForEmulatorLaunch();
   progress?.update('primary-device', { state: 'running', detail: 'launching Android emulator' });
   const provision = await provisionEmulators({
     existingSerials: [],
@@ -1313,6 +1314,7 @@ async function provisionMultiWorkerDevices(
     serials = [config.device!, ...pinned, ...others].filter(Boolean);
 
     if (serials.length < wanted && config.launchEmulators) {
+      assertAdbForEmulatorLaunch();
       const provision = await provisionEmulators({
         existingSerials: serials,
         occupiedSerials: allConnected,
@@ -1584,6 +1586,7 @@ async function provisionDevicesForBucketUnclaimed(
     return { serials, launched: [], reusedSimulatorCount: 0 };
   }
 
+  assertAdbForEmulatorLaunch();
   const provision = await provisionEmulators({
     existingSerials: serials,
     occupiedSerials: allConnected,
@@ -1687,9 +1690,12 @@ async function provisionPerProjectDevices(
     const provisioned = await provisionDevicesForBucket(bucketEffective, desiredDevices, sink, snapshot?.group);
 
     if (provisioned.serials.length === 0) {
+      const iosBucketBlocker = bucketEffective.platform === 'ios' ? iosToolchainBlocker() : undefined;
       throw new Error(
         `Failed to provision any devices for bucket "${signature.split('|').slice(0, 2).join(' ')}".`
-        + (bucketEffective.platform === 'ios' ? '' : ` ${attachedDeviceAdvice(bucketEffective, listAdbDevices(), androidToolchainBlocker())}`)
+        + (bucketEffective.platform === 'ios'
+          ? (iosBucketBlocker ? ` ${iosBucketBlocker}.` : '')
+          : ` ${attachedDeviceAdvice(bucketEffective, listAdbDevices(), androidToolchainBlocker())}`)
         // Devices other sessions hold are named, not left to read as missing.
         + (bucketEffective.platform === 'ios' ? '' : heldDevicesNote(withoutHeldDevices(listConnectedDeviceSerials()).held)),
       );

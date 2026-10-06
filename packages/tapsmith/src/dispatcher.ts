@@ -57,7 +57,7 @@ import {
 } from './ios-simulator.js';
 import { freeStaleAgentPort, findPidsOnPort } from './port-utils.js';
 import { describeUnusableAndroidDevice, isUsableAndroidState, moreDevicesAdvice, noOnlineDeviceMessage, workerStartAdvice } from './device-advice.js';
-import { androidToolchainBlocker, iosToolchainBlocker, toolchainBlocker } from './toolchain.js';
+import { androidToolchainBlocker, assertAdbForEmulatorLaunch, iosToolchainBlocker, toolchainBlocker } from './toolchain.js';
 import type { AdbDevice } from './adb-devices.js';
 import { notifyLegacySudoersIfPresent } from './legacy-cleanup.js';
 import {
@@ -1496,6 +1496,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         config.launchEmulators &&
         installedOnline.selectedSerials.length < maxUsefulWorkers * groupSize
       ) {
+        assertAdbForEmulatorLaunch();
         const provision = await provisionEmulators({
           existingSerials: installedOnline.selectedSerials,
           occupiedSerials: androidDevices.map((d) => d.serial),

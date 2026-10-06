@@ -105,6 +105,16 @@ export function androidToolchainBlocker(overrides: Partial<ToolchainDeps> = {}):
 }
 
 /**
+ * Before launching an emulator: without adb, Tapsmith would boot it and then
+ * wait out the whole boot timeout on an adb that cannot run. Throws the
+ * {@link androidToolchainBlocker} instead.
+ */
+export function assertAdbForEmulatorLaunch(overrides: Partial<ToolchainDeps> = {}): void {
+  const blocker = androidToolchainBlocker(overrides);
+  if (blocker) throw new Error(`${blocker}.`);
+}
+
+/**
  * Why no iOS simulator can be used on this machine, with the fix —
  * undefined on a Mac with Xcode. No trailing period.
  */
