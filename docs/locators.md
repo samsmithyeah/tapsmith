@@ -102,6 +102,13 @@ Supported roles map to platform-native element types. On iOS, many React Native 
 | `spinner` | `Spinner` | `XCUIElementTypePicker`, `XCUIElementTypeActivityIndicator` |
 | `toolbar` | `Toolbar` | `XCUIElementTypeToolbar` |
 | `tab` | `TabLayout` | `XCUIElementTypeTab`, `XCUIElementTypeTabBar` |
+| `list` | `ListView`, `GridView`, `RecyclerView` | `XCUIElementTypeTable`, `XCUIElementTypeCollectionView` |
+| `listitem` | `LinearLayout`, `RelativeLayout`, `FrameLayout` | `XCUIElementTypeCell` |
+| `scrollview` | `ScrollView`, `HorizontalScrollView`, `NestedScrollView` | `XCUIElementTypeScrollView` |
+
+Role names are case-insensitive. Any other role throws as soon as the locator is built — `Unknown role "row". Supported: alert, button, …` — instead of waiting out the timeout. Playwright's ARIA names that differ here get a hint (`textbox` → `textfield`, `img` → `image`, `radio` → `radiobutton`, `searchbox` → `searchfield`). WebView locators (`webview.getByRole()`) take the page's ARIA roles instead.
+
+> **Lists in React Native:** `list` and `listitem` match native list widgets. A React Native `FlatList`, `SectionList` or `ScrollView` and its rows are not those widgets, so `getByRole("list")` finds nothing in them. Give the list a `testID` and target it with `getByTestId()`; target a row by its text, or by `getByRole("button")` when the row is a `Pressable` or `TouchableOpacity` with `accessibilityRole="button"`.
 
 > **React Native note:** RN components that set `accessibilityRole` (e.g. `accessibilityRole="button"`) expose the corresponding iOS accessibility trait, and `getByRole` will find them. Components that don't set `accessibilityRole` (common in many RN apps) render as generic `XCUIElementTypeOther` with no role — use `getByText`, `getByPlaceholder`, or `getByDescription` instead.
 
@@ -246,8 +253,8 @@ An XPath locator is for use on its own. `and()`/`or()` refuse an XPath operand w
 `getBy*` and `locator()` are also available on every `ElementHandle`. Calling them on a parent locator scopes the search to its descendants — exactly like Playwright's `locator.locator(...)`.
 
 ```typescript
-// Find "Item 3" inside a specific list
-const item = device.getByRole("list", { name: "Shopping cart" }).getByText("Item 3", { exact: true })
+// Find "Item 3" inside a specific list (a FlatList with testID="cart-list")
+const item = device.getByTestId("cart-list").getByText("Item 3", { exact: true })
 await expect(item).toBeVisible()
 
 // Tap the delete button inside a specific row

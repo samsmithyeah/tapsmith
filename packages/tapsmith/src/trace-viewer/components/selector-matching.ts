@@ -33,7 +33,7 @@ const SQ = String.raw`'((?:[^'\\]|\\.)*)'`;
 // An options object: quoted strings and RegExp literals may contain braces.
 const OPTIONS = String.raw`((?:[^{}"'/]|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|${REGEX_SOURCE.replace(/\((?!\?)/g, '(?:')})*)`;
 
-// Matches: device.getByText("value"), device.getByRole("role", { name: "n" }),
+// Matches: device.getByText("value"), device.getByRole("button", { name: "n" }),
 // device.getByText("value", { exact: true }), device.getByText(/re/i) — the
 // options object is captured as a blob and parsed by parseGetByOptions.
 // Supports both single and double quotes, optional whitespace around args.

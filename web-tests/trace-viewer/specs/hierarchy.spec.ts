@@ -125,6 +125,24 @@ test.describe("Locator playground", () => {
     await expect(locator.matchCount).toHaveText("0 matches")
   })
 
+  test("explains a role getByRole would reject instead of counting 0 matches", async ({
+    viewer,
+    detailTabs,
+    locator,
+  }) => {
+    await viewer.open(SPEC)
+    await detailTabs.select("Locator")
+
+    // The test would throw this when it builds the locator (PILOT-556).
+    await locator.type('device.getByRole("textbox", { name: "Email" })')
+    await expect(locator.error).toContainText('Unknown role "textbox". Did you mean "textfield"?')
+    await expect(locator.matchCount).toHaveText("")
+
+    await locator.type('device.getByRole("Button", { name: "tap area" })')
+    await expect(locator.error).toHaveCount(0)
+    await expect(locator.matchCount).toHaveText("1 match")
+  })
+
   test("counts every match of an ambiguous selector", async ({ viewer, detailTabs, locator }) => {
     await viewer.open(traceWith(AMBIGUOUS_HIERARCHY))
     await detailTabs.select("Locator")
