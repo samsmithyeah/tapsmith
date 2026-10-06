@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { matchesTestFilter } from '../test-filter.js';
+import { isFilteredOutSkip, matchesTestFilter } from '../test-filter.js';
 
 describe('matchesTestFilter', () => {
   const fullName = 'Login screen > submits the form';
@@ -32,5 +32,20 @@ describe('matchesTestFilter', () => {
 
   it('treats an empty filter as a match (caller decides whether to apply it)', () => {
     expect(matchesTestFilter(fullName, '')).toBe(true);
+  });
+});
+
+describe('isFilteredOutSkip', () => {
+  it('drops the synthetic skip of a test outside the filter', () => {
+    expect(isFilteredOutSkip({ status: 'skipped', fullName: 'other > t' }, 'share')).toBe(true);
+  });
+
+  it('keeps a skip of a test the filter selected, e.g. a runtime test.skip() in a group run (PILOT-546)', () => {
+    expect(isFilteredOutSkip({ status: 'skipped', fullName: 'share > sheet' }, 'share')).toBe(false);
+  });
+
+  it('keeps every non-skipped result, and everything when there is no filter', () => {
+    expect(isFilteredOutSkip({ status: 'passed', fullName: 'other > t' }, 'share')).toBe(false);
+    expect(isFilteredOutSkip({ status: 'skipped', fullName: 'other > t' }, undefined)).toBe(false);
   });
 });

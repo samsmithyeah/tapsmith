@@ -37,6 +37,7 @@ export {
   afterEach,
   type TestFn,
   type DescribeFn,
+  type SkipFn,
   type DescribeConfigureOptions,
   type DescribeMode,
   type TestFixtures,
