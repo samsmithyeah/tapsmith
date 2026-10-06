@@ -98,7 +98,15 @@ export function selectorToProto(selector: Selector): Record<string, unknown> {
       const rv = selector.kind.value;
       const roleProto: Record<string, unknown> = { role: rv.role, name: rv.name };
       if (rv.exact) roleProto.exact = true;
-      if (rv.nameRegex) roleProto.nameRegex = regexToProto(rv.nameRegex);
+      if (rv.nameRegex) {
+        roleProto.nameRegex = regexToProto(rv.nameRegex);
+        // An agent from before RegExp support ignores `nameRegex` and would
+        // read an empty name as "any element of this role" — and act on the
+        // wrong one. The literal as `name` matches nothing there, so such an
+        // agent fails loudly instead; current agents ignore `name` when
+        // `nameRegex` is set.
+        roleProto.name = formatRegex(rv.nameRegex);
+      }
       if (rv.checked !== undefined) roleProto.checked = rv.checked;
       if (rv.disabled !== undefined) roleProto.disabled = rv.disabled;
       if (rv.selected !== undefined) roleProto.selected = rv.selected;

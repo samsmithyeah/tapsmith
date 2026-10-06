@@ -30,6 +30,7 @@ Whitespace is normalized on both sides before comparing a string, exact or not, 
 - `{ exact: true }` is ignored with a RegExp, as in Playwright.
 - A lookbehind must have a bounded length (no `*`, `+`, `{n,}` or backreference inside `(?<=…)`/`(?<!…)`) — the device regex engines can't run an unbounded one, so it throws a `TypeError`.
 - On iOS, a control that merges its children's text into one label joined by `", "` is tested as that whole label.
+- A few corners follow the device engine rather than JavaScript: `.` and quantifiers count whole characters (code points) even without the `u` flag, so `/^.$/` matches one emoji; a backreference to a group that didn't take part in the match fails instead of matching empty; and `i` also folds a few special characters (such as `ſ` and the Kelvin sign `K`) that JavaScript keeps distinct.
 
 ```typescript
 device.getByText(/\d+ items? in cart/)

@@ -551,11 +551,13 @@ class CommandHandler(
         val roleObj = params.opt("role")
         val source = if (roleObj is JSONObject) roleObj else params
         val role = source.optString("role", null)?.ifEmpty { null }
-        val name = source.optString("name", null)?.ifEmpty { null }
         // getByRole `{ exact: true }` rides inside the role object (PILOT-549).
         val nameExact = roleObj is JSONObject && roleObj.optBoolean("exact", false)
         // RegExp locators (PILOT-520); a malformed one is an invalid selector.
+        // With a RegExp name, `name` only carries its literal for agents that
+        // predate RegExp support, so it is not a name filter here.
         val nameRegex = (roleObj as? JSONObject)?.optJSONObject("nameRegex")?.let { TextRegex.fromJson(it) }
+        val name = if (nameRegex != null) null else source.optString("name", null)?.ifEmpty { null }
 
         // Handle "resourceId" (sent by daemon) or "id" (legacy)
         val resourceId = params.optString("resourceId", null) ?: params.optString("id", null)

@@ -291,10 +291,12 @@ describe('RegExp locators (PILOT-520)', () => {
     });
   });
 
-  it('getByRole name RegExp travels as nameRegex with an empty name, and ignores exact', () => {
+  it('getByRole name RegExp travels as nameRegex, and ignores exact', () => {
     const sel = _role('button', { name: /save/i, exact: true });
     expect(selectorToProto(sel)).toEqual({
-      role: { role: 'button', name: '', nameRegex: { pattern: 'save', ignoreCase: true, display: '/save/i' } },
+      // `name` carries the literal so an agent without RegExp support
+      // matches nothing rather than every button.
+      role: { role: 'button', name: '/save/i', nameRegex: { pattern: 'save', ignoreCase: true, display: '/save/i' } },
     });
   });
 

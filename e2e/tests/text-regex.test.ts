@@ -27,7 +27,8 @@ describe("RegExp locators (PILOT-520)", () => {
 
   test("getByText(RegExp): the i flag and anchors", async ({ device }) => {
     await expect(device.getByText(/^welcome to\sexpo$/i)).toBeVisible()
-    await expect(device.getByText(/^welcome/)).toHaveCount(0)
+    // Case-sensitive: not the heading ("welcome=0 save=0" below is lowercase).
+    await expect(device.getByText(/^welcome to/)).toHaveCount(0)
     await expect(device.getByText(/^Expo/)).toHaveCount(0)
     await expect(device.getByText(/^Spaced\s+out$/)).toBeVisible()
   })
