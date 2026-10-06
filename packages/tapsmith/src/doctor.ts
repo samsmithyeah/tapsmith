@@ -18,9 +18,10 @@ import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { formatJson, jsonError, stripAnsi, type JsonCheck } from './cli-json.js';
 import { avdCaptureSupport, captureAvdFix, scanAvdImageTags, type AvdImageInfo } from './avd-images.js';
 import { parseSimctlDevicesJson, tryExec } from './env-scan.js';
-import { ADB_FIX, androidUnusableDeviceFix, parseAdbDevicesOutput, type AdbDevice } from './adb-devices.js';
+import { androidUnusableDeviceFix, parseAdbDevicesOutput, type AdbDevice } from './adb-devices.js';
 import { isTapsmithNotInstalledError, type TapsmithConfig } from './config.js';
 import { emulatorNotFoundMessage, resolveEmulatorBinary, type EmulatorBinary } from './emulator.js';
+import { adbMissingFix, XCODE_FIX } from './toolchain.js';
 
 // ─── ANSI helpers ───
 
@@ -206,9 +207,11 @@ function checkAdb(report: Reporter, required: boolean, targeted: boolean): boole
     pass(report, 'adb', `ADB ${version}`);
     return true;
   }
-  if (required) fail(report, 'adb', 'ADB not found on PATH', ADB_FIX);
-  else if (targeted) warn(report, 'adb', 'ADB not found on PATH — the config\'s Android projects cannot run on this machine', `${ADB_FIX}. Meanwhile, select the other projects with --project`);
-  else warn(report, 'adb', 'ADB not found on PATH — Android checks skipped', `To test on Android: ${ADB_FIX}`);
+  // Install an SDK, install platform-tools, or add them to PATH: whichever is missing.
+  const fix = adbMissingFix();
+  if (required) fail(report, 'adb', 'ADB not found on PATH', fix);
+  else if (targeted) warn(report, 'adb', 'ADB not found on PATH — the config\'s Android projects cannot run on this machine', `${fix}. Meanwhile, select the other projects with --project`);
+  else warn(report, 'adb', 'ADB not found on PATH — Android checks skipped', `To test on Android: ${fix}`);
   return false;
 }
 
@@ -454,9 +457,20 @@ function checkAvdImages(report: Reporter, configuredAvd?: string | string[]): vo
   }
 }
 
-// ─── iOS checks ───
+// ─── No usable platform ───
 
-const XCODE_FIX = 'Install Xcode from the Mac App Store, open it once to finish setup, then run: sudo xcode-select -s /Applications/Xcode.app';
+/** The machine has neither platform's toolchain, so no test can run (PILOT-558). */
+function checkNoPlatform(report: Reporter): void {
+  if (process.platform === 'darwin') {
+    fail(report, 'no-platform', 'Neither Android nor iOS tests can run on this machine: ADB is not on PATH and Xcode is not installed',
+      `Set up at least one. Android: ${adbMissingFix()}. iOS: ${XCODE_FIX}`);
+  } else {
+    fail(report, 'no-platform', 'Android tests cannot run on this machine, and iOS testing needs macOS: ADB is not on PATH',
+      adbMissingFix());
+  }
+}
+
+// ─── iOS checks ───
 
 /** Passes with the version, or reports the missing Xcode (see `planPlatforms`) and returns false. */
 function checkXcode(report: Reporter, required: boolean, targeted: boolean): boolean {
@@ -1029,6 +1043,10 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   checkNodeVersion(report);
   checkDaemonBin(report);
   checkConfigFile(report, configFile, findConfigFile);
+  // A config's own platforms already fail when none can run (planPlatform);
+  // without one, a machine that runs neither must not pass either (PILOT-558).
+  const noPlatform = !targets && !adbUsable() && !xcodeUsable();
+  if (noPlatform) checkNoPlatform(report);
   if (config && configPathOf(config)) {
     // One row, so a consumer matching on the id sees every offending scope.
     const platformless = platformlessIosFields(config);
@@ -1123,7 +1141,7 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
     parts.push(green(`${passed} check${passed === 1 ? '' : 's'} passed`));
     if (warnings > 0) parts.push(yellow(`${warnings} warning${warnings === 1 ? '' : 's'}`));
     if (errors > 0) parts.push(red(`${errors} error${errors === 1 ? '' : 's'}`));
-    console.log(parts.join(', '));
+    console.log(parts.join(', ') + (noPlatform ? red(' — no platform can run tests on this machine') : ''));
     console.log();
   }
 
