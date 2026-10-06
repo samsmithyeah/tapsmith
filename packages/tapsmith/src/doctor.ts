@@ -20,6 +20,7 @@ import { avdCaptureSupport, captureAvdFix, scanAvdImageTags, type AvdImageInfo }
 import { parseSimctlDevicesJson, tryExec } from './env-scan.js';
 import { androidUnusableDeviceFix, parseAdbDevicesOutput, type AdbDevice } from './adb-devices.js';
 import { isTapsmithNotInstalledError, type TapsmithConfig } from './config.js';
+import { MIN_NODE_MAJOR, isSupportedNodeVersion } from './node-runtime.js';
 import { emulatorNotFoundMessage, resolveEmulatorBinary, type EmulatorBinary } from './emulator.js';
 import { adbMissingFix, XCODE_FIX } from './toolchain.js';
 
@@ -151,21 +152,16 @@ function fail(report: Reporter, id: string, label: string, fix?: string, detail?
 
 // ─── Individual checks ───
 
-export function isSupportedNodeVersion(version: string): boolean {
-  const major = parseInt(version.split('.')[0], 10);
-  return major >= 22;
-}
-
 function checkNodeVersion(report: Reporter): void {
   try {
     const version = process.versions.node;
     if (isSupportedNodeVersion(version)) {
       pass(report, 'node', `Node.js ${version}`);
     } else {
-      fail(report, 'node', `Node.js ${version} — requires >= 22`, 'Install Node.js 22 or newer (https://nodejs.org)');
+      fail(report, 'node', `Node.js ${version} — requires >= ${MIN_NODE_MAJOR}`, `Install Node.js ${MIN_NODE_MAJOR} or newer (https://nodejs.org)`);
     }
   } catch {
-    fail(report, 'node', 'Node.js version check failed', 'Install Node.js 22 or newer (https://nodejs.org)');
+    fail(report, 'node', 'Node.js version check failed', `Install Node.js ${MIN_NODE_MAJOR} or newer (https://nodejs.org)`);
   }
 }
 

@@ -1648,10 +1648,10 @@ let emitBeforeFilter: typeof process.emit | undefined;
 /**
  * Run a native config import with Node's module-type warnings dropped.
  *
- * Node has no runtime switch for `--disable-warning`, and the CLI's shebang
- * passes it only when the shebang runs — not for `verify`'s child, a yarn
- * bin wrapper or `node dist/cli.js` — and it does not cover the CommonJS
- * warning at all. Both warnings reach `process.emit('warning')`: the CommonJS
+ * Node has no runtime switch for `--disable-warning`. The bin drops the
+ * typeless warning for its own process (`ignoreTypelessPackageWarnings`), but
+ * not for `node dist/cli.js` or a child that loads the CLI another way, and
+ * nothing else covers the CommonJS warning at all. Both warnings reach `process.emit('warning')`: the CommonJS
  * one synchronously from Node's loader, the typeless one from
  * `process.emitWarning` on a later tick — after the import has settled, so
  * the filter stays until the next macrotask, by which time every warning

@@ -7,10 +7,8 @@ Tapsmith resets your app to a known state before tests (see [Test isolation](wri
 Install `@tapsmith/react-native` in your app and mount it once at the root:
 
 ```bash
-npm install @tapsmith/react-native@beta
+npm install @tapsmith/react-native
 ```
-
-During the 0.6 beta, install the `beta` tag so the hooks match a `tapsmith@beta` SDK; a plain install gets the 0.5 release.
 
 ```tsx
 // app/_layout.tsx (Expo Router) — or your root component

@@ -27,13 +27,13 @@ test("can navigate to settings", async ({ device }) => {
 
 ## Quick Start
 
+Tapsmith requires **Node.js 22 or newer** — check with `node --version` first. On older Node, npm can install an old Tapsmith release whose commands don't match these docs, or none at all.
+
 ```bash
-npm install -D tapsmith@beta
+npm install -D tapsmith
 npx tapsmith init
 npx tapsmith test
 ```
-
-Tapsmith 0.6 is in beta, published under npm's `beta` tag. Until it is released, a plain `npm install tapsmith` installs the previous stable release (0.5).
 
 The `init` wizard detects your environment, walks through platform configuration, and generates your config file and an example test.
 

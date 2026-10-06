@@ -2,6 +2,8 @@
 
 This guide walks you through installing Tapsmith, writing your first test, and running it against an Android or iOS device/simulator.
 
+> **Tapsmith requires Node.js 22 or newer.** Check with `node --version` before you install. On older Node, npm can install an old Tapsmith release whose commands don't match this guide (or fail with `No matching version found`).
+
 > **Setting up with an AI coding agent?** See [Using Tapsmith with AI coding agents](agents.md) for the non-interactive setup loop (`doctor --json` → `init --yes` → `verify --json`).
 
 ## Prerequisites
@@ -48,10 +50,8 @@ Apple Developer account, device pairing). See [iOS physical devices](./ios-physi
 ## Installation
 
 ```bash
-npm install -D tapsmith@beta
+npm install -D tapsmith
 ```
-
-Tapsmith 0.6 is in beta, published under npm's `beta` tag. Until it is released, a plain `npm install tapsmith` installs the previous stable release (0.5).
 
 This installs the TypeScript SDK, test runner, the Tapsmith daemon binary for your platform, and the Android agent APKs (via the `@tapsmith/agent-android` optional dependency).
 
@@ -135,7 +135,7 @@ The wizard walks through these steps:
 7. **Config** — writes `tapsmith.config.ts` with the app, its `package` and, for iOS, `platform: 'ios'` and the simulator, plus `testMatch: ['**/*.tapsmith.ts']` (see [Tapsmith tests and your unit tests](#tapsmith-tests-and-your-unit-tests))
 8. **Example test** — optionally creates `tests/example.tapsmith.ts`
 9. **AGENTS.md** — optionally adds a Tapsmith section to `AGENTS.md` for AI coding agents
-10. **Install** — if the project doesn't have Tapsmith yet (you ran `npx tapsmith init` before installing it), offers to install it with your package manager (`npm i -D tapsmith`, `yarn add -D tapsmith`, …), since the config and example test import it. Decline and the command is the first of the next steps. During the 0.6 beta, install `tapsmith@beta` first: with no local install, `npx tapsmith init` runs the 0.5 release's wizard, which installs 0.5
+10. **Install** — if the project doesn't have Tapsmith yet (you ran `npx tapsmith init` before installing it), offers to install it with your package manager (`npm i -D tapsmith`, `yarn add -D tapsmith`, …), since the config and example test import it. Decline and the command is the first of the next steps. Install Tapsmith first, as in [Installation](#installation): with no local install, `npx tapsmith init` runs whichever version npx downloads, not the one your project will use
 
 The wizard does not ask about workers; see [Parallel runs](#parallel-runs) to add them.
 
