@@ -2744,7 +2744,7 @@ npx tapsmith test --reporter json     # writes tapsmith-results/results.json
 
 ### `tapsmith init [options]`
 
-Set up a project. With no options, in a terminal, it runs the interactive wizard: it detects your environment (ADB, Xcode, simulators, emulators), offers the app builds it finds under `android/` and `ios/` (a typed path must exist), walks you through platform and app configuration, and generates a `tapsmith.config.ts`, an example test and an `AGENTS.md` section. Run outside a project that has Tapsmith installed (`npx tapsmith init` before `npm i -D tapsmith`, or a global install), it offers to install it with the project's package manager, since the files it writes import `tapsmith`; declined, it prints the command as the first next step.
+Set up a project. With no options, in a terminal, it runs the interactive wizard: it detects your environment (ADB, Xcode, simulators, emulators), offers the app builds it finds under `android/` and `ios/` (a typed path must exist), walks you through platform and app configuration, and generates a `tapsmith.config.ts`, an example test and an `AGENTS.md` section. Run outside a project that has Tapsmith installed (`npx tapsmith init` before `npm i -D tapsmith`, or a global install), it offers to install it with the project's package manager, since the files it writes import `tapsmith`; declined, it prints the command as the first next step. In an Expo project (`expo` among the dependencies, plus `app.json` or `app.config.*`) it gives the Expo build commands when it finds no build (`npx expo prebuild`, then a release `./gradlew assembleRelease` or `xcodebuild` build, with `EXPO_PUBLIC_TAPSMITH_HOOKS=1` when the app uses `@tapsmith/react-native`), and pre-fills the package and bundle ID prompts from the app config when it can't read them from the build.
 
 Pass `--yes` or any setup flag below (every flag but `--json`) to run non-interactively instead, for scripts and AI agents: anything not given is auto-detected, and a choice that cannot be made (two APKs, say) exits 1 naming the candidates and the flag that picks one. `--json` only changes the output, so an agent passes `--yes --json`. Without a terminal and without `--yes` or a setup flag, `init` exits 1 rather than waiting for input. iOS physical devices need the interactive wizard, for its code-signing preflight.
 
@@ -2753,9 +2753,9 @@ Pass `--yes` or any setup flag below (every flag but `--json`) to run non-intera
 | `-y`, `--yes` | Accept auto-detected defaults for anything not specified |
 | `--platform <list>` | `android`, `ios`, or `android,ios` (default: inferred from `android/` and `ios/`) |
 | `--apk <path>` | Android APK (default: auto-detected under `android/**/build/outputs/apk/`) |
-| `--package <id>` | Android package name (default: read from the APK) |
+| `--package <id>` | Android package name (default: read from the APK, else, in an Expo project, `expo.android.package` from the app config, with a warning) |
 | `--app <path>` | iOS simulator `.app` bundle (default: auto-detected under `ios/`) |
-| `--bundle-id <id>` | iOS bundle identifier (default: read from `Info.plist`) |
+| `--bundle-id <id>` | iOS bundle identifier (default: read from `Info.plist`, else, in an Expo project, `expo.ios.bundleIdentifier` from the app config, with a warning) |
 | `--avd <name>` | Android AVD to auto-launch (default: first available; with `--network-capture`, the first that supports HTTPS capture — Google Play images don't, and init warns if it can only pick one) |
 | `--simulator <name>` | iOS simulator name (default: newest available iPhone) |
 | `--device-type <type>` | `emulator`, `physical` or `both` (default: `emulator`) |
