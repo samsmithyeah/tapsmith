@@ -230,7 +230,10 @@ Between events, keep an eye on the batch:
   re-runs its gate. Don't send the others round CI again just because `main` moved —
   `main`'s own CI on each merge commit tests the combination. Watch that run (`gh run list
   --branch main --commit <sha>`); if it goes red, find the PR whose change broke it and
-  have that worker (or a new one) fix forward on a new PR. Start any ticket whose lane was
+  have that worker (or a new one) fix forward on a new PR. `E2E iOS` cancels an older
+  `main` run when a newer merge lands, so a `cancelled` run there is neither a failure
+  nor something to wait for: watch the newest `main` commit's run instead, which tests
+  every merge since the last green one — if it goes red, the culprit is among those. Start any ticket whose lane was
   `after <KEY>`. A worker stacked on `<KEY>` merges `origin/<base>` (implement-ticket
   *Stacked branches*) and re-gates. Unless `no-jira`, move the merged ticket to **Done**
   (statuses are To Do, In Progress, Done) if it is not there already (a `merge` worker

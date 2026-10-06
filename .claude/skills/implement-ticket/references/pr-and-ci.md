@@ -228,10 +228,11 @@ done
 
 ## Keeping up with the base
 
-Merge the base in only when GitHub reports a conflict, or when the branch needs something
-that has since landed on it. Never merge it just because it moved: every push re-runs
-every workflow on the PR (iOS E2E included, on the scarce macOS runners), and `main`'s own
-CI tests the combination after the squash-merge.
+Before the Phase 7 gate passes, merge the base in only when GitHub reports a conflict, or
+when the branch needs something that has since landed on it. After the gate passes, only
+on a conflict (Phase 8). Never merge it just because it moved: every push re-runs every
+workflow on the PR (iOS E2E included unless its `paths` exclude the PR, on the scarce
+macOS runners), and `main`'s own CI tests the combination after the squash-merge.
 
 ```bash
 gh pr view <n> --json mergeable,mergeStateStatus   # CONFLICTING → merge the base in
