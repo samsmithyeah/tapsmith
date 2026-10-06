@@ -317,6 +317,7 @@ A few things to note:
 - Tests receive a `device` fixture automatically. This is your primary interface for interacting with the app.
 - `getByText()`, `getByRole()`, and the other `getBy*` methods are Playwright-style locators that identify UI elements. See the [Locators Guide](locators.md) for the full list.
 - `expect()` creates assertions that auto-wait. `toBeVisible()` polls until the element appears or the timeout expires.
+- **Tests in the same file share the app.** Tapsmith resets the app to a clean state once at the start of each test file, not before every test. So the second test above starts on whatever screen the first one left, with any state it created, such as a signed-in user. This differs from Playwright, where every test gets a fresh browser context. If a file's tests each need a fresh app, add `test.use({ appResetScope: "test" })` to that file. Without in-app hooks, each of those resets is a full clear and relaunch, which takes a few seconds per test. React Native and Expo apps that mount the [warm reset hooks](warm-reset.md) reset in well under a second instead. [Test isolation](writing-tests.md#test-isolation) covers the other reset options.
 
 ## Run Your Tests
 
@@ -387,19 +388,22 @@ When a test fails, Tapsmith prints the error message, a partial stack trace, and
 
 ## Organizing Tests
 
-You can use `describe` blocks and hooks to organize your tests:
+You can use `describe` blocks to group tests, and `test.use()` to set options for a group:
 
 ```typescript
-import { test, describe, beforeEach, expect } from "tapsmith";
+import { test, describe, expect } from "tapsmith";
 
 describe("Login flow", () => {
-  beforeEach(async () => {
-    // Reset app state before each test if needed
-  });
+  // Start every test signed out. Without this, "invalid credentials" would
+  // start where "successful login" left off: already signed in.
+  test.use({ appResetScope: "test" });
 
   test("successful login", async ({ device }) => {
     await device.getByRole("textfield", { name: "Email" }).type("user@example.com");
     await device.getByRole("textfield", { name: "Password" }).type("password123");
+    // Close the keyboard first: many screens (any React Native ScrollView, by
+    // default) spend the first tap outside a field on dismissing it.
+    await device.hideKeyboard();
     await device.getByRole("button", { name: "Sign In" }).tap();
     await expect(device.getByText("Welcome back")).toBeVisible();
   });
@@ -407,11 +411,14 @@ describe("Login flow", () => {
   test("invalid credentials", async ({ device }) => {
     await device.getByRole("textfield", { name: "Email" }).type("bad@example.com");
     await device.getByRole("textfield", { name: "Password" }).type("wrong");
+    await device.hideKeyboard();
     await device.getByRole("button", { name: "Sign In" }).tap();
     await expect(device.getByText("Invalid credentials")).toBeVisible();
   });
 });
 ```
+
+`test.use()` inside a `describe` applies only to the tests in that group. Hooks (`beforeAll`, `beforeEach`, `afterEach`, `afterAll`) are also available. You don't need one to reset the app, because the reset is declared with `appReset` and `appResetScope` instead. See [Writing Tests](writing-tests.md#test-isolation).
 
 ## Next Steps
 
