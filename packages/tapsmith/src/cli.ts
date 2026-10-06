@@ -283,6 +283,21 @@ async function checkDeviceHealth(serial: string | undefined, progress?: LaunchPr
 
 /** Track the daemon process we spawned so we can kill it on exit. */
 let spawnedDaemonProcess: ReturnType<typeof spawn> | undefined;
+/**
+ * Daemons this process started and has since stopped, by pid. SIGTERM does
+ * not wait: an iOS daemon stays alive for a few seconds after closing its
+ * port while it stops its agent, and the next target's daemon start must not
+ * mistake it for another session's (PILOT-550).
+ */
+const stoppedOwnDaemons = new Set<number>();
+
+/** Stop this target's daemon (SIGTERM) and forget its handle. */
+function stopSpawnedDaemon(): void {
+  if (!spawnedDaemonProcess) return;
+  if (spawnedDaemonProcess.pid !== undefined) stoppedOwnDaemons.add(spawnedDaemonProcess.pid);
+  try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
+  spawnedDaemonProcess = undefined;
+}
 
 let sequentialFatalHandlersInstalled = false;
 // The handler is registered once, but the active run context is refreshed on
@@ -389,9 +404,10 @@ async function ensureDaemonRunning(
   let agentPort: number | undefined;
   // Set when the default agent port belongs to another live session.
   let agentPortInUse = false;
-  // Daemons on our port that did not answer, just sent SIGTERM: they may
-  // still be exiting, and are not another session's.
-  const stoppedStaleDaemons = new Set<number>();
+  // Daemons that may still be exiting and are not another session's: this
+  // process's earlier targets' daemons, and those on our port that did not
+  // answer, sent SIGTERM below.
+  const stoppedStaleDaemons = new Set<number>(stoppedOwnDaemons);
   try {
     const probe = new TapsmithGrpcClient(address);
     const alive = await probe.waitForReady(1_000);
@@ -1019,10 +1035,7 @@ function teardownSequentialDevice(state: SequentialDeviceState): void {
   }
   try { state.device.close(); } catch { /* already closed */ }
   try { state.client.close(); } catch { /* already closed */ }
-  if (spawnedDaemonProcess) {
-    try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
-    spawnedDaemonProcess = undefined;
-  }
+  stopSpawnedDaemon();
   // Its emulators are left running for reuse, and named at the end of the
   // run (emulatorsLaunchedThisProcess): a notice here would read as if the
   // run had ended.
@@ -2431,10 +2444,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     // The failed setup may have spawned this target's daemon. Nothing will
     // use it, and the next target's setup would overwrite the handle the
     // final teardown kills, orphaning it.
-    if (spawnedDaemonProcess) {
-      try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
-      spawnedDaemonProcess = undefined;
-    }
+    stopSpawnedDaemon();
     if (announce) warnTargetFailed(signature);
   };
 
