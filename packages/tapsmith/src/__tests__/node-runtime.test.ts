@@ -124,7 +124,12 @@ describe('ignoreTypelessPackageWarnings() in forked children', () => {
     return result.stderr;
   }
 
-  it.skipIf(!fs.existsSync(distRuntime))('do not print the warning (built dist/)', () => {
+  // Node detects module syntax in typeless .js files, and warns about it, from
+  // 22.7; on 22.0–22.6 there is no warning to drop.
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  const nodeWarns = major > 22 || (major === 22 && minor >= 7);
+
+  it.skipIf(!fs.existsSync(distRuntime) || !nodeWarns)('do not print the warning (built dist/)', () => {
     // Control first: without the call, a forked child on this Node warns.
     expect(runParent(false)).toContain('MODULE_TYPELESS_PACKAGE_JSON');
     expect(runParent(true)).not.toContain('MODULE_TYPELESS_PACKAGE_JSON');

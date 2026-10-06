@@ -6,6 +6,8 @@ non-interactive mode with machine-readable output.
 
 ## The setup loop
 
+Tapsmith needs Node.js 22 or newer: check `node --version` before installing. On older Node, npm can install an old, incompatible release. Under `--json`, the CLI reports an unsupported Node as the `UNSUPPORTED_NODE` error.
+
 ```bash
 npm install -D tapsmith
 
