@@ -814,13 +814,13 @@ const RELATIVE_IMPORT = new RegExp(`${IMPORT_PREFIX}['"](\\.{1,2}/[^'"]+)['"]`, 
 
 /**
  * A test or hook body that destructures Tapsmith's `device` fixture
- * (`async ({ device }) =>`) and drives it through Tapsmith's device API
+ * (`async ({ device }) =>`, `async ({ device }, testInfo) =>`) and drives it through Tapsmith's device API
  * (`device.getByRole(`, `device.tap(`, …). Both together mark a Tapsmith test
  * whatever module path (an alias, a chain of fixture modules) brings
  * `tapsmith` in; a Jest table test or factory that destructures a `device`
  * key does not call those methods on it.
  */
-const DEVICE_FIXTURE = /\(\s*\{[^}]*\bdevice\b[^}]*\}\s*\)\s*=>/;
+const DEVICE_FIXTURE = /\(\s*\{[^}]*\bdevice\b[^}]*\}\s*(?:,[^)]*)?\)\s*=>/;
 const DEVICE_API = /\bdevice\.(?:getBy\w+|locator|element|tap|swipe|pressKey|launchApp|restartApp|resetApp|terminateApp|openDeepLink|route|waitFor\w*|takeScreenshot|unlock|hideKeyboard)\s*\(/;
 
 function readText(file: string): string | undefined {

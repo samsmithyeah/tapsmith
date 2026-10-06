@@ -707,6 +707,8 @@ describe('executeInitPlan()', () => {
       fs.mkdirSync(path.join(tmp, 'e2e'));
       fs.writeFileSync(path.join(tmp, 'e2e', 'alias.test.ts'),
         "import { test, expect } from '@/e2e/fixtures'\n\ntest('signs in', async ({ device }) => {\n  await device.getByText('Hi').tap()\n})\n");
+      fs.writeFileSync(path.join(tmp, 'e2e', 'info.test.ts'),
+        "import { test } from '@/fixtures'\ntest('x', async ({ device }, testInfo) => {\n  await device.tap()\n})\n");
       fs.writeFileSync(path.join(tmp, 'e2e', 'hook.spec.ts'),
         "import { test } from '~/support'\ntest.beforeEach(async ({ device, page }) => {\n  await device.restartApp()\n})\n");
       // A Jest test that merely mentions a device is not one, even one that
@@ -721,6 +723,7 @@ describe('executeInitPlan()', () => {
       const warning = executeInitPlan(plan, args, tmp).warnings.find((w) => w.includes('.tapsmith.ts'));
       expect(warning).toContain('e2e/alias.test.ts');
       expect(warning).toContain('e2e/hook.spec.ts');
+      expect(warning).toContain('e2e/info.test.ts');
       expect(warning).not.toContain('unit.test.ts');
       expect(warning).not.toContain('table.test.ts');
     } finally {
