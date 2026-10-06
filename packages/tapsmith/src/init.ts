@@ -325,13 +325,13 @@ export async function configureAndroid(env: EnvScan, expo?: ExpoProject): Promis
   return { apkPath, packageName, useEmulators, usePhysicalDevices, avd };
 }
 
+/** How many simulators the picker shows at once; the rest scroll into view. */
+const SIMULATOR_PICKER_ROWS = 12;
+
 /**
  * The iOS questions. `expo` (PILOT-557) swaps the simulator build hint for
  * the Expo one and is the last fallback for the bundle id prompt's prefill.
  */
-/** How many simulators the picker shows at once; the rest scroll into view. */
-const SIMULATOR_PICKER_ROWS = 12;
-
 export async function configureIos(env: EnvScan, expo?: ExpoProject): Promise<IosConfig> {
   console.log(`  ${bold('iOS')}`);
 
