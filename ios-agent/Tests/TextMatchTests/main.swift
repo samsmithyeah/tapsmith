@@ -107,6 +107,44 @@ let saves = [node(staticText, "Save"), node(other, "Save"), node(button, "Save")
 expect(".any scope counts every same-label node", QueryIndex.liveIndex(of: 3, in: saves, scopeTypeRaw: nil) == 3)
 expect("a specific scope counts only its type", QueryIndex.liveIndex(of: 2, in: saves, scopeTypeRaw: button) == 0)
 
+// RegExp locators (PILOT-520): the SDK's conformance fixture, replayed
+// through ICU (NSRegularExpression for the snapshot walk, NSPredicate MATCHES
+// with the whole-string wrapper for XCUIElement queries).
+let fixturePath = CommandLine.arguments.count > 1
+    ? CommandLine.arguments[1]
+    : "../packages/tapsmith/src/__tests__/fixtures/regex-conformance.json"
+if let data = FileManager.default.contents(atPath: fixturePath),
+   let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+   let cases = root["cases"] as? [[String: Any]] {
+    expect("the conformance fixture has cases", cases.count > 50)
+    for c in cases {
+        let source = c["source"] as? String ?? ""
+        let flags = c["flags"] as? String ?? ""
+        let input = c["input"] as? String ?? ""
+        let want = c["matches"] as? Bool ?? false
+        let re = TextRegex(
+            pattern: c["pattern"] as? String ?? "",
+            ignoreCase: c["ignoreCase"] as? Bool ?? false,
+            display: "/\(source)/\(flags)"
+        )
+        let why = c["why"] as? String ?? ""
+        expect("regex /\(source)/\(flags): \(why)", re.error == nil && re.matches(input) == want)
+        expect("predicate /\(source)/\(flags): \(why)", matches(re.fullMatchPattern, input) == want)
+    }
+} else {
+    expect("the conformance fixture is readable at \(fixturePath)", false)
+}
+
+let saveRegex = TextRegex.fromJSON(["pattern": "^save", "ignoreCase": true, "display": "/^save/i"])
+expect("fromJSON reads the daemon's object", saveRegex?.display == "/^save/i" && saveRegex?.matches("SAVE draft") == true)
+expect("fromJSON of nothing is nil", TextRegex.fromJSON(nil) == nil)
+let badRegex = TextRegex(pattern: "(?<=a+", ignoreCase: false, display: "/(?<=a+/")
+expect("a pattern ICU rejects carries an error naming the RegExp",
+       badRegex.error?.contains("/(?<=a+/") == true && !badRegex.matches("a"))
+let nameRegex = TextRegex(pattern: "\\ASave\\u0020draft\\z", ignoreCase: false, display: "/^Save draft$/")
+expect("a name RegExp tests the normalized name", nameRegex.nameMatches("  Save\u{202F}\n draft "))
+expect("a name RegExp still needs the whole anchored name", !nameRegex.nameMatches("Save draft, more"))
+
 if failures > 0 {
     print("\(failures) failure(s)")
     exit(1)

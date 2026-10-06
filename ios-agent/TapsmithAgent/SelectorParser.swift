@@ -19,6 +19,8 @@ enum SelectorParser {
         let name = nonEmpty(source["name"] as? String)
         // getByRole `{ exact: true }` rides inside the role object (PILOT-549).
         let nameExact = (roleObj as? [String: Any])?["exact"] as? Bool ?? false
+        // RegExp locators (PILOT-520).
+        let nameRegex = TextRegex.fromJSON((roleObj as? [String: Any])?["nameRegex"])
 
         // Handle "resourceId" (sent by daemon) or "id" (legacy)
         let resourceId = nonEmpty(params["resourceId"] as? String) ?? nonEmpty(params["id"] as? String)
@@ -27,8 +29,10 @@ enum SelectorParser {
             role: role,
             name: name,
             nameExact: nameExact,
+            nameRegex: nameRegex,
             text: nonEmpty(params["text"] as? String),
             textContains: nonEmpty(params["textContains"] as? String),
+            textRegex: TextRegex.fromJSON(params["textRegex"]),
             contentDesc: nonEmpty(params["contentDesc"] as? String),
             hint: nonEmpty(params["hint"] as? String),
             className: nonEmpty(params["className"] as? String),
@@ -36,6 +40,7 @@ enum SelectorParser {
             id: resourceId,
             xpath: nonEmpty(params["xpath"] as? String),
             label: nonEmpty(params["label"] as? String),
+            labelRegex: TextRegex.fromJSON(params["labelRegex"]),
             enabled: params["enabled"] as? Bool,
             checked: params["checked"] as? Bool,
             focused: params["focused"] as? Bool,

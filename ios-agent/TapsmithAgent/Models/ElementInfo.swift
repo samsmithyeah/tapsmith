@@ -8,8 +8,12 @@ struct ElementSelector {
     var name: String?
     /// getByRole `{ exact: true }`: match `name` case-sensitively and whole (PILOT-549).
     var nameExact: Bool = false
+    /// getByRole `{ name: RegExp }` (PILOT-520); `name` is then nil.
+    var nameRegex: TextRegex?
     var text: String?
     var textContains: String?
+    /// getByText(RegExp) (PILOT-520): tested against label, title or value.
+    var textRegex: TextRegex?
     var contentDesc: String?
     var hint: String?
     var className: String?
@@ -17,11 +21,29 @@ struct ElementSelector {
     var id: String?
     var xpath: String?
     var label: String?
+    /// getByLabel(RegExp) (PILOT-520): tested against an input's label or title.
+    var labelRegex: TextRegex?
     var enabled: Bool?
     var checked: Bool?
     var focused: Bool?
     var selected: Bool?
     var expanded: Bool?
+
+    /// Whether a role selector filters by name, as a string or a RegExp.
+    var hasNameFilter: Bool { name != nil || nameRegex != nil }
+
+    /// Why a RegExp in this selector can't be used (ICU rejected it), if so.
+    var regexError: String? {
+        [nameRegex, textRegex, labelRegex].compactMap { $0?.error }.first
+    }
+
+    /// Whether a match is re-resolved as a live element by its own label
+    /// (QueryIndex.liveIndex) rather than by the selector — needed when the
+    /// selector also matches other labels (a substring role name, PILOT-549;
+    /// a RegExp, PILOT-520) and would shift the positional index.
+    var reResolvesByLabel: Bool {
+        (role != nil && hasNameFilter) || textRegex != nil || labelRegex != nil
+    }
 }
 
 /// Bounding rectangle for an element.
