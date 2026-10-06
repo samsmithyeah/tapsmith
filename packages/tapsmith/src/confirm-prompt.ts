@@ -2,7 +2,7 @@
 
 /** The parts of enquirer's boolean prompt that `format` is called with as `this`. */
 interface BooleanPromptLike {
-  state: { submitted: boolean };
+  state: { submitted: boolean; cancelled?: boolean };
   styles: { success(s: string): string };
 }
 
@@ -10,10 +10,11 @@ interface BooleanPromptLike {
  * enquirer's confirm prompt echoes its value as a boolean: `(Y/n) › true`
  * while it waits and `(Y/n) · true` once answered, which reads as a rendering
  * bug. Show nothing while it waits (the `(Y/n)` hint already marks the
- * default) and `yes` or `no` once answered.
+ * default) or once cancelled (enquirer marks a cancelled prompt submitted
+ * too), and `yes` or `no` once answered.
  */
 function formatConfirm(this: BooleanPromptLike, value: unknown): string {
-  if (!this.state.submitted) return '';
+  if (!this.state.submitted || this.state.cancelled) return '';
   return this.styles.success(value ? 'yes' : 'no');
 }
 

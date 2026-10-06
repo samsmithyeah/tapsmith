@@ -853,9 +853,12 @@ describe('simulatorChoices() (PILOT-562)', () => {
     expect(simulatorChoices(sims).map((s) => s.name)).toEqual(['iPhone 17']);
   });
 
-  it('keeps every simulator when none has an iOS runtime name (an unrecognised simctl shape)', () => {
-    const sims = [sim('Phone A', 'Future 1'), sim('Phone B', 'Future 2')];
-    expect(simulatorChoices(sims).map((s) => s.name)).toEqual(['Phone B', 'Phone A']);
+  it('offers nothing when no iOS runtime is installed, so init warns instead of picking a watch or headset', () => {
+    const sims = [sim('Apple Vision Pro', 'xrOS 2.0'), sim('Apple Watch Ultra', 'watchOS 11.0', 'Booted')];
+    expect(simulatorChoices(sims)).toEqual([]);
+    const plan = resolveInitPlan(initArgs({ yes: true, platform: 'ios' }), { ...baseEnv, simulators: sims }, detectStubs);
+    expect(plan.ios?.simulator).toBe('iPhone 17');
+    expect(plan.warnings.join('\n')).toContain('No iOS simulators found');
   });
 
   it('init --yes picks the booted simulator over the newest iPhone', () => {

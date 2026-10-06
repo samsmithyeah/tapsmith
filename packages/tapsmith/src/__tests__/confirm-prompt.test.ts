@@ -38,6 +38,23 @@ describe('confirmQuestion()', () => {
     expect(no.final).not.toMatch(/true|false/);
   });
 
+  it('shows no answer when cancelled with Ctrl-C', async () => {
+    const stdin = Object.assign(new PassThrough(), { isTTY: true, isRaw: false, setRawMode: () => stdin });
+    const stdout = new PassThrough();
+    const frames: string[] = [];
+    stdout.on('data', (d: Buffer) => frames.push(stripAnsi(d.toString())));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- enquirer's prompt classes are untyped statics
+    const prompt = new (Enquirer as any).Confirm({ ...confirmQuestion('Install it now?', true), name: 'q', stdin, stdout });
+    prompt.once('run', () => {
+      frames.length = 0;
+      // What enquirer's ctrl+c action calls.
+      void prompt.cancel();
+    });
+    await expect(prompt.run()).rejects.toBeDefined();
+    expect(frames.join('')).toMatch(/Install it now\? \(Y\/n\)/);
+    expect(frames.join('')).not.toMatch(/\b(yes|no|true|false)\b/);
+  });
+
   it('shows no value while waiting for an answer: the (Y/n) hint is the default', async () => {
     const { pending } = await render(false, '\r');
     expect(pending).toMatch(/Generate example test file\? \(y\/N\) ›/);
