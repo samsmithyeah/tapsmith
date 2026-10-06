@@ -494,9 +494,11 @@ its head** — never a `best-effort`, `ready-stacked` or `blocked` PR, and never
    `gh pr view <n> --json headRefOid,mergeable,mergeStateStatus,reviewDecision,isDraft`.
    The head must be the SHA the gate passed on; no "changes requested"; no new
    unresolved thread since the gate (re-run the Phase 6 thread query).
-2. **Up to date with the base.** If `origin/<base>` has moved since the head's CI run,
-   merge it in (Keeping up with the base), push, and run the gate again on the new head —
-   CI that passed against an older `main` says nothing about the combination.
+2. **No conflict with the base.** Do not merge `origin/<base>` in just because it has
+   moved: that push re-runs every workflow on the PR, and `main`'s own CI tests the
+   combination after the squash-merge. Only if GitHub reports a conflict
+   (`mergeable: CONFLICTING`) merge it in (Keeping up with the base), push, and run the
+   gate again on the new head.
 3. **Merge**, pinned to the gated head so nothing pushed in between slips through:
 
    ```bash

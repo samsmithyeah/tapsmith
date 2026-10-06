@@ -156,9 +156,9 @@ For each ticket that is ready to start, up to `max-parallel` running at once:
 
 A slot is a worker that is **building**: `max-parallel` caps building workers, not
 started ones. A worker that returns `ready-to-merge`, `blocked` or `planned` is idle
-and frees its slot. A ready worker may need resuming later (another PR merged: it must
-merge `main` and re-run its gate); until it has, report it as `ready (stale vs main)`,
-never plain `ready`. Resuming an idle
+and frees its slot. A ready worker may need resuming later (another PR merged and its
+PR now conflicts: it must merge `main` and re-run its gate); until it has, report it as
+`ready (conflicts with main)`, never plain `ready`. Resuming an idle
 worker (relaying "go" or an answer) needs a free slot like starting a new one does —
 resume in lane order, and queue the rest until slots free. Fill free slots from the
 queue in lane order.
@@ -225,14 +225,16 @@ Between events, keep an eye on the batch:
   hang → mark it held and say so.
 
 - **Merges.** Without `merge`, nobody in the batch merges; still poll, since the user may.
-  When a PR in the batch merges (`gh pr view <n> --json state`), tell every
-  other worker with an open PR: "`<KEY>`'s PR merged; fetch, merge `origin/<base>`, re-run
-  your gate." Start any ticket whose lane was `after <KEY>`. A worker stacked on `<KEY>` merges
-  `origin/<base>` (implement-ticket *Stacked branches*) and re-gates. Unless `no-jira`, move
-  the merged ticket to **Done** (statuses are To Do, In Progress, Done) if it is not there
-  already (a `merge` worker does this itself). With `merge`, every merge sends the other
-  open PRs round CI again; that churn is the price of never merging a PR whose CI ran
-  against an older `main`.
+  When a PR in the batch merges (`gh pr view <n> --json state`), check the other open
+  PRs' `mergeable`: only a worker whose PR now **conflicts** merges `origin/<base>` and
+  re-runs its gate. Don't send the others round CI again just because `main` moved —
+  `main`'s own CI on each merge commit tests the combination. Watch that run (`gh run list
+  --branch main --commit <sha>`); if it goes red, find the PR whose change broke it and
+  have that worker (or a new one) fix forward on a new PR. Start any ticket whose lane was
+  `after <KEY>`. A worker stacked on `<KEY>` merges `origin/<base>` (implement-ticket
+  *Stacked branches*) and re-gates. Unless `no-jira`, move the merged ticket to **Done**
+  (statuses are To Do, In Progress, Done) if it is not there already (a `merge` worker
+  does this itself).
 - **Cross-ticket conflicts.** If two workers turn out to touch the same file after all
   (`git diff --stat` in each worktree), pause the later one with a message, and move it to
   a serial lane.

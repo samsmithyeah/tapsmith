@@ -228,10 +228,13 @@ done
 
 ## Keeping up with the base
 
-Check before the gate, and whenever GitHub reports a conflict:
+Merge the base in only when GitHub reports a conflict, or when the branch needs something
+that has since landed on it. Never merge it just because it moved: every push re-runs
+every workflow on the PR (iOS E2E included, on the scarce macOS runners), and `main`'s own
+CI tests the combination after the squash-merge.
 
 ```bash
-gh pr view <n> --json mergeable,mergeStateStatus
+gh pr view <n> --json mergeable,mergeStateStatus   # CONFLICTING → merge the base in
 git fetch origin && git merge origin/<base>     # resolve, run package checks, commit -s
 ```
 
