@@ -570,6 +570,30 @@ describe('executeInitPlan()', () => {
     }
   });
 
+  it('adds tapsmith-results/ to .gitignore and lists it, warning instead of failing when it cannot (PILOT-562)', () => {
+    const tmp = makeTmp();
+    try {
+      fs.writeFileSync(path.join(tmp, '.gitignore'), 'node_modules/\n');
+      const args = initArgs({ yes: true, platform: 'android' });
+      const result = executeInitPlan(resolveInitPlan(args, baseEnv, detectStubs, tmp), args, tmp);
+      expect(fs.readFileSync(path.join(tmp, '.gitignore'), 'utf8')).toContain('\ntapsmith-results/\n');
+      expect(result.filesCreated).toContain('.gitignore');
+
+      // Already there: not listed again.
+      const again = executeInitPlan(resolveInitPlan({ ...args, force: true }, baseEnv, detectStubs, tmp), { ...args, force: true }, tmp);
+      expect(again.filesCreated).not.toContain('.gitignore');
+
+      // Unwritable: init still succeeds, with a warning.
+      fs.rmSync(path.join(tmp, '.gitignore'));
+      fs.mkdirSync(path.join(tmp, '.gitignore'));
+      const blocked = executeInitPlan(resolveInitPlan({ ...args, force: true }, baseEnv, detectStubs, tmp), { ...args, force: true }, tmp);
+      expect(blocked.filesCreated).not.toContain('.gitignore');
+      expect(blocked.warnings.join('\n')).toMatch(/Could not add tapsmith-results\/ to \.gitignore/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('respects --no-example-test and --no-agents-md', () => {
     const tmp = makeTmp();
     try {

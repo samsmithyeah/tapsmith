@@ -10,6 +10,7 @@ import { simulatorChoices, type EnvScan } from './env-scan.js';
 import type { AndroidConfig, IosConfig, Platform } from './init.js';
 import { EXAMPLE_TEST_PATH, generateConfig, tapsmithTestsOutsideGeneratedMatch, testsOutsideGeneratedMatchWarning, writeExampleTest } from './init.js';
 import { writeAgentsMd } from './agents-md.js';
+import { ignoreTestResultsOrWarn } from './init-gitignore.js';
 import { avdCaptureSupport, avdCaptureWarning, noAvdsListedMessage } from './avd-images.js';
 import * as detectDefaults from './init-detect.js';
 import type { InitCommandOptions } from './cli-program.js';
@@ -335,6 +336,10 @@ export function executeInitPlan(
 
   const unmatched = testsOutsideGeneratedMatchWarning(tapsmithTestsOutsideGeneratedMatch(cwd));
   if (unmatched) warnings.push(unmatched);
+
+  const ignored = ignoreTestResultsOrWarn(cwd);
+  if (ignored === 'created' || ignored === 'added') filesCreated.push('.gitignore');
+  else if (typeof ignored === 'object') warnings.push(ignored.warning);
 
   if (args.exampleTest) {
     if (writeExampleTest(cwd) === 'exists') {

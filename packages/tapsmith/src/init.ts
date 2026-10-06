@@ -25,6 +25,7 @@ import { globSync } from 'glob';
 import { minimatch } from 'minimatch';
 import { DEFAULT_TEST_IGNORE } from './test-file-discovery.js';
 import { confirmQuestion } from './confirm-prompt.js';
+import { ignoreTestResultsOrWarn } from './init-gitignore.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -1094,6 +1095,12 @@ async function runInitInner(): Promise<void> {
   } catch (err) {
     console.log(`  ${RED}✗${RESET} Failed to write tapsmith.config.ts: ${err instanceof Error ? err.message : String(err)}`);
   }
+
+  // Step 7.5: keep test results out of git (PILOT-562)
+  const ignored = ignoreTestResultsOrWarn(process.cwd());
+  if (ignored === 'created') console.log(`  ${green('✓')} .gitignore created (ignores tapsmith-results/)`);
+  else if (ignored === 'added') console.log(`  ${green('✓')} tapsmith-results/ added to .gitignore`);
+  else if (typeof ignored === 'object') console.log(`  ${YELLOW}⚠${RESET} ${ignored.warning}`);
 
   // Step 8: Example test
   const createTest = await ask<boolean>(confirmQuestion('Generate example test file?', true));
