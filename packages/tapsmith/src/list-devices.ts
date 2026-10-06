@@ -25,6 +25,7 @@ import { pickFreePort } from './port-utils.js';
 import { formatJson, jsonError } from './cli-json.js';
 import { currentSession, listDeviceClaims, type DeviceClaim } from './device-claims.js';
 import { androidUnusableDeviceFix } from './adb-devices.js';
+import { androidToolchainBlocker, iosToolchainBlocker } from './toolchain.js';
 import {
   listPhysicalDevices,
   listUsbAttachedIosDevices,
@@ -240,12 +241,22 @@ function blockersFor(
 
 // ─── Rendering ──────────────────────────────────────────────────────────
 
+/**
+ * What to do when nothing was found, per platform: how to start a device, or
+ * — on a machine without that platform's toolchain — what to install first,
+ * since `xcrun simctl boot` needs Xcode and an emulator needs the SDK
+ * (PILOT-558).
+ */
+function noDevicesHint(toolchain: ToolchainBlockers): string {
+  const android = toolchain.android ?? 'start an emulator, or connect a device with USB debugging enabled';
+  const ios = toolchain.ios ?? 'boot a simulator (xcrun simctl boot "<name>"), or plug in an iPhone';
+  return dim('No devices detected.\n\n')
+    + `  Android: ${android}.\n`
+    + `  iOS: ${ios}.\n`
+    + '  Then re-run `tapsmith list-devices`.\n';
+}
+
 function formatTable(rows: DeviceRow[]): string {
-  if (rows.length === 0) {
-    return dim('No devices detected.\n\n') +
-      '  Plug in an iPhone, boot an iOS simulator with `xcrun simctl boot`,\n' +
-      '  or start an Android emulator — then re-run `tapsmith list-devices`.\n';
-  }
 
   // Columns: NAME · PLATFORM · SERIAL · OS · STATUS. Name comes first
   // because humans scan device lists by name. No ✓/✗ column — the STATUS
@@ -466,12 +477,20 @@ export async function listDevicesFromDaemon(
 
 // ─── CLI entry point ────────────────────────────────────────────────────
 
+/** Per platform, why it cannot run on this machine; undefined when it can. */
+export interface ToolchainBlockers {
+  android: string | undefined;
+  ios: string | undefined;
+}
+
 export interface ListDevicesDeps {
   fetchDevices: () => Promise<DeviceInfoProto[]>;
   /** devicectl + USB cross-reference for physical iOS devices. */
   enrich: () => { physical: PhysicalDeviceInfo[]; usbAttached: Set<string> };
   /** Live claims of other Tapsmith sessions, by device (PILOT-381). */
   claims: () => ReadonlyMap<string, DeviceClaim>;
+  /** Why each platform cannot run here (`androidToolchainBlocker` / `iosToolchainBlocker`); read only when nothing was found. */
+  toolchain: () => ToolchainBlockers;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -501,6 +520,7 @@ export async function runListDevices(opts: { json: boolean }, overrides: Partial
     fetchDevices: () => listDevicesFromDaemon(),
     enrich: enrichFromHost,
     claims: liveClaimsByDevice,
+    toolchain: () => ({ android: androidToolchainBlocker(), ios: iosToolchainBlocker() }),
     stdout: (text) => { process.stdout.write(text); },
     stderr: (text) => { process.stderr.write(text); },
     ...overrides,
@@ -534,7 +554,7 @@ export async function runListDevices(opts: { json: boolean }, overrides: Partial
     return 0;
   }
 
-  deps.stdout('\n' + formatTable(rows) + '\n');
+  deps.stdout('\n' + (rows.length === 0 ? noDevicesHint(deps.toolchain()) : formatTable(rows)) + '\n');
   return 0;
 }
 
