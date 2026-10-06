@@ -535,26 +535,34 @@ export function applyPositionalIndex<T>(items: T[], index: ParsedSelector['index
 }
 
 /**
- * Roles whose class list the agent ignores on that platform: on Android a
- * TextView is a heading or link only through its role description, and on
- * iOS a static text is a heading only through the header trait.
+ * Android roles the agent resolves on two paths (ElementFinder.kt
+ * DUAL_PATH_ROLES): a node with a role description matches only through it,
+ * one without falls back to its class — except heading and link, whose class
+ * (TextView) the agent never accepts on its own.
  */
-const ANDROID_TRAIT_GATED_ROLES = new Set(['heading', 'link']);
-const IOS_TRAIT_GATED_ROLES = new Set(['heading']);
+const ANDROID_DUAL_PATH_ROLES = new Set(['heading', 'link', 'image', 'searchfield']);
+const ANDROID_DESCRIPTION_ONLY_ROLES = new Set(['heading', 'link']);
 
 /**
  * Whether a native node has `role` (canonical) the way the agent's getByRole
  * decides it: its reported role, or membership of the role's classes / element
  * types — which covers roles the reverse map leaves out (list, listitem,
  * scrollview, …) without making every layout suggest getByRole("listitem").
+ *
+ * iOS heading stays header-trait only here; the iOS agent currently also
+ * type-matches every static text for "heading", which is its bug to fix.
  */
 function nodeHasRole(node: HierarchyNode, role: string): boolean {
   const reported = getNodeRole(node);
   if (reported && normalizeRole(reported) === role) return true;
   const className = node.attributes.get('class');
-  if (className) return !ANDROID_TRAIT_GATED_ROLES.has(role) && (ANDROID_ROLE_CLASSES[role]?.includes(className) ?? false);
+  if (className) {
+    if (ANDROID_DUAL_PATH_ROLES.has(role)
+      && (ANDROID_DESCRIPTION_ONLY_ROLES.has(role) || node.attributes.has('tapsmith-role'))) return false;
+    return ANDROID_ROLE_CLASSES[role]?.includes(className) ?? false;
+  }
   const type = node.attributes.get('type') ?? node.tagName;
-  return !IOS_TRAIT_GATED_ROLES.has(role) && (IOS_ROLE_TYPES[role]?.includes(type) ?? false);
+  return role !== 'heading' && (IOS_ROLE_TYPES[role]?.includes(type) ?? false);
 }
 
 /**

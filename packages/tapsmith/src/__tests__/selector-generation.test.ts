@@ -599,6 +599,19 @@ describe('role names in the playground match the runtime', () => {
     expect(on('device.getByRole("link")')).toEqual([]);
   });
 
+  it('applies the Android agent\'s dual-path rule: a role description overrides the class', () => {
+    // ElementFinder.kt: for heading/link/image/searchfield, a node with a role
+    // description matches only through it; class roles (button, …) are
+    // By.clazz matches and ignore it.
+    const pressableImage = makeNode('node', { class: 'android.widget.ImageView', 'tapsmith-role': 'button', bounds: '[0,0][50,50]' });
+    const plainImage = makeNode('node', { class: 'android.widget.ImageView', bounds: '[0,60][50,110]' });
+    const menuButton = makeNode('node', { class: 'android.widget.Button', 'tapsmith-role': 'menuitem', text: 'Open', bounds: '[0,120][50,170]' });
+    const tree = [makeNode('hierarchy', {}, [pressableImage, plainImage, menuButton])];
+    const on = (selector: string) => findMatchingNodes(tree, parseSelectorString(selector)!);
+    expect(on('device.getByRole("image")')).toEqual([plainImage]);
+    expect(on('device.getByRole("button")')).toContain(menuButton);
+  });
+
   it('matches nothing for a role getByRole rejects, and says why', () => {
     expect(match('device.getByRole("menuitem")')).toEqual([]);
     expect(parsedSelectorError(parseSelectorString('device.getByRole("menuitem")')!))
