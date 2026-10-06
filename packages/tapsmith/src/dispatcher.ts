@@ -57,6 +57,7 @@ import {
 } from './ios-simulator.js';
 import { freeStaleAgentPort, findPidsOnPort } from './port-utils.js';
 import { describeUnusableAndroidDevice, isUsableAndroidState, moreDevicesAdvice, noOnlineDeviceMessage, workerStartAdvice } from './device-advice.js';
+import { androidToolchainBlocker, iosToolchainBlocker, toolchainBlocker } from './toolchain.js';
 import type { AdbDevice } from './adb-devices.js';
 import { notifyLegacySudoersIfPresent } from './legacy-cleanup.js';
 import {
@@ -1495,6 +1496,13 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         config.launchEmulators &&
         installedOnline.selectedSerials.length < maxUsefulWorkers * groupSize
       ) {
+        // Without adb the emulator would boot and the boot wait time out:
+        // say so now, as a launch failure rather than a crash.
+        const adbBlocker = androidToolchainBlocker();
+        if (adbBlocker) {
+          failStep('worker-devices', 'adb is not on PATH');
+          throw new LaunchSetupError(`${adbBlocker}.`);
+        }
         const provision = await provisionEmulators({
           existingSerials: installedOnline.selectedSerials,
           occupiedSerials: androidDevices.map((d) => d.serial),
@@ -1529,15 +1537,16 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
 
     if (deviceSerials.length === 0) {
       failStep('worker-devices', 'no worker-ready devices found');
+      const iosBlocker = isIos ? iosToolchainBlocker() : undefined;
       throw new LaunchSetupError(
         isIos
-          ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
+          ? `No booted iOS simulators found.${iosBlocker ? ` ${iosBlocker}.` : config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
             // Booted ones other sessions hold are named, not reported missing.
             + heldDevicesNote(withoutHeldDevices(
               listBootedSimulators().filter((sim) => sim.name === config.simulator || sim.udid === config.simulator).map((sim) => sim.udid),
             ).held)
           // adb's state now, not at discovery: provisioning may have changed it.
-          : noOnlineDeviceMessage(config, listAdbDevices())
+          : noOnlineDeviceMessage(config, listAdbDevices(), androidToolchainBlocker())
             + heldDevicesNote(withoutHeldDevices(listAdbDevices().filter((d) => d.state === 'device').map((d) => d.serial)).held),
       );
     }
@@ -1576,7 +1585,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       throw new LaunchSetupError(
         `use.devices asks for ${groupSize} device(s) per test but only ${deviceSerials.length} could be provisioned `
         + `(${deviceSerials.join(', ')}). `
-        + moreDevicesAdvice(config),
+        + moreDevicesAdvice(config, toolchainBlocker(config.platform)),
       );
     }
 
