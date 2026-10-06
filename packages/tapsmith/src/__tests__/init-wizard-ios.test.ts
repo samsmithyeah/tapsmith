@@ -408,4 +408,13 @@ describe('configureIos() simulator picker (PILOT-562)', () => {
     expect(q?.choices?.[0]).toMatchObject({ name: 'iPhone 16', hint: 'iOS 18.2, booted' });
     expect(q?.choices?.[1]).toMatchObject({ name: 'iPhone 17 Pro', hint: 'iOS 26.5' });
   });
+
+  it('with only worker clones to offer, falls back to a default simulator instead of an empty list', async () => {
+    script('simulators');
+
+    const ios = await configureIos({ ...env, simulators: [sim('iPhone 17 (Tapsmith Worker 1)', 'iOS 26.5', 'Booted')] });
+
+    expect(picker()).toBeUndefined();
+    expect(ios.simulator).toBe('iPhone 17');
+  });
 });

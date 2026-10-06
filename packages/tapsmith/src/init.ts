@@ -363,9 +363,9 @@ export async function configureIos(env: EnvScan, expo?: ExpoProject): Promise<Io
 
   let simulator: string | undefined;
   if (useSimulators) {
-    if (env.simulators.length > 0) {
-      // Every simulator, a booted one first and selected (PILOT-562).
-      const choices = simulatorChoices(env.simulators);
+    // Every simulator, a booted one first and selected (PILOT-562).
+    const choices = simulatorChoices(env.simulators);
+    if (choices.length > 0) {
       simulator = await ask<string>({
         type: 'select',
         message: choices.length > SIMULATOR_PICKER_ROWS

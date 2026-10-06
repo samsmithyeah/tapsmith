@@ -93,9 +93,9 @@ export function parseSimctlDevicesJson(output: string): SimulatorInfo[] {
 // ─── Simulator choice (PILOT-562) ───
 
 /**
- * The simulators init offers, best first (PILOT-562): iOS runtimes only
- * (watchOS, tvOS and visionOS simulators cannot run an iOS app; all of them
- * when none is named iOS), one per name — a booted one, else the newest
+ * The simulators init offers, best first (PILOT-562): no Tapsmith worker
+ * clones, iOS runtimes only (watchOS, tvOS and visionOS simulators cannot
+ * run an iOS app; all of them when none is named iOS), one per name — a booted one, else the newest
  * runtime's, as the config names a simulator by name and the runner adopts a
  * booted one of that name. A booted simulator comes first, as choosing it
  * avoids a boot, then iPhones, then the rest, each newest runtime first and
@@ -103,9 +103,12 @@ export function parseSimctlDevicesJson(output: string): SimulatorInfo[] {
  * first selected, and `init --yes` picks the first.
  */
 export function simulatorChoices(simulators: SimulatorInfo[]): SimulatorInfo[] {
-  const ios = simulators.filter((s) => /^iOS\b/.test(s.runtime));
+  // Not the `<name> (Tapsmith Worker N)` clones parallel runs make: they
+  // come and go with runs, and the config names the simulator they clone.
+  const own = simulators.filter((s) => !/ \(Tapsmith Worker \d+\)$/.test(s.name));
+  const ios = own.filter((s) => /^iOS\b/.test(s.runtime));
   const byName = new Map<string, SimulatorInfo>();
-  for (const sim of ios.length > 0 ? ios : simulators) {
+  for (const sim of ios.length > 0 ? ios : own) {
     const existing = byName.get(sim.name);
     if (!existing || rank(sim, existing) < 0) byName.set(sim.name, sim);
   }

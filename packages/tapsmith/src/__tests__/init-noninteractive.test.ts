@@ -843,6 +843,11 @@ describe('simulatorChoices() (PILOT-562)', () => {
     expect(ordered.map((s) => s.name)).toEqual(['iPhone 16', 'iPhone 17 Pro']);
   });
 
+  it('leaves out the clones parallel runs make, even a booted one', () => {
+    const sims = [sim('iPhone 17 (Tapsmith Worker 1)', 'iOS 26.5', 'Booted'), sim('iPhone 17', 'iOS 26.5')];
+    expect(simulatorChoices(sims).map((s) => s.name)).toEqual(['iPhone 17']);
+  });
+
   it('leaves out watchOS, tvOS and visionOS simulators, which cannot run an iOS app', () => {
     const sims = [sim('Apple Watch Ultra', 'watchOS 11.0', 'Booted'), sim('Apple TV', 'tvOS 18.0'), sim('Apple Vision Pro', 'xrOS 2.0'), sim('iPhone 17', 'iOS 26.0')];
     expect(simulatorChoices(sims).map((s) => s.name)).toEqual(['iPhone 17']);
