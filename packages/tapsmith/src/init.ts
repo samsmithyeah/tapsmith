@@ -880,7 +880,23 @@ export function testsOutsideGeneratedMatchWarning(files: string[]): string | und
 
 // ─── Main wizard ───
 
-const UNEXPECTED_FIX = 'Run: npx tapsmith doctor --json to check the environment';
+/**
+ * The wizard's Next steps as `[label, command]`: a declined install first
+ * (PILOT-551), then `tapsmith verify`, which getting-started has a new user
+ * run before writing tests (PILOT-562). Plain commands: `--json` is for agents.
+ */
+export function wizardNextSteps(installStep: string | undefined): Array<[string, string]> {
+  return [
+    ...(installStep ? [['Install Tapsmith', installStep] as [string, string]] : []),
+    ['Verify your setup', 'npx tapsmith verify'],
+    ['Run your tests', 'npx tapsmith test'],
+    ['List devices', 'npx tapsmith list-devices'],
+    ['Health check', 'npx tapsmith doctor'],
+  ];
+}
+
+/** The fix for an unexpected init error: `--json` only for an agent that asked for JSON. */
+const unexpectedFix = (json: boolean): string => `Run: npx tapsmith doctor${json ? ' --json' : ''} to check the environment`;
 
 export async function runInit(opts: InitCommandOptions): Promise<void> {
   const { initArgsFromOptions, resolveInitPlan, executeInitPlan, InitError } = await import('./init-noninteractive.js');
@@ -891,7 +907,7 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
   } catch (err) {
     const initErr = err instanceof InitError
       ? err
-      : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), { fix: UNEXPECTED_FIX });
+      : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), { fix: unexpectedFix(opts.json) });
     emitInitError(initErr, opts.json);
     process.exit(1);
     return;
@@ -955,7 +971,7 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
     } catch (err) {
       const initErr = err instanceof InitError
         ? err
-        : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), { fix: UNEXPECTED_FIX });
+        : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), { fix: unexpectedFix(parsed.json) });
       emitInitError(initErr, parsed.json);
       process.exit(1);
     }
@@ -998,7 +1014,7 @@ async function runInitInner(): Promise<void> {
   if (existingConfig) {
     const overwrite = await ask<boolean>(confirmQuestion(`Found existing ${existingConfig}. Overwrite it?`, false));
     if (!overwrite) {
-      console.log(dim('  Keeping existing config. Run `npx tapsmith doctor` to verify your setup.'));
+      console.log(dim('  Keeping existing config. Run `npx tapsmith verify` to check your setup.'));
       return;
     }
   }
@@ -1109,12 +1125,7 @@ async function runInitInner(): Promise<void> {
   console.log();
   console.log(`  ${bold('Next steps')}`);
   const projects = generatedProjects(selectedPlatforms, iosConfig);
-  const steps: Array<[string, string]> = [
-    ...(installStep ? [['Install Tapsmith', installStep] as [string, string]] : []),
-    ['Run your tests', 'npx tapsmith test'],
-    ['List devices', 'npx tapsmith list-devices'],
-    ['Health check', 'npx tapsmith doctor'],
-  ];
+  const steps = wizardNextSteps(installStep);
   const width = Math.max(...[...steps.map(([l]) => l), ...projects.map((p) => p.label)].map((l) => l.length)) + 3;
   const step = (label: string, cmd: string): void => console.log(`  ${`${label}:`.padEnd(width)}${green(cmd)}`);
   for (const [label, cmd] of steps) step(label, cmd);

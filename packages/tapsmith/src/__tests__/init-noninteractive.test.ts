@@ -553,6 +553,23 @@ describe('executeInitPlan()', () => {
     }
   });
 
+  // Next steps print for a person without --json, and --json is for agents (PILOT-562).
+  it('shows a person `tapsmith verify` and an agent `tapsmith verify --json`', () => {
+    const tmp = makeTmp();
+    try {
+      const human = initArgs({ yes: true, platform: 'android' });
+      const humanSteps = executeInitPlan(resolveInitPlan(human, baseEnv, detectStubs, tmp), human, tmp).nextSteps;
+      expect(humanSteps[0]).toBe('Verify the setup end-to-end: npx tapsmith verify');
+      expect(humanSteps.join('\n')).not.toContain('--json');
+
+      const agent = initArgs({ yes: true, json: true, platform: 'android', force: true });
+      const agentSteps = executeInitPlan(resolveInitPlan(agent, baseEnv, detectStubs, tmp), agent, tmp).nextSteps;
+      expect(agentSteps[0]).toBe('Verify the setup end-to-end: npx tapsmith verify --json');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('respects --no-example-test and --no-agents-md', () => {
     const tmp = makeTmp();
     try {

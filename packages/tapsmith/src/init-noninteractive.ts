@@ -355,7 +355,8 @@ export function executeInitPlan(
 
   const nextSteps = [
     ...(missingTapsmith ? [`Install Tapsmith in this project: ${missingTapsmith.display}`] : []),
-    'Verify the setup end-to-end: npx tapsmith verify --json',
+    // --json is for agents: a person reading the plain output gets the plain command (PILOT-562).
+    `Verify the setup end-to-end: npx tapsmith verify${args.json ? ' --json' : ''}`,
     'Run tests: npx tapsmith test',
     'Register the MCP server for richer agent tooling: claude mcp add tapsmith -- npx tapsmith mcp-server',
   ];
