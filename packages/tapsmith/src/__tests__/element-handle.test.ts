@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ElementHandle, StrictModeViolationError, isStrictModeViolation } from '../element-handle.js';
+import { ElementHandle, StrictModeViolationError, isStrictModeViolation, buildStrictModeViolationError } from '../element-handle.js';
 import { TraceCollector, type TraceCapture } from '../trace/trace-collector.js';
 import type { AnyTraceEvent, ActionTraceEvent } from '../trace/types.js';
 import { isAbortError, TestAbortedError } from '../abort.js';
@@ -844,12 +844,22 @@ describe('tap()', () => {
     expect((err as Error).message).toBe(
       'strict mode violation: getByText("Sign in") resolved to 2 elements:\n' +
       '    1) text "Sign in to continue to DreamSpinner" [44,210][436,260] aka device.getByText("Sign in to continue to DreamSpinner", { exact: true })\n' +
-      '    2) button "Sign in" [44,640][436,712] aka device.getByRole("button", { name: "Sign in" })\n' +
-      'Hint: use { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last() to target a single element.',
+      '    2) button "Sign in" [44,640][436,712] aka device.getByRole("button", { name: "Sign in", exact: true })\n' +
+      'Hint: use { exact: true }, getByRole(role, { name, exact: true }), getByTestId(), or .first()/.nth()/.last() to target a single element.',
     );
     // Strict violations must throw immediately — no polling out the timeout
     expect(client.findElements).toHaveBeenCalledTimes(1);
     expect(tap).not.toHaveBeenCalled();
+  });
+
+  it('suggests a long role name as a matching prefix, not an ellipsis (PILOT-549)', () => {
+    const long = 'Login Form, Text inputs, buttons, focus and blur, keyboard handling';
+    const err = buildStrictModeViolationError('getByRole("button")', [
+      makeElementInfo({ role: 'button', contentDescription: long }),
+      makeElementInfo({ role: 'button', contentDescription: 'Other' }),
+    ]);
+    expect(err.message).toContain(`aka device.getByRole("button", { name: "${long.slice(0, 60)}" })`);
+    expect(err.message).toContain('aka device.getByRole("button", { name: "Other", exact: true })');
   });
 
   it('.first() disambiguates an ambiguous selector', async () => {

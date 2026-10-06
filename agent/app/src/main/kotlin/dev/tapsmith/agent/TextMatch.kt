@@ -33,6 +33,45 @@ object TextMatch {
         expected: String,
     ): Boolean = actual != null && normalize(actual.toString()) == normalize(expected)
 
+    /**
+     * Whether [actual] (null = no text) matches the accessible-name [query]
+     * the way Playwright's getByRole `name` does (PILOT-549): by default a
+     * case-insensitive substring match, with [exact] a case-sensitive
+     * whole-string match. Whitespace is normalized either way. Case folding
+     * uses [String.lowercase], which is locale-independent, so a Turkish
+     * device locale doesn't break "LOGIN" vs "login".
+     */
+    fun nameMatches(
+        actual: CharSequence?,
+        query: String,
+        exact: Boolean,
+    ): Boolean {
+        if (actual == null) return false
+        if (exact) return equalsNormalized(actual, query)
+        return normalize(actual.toString()).lowercase().contains(normalize(query).lowercase())
+    }
+
+    /**
+     * Whether an element's accessible name matches [name]: its content
+     * description, its text, or its joined [descendantText] (read lazily —
+     * each child read is an accessibility round-trip). When [textIsValue] —
+     * an editable field's typed value, not its hint — the text is not part
+     * of the accessible name (Playwright; the iOS agent checks label/title
+     * only), so it is still compared whole: typing "email me later" into
+     * Notes must not make that field match name "Email".
+     */
+    fun accessibleNameMatches(
+        contentDescription: CharSequence?,
+        text: CharSequence?,
+        textIsValue: Boolean,
+        descendantText: () -> CharSequence?,
+        name: String,
+        exact: Boolean,
+    ): Boolean =
+        nameMatches(contentDescription, name, exact) ||
+            nameMatches(text, name, exact || textIsValue) ||
+            nameMatches(descendantText(), name, exact)
+
     /** Full-match pattern: the text equals [query] after normalizing both. */
     fun exactPattern(query: String): Pattern = Pattern.compile("$WS_CLASS*${wordsPattern(query)}$WS_CLASS*")
 
