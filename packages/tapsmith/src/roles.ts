@@ -65,6 +65,119 @@ const ARIA_ROLE_HINTS: Readonly<Record<string, string>> = {
   searchbox: 'searchfield',
 };
 
+/**
+ * Android class names per role — the agent's `roleClassMap`
+ * (`agent/.../ElementFinder.kt`), which `roles.test.ts` pins. Roles the agent
+ * resolves only from an RN role description (`alert`, `combobox`) have none.
+ */
+export const ANDROID_ROLE_CLASSES: Readonly<Record<string, readonly string[]>> = {
+  button: [
+    'android.widget.Button',
+    'android.widget.ImageButton',
+    'com.google.android.material.button.MaterialButton',
+    'androidx.appcompat.widget.AppCompatButton',
+  ],
+  textfield: [
+    'android.widget.EditText',
+    'android.widget.AutoCompleteTextView',
+    'com.google.android.material.textfield.TextInputEditText',
+    'androidx.appcompat.widget.AppCompatEditText',
+  ],
+  checkbox: [
+    'android.widget.CheckBox',
+    'androidx.appcompat.widget.AppCompatCheckBox',
+    'com.google.android.material.checkbox.MaterialCheckBox',
+  ],
+  switch: [
+    'android.widget.Switch',
+    'androidx.appcompat.widget.SwitchCompat',
+    'com.google.android.material.switchmaterial.SwitchMaterial',
+  ],
+  image: [
+    'android.widget.ImageView',
+    'androidx.appcompat.widget.AppCompatImageView',
+  ],
+  text: [
+    'android.widget.TextView',
+    'androidx.appcompat.widget.AppCompatTextView',
+    'com.google.android.material.textview.MaterialTextView',
+  ],
+  heading: ['android.widget.TextView'],
+  link: ['android.widget.TextView'],
+  list: [
+    'android.widget.ListView',
+    'android.widget.GridView',
+    'androidx.recyclerview.widget.RecyclerView',
+  ],
+  listitem: [
+    'android.widget.LinearLayout',
+    'android.widget.RelativeLayout',
+    'android.widget.FrameLayout',
+  ],
+  scrollview: [
+    'android.widget.ScrollView',
+    'android.widget.HorizontalScrollView',
+    'androidx.core.widget.NestedScrollView',
+  ],
+  progressbar: [
+    'android.widget.ProgressBar',
+    'com.google.android.material.progressindicator.LinearProgressIndicator',
+    'com.google.android.material.progressindicator.CircularProgressIndicator',
+  ],
+  seekbar: [
+    'android.widget.SeekBar',
+    'com.google.android.material.slider.Slider',
+  ],
+  radiobutton: [
+    'android.widget.RadioButton',
+    'androidx.appcompat.widget.AppCompatRadioButton',
+    'com.google.android.material.radiobutton.MaterialRadioButton',
+  ],
+  spinner: [
+    'android.widget.Spinner',
+    'androidx.appcompat.widget.AppCompatSpinner',
+  ],
+  toolbar: [
+    'android.widget.Toolbar',
+    'androidx.appcompat.widget.Toolbar',
+    'com.google.android.material.appbar.MaterialToolbar',
+  ],
+  tab: [
+    'android.widget.TabWidget',
+    'com.google.android.material.tabs.TabLayout',
+  ],
+  searchfield: [
+    'android.widget.SearchView',
+    'androidx.appcompat.widget.SearchView',
+  ],
+};
+
+/**
+ * iOS element types per role — the agent's `RoleMapping.roleToElementTypes`
+ * without `.other` (a generic view, which the agent narrows by trait or name),
+ * as the `XCUIElementType…` names hierarchy dumps use. `roles.test.ts` pins it.
+ */
+export const IOS_ROLE_TYPES: Readonly<Record<string, readonly string[]>> = {
+  button: ['XCUIElementTypeButton'],
+  textfield: ['XCUIElementTypeTextField', 'XCUIElementTypeSecureTextField'],
+  checkbox: ['XCUIElementTypeCheckBox'],
+  switch: ['XCUIElementTypeSwitch', 'XCUIElementTypeToggle'],
+  image: ['XCUIElementTypeImage'],
+  text: ['XCUIElementTypeStaticText'],
+  heading: ['XCUIElementTypeStaticText'],
+  link: ['XCUIElementTypeLink'],
+  list: ['XCUIElementTypeTable', 'XCUIElementTypeCollectionView'],
+  listitem: ['XCUIElementTypeCell'],
+  scrollview: ['XCUIElementTypeScrollView'],
+  progressbar: ['XCUIElementTypeProgressIndicator'],
+  seekbar: ['XCUIElementTypeSlider'],
+  radiobutton: ['XCUIElementTypeRadioButton'],
+  spinner: ['XCUIElementTypePicker', 'XCUIElementTypeActivityIndicator'],
+  toolbar: ['XCUIElementTypeToolbar'],
+  tab: ['XCUIElementTypeTab', 'XCUIElementTypeTabBar'],
+  searchfield: ['XCUIElementTypeSearchField'],
+};
+
 const KNOWN = new Set(NATIVE_ROLES);
 
 // ─── Helpers ───

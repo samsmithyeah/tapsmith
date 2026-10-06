@@ -20,7 +20,7 @@
 import { ElementHandle, ELEMENT_HANDLE_BRAND, isStrictModeViolation, isRetryableResolutionError, isStaleSnapshotError, POLL_INTERVAL_MS } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { formatSelector } from "./selectors.js";
-import { normalizeRole } from "./roles.js";
+import { ANDROID_ROLE_CLASSES, normalizeRole } from "./roles.js";
 import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
 import { WebViewLocator, WEBVIEW_LOCATOR_BRAND } from "./webview-locator.js";
 import { defineStandIns, notSupportedYet } from "./not-supported.js";
@@ -138,95 +138,11 @@ function resolveTick(handle: ElementHandle, strict: boolean): Promise<ElementInf
   return handle._resolveForAssertion(POLL_FIND_TIMEOUT_MS, strict);
 }
 
-// ─── Role-to-class mapping (mirrors Kotlin roleClassMap) ───
-
-const ROLE_CLASS_MAP: Record<string, string[]> = {
-  button: [
-    "android.widget.Button",
-    "android.widget.ImageButton",
-    "com.google.android.material.button.MaterialButton",
-    "androidx.appcompat.widget.AppCompatButton",
-  ],
-  textfield: [
-    "android.widget.EditText",
-    "android.widget.AutoCompleteTextView",
-    "com.google.android.material.textfield.TextInputEditText",
-    "androidx.appcompat.widget.AppCompatEditText",
-  ],
-  checkbox: [
-    "android.widget.CheckBox",
-    "androidx.appcompat.widget.AppCompatCheckBox",
-    "com.google.android.material.checkbox.MaterialCheckBox",
-  ],
-  switch: [
-    "android.widget.Switch",
-    "androidx.appcompat.widget.SwitchCompat",
-    "com.google.android.material.switchmaterial.SwitchMaterial",
-  ],
-  image: [
-    "android.widget.ImageView",
-    "androidx.appcompat.widget.AppCompatImageView",
-  ],
-  text: [
-    "android.widget.TextView",
-    "androidx.appcompat.widget.AppCompatTextView",
-    "com.google.android.material.textview.MaterialTextView",
-  ],
-  heading: ["android.widget.TextView"],
-  link: ["android.widget.TextView"],
-  list: [
-    "android.widget.ListView",
-    "android.widget.GridView",
-    "androidx.recyclerview.widget.RecyclerView",
-  ],
-  listitem: [
-    "android.widget.LinearLayout",
-    "android.widget.RelativeLayout",
-    "android.widget.FrameLayout",
-  ],
-  scrollview: [
-    "android.widget.ScrollView",
-    "android.widget.HorizontalScrollView",
-    "androidx.core.widget.NestedScrollView",
-  ],
-  progressbar: [
-    "android.widget.ProgressBar",
-    "com.google.android.material.progressindicator.LinearProgressIndicator",
-    "com.google.android.material.progressindicator.CircularProgressIndicator",
-  ],
-  seekbar: [
-    "android.widget.SeekBar",
-    "com.google.android.material.slider.Slider",
-  ],
-  radiobutton: [
-    "android.widget.RadioButton",
-    "androidx.appcompat.widget.AppCompatRadioButton",
-    "com.google.android.material.radiobutton.MaterialRadioButton",
-  ],
-  spinner: [
-    "android.widget.Spinner",
-    "androidx.appcompat.widget.AppCompatSpinner",
-  ],
-  toolbar: [
-    "android.widget.Toolbar",
-    "androidx.appcompat.widget.Toolbar",
-    "com.google.android.material.appbar.MaterialToolbar",
-  ],
-  tab: [
-    "android.widget.TabWidget",
-    "com.google.android.material.tabs.TabLayout",
-  ],
-  searchfield: [
-    "android.widget.SearchView",
-    "androidx.appcompat.widget.SearchView",
-  ],
-};
-
-const EDITABLE_CLASSES = new Set(ROLE_CLASS_MAP["textfield"]);
+const EDITABLE_CLASSES = new Set(ANDROID_ROLE_CLASSES["textfield"]);
 
 const CLASS_TO_ROLE_MAP: Record<string, string> = (() => {
   const map: Record<string, string> = {};
-  for (const [role, classes] of Object.entries(ROLE_CLASS_MAP)) {
+  for (const [role, classes] of Object.entries(ANDROID_ROLE_CLASSES)) {
     for (const className of classes) {
       if (!(className in map)) {
         map[className] = role;

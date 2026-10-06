@@ -582,6 +582,23 @@ describe('role names in the playground match the runtime', () => {
     expect(match('device.getByRole("Button", { name: "OK" })')).toEqual([button]);
   });
 
+  it('matches the roles the agents resolve by class, which the reverse map leaves out', () => {
+    const scroll = makeNode('node', { class: 'android.widget.ScrollView', bounds: '[0,0][100,500]' });
+    const recycler = makeNode('node', { class: 'androidx.recyclerview.widget.RecyclerView', bounds: '[0,0][100,400]' });
+    const table = makeNode('XCUIElementTypeTable', { type: 'XCUIElementTypeTable', x: '0', y: '0', width: '100', height: '400' });
+    const cell = makeNode('XCUIElementTypeCell', { type: 'XCUIElementTypeCell', x: '0', y: '0', width: '100', height: '40' });
+    const text = makeNode('node', { class: 'android.widget.TextView', text: 'Plain', bounds: '[0,0][100,20]' });
+    const tree = [makeNode('hierarchy', {}, [scroll, recycler, table, cell, text])];
+    const on = (selector: string) => findMatchingNodes(tree, parseSelectorString(selector)!);
+    expect(on('device.getByRole("scrollview")')).toEqual([scroll]);
+    expect(on('device.getByRole("list")')).toEqual([recycler, table]);
+    expect(on('device.getByRole("listitem")')).toEqual([cell]);
+    // A TextView is only a heading or link through its role description, as
+    // on the device.
+    expect(on('device.getByRole("heading")')).toEqual([]);
+    expect(on('device.getByRole("link")')).toEqual([]);
+  });
+
   it('matches nothing for a role getByRole rejects, and says why', () => {
     expect(match('device.getByRole("menuitem")')).toEqual([]);
     expect(parsedSelectorError(parseSelectorString('device.getByRole("menuitem")')!))

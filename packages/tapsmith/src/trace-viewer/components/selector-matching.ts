@@ -2,7 +2,7 @@ import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
 import { parseBounds, getNodeRole } from './hierarchy-utils.js';
 import { FORM_FIELD_ROLES } from './selector-generation.js';
 import { toJsRegExp } from '../../text-regex.js';
-import { normalizeRole, unknownRoleMessage } from '../../roles.js';
+import { ANDROID_ROLE_CLASSES, IOS_ROLE_TYPES, normalizeRole, unknownRoleMessage } from '../../roles.js';
 
 // ─── Selector Parsing ───
 
@@ -417,8 +417,7 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
       // Like getByRole at runtime (PILOT-556): case-insensitive, aliases
       // resolved, and a role it rejects matches nothing.
       if (unknownRoleMessage(selector.value) !== null) return false;
-      const role = getNodeRole(node);
-      if (!role || normalizeRole(role) !== normalizeRole(selector.value)) return false;
+      if (!nodeHasRole(node, normalizeRole(selector.value))) return false;
       if (selector.nameRegex) return roleNameMatchesRegex(node, toJsRegExp(selector.nameRegex));
       if (selector.name) return roleNameMatches(node, selector.name, selector.exact === true);
       return true;
@@ -533,6 +532,29 @@ export function applyPositionalIndex<T>(items: T[], index: ParsedSelector['index
   if (index === undefined) return items;
   const idx = resolvePositionalIndex(items.length, index);
   return idx >= 0 && idx < items.length ? [items[idx]] : [];
+}
+
+/**
+ * Roles whose class list the agent ignores on that platform: on Android a
+ * TextView is a heading or link only through its role description, and on
+ * iOS a static text is a heading only through the header trait.
+ */
+const ANDROID_TRAIT_GATED_ROLES = new Set(['heading', 'link']);
+const IOS_TRAIT_GATED_ROLES = new Set(['heading']);
+
+/**
+ * Whether a native node has `role` (canonical) the way the agent's getByRole
+ * decides it: its reported role, or membership of the role's classes / element
+ * types — which covers roles the reverse map leaves out (list, listitem,
+ * scrollview, …) without making every layout suggest getByRole("listitem").
+ */
+function nodeHasRole(node: HierarchyNode, role: string): boolean {
+  const reported = getNodeRole(node);
+  if (reported && normalizeRole(reported) === role) return true;
+  const className = node.attributes.get('class');
+  if (className) return !ANDROID_TRAIT_GATED_ROLES.has(role) && (ANDROID_ROLE_CLASSES[role]?.includes(className) ?? false);
+  const type = node.attributes.get('type') ?? node.tagName;
+  return !IOS_TRAIT_GATED_ROLES.has(role) && (IOS_ROLE_TYPES[role]?.includes(type) ?? false);
 }
 
 /**

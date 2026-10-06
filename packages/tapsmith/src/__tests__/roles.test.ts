@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { NATIVE_ROLES, ROLE_ALIASES, assertKnownRole, normalizeRole, unknownRoleMessage } from '../roles.js';
+import { ANDROID_ROLE_CLASSES, IOS_ROLE_TYPES, NATIVE_ROLES, ROLE_ALIASES, assertKnownRole, normalizeRole, unknownRoleMessage } from '../roles.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const read = (rel: string): string => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
@@ -115,6 +115,25 @@ describe('role set parity with the agents', () => {
     expect([...kotlin.matchAll(/"([a-z]+)" to "([a-z]+)"/g)].map((m) => [m[1], m[2]]).sort()).toEqual(sdk);
     const swift = block(read('ios-agent/TapsmithAgent/RoleMapping.swift'), 'static let roleAliases', ']\n');
     expect([...swift.matchAll(/"([a-z]+)": "([a-z]+)"/g)].map((m) => [m[1], m[2]]).sort()).toEqual(sdk);
+  });
+
+  it('has the Android agent\'s class names per role', () => {
+    const classMap = block(read('agent/app/src/main/kotlin/dev/tapsmith/agent/ElementFinder.kt'), 'private val roleClassMap =', 'private val classToRoleMap');
+    const kotlin: Record<string, string[]> = {};
+    for (const m of classMap.matchAll(/"([a-z]+)" to\s*\n\s*listOf\(([^)]*)\)/g)) {
+      kotlin[m[1]!] = [...m[2]!.matchAll(/"([\w.]+)"/g)].map((c) => c[1]!);
+    }
+    expect(ANDROID_ROLE_CLASSES).toEqual(kotlin);
+  });
+
+  it('has the iOS agent\'s element types per role, without .other', () => {
+    const map = block(read('ios-agent/TapsmithAgent/RoleMapping.swift'), 'static let roleToElementTypes', 'static let reverseRolePins');
+    const swift: Record<string, string[]> = {};
+    for (const m of map.matchAll(/^\s*"([a-z]+)": \[([^\]]*)\]/gm)) {
+      const types = [...m[2]!.matchAll(/\.(\w+)/g)].map((t) => t[1]!).filter((t) => t !== 'other');
+      if (types.length > 0) swift[m[1]!] = types.map((t) => `XCUIElementType${t[0]!.toUpperCase()}${t.slice(1)}`);
+    }
+    expect(IOS_ROLE_TYPES).toEqual(swift);
   });
 
   it('lists NATIVE_ROLES sorted, so the error message reads alphabetically', () => {
