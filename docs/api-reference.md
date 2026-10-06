@@ -2506,7 +2506,7 @@ removing one, or changing what it means, is a breaking change.
 
 | Command | Error codes |
 |---|---|
-| every command above | `BAD_ARGS` (a usage error), `UNEXPECTED_ERROR` (a bug or an environment failure the command did not anticipate; `init` and `verify` included) |
+| every command above | `BAD_ARGS` (a usage error), `UNEXPECTED_ERROR` (a bug or an environment failure the command did not anticipate; `init` and `verify` included), `UNSUPPORTED_NODE` (Node.js is older than 22; nothing else runs) |
 | `init` | `UNKNOWN_FLAG`, `MISSING_FLAG_VALUE`, `INVALID_PLATFORM`, `INVALID_DEVICE_TYPE`, `NO_PLATFORM`, `NO_APK`, `AMBIGUOUS_APK`, `NO_PACKAGE`, `NO_IOS_APP`, `AMBIGUOUS_IOS_APP`, `NO_BUNDLE_ID`, `IOS_REQUIRES_MACOS`, `IOS_PHYSICAL_INTERACTIVE_ONLY`, `CONFIG_EXISTS`, `NON_INTERACTIVE_TTY` (no terminal and no `--yes`), `JSON_REQUIRES_YES` (`--json` in a terminal without `--yes` or a setup flag: the wizard has no JSON output) |
 | `verify` | `NO_CONFIG`, `CONFIG_ERROR`, `RUN_FAILED`, `PARSE_FAILED`, `NO_TESTS_RAN` (the run executed no test: the file has none, every one was skipped, or a `grep` / `grepInvert` filtered them all out; a flaky test that passed on retry counts as having run) |
 | `doctor` | none of its own: a check that cannot run is reported in the result, usually as a `warn` (`Could not check …`) |

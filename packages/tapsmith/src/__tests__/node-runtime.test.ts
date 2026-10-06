@@ -51,8 +51,10 @@ describe('unsupportedNodeMessage()', () => {
 
 describe('ignoreTypelessPackageWarnings()', () => {
   const originalEmit = process.emit;
+  const originalArgv = [...process.execArgv];
   afterEach(() => {
     process.emit = originalEmit;
+    process.execArgv.splice(0, process.execArgv.length, ...originalArgv);
   });
 
   it('drops only MODULE_TYPELESS_PACKAGE_JSON warnings', () => {
@@ -159,6 +161,19 @@ describe('the tapsmith bin', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(unsupportedNodeMessage('20.20.0'));
     expect(result.stdout).toBe('');
+  }, 60_000);
+
+  it('answers --json with the error envelope on stdout', () => {
+    // docs/api-reference.md "JSON output": one JSON document on stdout, even on failure.
+    const result = runBin('20.20.0', ['doctor', '--json']);
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toEqual({
+      error: {
+        code: 'UNSUPPORTED_NODE',
+        message: `You are running Node.js 20.20.0. Tapsmith requires Node.js ${MIN_NODE_MAJOR} or newer.`,
+        fix: `Install Node.js ${MIN_NODE_MAJOR} or newer (https://nodejs.org), then run the command again.`,
+      },
+    });
   }, 60_000);
 
   it('runs the CLI on a supported Node', () => {

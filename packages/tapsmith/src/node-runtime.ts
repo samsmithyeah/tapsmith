@@ -15,10 +15,25 @@ export function isSupportedNodeVersion(version: string): boolean {
   return major >= MIN_NODE_MAJOR;
 }
 
+function unsupportedNodeParts(version: string): { message: string; fix: string } {
+  return {
+    message: `You are running Node.js ${version}. Tapsmith requires Node.js ${MIN_NODE_MAJOR} or newer.`,
+    fix: `Install Node.js ${MIN_NODE_MAJOR} or newer (https://nodejs.org), then run the command again.`,
+  };
+}
+
 /** What the CLI prints, before doing anything else, on an unsupported Node. */
 export function unsupportedNodeMessage(version: string): string {
-  return `You are running Node.js ${version}. Tapsmith requires Node.js ${MIN_NODE_MAJOR} or newer.\n`
-    + `Install Node.js ${MIN_NODE_MAJOR} or newer (https://nodejs.org), then run the command again.`;
+  const { message, fix } = unsupportedNodeParts(version);
+  return `${message}\n${fix}`;
+}
+
+/**
+ * The same refusal under `--json`: the documented error envelope, so a script
+ * or agent reading stdout gets one JSON document (docs/api-reference.md, JSON output).
+ */
+export function unsupportedNodeJson(version: string): string {
+  return JSON.stringify({ error: { code: 'UNSUPPORTED_NODE', ...unsupportedNodeParts(version) } }, null, 2) + '\n';
 }
 
 const DISABLE_TYPELESS_WARNING = '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON';

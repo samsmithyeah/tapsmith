@@ -10,14 +10,15 @@
  * dynamically, after the check.
  */
 
-import { ignoreTypelessPackageWarnings, isSupportedNodeVersion, unsupportedNodeMessage } from './node-runtime.js';
+import { ignoreTypelessPackageWarnings, isSupportedNodeVersion, unsupportedNodeJson, unsupportedNodeMessage } from './node-runtime.js';
 
 if (isSupportedNodeVersion(process.versions.node)) {
   ignoreTypelessPackageWarnings();
   await import('./cli.js');
 } else {
-  // exitCode, not exit(): stderr to a pipe is asynchronous on macOS, and
+  // exitCode, not exit(): stdout/stderr to a pipe is asynchronous on macOS, and
   // exit() can cut the message off.
-  process.stderr.write(`${unsupportedNodeMessage(process.versions.node)}\n`);
+  if (process.argv.slice(2).includes('--json')) process.stdout.write(unsupportedNodeJson(process.versions.node));
+  else process.stderr.write(`${unsupportedNodeMessage(process.versions.node)}\n`);
   process.exitCode = 1;
 }
