@@ -47,6 +47,23 @@ vi.mock('../ios-device-resolve.js', () => ({
   getInstalledSimulatorSdkVersion: () => '26.0',
 }));
 
+// Node under Rosetta (PILOT-559): an x64 Node that sysctl says is translated.
+const rosetta = vi.hoisted(() => ({ on: false }));
+vi.mock('../host-arch.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../host-arch.js')>();
+  type Deps = Partial<import('../host-arch.js').HostArchDeps>;
+  const faked = (overrides: Deps = {}): Deps => ({
+    ...(rosetta.on ? { platform: 'darwin', arch: 'x64' } : {}),
+    translated: () => rosetta.on,
+    ...overrides,
+  });
+  return {
+    ...actual,
+    nodeUnderRosetta: (o?: Deps) => actual.nodeUnderRosetta(faked(o)),
+    hostArch: (o?: Deps) => actual.hostArch(faked(o)),
+  };
+});
+
 import { stripAnsi } from '../cli-json.js';
 import { findMitmRedirector, runDoctor, type DoctorJson } from '../doctor.js';
 
@@ -124,6 +141,7 @@ beforeEach(() => {
   exec.calls.length = 0;
   exec.timeouts.clear();
   xctestrun.found = '/h/.tapsmith/ios-simulator-agent/x_iphonesimulator26.0.xctestrun';
+  rosetta.on = false;
   setPlatform('darwin');
 });
 
@@ -592,6 +610,31 @@ describe('doctor fixes (PILOT-263 items 2, 3)', () => {
     expect(c?.fix).not.toMatch(/init/);
     expect(c?.fix).toContain(`@tapsmith/agent-ios-simulator-${process.arch}`);
     expect(c?.fix).toMatch(/first iOS simulator test run/);
+  });
+
+  it('under Rosetta, warns about the x64 Node and does not suggest an npm install that cannot work', async () => {
+    withXcode();
+    rosetta.on = true;
+    xctestrun.found = undefined;
+    writeConfig("export default { platform: 'ios' }\n");
+    const { code, json } = await doctorJson();
+    expect(check(json, 'node-arch')).toMatchObject({
+      status: 'warn',
+      label: expect.stringContaining('running under Rosetta'),
+      fix: expect.stringContaining('Install an arm64 Node'),
+    });
+    const agent = check(json, 'ios-sim-agent');
+    expect(agent?.fix).not.toMatch(/npm install @tapsmith/);
+    expect(agent?.fix).toMatch(/arm64 Node/);
+    // A warning: tests still run, translated.
+    expect(code).toBe(0);
+  });
+
+  it('a native Node gets no node-arch row', async () => {
+    withXcode();
+    writeConfig("export default { platform: 'ios' }\n");
+    const { json } = await doctorJson();
+    expect(ids(json)).not.toContain('node-arch');
   });
 
   it('finds the mitmproxy redirector the way the daemon does, without Homebrew', async () => {

@@ -141,6 +141,7 @@ export function resolveInitPlan(
   cwd: string = process.cwd(),
 ): InitPlan {
   const warnings: string[] = [];
+  if (env.rosettaWarning) warnings.push(env.rosettaWarning);
 
   // Expo (PILOT-557): only needed for a missing build or id, and reading a
   // dynamic app config runs the project's Expo CLI, so detected on demand.

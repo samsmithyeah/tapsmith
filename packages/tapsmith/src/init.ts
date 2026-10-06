@@ -56,6 +56,7 @@ function displayEnvironment(env: EnvScan, expo: ExpoProject | undefined): void {
 
   const major = parseInt(env.nodeVersion.split('.')[0], 10);
   lines.push(major >= 22 ? ok(`Node.js ${env.nodeVersion}`) : fail(`Node.js ${env.nodeVersion} (requires >= 22)`));
+  if (env.rosettaWarning) lines.push(warn(env.rosettaWarning));
   lines.push(env.daemonBin ? ok('Tapsmith daemon') : fail('Tapsmith daemon not found'));
 
   if (env.agentApk && env.agentTestApk) lines.push(ok('Android agent (bundled)'));
