@@ -10,6 +10,31 @@
 
 export type WatchAction = 'run-all' | 'run-failed' | 'rerun' | 'quit'
 
+/**
+ * The keys watch mode lists after each run, in order. docs/watch-mode.md's
+ * keyboard table carries the same text (a unit test holds them together:
+ * they had drifted apart, PILOT-569).
+ */
+export const WATCH_KEYS: ReadonlyArray<{ key: string; action: string }> = [
+  { key: 'a', action: 'run all test files' },
+  { key: 'f', action: 're-run the files that had failures' },
+  { key: 'Enter', action: 're-run the last run\'s files' },
+  { key: 'q', action: 'quit (Ctrl+C also quits)' },
+];
+
+/**
+ * The key list as printed: Enter only once there is a run to repeat, naming
+ * its files.
+ */
+export function watchUsage(lastRunFiles: readonly string[]): Array<{ key: string; action: string }> {
+  return WATCH_KEYS.flatMap(({ key, action }) => {
+    if (key !== 'Enter') return [{ key, action }];
+    if (lastRunFiles.length === 0) return [];
+    const names = lastRunFiles.map((f) => f.split(/[\\/]/).pop()).join(', ');
+    return [{ key, action: `${action}: ${names}` }];
+  });
+}
+
 export function mapKeyToAction(key: string): WatchAction | null {
   switch (key) {
     case 'a': return 'run-all';

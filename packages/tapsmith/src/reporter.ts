@@ -192,6 +192,18 @@ export function normalizeReporterConfig(config: ReporterConfig | undefined): Rep
   return config as ReporterDescription[];
 }
 
+/** Reporters that end a run with a summary line in the terminal. */
+const SUMMARY_REPORTERS = new Set(['list', 'line', 'dot']);
+
+/**
+ * Whether the configured reporters print a run summary in the terminal —
+ * so watch mode, which prints its key list after each run, need not print a
+ * second one (PILOT-569).
+ */
+export function printsRunSummary(config: ReporterConfig | undefined): boolean {
+  return normalizeReporterConfig(config).some((desc) => SUMMARY_REPORTERS.has(typeof desc === 'string' ? desc : desc[0]));
+}
+
 function isSingleTuple(config: ReporterConfig): boolean {
   return (
     Array.isArray(config) &&

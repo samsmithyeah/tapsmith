@@ -22,7 +22,7 @@ import { findDaemonBin } from './daemon-bin.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary, type DaemonStartFailed } from './daemon-start.js';
 import type { Device } from './device.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
-import { createReporters, ReporterDispatcher, type FullResult, type TapsmithReporter } from './reporter.js';
+import { createReporters, printsRunSummary, ReporterDispatcher, type FullResult, type TapsmithReporter } from './reporter.js';
 import type { TestResult, SuiteResult } from './runner.js';
 import type { ResolvedProject } from './project.js';
 import { projectLabel } from './project.js';
@@ -40,7 +40,7 @@ import type {
   UIWorkerMessage,
   UIWorkerChildMessage,
 } from './ui-mode/ui-protocol.js';
-import { RunQueue, mapKeyToAction } from './watch-queue.js';
+import { RunQueue, mapKeyToAction, watchUsage } from './watch-queue.js';
 import { preserveEmulatorsForReuse, emulatorsLaunchedThisProcess, type LaunchedEmulator } from './emulator.js';
 import { deviceTargetLabel } from './dispatcher.js';
 import type { ProvisionedTarget, UnavailableTargets } from './unavailable-targets.js';
@@ -1421,7 +1421,9 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
   function printStatusLine(results?: TestResult[], durationMs?: number): void {
     process.stdout.write('\n');
 
-    if (results && durationMs !== undefined) {
+    // The reporter's own summary has just been printed: a second count line
+    // under it read as the run being reported twice (PILOT-569).
+    if (results && durationMs !== undefined && !printsRunSummary(ctx.config.reporter)) {
       const passed = results.filter((r) => r.status === 'passed').length;
       const failed = results.filter((r) => r.status === 'failed').length;
       const skipped = results.filter((r) => r.status === 'skipped').length;
@@ -1434,13 +1436,9 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     }
 
     process.stdout.write(`${BOLD}Watch Usage${RESET}\n`);
-    process.stdout.write(`${DIM} ${CYAN}\u203a${RESET}${DIM} Press ${BOLD}a${RESET}${DIM} to run all tests${RESET}\n`);
-    process.stdout.write(`${DIM} ${CYAN}\u203a${RESET}${DIM} Press ${BOLD}f${RESET}${DIM} to run only failed tests${RESET}\n`);
-    if (state.lastRunFiles.length > 0) {
-      const fileNames = state.lastRunFiles.map((f) => path.basename(f)).join(', ');
-      process.stdout.write(`${DIM} ${CYAN}\u203a${RESET}${DIM} Press ${BOLD}Enter${RESET}${DIM} to re-run ${fileNames}${RESET}\n`);
+    for (const { key, action } of watchUsage(state.lastRunFiles)) {
+      process.stdout.write(`${DIM} ${CYAN}\u203a${RESET}${DIM} Press ${BOLD}${key}${RESET}${DIM} to ${action}${RESET}\n`);
     }
-    process.stdout.write(`${DIM} ${CYAN}\u203a${RESET}${DIM} Press ${BOLD}q${RESET}${DIM} to quit${RESET}\n`);
   }
 
   // ─── Cleanup ───

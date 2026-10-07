@@ -33,9 +33,11 @@ While watch mode is running, these keys are available:
 | Key | Action |
 |---|---|
 | `a` | Run all test files |
-| `f` | Re-run only previously failed tests |
-| `Enter` | Re-run the last file(s) that were executed |
-| `q` | Quit watch mode |
+| `f` | Re-run the files that had failures |
+| `Enter` | Re-run the last run's files |
+| `q` | Quit (Ctrl+C also quits) |
+
+After each run, watch mode prints the reporter's output and summary, then this key list. `Enter` appears once there is a run to repeat, with the names of the files it re-runs.
 
 ## Configuration
 
