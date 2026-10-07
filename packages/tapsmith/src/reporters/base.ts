@@ -73,6 +73,15 @@ export function formatSummaryLine(
   return bold('Summary: ') + parts.join(', ') + dim(timing);
 }
 
+/**
+ * ` (retry #N)` after a retry attempt's title, as Playwright prints it, so a
+ * second line for the same test reads as a retry rather than as the test
+ * running twice by mistake (PILOT-569). Empty for a first attempt.
+ */
+export function retrySuffix(retry: number | undefined): string {
+  return retry != null && retry > 0 ? ` (retry #${retry})` : '';
+}
+
 export function countFlaky(tests: TestResult[]): number {
   return tests.filter((t) => t.status === 'passed' && t.retry != null && t.retry > 0).length;
 }

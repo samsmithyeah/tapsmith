@@ -21,6 +21,7 @@ import {
   formatSummaryLine,
   formatFlakySection,
   countFlaky,
+  retrySuffix,
   workerTag,
   projectTag,
 } from './base.js';
@@ -50,7 +51,7 @@ export class LineReporter implements TapsmithReporter {
         process.stdout.write('\x1b[2K\r');
       }
       const project = this._showProjectTags ? projectTag(test.project) : '';
-      process.stdout.write(`  ${statusIcon('failed')} ${workerTag(test.workerIndex)}${project}${test.fullName} ${dim(`(${formatDuration(test.durationMs)})`)}\n`);
+      process.stdout.write(`  ${statusIcon('failed')} ${workerTag(test.workerIndex)}${project}${test.fullName}${retrySuffix(test.retry)} ${dim(`(${formatDuration(test.durationMs)})`)}\n`);
       if (test.error) {
         process.stdout.write(formatError(test.error) + '\n');
       }
@@ -63,7 +64,7 @@ export class LineReporter implements TapsmithReporter {
       const duration = dim(`(${formatDuration(test.durationMs)})`);
       const worker = workerTag(test.workerIndex);
       const project = this._showProjectTags ? projectTag(test.project) : '';
-      const line = `  ${icon} [${this._completed}] ${worker}${project}${test.fullName} ${duration}`;
+      const line = `  ${icon} [${this._completed}] ${worker}${project}${test.fullName}${retrySuffix(test.retry)} ${duration}`;
       // Truncate to terminal width
       const maxWidth = process.stdout.columns ?? 80;
       const truncated = line.length > maxWidth ? line.slice(0, maxWidth - 1) + '…' : line;

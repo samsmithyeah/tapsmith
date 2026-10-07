@@ -387,6 +387,23 @@ describe('ListReporter', () => {
     expect(output).toContain('Test timed out after 90000ms');
   });
 
+  // A retry printed the same "✗ [7] …" line as the attempt before it, so it
+  // looked like the test ran twice by mistake (PILOT-569). Playwright labels
+  // each retry "(retry #N)".
+  it('labels each retry attempt, and not the first', () => {
+    reporter.onRunStart!(makeConfig(), 1);
+    const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, '');
+    reporter.onTestEnd!(makeTestResult({ status: 'failed', fullName: 'flaky test', error: new Error('boom'), _willRetry: true, retry: 0 }));
+    reporter.onTestEnd!(makeTestResult({ status: 'failed', fullName: 'flaky test', error: new Error('boom'), _willRetry: true, retry: 1 }));
+    reporter.onTestEnd!(makeTestResult({ status: 'passed', fullName: 'flaky test', retry: 2, durationMs: 1200 }));
+    const lines = strip(stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join(''))
+      .split('\n').filter((l) => l.includes('flaky test'));
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).not.toContain('retry #');
+    expect(lines[1]).toContain('flaky test (retry #1) (');
+    expect(lines[2]).toContain('flaky test (retry #2) (1.2s)');
+  });
+
   it('prints the first-attempt error and trace in the flaky summary', () => {
     reporter.onRunStart!(makeConfig(), 1);
     const flakyTest = makeTestResult({
@@ -616,6 +633,16 @@ describe('LineReporter', () => {
     reporter.onRunStart!(makeConfig(), 3);
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
     expect(output).toContain('Running tests from 3 file(s)');
+  });
+
+  it('labels a failed retry (PILOT-569)', () => {
+    reporter.onRunStart!(makeConfig(), 1);
+    reporter.onTestEnd!(makeTestResult({ status: 'failed', fullName: 'flaky test', error: new Error('boom'), _willRetry: true, retry: 0 }));
+    reporter.onTestEnd!(makeTestResult({ status: 'failed', fullName: 'flaky test', error: new Error('boom'), retry: 1 }));
+    reporter.onTestEnd!(makeTestResult({ status: 'passed', fullName: 'other test', retry: 1 }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('').replace(/\x1b\[[0-9;]*m/g, '');
+    expect(output).toContain('flaky test (retry #1) (');
+    expect(output).toContain('other test (retry #1) (');
   });
 
   it('keeps parallel progress counters monotonic after file retry notifications', () => {

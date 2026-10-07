@@ -24,6 +24,7 @@ import {
   formatSummaryLine,
   formatFlakySection,
   countFlaky,
+  retrySuffix,
   workerTag,
   projectTag,
 } from './base.js';
@@ -96,7 +97,7 @@ export class ListReporter implements TapsmithReporter {
       const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
       const project = this._showProjectTags ? projectTag(test.project) : '';
       const file = this._fileSegment(test.filePath);
-      this._write(`  ${red('✗')} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
+      this._write(`  ${red('✗')} ${counter} ${worker}${project}${file}${test.fullName}${retrySuffix(test.retry)} ${duration}\n`);
       for (const line of formatWarnings(test)) this._write(line + '\n');
       // The failing attempt's error and artifacts are worth seeing even
       // though a retry is coming — a flaky pass would otherwise hide what
@@ -125,7 +126,7 @@ export class ListReporter implements TapsmithReporter {
     const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
     const project = this._showProjectTags ? projectTag(test.project) : '';
     const file = this._fileSegment(test.filePath);
-    this._write(`  ${icon} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
+    this._write(`  ${icon} ${counter} ${worker}${project}${file}${test.fullName}${retrySuffix(test.retry)} ${duration}\n`);
     for (const line of formatWarnings(test)) this._write(line + '\n');
 
     if (test.error) {
