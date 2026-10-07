@@ -1,9 +1,10 @@
 #!/usr/bin/env -S node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON
 
 /**
- * CLI entry point for `npx tapsmith`. The command tree, flags and help live
- * in `cli-program.ts`; this file holds what the commands do, above all the
- * `tapsmith test` run body.
+ * The CLI. `npx tapsmith` runs `bin.ts`, which checks the Node.js version
+ * and then imports this file; the shebang here serves only running dist/cli.js
+ * directly. The command tree, flags and help live in `cli-program.ts`; this
+ * file holds what the commands do, above all the `tapsmith test` run body.
  */
 
 import * as path from 'node:path';
@@ -59,11 +60,12 @@ import {
   ensureAdbRoot,
 } from './emulator.js';
 import { isRecoverableInfrastructureError, serializeConfig } from './worker-protocol.js';
-import { findPidsOnPort, freeStaleAgentPort, pickFreePort } from './port-utils.js';
+import { DEFAULT_AGENT_PORT, daemonsOnAgentPort, findPidsOnPort, freeStaleAgentPort, pickFreePort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary } from './daemon-start.js';
 import { splitHeadline } from './error-detail.js';
 import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage, pinnedDeviceUnusableMessage, waitForPinnedDeviceAuthorization } from './device-advice.js';
+import { rosettaNodeWarning } from './host-arch.js';
 import { androidToolchainBlocker, assertAdbForEmulatorLaunch, iosToolchainBlocker, toolchainBlocker } from './toolchain.js';
 import {
   createUiLaunchSteps,
@@ -285,6 +287,21 @@ async function checkDeviceHealth(serial: string | undefined, progress?: LaunchPr
 
 /** Track the daemon process we spawned so we can kill it on exit. */
 let spawnedDaemonProcess: ReturnType<typeof spawn> | undefined;
+/**
+ * Daemons this process started and has since stopped, by pid. SIGTERM does
+ * not wait: an iOS daemon stays alive for a few seconds after closing its
+ * port while it stops its agent, and the next target's daemon start must not
+ * mistake it for another session's (PILOT-550).
+ */
+const stoppedOwnDaemons = new Set<number>();
+
+/** Stop this target's daemon (SIGTERM) and forget its handle. */
+function stopSpawnedDaemon(): void {
+  if (!spawnedDaemonProcess) return;
+  if (spawnedDaemonProcess.pid !== undefined) stoppedOwnDaemons.add(spawnedDaemonProcess.pid);
+  try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
+  spawnedDaemonProcess = undefined;
+}
 
 let sequentialFatalHandlersInstalled = false;
 // The handler is registered once, but the active run context is refreshed on
@@ -389,6 +406,12 @@ async function ensureDaemonRunning(
   // would otherwise find that session's runner on 18700 and (rightly) refuse
   // to adopt it, or a second runner could not bind it (PILOT-381).
   let agentPort: number | undefined;
+  // Set when the default agent port belongs to another live session.
+  let agentPortInUse = false;
+  // Daemons that may still be exiting and are not another session's: this
+  // process's earlier targets' daemons, and those on our port that did not
+  // answer, sent SIGTERM below.
+  const stoppedStaleDaemons = new Set<number>(stoppedOwnDaemons);
   try {
     const probe = new TapsmithGrpcClient(address);
     const alive = await probe.waitForReady(1_000);
@@ -407,12 +430,33 @@ async function ensureDaemonRunning(
     } else {
       const pids = findPidsOnPort(port);
       for (const pid of pids) {
+        stoppedStaleDaemons.add(pid);
         try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
       }
       if (pids.length > 0) await new Promise((r) => setTimeout(r, 500));
     }
   } catch {
     // No daemon running, nothing to kill
+  }
+
+  // A live daemon of another session can use the default agent port without
+  // answering on ours — a sequential run on another `daemonAddress`. Its
+  // `adb forward` (Android) or runner (iOS) on that port is live: sweeping
+  // it would cut that session off, and keeping it would shadow our agent
+  // (PILOT-550). Take a free agent port instead, as for a shared daemon port;
+  // so too when the processes cannot be read to tell.
+  if (!sharingWithLiveSession) {
+    const owners = daemonsOnAgentPort(DEFAULT_AGENT_PORT, stoppedStaleDaemons);
+    if (owners === undefined || owners.length > 0) {
+      agentPortInUse = true;
+      agentPort = await pickFreePort();
+      while (agentPort === Number(port)) agentPort = await pickFreePort();
+      const why = owners === undefined
+        ? `could not check whether another Tapsmith session uses agent port ${DEFAULT_AGENT_PORT}`
+        : `agent port ${DEFAULT_AGENT_PORT} is in use by another Tapsmith session (daemon pid ${owners.join(', ')})`;
+      if (progress) progress.note(`${why}; using agent port ${agentPort}`);
+      else console.log(dim(`${why[0].toUpperCase()}${why.slice(1)}; using agent port ${agentPort}`));
+    }
   }
 
   // Remove stale ADB port forwards whose HOST side is the default agent port
@@ -423,10 +467,11 @@ async function ensureDaemonRunning(
   // (which would print "listener 'tcp:18700' not found").
   //
   // Skipped entirely when another live Tapsmith session owns the requested
-  // port: its agent forward and agent process are not stale, they are that
-  // session's — sweeping them would cut it off from its device, which is
-  // exactly what starting on a free port above set out to avoid.
-  if (!sharingWithLiveSession) try {
+  // port or the default agent port: its agent forward and agent process are
+  // not stale, they are that session's — sweeping them would cut it off from
+  // its device, which is exactly what starting on a free port above set out
+  // to avoid.
+  if (!sharingWithLiveSession && !agentPortInUse) try {
     const fwdList = execFileSync('adb', ['forward', '--list'], { encoding: 'utf-8' }).trim();
     for (const line of fwdList.split('\n')) {
       const [serial, local] = line.split(/\s+/);
@@ -444,8 +489,8 @@ async function ensureDaemonRunning(
   // listener squatting on this port, the new daemon's `adb forward` is
   // shadowed by the stale socket and every command silently routes to the
   // wrong device — see freeStaleAgentPort for the full rationale.
-  if (!sharingWithLiveSession) {
-    freeStaleAgentPort(18700, progress
+  if (!sharingWithLiveSession && !agentPortInUse) {
+    freeStaleAgentPort(DEFAULT_AGENT_PORT, progress
       ? ({ port, pid }) => progress.update('daemon', {
         state: 'running',
         detail: `cleared stale agent port ${port} (pid ${pid})`,
@@ -994,10 +1039,7 @@ function teardownSequentialDevice(state: SequentialDeviceState): void {
   }
   try { state.device.close(); } catch { /* already closed */ }
   try { state.client.close(); } catch { /* already closed */ }
-  if (spawnedDaemonProcess) {
-    try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
-    spawnedDaemonProcess = undefined;
-  }
+  stopSpawnedDaemon();
   // Its emulators are left running for reuse, and named at the end of the
   // run (emulatorsLaunchedThisProcess): a notice here would read as if the
   // run had ended.
@@ -2175,6 +2217,11 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     return;
   }
 
+  // An x64 Node under Rosetta (PILOT-559) runs, translated, but should not
+  // pass unremarked. After the tsx re-exec, so it prints once.
+  const rosettaWarning = rosettaNodeWarning();
+  if (rosettaWarning) console.error(yellow(`⚠ ${rosettaWarning}`));
+
   // After the tsx re-exec, so each prints once.
   for (const arg of unmatchedFileArgs) {
     console.error(yellow(`Warning: "${arg}" matched no test file — running the files the other arguments selected.`));
@@ -2518,10 +2565,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     // The failed setup may have spawned this target's daemon. Nothing will
     // use it, and the next target's setup would overwrite the handle the
     // final teardown kills, orphaning it.
-    if (spawnedDaemonProcess) {
-      try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
-      spawnedDaemonProcess = undefined;
-    }
+    stopSpawnedDaemon();
     if (announce) warnTargetFailed(signature);
   };
 

@@ -138,7 +138,7 @@ Common components and their recommended props:
 
 > **Tip:** If you can't modify the app, `getByText` and `getByPlaceholder` work without any accessibility props. `getByRole` is preferred when the props are available because it verifies both the element's function and its text, making tests more precise.
 
-### `getByText(text, { exact? })`
+### `getByText(text | RegExp, { exact? })`
 
 Find an element by its visible text content. **Substring match by default**, like Playwright. Pass `{ exact: true }` for an exact match.
 
@@ -151,9 +151,14 @@ await device.getByText("Sign In", { exact: true }).tap()
 
 // Useful for dynamic content
 await expect(device.getByText("3 items")).toBeVisible()
+
+// A regular expression, for patterns
+await expect(device.getByText(/^\d+ items?$/)).toBeVisible()
 ```
 
-Whitespace differences don't matter: non-breaking spaces, line breaks and runs of spaces in the element's text (or in your query) are treated as a single space, and leading and trailing whitespace is ignored — the same normalization Playwright applies. `getByText("Welcome to Expo")` finds a heading rendered as `Welcome to&nbsp;Expo`.
+Whitespace differences don't matter for a string: non-breaking spaces, line breaks and runs of spaces in the element's text (or in your query) are treated as a single space, and leading and trailing whitespace is ignored — the same normalization Playwright applies. `getByText("Welcome to Expo")` finds a heading rendered as `Welcome to&nbsp;Expo`.
+
+A `RegExp` (also accepted by `getByLabel` and `getByRole`'s `name`) is matched with JavaScript's semantics against the text as it is: `\s` covers non-breaking spaces, and `^`/`$` anchor the whole text unless you pass the `m` flag. See [Regular expressions](api-reference.md#regular-expressions) for the details.
 
 > **Strict mode:** because of the substring default, `getByText("Sign in")` also matches longer text such as `"Sign in to continue"`. A locator that resolves to more than one element throws a `strict mode violation` when you act or assert on it (instead of silently using the first match). Disambiguate with `{ exact: true }`, `getByRole(role, { name, exact: true })`, `getByTestId()`, or `.first()/.nth()/.last()`. Absence checks (`toBeHidden`, `not.toBeVisible`, `waitFor({ state: "hidden" })`) and multi-element APIs (`count()`, `all()`, `toHaveCount`) are exempt. See the [API reference](api-reference.md#strict-mode) for the full rules. WebView locators (`webview.getBy*`, `webview.locator(css)`) enforce the same rules.
 

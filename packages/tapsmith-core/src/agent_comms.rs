@@ -1092,6 +1092,57 @@ pub struct ConnectionParams {
     pub host_port: u16,
 }
 
+/// The `adb forward` this daemon set up to reach its Android agent: the
+/// serial and host port. Shared (cloned) so the shutdown path can remove the
+/// forward without the connection lock, which an in-flight command can hold
+/// for its whole timeout. A forward left behind keeps answering pings on the
+/// host port with the still-running Android agent's pong, so the next iOS
+/// daemon on that port finds an Android device where its runner should be
+/// (PILOT-550).
+#[derive(Debug, Clone, Default)]
+pub struct AgentForward(Arc<std::sync::Mutex<Option<(String, u16)>>>);
+
+impl AgentForward {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<(String, u16)>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn record(&self, serial: &str, host_port: u16) {
+        *self.lock() = Some((serial.to_string(), host_port));
+    }
+
+    /// Forget the forward once it has been removed — only if it is still the
+    /// one recorded.
+    fn forget(&self, serial: &str, host_port: u16) {
+        let mut current = self.lock();
+        if current
+            .as_ref()
+            .is_some_and(|(s, p)| s == serial && *p == host_port)
+        {
+            *current = None;
+        }
+    }
+
+    fn take(&self) -> Option<(String, u16)> {
+        self.lock().take()
+    }
+
+    /// Remove the recorded forward, if any. Called once the daemon starts
+    /// shutting down; bounded, and a failure (device gone, adb missing) only
+    /// logs.
+    pub async fn remove(&self) {
+        let Some((serial, host_port)) = self.take() else {
+            return;
+        };
+        match adb::remove_forward_with_timeout(&serial, host_port, Duration::from_secs(5)).await {
+            Ok(()) => info!(serial, host_port, "Removed the agent port forward"),
+            Err(e) => debug!(serial, host_port, error = %e, "agent port forward was not removed"),
+        }
+    }
+}
+
 /// Manages the TCP connection to the on-device Tapsmith agent.
 #[derive(Debug)]
 pub struct AgentConnection {
@@ -1099,6 +1150,7 @@ pub struct AgentConnection {
     device_serial: Option<String>,
     host_port: u16,
     is_ios: bool,
+    forward: AgentForward,
 }
 
 impl AgentConnection {
@@ -1112,7 +1164,14 @@ impl AgentConnection {
             device_serial: None,
             host_port,
             is_ios: false,
+            forward: AgentForward::default(),
         }
+    }
+
+    /// The handle to this connection's Android agent forward, for removing
+    /// it at shutdown.
+    pub fn forward(&self) -> AgentForward {
+        self.forward.clone()
     }
 
     pub fn is_connected(&self) -> bool {
@@ -1180,6 +1239,7 @@ impl AgentConnection {
             adb::forward_port(serial, self.host_port, AGENT_DEVICE_PORT)
                 .await
                 .context("Failed to set up ADB port forwarding to agent")?;
+            self.forward.record(serial, self.host_port);
         }
         // iOS simulator: agent listens on localhost directly, no forwarding needed
 
@@ -1218,6 +1278,7 @@ impl AgentConnection {
         if !ios {
             // Clean up the forwarding on failure
             let _ = adb::remove_forward(serial, self.host_port).await;
+            self.forward.forget(serial, self.host_port);
         }
         bail!(
             "Agent is not responding on device {serial} after {}s: {last_err}. Is the agent app running?",
@@ -1231,6 +1292,7 @@ impl AgentConnection {
         if !self.is_ios {
             if let Some(ref serial) = self.device_serial {
                 let _ = adb::remove_forward(serial, self.host_port).await;
+                self.forward.forget(serial, self.host_port);
             }
         }
         self.connected = false;
@@ -1422,6 +1484,7 @@ impl AgentConnection {
         if !self.is_ios {
             let _ = adb::remove_forward(serial, self.host_port).await;
             adb::forward_port(serial, self.host_port, AGENT_DEVICE_PORT).await?;
+            self.forward.record(serial, self.host_port);
         }
 
         match self.ping_agent().await {
@@ -1441,6 +1504,33 @@ impl AgentConnection {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ─── Agent forward record (PILOT-550) ───
+
+    #[test]
+    fn agent_forward_is_taken_once_for_shutdown() {
+        let conn = AgentConnection::with_port(18_765);
+        let forward = conn.forward();
+        assert_eq!(forward.take(), None, "no forward before connecting");
+        forward.record("emulator-5554", 18_765);
+        // The handle is shared: the shutdown path holds a clone, not the connection.
+        assert_eq!(
+            conn.forward().take(),
+            Some(("emulator-5554".to_string(), 18_765))
+        );
+        assert_eq!(forward.take(), None, "removed once, never twice");
+    }
+
+    #[test]
+    fn agent_forward_forget_only_clears_the_matching_forward() {
+        let forward = AgentForward::default();
+        forward.record("emulator-5556", 18_700);
+        forward.forget("emulator-5554", 18_700);
+        assert_eq!(forward.take(), Some(("emulator-5556".to_string(), 18_700)));
+        forward.record("emulator-5554", 18_700);
+        forward.forget("emulator-5554", 18_700);
+        assert_eq!(forward.take(), None);
+    }
 
     // ─── Read-timeout headroom ───
 

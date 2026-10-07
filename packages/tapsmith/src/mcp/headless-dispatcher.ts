@@ -1312,6 +1312,10 @@ export class HeadlessTestDispatcher implements TestDispatcher {
               videoPath: result.videoPath,
               projectName,
               ...(result.warnings?.length ? { warnings: result.warnings } : {}),
+              // The runner's stand-in for a file that failed to load
+              // (PILOT-545): flagged so the board retires it once the file
+              // runs for real.
+              ...(result.fileLevelFailure ? { fileLevelFailure: true } : {}),
             });
             break;
           }

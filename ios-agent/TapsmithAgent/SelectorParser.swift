@@ -16,9 +16,13 @@ enum SelectorParser {
         }
 
         let role = nonEmpty(source["role"] as? String)
-        let name = nonEmpty(source["name"] as? String)
         // getByRole `{ exact: true }` rides inside the role object (PILOT-549).
         let nameExact = (roleObj as? [String: Any])?["exact"] as? Bool ?? false
+        // RegExp locators (PILOT-520). With a RegExp name, `name` only carries
+        // its literal for agents that predate RegExp support, so it is not a
+        // name filter here.
+        let nameRegex = TextRegex.fromJSON((roleObj as? [String: Any])?["nameRegex"])
+        let name = nameRegex == nil ? nonEmpty(source["name"] as? String) : nil
 
         // Handle "resourceId" (sent by daemon) or "id" (legacy)
         let resourceId = nonEmpty(params["resourceId"] as? String) ?? nonEmpty(params["id"] as? String)
@@ -27,8 +31,10 @@ enum SelectorParser {
             role: role,
             name: name,
             nameExact: nameExact,
+            nameRegex: nameRegex,
             text: nonEmpty(params["text"] as? String),
             textContains: nonEmpty(params["textContains"] as? String),
+            textRegex: TextRegex.fromJSON(params["textRegex"]),
             contentDesc: nonEmpty(params["contentDesc"] as? String),
             hint: nonEmpty(params["hint"] as? String),
             className: nonEmpty(params["className"] as? String),
@@ -36,6 +42,7 @@ enum SelectorParser {
             id: resourceId,
             xpath: nonEmpty(params["xpath"] as? String),
             label: nonEmpty(params["label"] as? String),
+            labelRegex: TextRegex.fromJSON(params["labelRegex"]),
             enabled: params["enabled"] as? Bool,
             checked: params["checked"] as? Bool,
             focused: params["focused"] as? Bool,

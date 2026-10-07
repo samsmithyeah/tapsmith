@@ -51,6 +51,7 @@ const { configureAndroid } = await import('../init.js');
 
 const env: EnvScan = {
   nodeVersion: '22.0.0',
+  rosettaWarning: undefined,
   daemonBin: undefined,
   agentApk: false,
   agentTestApk: false,

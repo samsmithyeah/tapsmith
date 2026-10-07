@@ -57,6 +57,9 @@ class ElementFinder {
 
     /// Find all elements matching the selector.
     func findElements(_ selector: ElementSelector, parentId: String? = nil) throws -> [ElementInfo] {
+        if let regexError = selector.regexError {
+            throw AgentError.invalidSelector(regexError)
+        }
         if let xpath = selector.xpath {
             return try findByXPath(xpath)
         }
@@ -132,6 +135,10 @@ class ElementFinder {
                     TextMatch.nameMatches(elem.label, name, exact: selector.nameExact)
                         || TextMatch.nameMatches(elem.title, name, exact: selector.nameExact)
                 }
+            } else if let nameRegex = selector.nameRegex {
+                results = results.filter { elem in
+                    nameRegex.nameMatches(elem.label) || nameRegex.nameMatches(elem.title)
+                }
             }
             return results
         }
@@ -146,6 +153,18 @@ class ElementFinder {
         // TextContains selector
         if let textContains = selector.textContains {
             let predicate = NSPredicate(format: "label MATCHES %@", TextMatch.containsPattern(textContains))
+            let query = root.descendants(matching: .any).matching(predicate)
+            return allElements(from: query)
+        }
+
+        // getByText(RegExp) (PILOT-520): the raw label, title or value, as the
+        // snapshot walk tests it.
+        if let textRegex = selector.textRegex {
+            let pattern = textRegex.fullMatchPattern
+            let predicate = NSPredicate(
+                format: "label MATCHES %@ OR title MATCHES %@ OR value MATCHES %@",
+                pattern, pattern, pattern
+            )
             let query = root.descendants(matching: .any).matching(predicate)
             return allElements(from: query)
         }
@@ -191,19 +210,27 @@ class ElementFinder {
         // Label selector: find input elements whose accessibilityLabel matches.
         // Single query on .any avoids multiple expensive IPC calls per element type.
         if let label = selector.label {
-            let inputTypes: Set<XCUIElement.ElementType> = [
-                .textField, .secureTextField, .textView,
-                .switch, .slider, .stepper, .picker,
-                .checkBox, .radioButton,
-            ]
             let predicate = NSPredicate(format: "label MATCHES %@", TextMatch.exactPattern(label))
             let query = root.descendants(matching: .any).matching(predicate)
             let all = allElements(from: query)
-            return all.filter { inputTypes.contains($0.elementType) }
+            return all.filter { Self.labelInputTypes.contains($0.elementType) }
+        }
+        if let labelRegex = selector.labelRegex {
+            let pattern = labelRegex.fullMatchPattern
+            let predicate = NSPredicate(format: "label MATCHES %@ OR title MATCHES %@", pattern, pattern)
+            let query = root.descendants(matching: .any).matching(predicate)
+            return allElements(from: query).filter { Self.labelInputTypes.contains($0.elementType) }
         }
 
         throw AgentError.invalidSelector("No valid selector criteria provided")
     }
+
+    /// The input types getByLabel finds.
+    static let labelInputTypes: Set<XCUIElement.ElementType> = [
+        .textField, .secureTextField, .textView,
+        .switch, .slider, .stepper, .picker,
+        .checkBox, .radioButton,
+    ]
 
     // MARK: - XPath
 
@@ -365,8 +392,11 @@ class ElementFinder {
         if let v = selector.role { parts.append("role=\(v)") }
         if let v = selector.name { parts.append("name=\(v)") }
         if selector.name != nil && selector.nameExact { parts.append("exact=true") }
+        if let v = selector.nameRegex { parts.append("name=\(v.display)") }
         if let v = selector.text { parts.append("text=\(v)") }
         if let v = selector.textContains { parts.append("textContains=\(v)") }
+        if let v = selector.textRegex { parts.append("text=\(v.display)") }
+        if let v = selector.labelRegex { parts.append("label=\(v.display)") }
         if let v = selector.contentDesc { parts.append("contentDesc=\(v)") }
         if let v = selector.hint { parts.append("hint=\(v)") }
         if let v = selector.className { parts.append("className=\(v)") }

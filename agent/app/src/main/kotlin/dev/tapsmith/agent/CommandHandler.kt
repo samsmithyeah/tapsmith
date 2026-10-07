@@ -298,7 +298,9 @@ class CommandHandler(
                         "testId",
                         "hint",
                         "label",
+                        "labelRegex",
                         "textContains",
+                        "textRegex",
                         "xpath",
                         "parent",
                         "elementId",
@@ -549,9 +551,13 @@ class CommandHandler(
         val roleObj = params.opt("role")
         val source = if (roleObj is JSONObject) roleObj else params
         val role = source.optString("role", null)?.ifEmpty { null }
-        val name = source.optString("name", null)?.ifEmpty { null }
         // getByRole `{ exact: true }` rides inside the role object (PILOT-549).
         val nameExact = roleObj is JSONObject && roleObj.optBoolean("exact", false)
+        // RegExp locators (PILOT-520); a malformed one is an invalid selector.
+        // With a RegExp name, `name` only carries its literal for agents that
+        // predate RegExp support, so it is not a name filter here.
+        val nameRegex = (roleObj as? JSONObject)?.optJSONObject("nameRegex")?.let { TextRegex.fromJson(it) }
+        val name = if (nameRegex != null) null else source.optString("name", null)?.ifEmpty { null }
 
         // Handle "resourceId" (sent by daemon) or "id" (legacy)
         val resourceId = params.optString("resourceId", null) ?: params.optString("id", null)
@@ -560,8 +566,10 @@ class CommandHandler(
             role = role,
             name = name,
             nameExact = nameExact,
+            nameRegex = nameRegex,
             text = params.optString("text", null),
             textContains = params.optString("textContains", null),
+            textRegex = TextRegex.fromJson(params.optJSONObject("textRegex")),
             contentDesc = params.optString("contentDesc", null),
             hint = params.optString("hint", null),
             className = params.optString("className", null),
@@ -569,6 +577,7 @@ class CommandHandler(
             id = resourceId,
             xpath = params.optString("xpath", null),
             label = params.optString("label", null),
+            labelRegex = TextRegex.fromJson(params.optJSONObject("labelRegex")),
             enabled = if (params.has("enabled")) params.getBoolean("enabled") else null,
             checked = if (params.has("checked")) params.getBoolean("checked") else null,
             focused = if (params.has("focused")) params.getBoolean("focused") else null,

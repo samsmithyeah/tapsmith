@@ -14,6 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { appleArch, hostArch } from './host-arch.js';
 import { listPhysicalDevices, listUsbAttachedIosDevices } from './ios-devicectl.js';
 import { displayPath, npmIosAgentDir, npmIosAgentVersion, tapsmithPackageVersion } from './ios-agent-paths.js';
 
@@ -246,8 +247,9 @@ export function findSimulatorXctestrun(): string | undefined {
   // producing protocol-mismatch failures that masquerade as flaky tests
   // (PILOT-289: stale-element taps from an agent predating the textContains
   // cache branch). On mismatch, warn and use the DerivedData scan instead.
-  const arch = process.arch;
-  const pkg = `@tapsmith/agent-ios-simulator-${arch}`;
+  // The machine's arch, not Node's: under Rosetta npm installs the x64
+  // package, whose x86_64 agent arm64 simulators cannot run (PILOT-559).
+  const pkg = `@tapsmith/agent-ios-simulator-${hostArch()}`;
   try {
     const pkgJsonPath = require.resolve(`${pkg}/package.json`);
     const pkgDir = path.dirname(pkgJsonPath);
@@ -325,6 +327,7 @@ export function findSimulatorXctestrun(): string | undefined {
         e.endsWith('.xctestrun') &&
         e.includes('iphonesimulator') &&
         !e.endsWith('.patched.xctestrun') &&
+        xctestrunRunsOnHost(e) &&
         hasSimulatorTestProducts(path.join(productsDir, e))
       ) {
         candidates.push(path.join(productsDir, e));
@@ -334,6 +337,28 @@ export function findSimulatorXctestrun(): string | undefined {
   if (candidates.length === 0) return undefined;
   candidates.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
   return candidates[0];
+}
+
+/**
+ * The architectures a simulator xctestrun's file name says it was built for
+ * (`…iphonesimulator26.0-arm64.xctestrun`, `…-arm64-x86_64.xctestrun`), or
+ * undefined when the name does not say.
+ */
+export function xctestrunArchs(xctestrunPath: string): string[] | undefined {
+  const match = path.basename(xctestrunPath).match(/iphonesimulator[\d.]+-([A-Za-z0-9_-]+)\.xctestrun$/);
+  return match ? match[1].split('-') : undefined;
+}
+
+/**
+ * Whether a simulator xctestrun can run on this machine's simulators. One
+ * built only for the other arch fails at launch ("No architectures
+ * intersection"): an x86_64 agent left over from a run under Rosetta, or
+ * built on an Intel Mac, must not be picked on Apple Silicon (PILOT-559).
+ * A name that does not say is kept.
+ */
+function xctestrunRunsOnHost(xctestrunPath: string): boolean {
+  const archs = xctestrunArchs(xctestrunPath);
+  return !archs || archs.includes(appleArch());
 }
 
 export function extractSdkVersion(xctestrunPath: string): string | undefined {
@@ -372,7 +397,8 @@ function newestSimulatorXctestrunIn(dir: string): string | undefined {
     .filter(
       (e) =>
         e.endsWith('.xctestrun') &&
-        !e.endsWith('.patched.xctestrun'),
+        !e.endsWith('.patched.xctestrun') &&
+        xctestrunRunsOnHost(e),
     )
     .map((e) => ({ path: path.join(dir, e), mtime: fs.statSync(path.join(dir, e)).mtimeMs }))
     .filter((m) => hasSimulatorTestProducts(m.path));

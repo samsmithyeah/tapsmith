@@ -23,6 +23,7 @@ const brotliDecompress = promisify(zlib.brotliDecompress);
 import type { TapsmithConfig, Platform, UseOptions } from './config.js';
 import type { Device } from './device.js';
 import type { TapsmithReporter } from './reporter.js';
+import { fileLoadFailureTitle, loadErrorForReport } from './load-failure.js';
 import { APIRequestContext } from './api-request.js';
 import { flushSoftErrors } from './expect.js';
 import { FixtureRegistry, resolveFixtures, fixtureParameterNames, functionHasParameters, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
@@ -407,6 +408,13 @@ export interface TestResult {
    * dialog that the preflight closed before retrying (PILOT-398).
    */
   warnings?: string[];
+  /**
+   * True when this result stands for a whole file rather than a test in it —
+   * the file failed to load (a missing module, an error thrown at import), so
+   * none of its tests could be registered or run (PILOT-545). Its `name` and
+   * `fullName` are `<file name> — failed to load`; `filePath` names the file.
+   */
+  fileLevelFailure?: boolean;
 }
 
 export interface SuiteResult {
@@ -3147,9 +3155,31 @@ export async function runTestFile(
   // Node.js caches ESM imports by URL. Persistent processes (UI workers)
   // that re-run the same file must bust the cache with a unique query.
   const importUrl = opts.bustImportCache ? `${filePath}?t=${Date.now()}` : filePath;
-  await import(importUrl);
-
-  const rootCtx = popContext();
+  const loadStartedAt = Date.now();
+  let rootCtx: SuiteContext;
+  // Build a merged registry from all per-test/hook registries in the file.
+  // Using getFixtureRegistry() (the mutable global) would only reflect the
+  // last syncRegistry() call, missing worker fixtures from earlier extends.
+  const allEntryRegistries = new Set<FixtureRegistry>();
+  try {
+    await import(importUrl);
+    rootCtx = popContext();
+    // Walking the registries runs every describe() callback, which is where
+    // most of a file's registration happens — so a throw there is as much a
+    // load error as one at the top level, and is caught here too.
+    collectFixtureRegistries(rootCtx, allEntryRegistries);
+  } catch (err) {
+    // A file that cannot load fails on its own; the run carries on with the
+    // rest (PILOT-545). Whatever it registered before throwing is discarded —
+    // a half-loaded file runs none of its tests — and the next file starts
+    // from a fresh context stack (above), so a describe the throw left open
+    // does not leak into it.
+    return reportFileLevelFailure(
+      fileLevelFailureResult({ testFilePath: filePath, projectName: opts.projectName }, err),
+      opts,
+      Date.now() - loadStartedAt,
+    );
+  }
 
   // Apply project-level use options as a base layer under file-level test.use()
   if (opts.projectUseOptions) {
@@ -3158,11 +3188,6 @@ export async function runTestFile(
   assertDeviceGroupMatches(opts, rootCtx.useOptions?.devices);
   const restoreDeviceNames = applyRunDeviceNames(opts, rootCtx.useOptions?.devices);
 
-  // Build a merged registry from all per-test/hook registries in the file.
-  // Using getFixtureRegistry() (the mutable global) would only reflect the
-  // last syncRegistry() call, missing worker fixtures from earlier extends.
-  const allEntryRegistries = new Set<FixtureRegistry>();
-  collectFixtureRegistries(rootCtx, allEntryRegistries);
   let fileRegistry = new FixtureRegistry();
   for (const r of allEntryRegistries) {
     fileRegistry = fileRegistry.merge(r);
@@ -3271,6 +3296,39 @@ export async function runTestFile(
       }
     }
   }
+}
+
+// ─── File-level failures ───
+
+/**
+ * The failed result that stands in for a whole file whose tests never ran —
+ * the file failed to load (PILOT-545). The error keeps its own stack; for a
+ * missing module, a frame at the import line is added so reporters can show
+ * a code frame, which the resolver's own stack never reaches.
+ */
+export function fileLevelFailureResult(
+  opts: Pick<RunOptions, 'testFilePath' | 'projectName'>,
+  err: unknown,
+): TestResult {
+  const title = fileLoadFailureTitle(opts.testFilePath ?? '');
+  return {
+    name: title,
+    fullName: title,
+    status: 'failed',
+    durationMs: 0,
+    error: loadErrorForReport(err),
+    project: opts.projectName,
+    filePath: opts.testFilePath,
+    fileLevelFailure: true,
+  };
+}
+
+/** Report a file-level failure as the file's only result and return its suite. */
+function reportFileLevelFailure(result: TestResult, opts: RunOptions, durationMs: number): SuiteResult {
+  const suite: SuiteResult = { name: '', tests: [result], suites: [], durationMs };
+  opts.reporter?.onTestEnd?.(result);
+  reportRunTelemetry(opts, suite, durationMs);
+  return suite;
 }
 
 /**

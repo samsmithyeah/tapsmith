@@ -8,16 +8,37 @@ Locators identify UI elements on the device. They are exposed as Playwright-styl
 
 See the [Locators Guide](locators.md) for a deeper discussion of when to use each one.
 
-### `device.getByText(text: string, options?: { exact?: boolean }): ElementHandle`
+### `device.getByText(text: string | RegExp, options?: { exact?: boolean }): ElementHandle`
 
-Locate an element by its visible text. **Substring match by default**, like Playwright. Pass `{ exact: true }` for an exact match.
+Locate an element by its visible text. **Substring match by default**, like Playwright. Pass `{ exact: true }` for an exact match, or a regular expression to test the text with.
 
 ```typescript
 device.getByText("Welcome")                          // substring
 device.getByText("Sign In", { exact: true })         // exact
+device.getByText(/^welcome to\sexpo$/i)              // RegExp
 ```
 
-Whitespace is normalized on both sides before comparing, exact or not, as in Playwright: runs of whitespace — including non-breaking spaces (`&nbsp;`, U+00A0), other Unicode spaces and line breaks — collapse to one space, and leading and trailing whitespace is ignored. So `getByText("Welcome to Expo", { exact: true })` matches text rendered as `Welcome to&nbsp;Expo` or split over two lines. The same applies to `getByRole`'s `name` and to `getByLabel`. `getByText` matching is case-sensitive, and `text` must be a string: a regular expression throws a `TypeError`.
+Whitespace is normalized on both sides before comparing a string, exact or not, as in Playwright: runs of whitespace — including non-breaking spaces (`&nbsp;`, U+00A0), other Unicode spaces and line breaks — collapse to one space, and leading and trailing whitespace is ignored. So `getByText("Welcome to Expo", { exact: true })` matches text rendered as `Welcome to&nbsp;Expo` or split over two lines. The same applies to `getByRole`'s `name` and to `getByLabel`. String matching is case-sensitive.
+
+#### Regular expressions
+
+`getByText`, `getByLabel` and `getByRole`'s `name` accept a `RegExp`, as in Playwright. It is matched on the device with JavaScript's semantics, so it behaves the way it would in a browser:
+
+- **`\s` is JavaScript's whitespace**, including non-breaking and other Unicode spaces: `/Welcome to\sExpo/` matches `Welcome to&nbsp;Expo`. A literal space in the pattern matches only a space. `\d`, `\w` and `\b` are ASCII, as in JavaScript.
+- **The text is tested as it is**, the way Playwright tests an element's text: `getByText` and `getByLabel` don't normalize whitespace first, so `^` and `$` anchor the whole text, and a line break needs `\s` or the `m` flag (`/^Line two$/m`). A `getByRole` name is whitespace-normalized first, as Playwright normalizes accessible names.
+- **Flags:** `i`, `m`, `s` and `u` work as in JavaScript; `g` and `d` are accepted and have no effect. `y` and `v` throw a `TypeError` when the locator is built.
+- `{ exact: true }` is ignored with a RegExp, as in Playwright.
+- A lookbehind must have a bounded length (no `*`, `+`, `{n,}` or backreference inside `(?<=…)`/`(?<!…)`) — the device regex engines can't run an unbounded one, so it throws a `TypeError`.
+- On iOS, a control that merges its children's text into one label joined by `", "` is tested as that whole label.
+- A few corners follow the device engine rather than JavaScript: `.` and quantifiers count whole characters (code points) even without the `u` flag, so `/^.$/` matches one emoji; a backreference to a group that didn't take part in the match fails instead of matching empty; and `i` also folds a few special characters (such as `ſ` and the Kelvin sign `K`) that JavaScript keeps distinct.
+
+```typescript
+device.getByText(/\d+ items? in cart/)
+device.getByRole("button", { name: /^save( draft)?$/i })
+device.getByLabel(/e-?mail/i)
+```
+
+Any other value (a number, `null`, …) throws a `TypeError`.
 
 > Because the default is a substring match, `getByText("Sign in")` also matches longer text like `"Sign in to continue"`. When that happens, acting on the locator throws a [strict mode](#strict-mode) violation — add `{ exact: true }` or use `getByRole(role, { name, exact: true })` to pin a single element.
 
@@ -41,8 +62,8 @@ device.getByRole("button", { name: "Details", expanded: true })
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `name` | `string` | Filter by accessible name. **Case-insensitive substring match by default**, like Playwright; whitespace is normalized like `getByText` |
-| `exact` | `boolean` | Match `name` case-sensitively and as the whole string (whitespace still normalized). Ignored without `name` |
+| `name` | `string \| RegExp` | Filter by accessible name. **Case-insensitive substring match by default**, like Playwright; whitespace is normalized like `getByText`. A [RegExp](#regular-expressions) is tested against the whitespace-normalized name |
+| `exact` | `boolean` | Match a string `name` case-sensitively and as the whole string (whitespace still normalized). Ignored without `name`, and for a RegExp |
 | `checked` | `boolean` | Filter by checked state (checkbox, switch, radio) |
 | `disabled` | `boolean` | Filter by disabled state |
 | `selected` | `boolean` | Filter by selected state (tab, option) |
@@ -76,17 +97,18 @@ Locate an element by its dedicated test identifier.
 device.getByTestId("submit-button")
 ```
 
-### `device.getByLabel(text: string): ElementHandle`
+### `device.getByLabel(text: string | RegExp): ElementHandle`
 
 Locate an input element by its associated label text. Finds form controls (text fields, checkboxes, switches, etc.) whose accessible name matches the label.
 
 - **Android**: matches inputs whose `contentDescription` equals the text, or inputs linked via `labelFor`/`labeledBy`.
 - **iOS**: matches input elements (text fields, switches, sliders, etc.) whose `accessibilityLabel` equals the text.
 
-The comparison normalizes whitespace like `getByText`.
+The comparison normalizes whitespace like `getByText`. A [RegExp](#regular-expressions) is tested against the label text instead.
 
 ```typescript
 device.getByLabel("Email")           // finds the email text field
+device.getByLabel(/^e-?mail$/i)      // RegExp
 device.getByLabel("Dark Mode")       // finds the Dark Mode switch
 device.getByLabel("Volume")          // finds the Volume slider
 ```
@@ -754,7 +776,7 @@ An `ElementHandle` is a lazy reference to a UI element. It is returned by every 
 
 | Method | Description |
 |---|---|
-| `getByText(text, options?)` | Substring (default) or exact text match within the parent. |
+| `getByText(text, options?)` | Substring (default), exact or RegExp text match within the parent. |
 | `getByRole(role, options?)` | Accessibility role within the parent. |
 | `getByDescription(text)` | Accessibility description within the parent. |
 | `getByPlaceholder(text)` | Placeholder / hint text within the parent. |
@@ -1535,17 +1557,25 @@ await expect(device.getByText("Footer", { exact: true })).toBeInViewport();
 await expect(device.getByText("Footer", { exact: true })).toBeInViewport({ ratio: 0.5 }); // at least 50% visible
 ```
 
-#### `.toHaveText(expected: string, options?): Promise<void>`
+#### `.toHaveText(expected: string | RegExp | Array<string | RegExp>, options?): Promise<void>`
 
-Assert that the element's text content matches the expected string exactly.
+Assert that the element's text equals the expected string exactly, or matches a regular expression.
+
+With an array, the locator may match several elements (no strict-mode violation): it must match exactly as many elements as there are items, and each element's text must match its item, in order. `toHaveText([])` asserts that nothing matches.
 
 ```typescript
 await expect(device.locator({ id: "counter" })).toHaveText("42");
+await expect(device.getByTestId("status")).toHaveText(/^\d+ items$/);
+await expect(device.getByRole("listitem")).toHaveText(["Apples", "Bananas", /^Cherries/]);
 ```
 
-#### `.toContainText(expected: string | RegExp, options?): Promise<void>`
+#### `.toContainText(expected: string | RegExp | Array<string | RegExp>, options?): Promise<void>`
 
 Assert that the element's text contains the given substring or matches a regex. Unlike `toHaveText()` which requires an exact match, this allows partial matching.
+
+With an array, the locator may match several elements: each item must match one of them, in order, and other elements may come between (`["Apples", "Cherries"]` passes for *Apples, Bananas, Cherries*).
+
+A RegExp is tested afresh on every poll, so a `g` flag can't make it skip a match. Any expected value other than a string, a RegExp or an array of them throws a `TypeError` at once. The string forms compare the text as it is (no whitespace normalization).
 
 When the matched element has no own text (e.g. a wrapping `View` around `<Text>` children, common in React Native), the agents aggregate descendant text/labels so the assertion sees the visible string.
 
@@ -2434,8 +2464,16 @@ interface TestResult {
   retry?: number; // zero-based attempt number this result was recorded on (omitted for a first-attempt pass)
   filePath?: string; // path to the test file this result belongs to
   warnings?: string[]; // things that did not fail the test but a reader should know, e.g. the app's own ANR dialog the preflight closed
+  fileLevelFailure?: boolean; // the result stands for a whole file that failed to load, not a test in it
 }
 ```
+
+A test file that fails to load — a missing module, an error thrown while it is
+imported or inside a `describe()` callback — reports a single failed result in
+place of its tests: `name` and `fullName` are `"<file name> — failed to load"` (e.g. `"login.test.ts — failed to load"`),
+`fileLevelFailure` is `true`, `filePath` names the file, and `error` is the load
+error. None of the file's tests run; every other file still does, and the run
+counts it as a failure.
 
 For a **flaky** test (failed, then passed on retry) the final result links the
 **first failed attempt's** trace, screenshot, and video — the failure is what
@@ -2531,7 +2569,7 @@ removing one, or changing what it means, is a breaking change.
 
 | Command | Error codes |
 |---|---|
-| every command above | `BAD_ARGS` (a usage error), `UNEXPECTED_ERROR` (a bug or an environment failure the command did not anticipate; `init` and `verify` included) |
+| every command above | `BAD_ARGS` (a usage error), `UNEXPECTED_ERROR` (a bug or an environment failure the command did not anticipate; `init` and `verify` included), `UNSUPPORTED_NODE` (Node.js is older than 22; nothing else runs) |
 | `init` | `UNKNOWN_FLAG`, `MISSING_FLAG_VALUE`, `INVALID_PLATFORM`, `INVALID_DEVICE_TYPE`, `NO_PLATFORM`, `NO_APK`, `AMBIGUOUS_APK`, `NO_PACKAGE`, `NO_IOS_APP`, `AMBIGUOUS_IOS_APP`, `NO_BUNDLE_ID`, `IOS_REQUIRES_MACOS`, `IOS_PHYSICAL_INTERACTIVE_ONLY`, `CONFIG_EXISTS`, `NON_INTERACTIVE_TTY` (no terminal and no `--yes`), `JSON_REQUIRES_YES` (`--json` in a terminal without `--yes` or a setup flag: the wizard has no JSON output) |
 | `verify` | `NO_CONFIG`, `CONFIG_ERROR`, `RUN_FAILED`, `PARSE_FAILED`, `NO_TESTS_RAN` (the run executed no test: the file has none, every one was skipped, or a `grep` / `grepInvert` filtered them all out; a flaky test that passed on retry counts as having run) |
 | `doctor` | none of its own: a check that cannot run is reported in the result, usually as a `warn` (`Could not check …`) |
@@ -2576,7 +2614,7 @@ The results:
 A health check is `{ id, status, label, detail?, fix? }`. `id` is stable — match on it, not on `label`, which
 can hold values (`Node.js 22.1.0`) and whose wording may change. `status` is `pass`, `warn` (not blocking) or
 `fail`. `detail` is extra context (a path, where something was found, device names), which `doctor`'s text
-output prints dimmed after the label; `fix` says how to resolve a `warn` or `fail` and may span several lines. `doctor`'s ids include `node`, `daemon`, `config`, `config-load`, `config-platform`, `no-platform`, `adb`, `android-home`,
+output prints dimmed after the label; `fix` says how to resolve a `warn` or `fail` and may span several lines. `doctor`'s ids include `node`, `node-arch`, `daemon`, `config`, `config-load`, `config-platform`, `no-platform`, `adb`, `android-home`,
 `android-devices`, `android-agent`, `app-apk`, `android-emulator`, `avd-images`, `xcode`, `simctl`, `ios-sim-agent`, `mitm-ca`,
 `mitmproxy`, `network-extension` and `system-proxy`, each only where it applies; `ios setup-device`'s are
 `xcode-clt`, `devicectl`, `iproxy`, `signing`, `sudo-ddi-mount`, `ios-agent-runner`, `profile-expiry` and
@@ -2811,7 +2849,7 @@ See [Using Tapsmith with AI coding agents](agents.md) for the non-interactive se
 
 Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, config file, ADB (Android), connected devices, agent APKs, AVD system image compatibility, Xcode (iOS), simulators, and network capture dependencies. Each check prints `✓`, `⚠` (warning) or `✗` (error); most warnings and errors are followed by a `↳` line with the fix, often the exact command to run. Exits with code 0 unless a check is an error.
 
-Which platforms are checked follows the config. A platform the config targets (per project `use.platform`, else the root `platform`; when unset, iOS if `app`, `simulator` or `iosXctestrun` is set, otherwise Android) is always checked. When it is the config's only platform, a missing ADB or Xcode is an error, as is an iOS-only config on a non-Mac; when the config targets both, it is a warning as long as the other platform can run here (select its projects with `--project`), and an error when neither can. A config (or project) that sets `app`, `simulator` or `iosXctestrun` without `platform` is an error (`config-platform`), because `tapsmith test` refuses it. A platform the config does not target is skipped, with a `– skipped: …` line saying so. With no config file (or one that cannot be loaded), doctor checks whatever is installed: a missing ADB or Xcode is a warning that the platform's checks were skipped, not an error — unless neither platform can run here (no ADB on PATH, and no Xcode or not a Mac), which is a `no-platform` error: doctor exits 1 and its summary line ends `— no platform can run tests on this machine`. A missing ADB's fix depends on what is there: the `platform-tools` directory to add to `PATH` when an Android SDK has it, installing platform-tools when the SDK lacks them, or installing Android Studio (or the command-line tools) and setting `ANDROID_HOME` when there is no SDK at all. The mitmproxy and Network Extension checks run only when iOS is checked. When an Android project sets `avd`, doctor also looks for the emulator binary the way `tapsmith test` does (`$ANDROID_HOME/emulator`, `$ANDROID_SDK_ROOT/emulator`, the default SDK location, then PATH) and lists every path it tried; a missing emulator is an error when Tapsmith would launch the AVD, and a warning with `launchEmulators: false` or when this machine only runs a mixed config's iOS projects.
+Which platforms are checked follows the config. A platform the config targets (per project `use.platform`, else the root `platform`; when unset, iOS if `app`, `simulator` or `iosXctestrun` is set, otherwise Android) is always checked. When it is the config's only platform, a missing ADB or Xcode is an error, as is an iOS-only config on a non-Mac; when the config targets both, it is a warning as long as the other platform can run here (select its projects with `--project`), and an error when neither can. A config (or project) that sets `app`, `simulator` or `iosXctestrun` without `platform` is an error (`config-platform`), because `tapsmith test` refuses it. A platform the config does not target is skipped, with a `– skipped: …` line saying so. With no config file (or one that cannot be loaded), doctor checks whatever is installed: a missing ADB or Xcode is a warning that the platform's checks were skipped, not an error — unless neither platform can run here (no ADB on PATH, and no Xcode or not a Mac), which is a `no-platform` error: doctor exits 1 and its summary line ends `— no platform can run tests on this machine`. A missing ADB's fix depends on what is there: the `platform-tools` directory to add to `PATH` when an Android SDK has it, installing platform-tools when the SDK lacks them, or installing Android Studio (or the command-line tools) and setting `ANDROID_HOME` when there is no SDK at all. An x64 Node running under Rosetta on Apple Silicon is a `node-arch` warning, with the fix (an arm64 Node, then reinstall dependencies); `tapsmith init` and `tapsmith test` print the same warning. The mitmproxy and Network Extension checks run only when iOS is checked. When an Android project sets `avd`, doctor also looks for the emulator binary the way `tapsmith test` does (`$ANDROID_HOME/emulator`, `$ANDROID_SDK_ROOT/emulator`, the default SDK location, then PATH) and lists every path it tried; a missing emulator is an error when Tapsmith would launch the AVD, and a warning with `launchEmulators: false` or when this machine only runs a mixed config's iOS projects.
 
 `--json` prints `{ ok, checks, inventory }`: the checks (with a `fix` wherever the text output has one) and the device inventory (AVDs, simulators, connected devices), described under [JSON output](#json-output---json). A skipped platform has no checks in the JSON. `-c` / `--config` checks a specific config file; without it, doctor finds the config the same way `tapsmith test` does (`tapsmith.config.ts`, `.js` or `.mjs` in the current directory).
 
@@ -2857,7 +2895,7 @@ Create an Android AVD that supports HTTPS network capture. Downloads a **Google 
 
 If the Android SDK command-line tools are missing (Android Studio doesn't install them by default), the command offers to download and install them into `$ANDROID_HOME/cmdline-tools/latest` for you — pass `--install-tools` to skip the prompt in scripts/CI. When no `java` is available, Android Studio's bundled JDK is used automatically. A system image that is already installed is not re-downloaded; the Android emulator is installed alongside it when the SDK lacks one. The AVD is created in the AVD home the emulator reads (`$ANDROID_AVD_HOME` when set), so Tapsmith can launch it straight away.
 
-Defaults: API level 36, name `Tapsmith_Phone_API_<api>`, device profile `medium_phone`, ABI matching the host architecture (`arm64-v8a` on Apple Silicon, `x86_64` on Intel). `--force` overwrites an existing AVD with the same name.
+Defaults: API level 36, name `Tapsmith_Phone_API_<api>`, device profile `medium_phone`, ABI matching the machine's architecture (`arm64-v8a` on Apple Silicon — including when Node runs under Rosetta — and `x86_64` on Intel). `--force` overwrites an existing AVD with the same name.
 
 ```bash
 npx tapsmith create-avd                         # Tapsmith_Phone_API_36
@@ -3343,11 +3381,14 @@ for (const row of await rows.all()) {
 await expect(webview.locator(".header")).toBeVisible()
 await expect(webview.locator(".header")).toHaveText("Welcome")
 await expect(webview.locator(".header")).toContainText("Welc")
+await expect(webview.locator(".header")).toHaveText(/^Welcome/)
 await expect(webview.locator(".error")).toBeHidden()
 await expect(webview.locator("#email")).toExist()
 await expect(webview.locator("#email")).toHaveValue("user@test.com")
 await expect(webview.locator("a")).toHaveAttribute("href", "/about")
 ```
+
+`toHaveText` and `toContainText` take a string or a RegExp here; an array of texts throws a `TypeError` (not supported for WebView locators yet).
 
 All assertions support `.not` and a `{ timeout }` option:
 

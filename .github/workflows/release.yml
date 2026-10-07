@@ -572,6 +572,7 @@ jobs:
         run: |
           npm pack --dry-run 2>&1
           # Check critical files are present
+          test -f dist/bin.js || (echo "Missing dist/bin.js" && exit 1)
           test -f dist/cli.js || (echo "Missing dist/cli.js" && exit 1)
           test -f dist/proto/tapsmith.proto || (echo "Missing dist/proto/tapsmith.proto" && exit 1)
           # Public export `tapsmith/trace-format.schema.json` (docs/trace-format.md)

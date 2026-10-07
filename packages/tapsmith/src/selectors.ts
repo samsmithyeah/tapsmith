@@ -9,16 +9,20 @@
  * @internal
  */
 
+import { textRegexValue, formatRegex } from './text-regex.js';
+import type { TextRegexValue } from './text-regex.js';
+
 // ─── Types ───
 
 /** Options for `getByRole()` on a device or element handle. */
 export interface RoleLocatorOptions {
   /**
    * Filter by accessible name. A case-insensitive substring match by default,
-   * like Playwright; whitespace is normalized on both sides.
+   * like Playwright; whitespace is normalized on both sides. A RegExp is
+   * tested against the whitespace-normalized name (PILOT-520).
    */
-  name?: string;
-  /** Match `name` case-sensitively and as the whole string. */
+  name?: string | RegExp;
+  /** Match a string `name` case-sensitively and as the whole string. Ignored for a RegExp. */
   exact?: boolean;
   checked?: boolean;
   disabled?: boolean;
@@ -34,6 +38,11 @@ export interface RoleSelectorValue {
    * Playwright's default: a case-insensitive substring match (PILOT-549).
    */
   exact?: boolean;
+  /**
+   * getByRole `{ name: RegExp }` (PILOT-520); `name` is then empty here (the
+   * proto carries the literal in `name` for agents without RegExp support).
+   */
+  nameRegex?: TextRegexValue;
   checked?: boolean;
   disabled?: boolean;
   selected?: boolean;
@@ -44,13 +53,15 @@ export type SelectorKind =
   | { type: 'role'; value: RoleSelectorValue }
   | { type: 'text'; value: string }
   | { type: 'textContains'; value: string }
+  | { type: 'textRegex'; value: TextRegexValue }
   | { type: 'contentDesc'; value: string }
   | { type: 'hint'; value: string }
   | { type: 'className'; value: string }
   | { type: 'testId'; value: string }
   | { type: 'id'; value: string }
   | { type: 'xpath'; value: string }
-  | { type: 'label'; value: string };
+  | { type: 'label'; value: string }
+  | { type: 'labelRegex'; value: TextRegexValue };
 
 /**
  * A Selector identifies a UI element. Internal representation only.
@@ -90,6 +101,15 @@ export function selectorToProto(selector: Selector): Record<string, unknown> {
       const rv = selector.kind.value;
       const roleProto: Record<string, unknown> = { role: rv.role, name: rv.name };
       if (rv.exact) roleProto.exact = true;
+      if (rv.nameRegex) {
+        roleProto.nameRegex = regexToProto(rv.nameRegex);
+        // An agent from before RegExp support ignores `nameRegex` and would
+        // read an empty name as "any element of this role" — and act on the
+        // wrong one. The literal as `name` matches nothing there, so such an
+        // agent fails loudly instead; current agents ignore `name` when
+        // `nameRegex` is set.
+        roleProto.name = formatRegex(rv.nameRegex);
+      }
       if (rv.checked !== undefined) roleProto.checked = rv.checked;
       if (rv.disabled !== undefined) roleProto.disabled = rv.disabled;
       if (rv.selected !== undefined) roleProto.selected = rv.selected;
@@ -102,6 +122,9 @@ export function selectorToProto(selector: Selector): Record<string, unknown> {
       break;
     case 'textContains':
       proto.textContains = selector.kind.value;
+      break;
+    case 'textRegex':
+      proto.textRegex = regexToProto(selector.kind.value);
       break;
     case 'contentDesc':
       proto.contentDesc = selector.kind.value;
@@ -124,6 +147,9 @@ export function selectorToProto(selector: Selector): Record<string, unknown> {
     case 'label':
       proto.label = selector.kind.value;
       break;
+    case 'labelRegex':
+      proto.labelRegex = regexToProto(selector.kind.value);
+      break;
   }
 
   if (selector.parent) {
@@ -131,6 +157,11 @@ export function selectorToProto(selector: Selector): Record<string, unknown> {
   }
 
   return proto;
+}
+
+/** The proto `TextRegex` message: what the agents compile, plus the literal for their messages. */
+function regexToProto(v: TextRegexValue): Record<string, unknown> {
+  return { pattern: v.pattern, ignoreCase: v.ignoreCase, display: formatRegex(v) };
 }
 
 // ─── Human-readable formatting (error messages, traces) ───
@@ -149,7 +180,8 @@ export function formatSelector(sel: Selector): string {
       const rv = sel.kind.value;
       // Rendered as the call the user wrote, so it can be pasted back as code.
       const opts: string[] = [];
-      if (rv.name) opts.push(`name: ${JSON.stringify(rv.name)}`);
+      if (rv.nameRegex) opts.push(`name: ${formatRegex(rv.nameRegex)}`);
+      else if (rv.name) opts.push(`name: ${JSON.stringify(rv.name)}`);
       if (rv.name && rv.exact) opts.push('exact: true');
       for (const key of ['checked', 'disabled', 'selected', 'expanded'] as const) {
         if (rv[key] !== undefined) opts.push(`${key}: ${rv[key]}`);
@@ -161,10 +193,12 @@ export function formatSelector(sel: Selector): string {
     }
     case 'text': base = `getByText("${sel.kind.value}", { exact: true })`; break;
     case 'textContains': base = `getByText("${sel.kind.value}")`; break;
+    case 'textRegex': base = `getByText(${formatRegex(sel.kind.value)})`; break;
     case 'contentDesc': base = `getByDescription("${sel.kind.value}")`; break;
     case 'hint': base = `getByPlaceholder("${sel.kind.value}")`; break;
     case 'testId': base = `getByTestId("${sel.kind.value}")`; break;
     case 'label': base = `getByLabel("${sel.kind.value}")`; break;
+    case 'labelRegex': base = `getByLabel(${formatRegex(sel.kind.value)})`; break;
     case 'id': base = `locator({ id: "${sel.kind.value}" })`; break;
     case 'className': base = `locator({ className: "${sel.kind.value}" })`; break;
     case 'xpath': base = `locator({ xpath: "${sel.kind.value}" })`; break;
@@ -178,30 +212,32 @@ export function formatSelector(sel: Selector): string {
 // ─── Internal builders (used by Device/ElementHandle getBy* methods) ───
 
 /**
- * Throw when a getBy* text argument is not a string. The parameters are typed
- * `string`, but tests run through tsx are not type-checked, and a RegExp used
- * to reach the agent as its source text and silently match nothing.
+ * Throw when a getBy* text argument is neither a string nor a RegExp. The
+ * parameters are typed, but tests run through tsx are not type-checked, and
+ * anything else would reach the agent as garbage and silently match nothing.
  */
-function assertStringArg(value: unknown, what: string): void {
-  if (typeof value === 'string') return;
-  const got = value instanceof RegExp ? 'a RegExp' : value === null ? 'null' : `a ${typeof value}`;
-  const hint = value instanceof RegExp
-    ? ' Regular-expression matching is not supported; pass the text as a string (whitespace differences such as non-breaking spaces and line breaks are ignored).'
-    : '';
-  throw new TypeError(`${what} expects a string, got ${got}.${hint}`);
+function assertTextArg(value: unknown, what: string): asserts value is string | RegExp {
+  if (typeof value === 'string' || value instanceof RegExp) return;
+  const got = value === null ? 'null' : `a ${typeof value}`;
+  throw new TypeError(`${what} expects a string or a RegExp, got ${got}.`);
 }
 
 /** @internal */
 export function _role(roleName: string, options?: RoleLocatorOptions): Selector {
-  if (options?.name !== undefined) assertStringArg(options.name, 'getByRole() option `name`');
-  const name = options?.name ?? '';
+  if (options?.name !== undefined) assertTextArg(options.name, 'getByRole() option `name`');
+  const nameRegex = options?.name instanceof RegExp
+    ? textRegexValue(options.name, 'getByRole() option `name`')
+    : undefined;
+  const name = typeof options?.name === 'string' ? options.name : '';
   return makeSelector({
     type: 'role',
     value: {
       role: roleName,
       name,
-      // `exact` only qualifies a name; Playwright ignores it without one.
+      // `exact` only qualifies a string name; Playwright ignores it without
+      // one, and for a RegExp.
       ...(options?.exact && name ? { exact: true } : {}),
+      ...(nameRegex ? { nameRegex } : {}),
       checked: options?.checked,
       disabled: options?.disabled,
       selected: options?.selected,
@@ -210,16 +246,22 @@ export function _role(roleName: string, options?: RoleLocatorOptions): Selector 
   });
 }
 
-/** @internal */
-export function _text(exactText: string): Selector {
-  assertStringArg(exactText, 'getByText()');
+/** @internal — getByText with `{ exact: true }`; a RegExp ignores `exact`, as in Playwright. */
+export function _text(exactText: string | RegExp): Selector {
+  assertTextArg(exactText, 'getByText()');
+  if (exactText instanceof RegExp) return _textRegex(exactText);
   return makeSelector({ type: 'text', value: exactText });
 }
 
-/** @internal */
-export function _textContains(partial: string): Selector {
-  assertStringArg(partial, 'getByText()');
+/** @internal — getByText's default substring match, or a RegExp. */
+export function _textContains(partial: string | RegExp): Selector {
+  assertTextArg(partial, 'getByText()');
+  if (partial instanceof RegExp) return _textRegex(partial);
   return makeSelector({ type: 'textContains', value: partial });
+}
+
+function _textRegex(re: RegExp): Selector {
+  return makeSelector({ type: 'textRegex', value: textRegexValue(re, 'getByText()') });
 }
 
 /** @internal */
@@ -253,7 +295,10 @@ export function _xpath(expr: string): Selector {
 }
 
 /** @internal */
-export function _label(text: string): Selector {
-  assertStringArg(text, 'getByLabel()');
+export function _label(text: string | RegExp): Selector {
+  assertTextArg(text, 'getByLabel()');
+  if (text instanceof RegExp) {
+    return makeSelector({ type: 'labelRegex', value: textRegexValue(text, 'getByLabel()') });
+  }
   return makeSelector({ type: 'label', value: text });
 }

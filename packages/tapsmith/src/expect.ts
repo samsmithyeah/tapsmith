@@ -247,8 +247,12 @@ export interface TapsmithAssertions {
   /** Assert the element is enabled (interactive). */
   toBeEnabled(options?: { timeout?: number }): Promise<void>;
 
-  /** Assert the element's text content matches. */
-  toHaveText(expected: string, options?: { timeout?: number }): Promise<void>;
+  /**
+   * Assert the element's text matches: equals a string, or matches a RegExp.
+   * With an array, the locator's elements (all of them, in order) must have
+   * one text per item (PILOT-548).
+   */
+  toHaveText(expected: TextExpected, options?: { timeout?: number }): Promise<void>;
 
   /** Assert the element exists in the UI hierarchy. */
   toExist(options?: { timeout?: number }): Promise<void>;
@@ -268,9 +272,13 @@ export interface TapsmithAssertions {
   /** Assert the element currently has input/accessibility focus. */
   toBeFocused(options?: { timeout?: number }): Promise<void>;
 
-  /** Assert the element's text contains the given substring or matches a regex. */
+  /**
+   * Assert the element's text contains the given substring or matches a
+   * RegExp. With an array, the locator's elements must contain the items in
+   * order — other elements may come between them (PILOT-548).
+   */
   toContainText(
-    expected: string | RegExp,
+    expected: TextExpected,
     options?: { timeout?: number },
   ): Promise<void>;
 
@@ -309,24 +317,74 @@ export interface TapsmithAssertions {
   toBeInViewport(options?: { timeout?: number; ratio?: number }): Promise<void>;
 }
 
+/** One expected text: a string, or a RegExp tested against the text. */
+type TextExpectation = string | RegExp;
+/** What toHaveText / toContainText accept, as in Playwright (PILOT-548). */
+export type TextExpected = TextExpectation | readonly TextExpectation[];
+
+/**
+ * Test a RegExp afresh: a `g` or `y` RegExp's `test()` starts at its
+ * `lastIndex`, which an earlier poll (or the caller) may have moved.
+ */
+function regexTest(re: RegExp, text: string): boolean {
+  re.lastIndex = 0;
+  return re.test(text);
+}
+
 function matchesStringOrRegExp(
   actual: string,
-  expected: string | RegExp,
+  expected: TextExpectation,
 ): boolean {
   if (typeof expected === "string") {
     return actual.includes(expected);
   }
-  return expected.test(actual);
+  return regexTest(expected, actual);
 }
 
 function matchesExact(
   actual: string,
-  expected: string | RegExp,
+  expected: TextExpectation,
 ): boolean {
   if (typeof expected === "string") {
     return actual === expected;
   }
-  return expected.test(actual);
+  return regexTest(expected, actual);
+}
+
+/**
+ * Throw at once for an expected text of the wrong type — tests run through
+ * tsx aren't type-checked, and a number or object would otherwise be
+ * compared for the whole timeout and fail with a misleading message.
+ */
+function assertTextExpected(expected: unknown, assertion: string): asserts expected is TextExpected {
+  const ok = (v: unknown): boolean => typeof v === "string" || v instanceof RegExp;
+  if (ok(expected) || (Array.isArray(expected) && expected.every(ok))) return;
+  const got = expected === null ? "null" : Array.isArray(expected) ? "an array with other values" : `a ${typeof expected}`;
+  throw new TypeError(`${assertion}() expects a string, a RegExp or an array of them, got ${got}.`);
+}
+
+function isTextList(expected: TextExpected): expected is readonly TextExpectation[] {
+  return Array.isArray(expected);
+}
+
+/** `"text"` or `/re/flags`, for messages. */
+function formatExpectation(e: TextExpectation): string {
+  return typeof e === "string" ? JSON.stringify(e) : String(e);
+}
+
+function formatTextList(items: readonly TextExpectation[]): string {
+  return `[${items.map(formatExpectation).join(", ")}]`;
+}
+
+/** toContainText(array): the items match elements in order, others allowed between. */
+function containsInOrder(texts: readonly string[], expected: readonly TextExpectation[]): boolean {
+  let i = 0;
+  for (const item of expected) {
+    while (i < texts.length && !matchesStringOrRegExp(texts[i], item)) i++;
+    if (i === texts.length) return false;
+    i++;
+  }
+  return true;
 }
 
 /**
@@ -505,6 +563,26 @@ function createAssertions(
     throw err;
   };
 
+  /** Fail an array toHaveText / toContainText the way the single forms fail. */
+  const reportTextList = (
+    desc: string,
+    verb: "have" | "contain",
+    expected: readonly TextExpectation[],
+    actual: string[],
+    result: boolean,
+  ): void => {
+    const want = formatTextList(expected);
+    const got = `[${actual.map((t) => JSON.stringify(t)).join(", ")}]`;
+    if (!negated && !result) {
+      handle._assertionResult = { expected: want, actual: got };
+      fail(`Expected element ${desc} to ${verb} texts ${want}, but got ${got}`);
+    }
+    if (negated && result) {
+      handle._assertionResult = { expected: `not ${want}`, actual: got };
+      fail(`Expected element ${desc} NOT to ${verb} texts ${want}, but it did`);
+    }
+  };
+
   const assertions: TapsmithAssertions = {
     get not(): TapsmithAssertions {
       return createAssertions(handle, !negated);
@@ -544,14 +622,27 @@ function createAssertions(
     },
 
     async toHaveText(expected, options) {
+      assertTextExpected(expected, "toHaveText");
       const timeout = timeoutFor(options);
       const desc = selectorDescription(handle);
+      if (isTextList(expected)) {
+        // Every element the locator matches, in order (not strict).
+        let lastTexts: string[] = [];
+        const result = await poll(async () => {
+          lastTexts = (await resolveTick(handle, false)).map((el) => el.text);
+          return lastTexts.length === expected.length
+            && lastTexts.every((text, i) => matchesExact(text, expected[i]));
+        }, timeout, negated);
+        reportTextList(desc, "have", expected, lastTexts, result);
+        return;
+      }
+      const shown = typeof expected === "string" ? `"${expected}"` : String(expected);
       let lastText = "";
       const result = await poll(async () => {
         const els = await resolveTick(handle, true);
         if (els.length > 0) {
           lastText = els[0].text;
-          return els[0].text === expected;
+          return matchesExact(els[0].text, expected);
         }
         return false;
       }, timeout, negated);
@@ -559,13 +650,13 @@ function createAssertions(
       if (!negated && !result) {
         handle._assertionResult = { expected: String(expected), actual: lastText };
         fail(
-          `Expected element ${desc} to have text "${expected}", but got "${lastText}"`,
+          `Expected element ${desc} to have text ${shown}, but got "${lastText}"`,
         );
       }
       if (negated && result) {
         handle._assertionResult = { expected: `not ${String(expected)}`, actual: lastText };
         fail(
-          `Expected element ${desc} NOT to have text "${expected}", but it did`,
+          `Expected element ${desc} NOT to have text ${shown}, but it did`,
         );
       }
     },
@@ -692,8 +783,18 @@ function createAssertions(
     // ─── PILOT-34: toContainText ───
 
     async toContainText(expected, options) {
+      assertTextExpected(expected, "toContainText");
       const timeout = timeoutFor(options);
       const desc = selectorDescription(handle);
+      if (isTextList(expected)) {
+        let lastTexts: string[] = [];
+        const result = await poll(async () => {
+          lastTexts = (await resolveTick(handle, false)).map((el) => el.text);
+          return containsInOrder(lastTexts, expected);
+        }, timeout, negated);
+        reportTextList(desc, "contain", expected, lastTexts, result);
+        return;
+      }
       let lastText = "";
       const result = await poll(async () => {
         const els = await resolveTick(handle, true);
@@ -1654,10 +1755,24 @@ export interface WebViewAssertions {
   toBeVisible(options?: { timeout?: number }): Promise<void>;
   toBeHidden(options?: { timeout?: number }): Promise<void>;
   toExist(options?: { timeout?: number }): Promise<void>;
-  toHaveText(expected: string, options?: { timeout?: number }): Promise<void>;
+  toHaveText(expected: string | RegExp, options?: { timeout?: number }): Promise<void>;
   toContainText(expected: string | RegExp, options?: { timeout?: number }): Promise<void>;
   toHaveAttribute(name: string, value: string, options?: { timeout?: number }): Promise<void>;
   toHaveValue(expected: string, options?: { timeout?: number }): Promise<void>;
+}
+
+/**
+ * A WebView text assertion takes a string or a RegExp. An array (Playwright's
+ * multi-element form, supported natively since PILOT-548) is refused at once
+ * rather than compared for the whole timeout.
+ */
+function assertWebViewTextExpected(expected: unknown, assertion: string): asserts expected is string | RegExp {
+  if (Array.isArray(expected)) {
+    throw new TypeError(
+      `WebView ${assertion}() does not support an array of texts yet; assert each element's text separately (e.g. with .nth(i)).`,
+    );
+  }
+  assertTextExpected(expected, assertion);
 }
 
 function createWebViewAssertions(
@@ -1832,6 +1947,7 @@ function createWebViewAssertions(
 
     async toHaveText(expected, options) {
       return traceAssertion('toHaveText', async () => {
+        assertWebViewTextExpected(expected, 'toHaveText');
         const timeout = timeoutFor(options);
         let lastText = '';
         const result = await poll(
@@ -1844,7 +1960,7 @@ function createWebViewAssertions(
               const tick = await locator._handle._valueTickLocator(locator, 'el.textContent');
               if (!tick.found) return false;
               lastText = (tick.value as string) ?? '';
-              return lastText === expected;
+              return matchesExact(lastText, expected);
             } catch (err) {
               // Strict mode: an ambiguous locator is an error, not a
               // "keep polling" state. Transport hiccups keep polling.
@@ -1857,7 +1973,7 @@ function createWebViewAssertions(
         );
         if (result === negated) {
           fail(
-            `Expected "${locator._selector}" ${negated ? 'not ' : ''}to have text "${expected}", ` +
+            `Expected "${locator._selector}" ${negated ? 'not ' : ''}to have text ${typeof expected === 'string' ? `"${expected}"` : String(expected)}, ` +
             `but got "${lastText}"`,
           );
         }
@@ -1866,6 +1982,7 @@ function createWebViewAssertions(
 
     async toContainText(expected, options) {
       return traceAssertion('toContainText', async () => {
+        assertWebViewTextExpected(expected, 'toContainText');
         const timeout = timeoutFor(options);
         let lastText = '';
         const result = await poll(
@@ -1874,10 +1991,7 @@ function createWebViewAssertions(
               const tick = await locator._handle._valueTickLocator(locator, 'el.textContent');
               if (!tick.found) return false;
               lastText = (tick.value as string) ?? '';
-              if (typeof expected === 'string') {
-                return lastText.includes(expected);
-              }
-              return expected.test(lastText);
+              return matchesStringOrRegExp(lastText, expected);
             } catch (err) {
               if (isStrictModeViolation(err)) throw err;
               return false;

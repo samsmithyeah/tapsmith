@@ -308,8 +308,11 @@ class WaitEngine {
         if let v = selector.role { parts.append("role=\(v)") }
         if let v = selector.name { parts.append("name=\(v)") }
         if selector.name != nil && selector.nameExact { parts.append("exact=true") }
+        if let v = selector.nameRegex { parts.append("name=\(v.display)") }
         if let v = selector.text { parts.append("text=\(v)") }
         if let v = selector.textContains { parts.append("textContains=\(v)") }
+        if let v = selector.textRegex { parts.append("text=\(v.display)") }
+        if let v = selector.labelRegex { parts.append("label=\(v.display)") }
         if let v = selector.contentDesc { parts.append("contentDesc=\(v)") }
         if let v = selector.hint { parts.append("hint=\(v)") }
         if let v = selector.className { parts.append("className=\(v)") }

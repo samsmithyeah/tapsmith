@@ -37,6 +37,12 @@ describe('worker-protocol serialization', () => {
       expect(deserialized.error).toBeUndefined();
     });
 
+    it('round-trips the file-level failure flag (PILOT-545)', () => {
+      const result: TestResult = { name: 'a-broken.test.ts — failed to load', fullName: 'a-broken.test.ts — failed to load', status: 'failed', durationMs: 0, error: new Error('Cannot find module'), fileLevelFailure: true };
+      expect(deserializeTestResult(serializeTestResult(result, 0)).fileLevelFailure).toBe(true);
+      expect(serializeTestResult({ ...result, fileLevelFailure: undefined }, 0)).not.toHaveProperty('fileLevelFailure');
+    });
+
     it('round-trips warnings (PILOT-398)', () => {
       const result: TestResult = { name: 't', fullName: 't', status: 'passed', durationMs: 1, warnings: ['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it.'] };
       expect(deserializeTestResult(serializeTestResult(result, 0)).warnings).toEqual(['The app under test (com.example.app) showed "Example keeps stopping"; Tapsmith dismissed it.']);

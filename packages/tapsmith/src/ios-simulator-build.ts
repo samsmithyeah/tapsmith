@@ -13,6 +13,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
+import { appleArch } from './host-arch.js';
 import { resolveIosAgentDir, stripDstRootPath } from './build-ios-agent.js';
 import { extractSdkVersion, findSimulatorXctestrun, getInstalledSimulatorSdkVersion } from './ios-device-resolve.js';
 
@@ -244,7 +245,9 @@ export async function buildSimulatorAgent(
       '-scheme', 'TapsmithAgentUITests',
       '-destination', 'generic/platform=iOS Simulator',
       '-derivedDataPath', buildDir,
-      'ARCHS=' + (os.machine() === 'arm64' ? 'arm64' : 'x86_64'),
+      // The machine's arch, not Node's: under Rosetta both Node and
+      // os.machine() say x86_64, which arm64 simulators cannot run.
+      'ARCHS=' + appleArch(),
       'ONLY_ACTIVE_ARCH=NO',
       'CODE_SIGNING_ALLOWED=NO',
     ];

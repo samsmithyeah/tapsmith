@@ -1,6 +1,7 @@
 import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
 import { parseBounds, getNodeRole } from './hierarchy-utils.js';
 import { FORM_FIELD_ROLES } from './selector-generation.js';
+import { toJsRegExp } from '../../text-regex.js';
 
 // ─── Selector Parsing ───
 
@@ -10,19 +11,54 @@ export interface ParsedSelector {
   name?: string
   /** getByRole `{ exact: true }`: the name matches case-sensitively and whole. */
   exact?: boolean
+  /** The RegExp of a `textRegex` / `labelRegex` selector (PILOT-520). */
+  regex?: ParsedRegex
+  /** getByRole `{ name: RegExp }` (PILOT-520). */
+  nameRegex?: ParsedRegex
   index?: number | 'first' | 'last'
 }
 
+/** A RegExp literal from a locator string: its source and flags. */
+export interface ParsedRegex {
+  source: string
+  flags: string
+}
+
+// A RegExp literal: /source/flags. The source skips escaped characters and
+// bracketed classes, so `/a\/b/` and `/[/]/` parse whole (PILOT-520).
+const REGEX_SOURCE = String.raw`\/((?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^\\/\[\n])+)\/([a-z]*)`;
+const DQ = String.raw`"((?:[^"\\]|\\.)*)"`;
+const SQ = String.raw`'((?:[^'\\]|\\.)*)'`;
+// An options object: quoted strings and RegExp literals may contain braces.
+const OPTIONS = String.raw`((?:[^{}"'/]|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|${REGEX_SOURCE.replace(/\((?!\?)/g, '(?:')})*)`;
+
 // Matches: device.getByText("value"), device.getByRole("role", { name: "n" }),
-// device.getByText("value", { exact: true }) — the options object is captured
-// as a blob and parsed by parseGetByOptions. Supports both single and double
-// quotes, optional whitespace around args.
+// device.getByText("value", { exact: true }), device.getByText(/re/i) — the
+// options object is captured as a blob and parsed by parseGetByOptions.
+// Supports both single and double quotes, optional whitespace around args.
 // The quoted-string alternation skips escaped characters so values containing
 // escaped quotes (getByText("Say \\"hi\\"")) parse fully instead of truncating.
-// Groups: 1 = method, 2 = double-quoted value, 3 = single-quoted value, 4 = options blob.
-const DEVICE_RE = /^device\.getBy(\w+)\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')(?:\s*,\s*\{([^}]*)\})?\s*\)/;
+// Groups: 1 = method, 2 = double-quoted value, 3 = single-quoted value,
+// 4 = RegExp source, 5 = RegExp flags, 6 = options blob.
+const DEVICE_RE = new RegExp(
+  String.raw`^device\.getBy(\w+)\(\s*(?:${DQ}|${SQ}|${REGEX_SOURCE})(?:\s*,\s*\{${OPTIONS}\})?\s*\)`,
+);
 // Matches: webview.getByText("value"), webview.getByRole("role", { name: "n" })
-const WEBVIEW_GETBY_RE = /^webview\.getBy(\w+)\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')(?:\s*,\s*\{([^}]*)\})?\s*\)/;
+// (same groups; a RegExp is refused — the WebView engine doesn't take one).
+const WEBVIEW_GETBY_RE = new RegExp(
+  String.raw`^webview\.getBy(\w+)\(\s*(?:${DQ}|${SQ}|${REGEX_SOURCE})(?:\s*,\s*\{${OPTIONS}\})?\s*\)`,
+);
+
+/** A RegExp literal that JavaScript accepts, or null. */
+function parseRegex(source: string | undefined, flags: string | undefined): ParsedRegex | null {
+  if (source === undefined) return null;
+  try {
+    new RegExp(source, flags);
+  } catch {
+    return null;
+  }
+  return { source, flags: flags ?? '' };
+}
 
 /**
  * Undo source-string escaping (\" \' \\ \n) so a parsed name compares
@@ -32,16 +68,19 @@ function unescapeSelectorValue(s: string): string {
   return s.replace(/\\(.)/g, (_, c: string) => (c === 'n' ? '\n' : c));
 }
 
-/** Parse the options-object blob of a getBy* call: `name: "x"` and/or `exact: true`. */
-function parseGetByOptions(blob: string | undefined): { name?: string; exact?: boolean } {
+/** Parse the options-object blob of a getBy* call: `name: "x"` or `name: /x/`, and/or `exact: true`. */
+function parseGetByOptions(blob: string | undefined): { name?: string; nameRegex?: ParsedRegex | null; exact?: boolean } {
   if (!blob) return {};
   // Skip over escaped characters inside the quotes so an escaped quote of
   // the same type (name: "Say \"hi\"") doesn't truncate the capture.
-  const nameMatch = blob.match(/name:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')/);
-  const exactMatch = blob.match(/exact:\s*(true|false)/);
+  const nameMatch = blob.match(new RegExp(String.raw`name:\s*(?:${DQ}|${SQ}|${REGEX_SOURCE})`));
+  // `exact` outside the name's own value.
+  const rest = nameMatch ? blob.replace(nameMatch[0], '') : blob;
+  const exactMatch = rest.match(/exact:\s*(true|false)/);
   const rawName = nameMatch ? (nameMatch[1] !== undefined ? nameMatch[1] : nameMatch[2]) : undefined;
   return {
     name: rawName !== undefined ? unescapeSelectorValue(rawName) : undefined,
+    nameRegex: nameMatch && nameMatch[3] !== undefined ? parseRegex(nameMatch[3], nameMatch[4]) : undefined,
     exact: exactMatch ? exactMatch[1] === 'true' : undefined,
   };
 }
@@ -107,8 +146,10 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   const wvMatch = base.match(WEBVIEW_GETBY_RE);
   if (wvMatch) {
     const method = wvMatch[1];
+    if (wvMatch[4] !== undefined) return null;
     const value = pick(wvMatch[2], wvMatch[3]);
-    const { name, exact } = parseGetByOptions(wvMatch[4]);
+    const { name, nameRegex, exact } = parseGetByOptions(wvMatch[6]);
+    if (nameRegex !== undefined) return null;
     const sel = mapWebViewMethod(method, value, name, exact);
     if (sel) sel.index = index;
     return sel;
@@ -127,9 +168,15 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   const deviceMatch = base.match(DEVICE_RE);
   if (deviceMatch) {
     const method = deviceMatch[1];
-    const value = pick(deviceMatch[2], deviceMatch[3]);
-    const { name, exact } = parseGetByOptions(deviceMatch[4]);
-    const sel = mapDeviceMethod(method, value, name, exact);
+    const { name, nameRegex, exact } = parseGetByOptions(deviceMatch[6]);
+    if (nameRegex === null) return null; // a malformed RegExp
+    let sel: ParsedSelector | null;
+    if (deviceMatch[4] !== undefined) {
+      const regex = parseRegex(deviceMatch[4], deviceMatch[5]);
+      sel = regex ? mapDeviceRegexMethod(method, regex) : null;
+    } else {
+      sel = mapDeviceMethod(method, pick(deviceMatch[2], deviceMatch[3]), name, exact, nameRegex);
+    }
     if (sel) sel.index = index;
     return sel;
   }
@@ -142,7 +189,10 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   return null;
 }
 
-function mapDeviceMethod(method: string, value: string, name?: string, exact?: boolean): ParsedSelector | null {
+function mapDeviceMethod(
+  method: string, value: string, name?: string, exact?: boolean, nameRegex?: ParsedRegex,
+): ParsedSelector | null {
+  if (nameRegex && method !== 'Role') return null;
   switch (method) {
     // Runtime getByText is a SUBSTRING match unless { exact: true } is passed
     // (device.ts getByText → textContains). The playground must agree, or a
@@ -150,11 +200,23 @@ function mapDeviceMethod(method: string, value: string, name?: string, exact?: b
     case 'Text': return exact ? { type: 'text', value } : { type: 'textContains', value };
     // Role names match like the agents (PILOT-549): a case-insensitive
     // substring unless { exact: true } is passed.
-    case 'Role': return { type: 'role', value, name, ...(exact && name ? { exact: true } : {}) };
+    case 'Role':
+      // A RegExp name ignores `exact`, as in Playwright (PILOT-520).
+      if (nameRegex) return { type: 'role', value, nameRegex };
+      return { type: 'role', value, name, ...(exact && name ? { exact: true } : {}) };
     case 'Description': return { type: 'contentDesc', value };
     case 'Placeholder': return { type: 'hint', value };
     case 'TestId': return { type: 'testId', value };
     case 'Label': return { type: 'label', value };
+    default: return null;
+  }
+}
+
+/** getByText / getByLabel with a RegExp (PILOT-520); the other getters take strings only. */
+function mapDeviceRegexMethod(method: string, regex: ParsedRegex): ParsedSelector | null {
+  switch (method) {
+    case 'Text': return { type: 'textRegex', value: '', regex };
+    case 'Label': return { type: 'labelRegex', value: '', regex };
     default: return null;
   }
 }
@@ -270,6 +332,44 @@ function roleNameMatches(node: HierarchyNode, name: string, exact: boolean): boo
     || (isAndroid && matches(descendantText(node).join(' '), exact));
 }
 
+/**
+ * {@link roleNameMatches} for a RegExp name (PILOT-520): the RegExp is tested
+ * against each name source, whitespace-normalized (Playwright tests the
+ * normalized accessible name). A typed Android EditText value is not a name.
+ */
+function roleNameMatchesRegex(node: HierarchyNode, re: RegExp): boolean {
+  const test = (actual: string | undefined): boolean =>
+    actual !== undefined && actual !== '' && re.test(normalizeWhitespace(actual));
+  const isAndroid = node.attributes.has('class');
+  const text = node.attributes.get('text');
+  const textIsValue = text !== undefined && ANDROID_EDIT_TEXT_CLASSES.has(node.attributes.get('class') ?? '')
+    && text !== node.attributes.get('hint');
+  return test(node.attributes.get('content-desc'))
+    || test(node.attributes.get('label'))
+    || test(node.attributes.get('title'))
+    || (!textIsValue && test(text))
+    || (isAndroid && test(descendantText(node).join(' ')));
+}
+
+/**
+ * getByText(RegExp) (PILOT-520): the raw text the agents test — Android's
+ * `text`, iOS's label, title or value. Not whitespace-normalized, as
+ * Playwright tests the element's full text.
+ */
+function textMatchesRegex(node: HierarchyNode, re: RegExp): boolean {
+  if (node.attributes.has('class')) return re.test(node.attributes.get('text') ?? '');
+  return ['label', 'title', 'value'].some((key) => re.test(node.attributes.get(key) ?? ''));
+}
+
+/** getByLabel(RegExp) (PILOT-520): Android's content-desc, iOS's label or title, raw. */
+function labelMatchesRegex(node: HierarchyNode, re: RegExp): boolean {
+  const keys = node.attributes.has('class') ? ['content-desc'] : ['label', 'title'];
+  return keys.some((key) => {
+    const value = node.attributes.get(key);
+    return value !== undefined && value !== '' && re.test(value);
+  });
+}
+
 function isWebViewNode(node: HierarchyNode): boolean {
   return node.attributes.get('webview') === 'true';
 }
@@ -287,6 +387,8 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
       return normalizeWhitespace(getNodeText(node)) === normalizeWhitespace(selector.value);
     case 'textContains':
       return normalizeWhitespace(getNodeText(node)).includes(normalizeWhitespace(selector.value));
+    case 'textRegex':
+      return selector.regex !== undefined && textMatchesRegex(node, toJsRegExp(selector.regex));
     case 'contentDesc':
       return getNodeContentDesc(node) === selector.value;
     case 'id': {
@@ -302,6 +404,10 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
       if (!FORM_FIELD_ROLES.has(role)) return false;
       return normalizeWhitespace(getNodeAccessibleName(node)) === normalizeWhitespace(selector.value);
     }
+    case 'labelRegex': {
+      if (!FORM_FIELD_ROLES.has(getNodeRole(node)) || selector.regex === undefined) return false;
+      return labelMatchesRegex(node, toJsRegExp(selector.regex));
+    }
     case 'testId': {
       const rid = getNodeId(node);
       return rid === selector.value || rid.endsWith(`:id/${selector.value}`);
@@ -309,6 +415,7 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
     case 'role': {
       const role = getNodeRole(node);
       if (role !== selector.value) return false;
+      if (selector.nameRegex) return roleNameMatchesRegex(node, toJsRegExp(selector.nameRegex));
       if (selector.name) return roleNameMatches(node, selector.name, selector.exact === true);
       return true;
     }

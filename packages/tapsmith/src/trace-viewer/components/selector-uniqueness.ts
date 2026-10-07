@@ -110,7 +110,7 @@ function tryRoleNameUpgrade(
   node: HierarchyNode,
 ): GeneratedSelector | null {
   const parsed = parseSelectorString(s.code);
-  if (!parsed || parsed.type !== 'role' || parsed.name) return null;
+  if (!parsed || parsed.type !== 'role' || parsed.name || parsed.nameRegex) return null;
   const accessibleName =
     node.attributes.get('content-desc') || node.attributes.get('label') || node.attributes.get('text') || '';
   if (!accessibleName) return null;
