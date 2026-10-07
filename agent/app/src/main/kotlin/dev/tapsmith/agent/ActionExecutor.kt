@@ -42,6 +42,12 @@ class ActionExecutor(
         /** Interval between taps for double-tap gesture. */
         private const val DOUBLE_TAP_INTERVAL_MS = 100L
 
+        /** Accessibility-event quiet time that ends a swipe's settle ([settleAfterSwipe]). */
+        private const val SWIPE_SETTLE_QUIET_MS = 300L
+
+        /** Upper bound on a swipe's settle, for a screen that never goes quiet. */
+        private const val SWIPE_SETTLE_MAX_MS = 1000L
+
         /** How long each press of an injected tap is held (see injectTap). */
         private const val TAP_PRESS_MS = 50L
 
@@ -572,6 +578,7 @@ class ActionExecutor(
         val dir = parseDirection(direction)
         try {
             element.swipe(dir, distance.toFloat(), speed)
+            settleAfterSwipe()
         } catch (e: StaleObjectException) {
             throw e
         } catch (e: Exception) {
@@ -614,6 +621,27 @@ class ActionExecutor(
             }
             else -> throw ActionFailedException("Unknown swipe direction: $direction. Use up/down/left/right.")
         }
+        settleAfterSwipe()
+    }
+
+    /**
+     * Let the fling a swipe starts come to rest before the swipe returns
+     * (PILOT-539). A scroll view that is still moving takes the next touch
+     * as "stop scrolling" — React Native's ScrollView captures every touch
+     * between its momentum-scroll begin and end events — so a tap made right
+     * after a swipe silently does nothing. Scrolling emits accessibility
+     * events, so wait until they have been quiet for
+     * [SWIPE_SETTLE_QUIET_MS], bounded by [SWIPE_SETTLE_MAX_MS] so a screen
+     * that never goes quiet (a running animation) costs at most that.
+     */
+    private fun settleAfterSwipe() {
+        val start = SystemClock.uptimeMillis()
+        try {
+            instrumentation.uiAutomation.waitForIdle(SWIPE_SETTLE_QUIET_MS, SWIPE_SETTLE_MAX_MS)
+        } catch (_: java.util.concurrent.TimeoutException) {
+            // Never quiet within the bound: proceed, as documented above.
+        }
+        Log.d(TAG, "swipe settle: ${SystemClock.uptimeMillis() - start}ms")
     }
 
     /**
