@@ -2161,6 +2161,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       testMatch: selectionTestMatch,
       rootDir: config.rootDir,
       projectsSelected: selectedProjects !== undefined,
+      configFound: configPath !== undefined,
     })));
     process.exit(1);
   }
