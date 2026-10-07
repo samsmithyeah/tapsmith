@@ -33,7 +33,7 @@ import type { PreparedState, ResetCapabilities } from './app-reset.js';
 import { claimDeviceOrThrow, claimFirstFree, claimUpTo, currentSession, ensureClaimSession, devicesHeldByThisProcess, heldDevicesNote, releaseDeviceClaim, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { discoverTestFiles, noTestFilesFoundMessage, relativeTestPath, resolveTestFileArgs } from './test-file-discovery.js';
-import { resolveTsxBin } from './child-scripts.js';
+import { resolveTsxBin, tsxIpcPathProblem } from './child-scripts.js';
 import {
   resolveTraceConfig,
   isNetworkTracingEnabled,
@@ -160,6 +160,13 @@ function reExecWithTsx(args: string[]): never {
     // tsx is one of our dependencies, so a missing one means a broken install.
     console.error(red('TypeScript test files were found, but Tapsmith could not find the tsx loader it runs them with.'));
     console.error(dim('tsx ships as a dependency of tapsmith; reinstall it (npm install tapsmith), or install tsx: npm install -D tsx'));
+    process.exit(1);
+  }
+
+  // tsx would crash on its own socket before running anything (PILOT-569).
+  const ipcProblem = tsxIpcPathProblem();
+  if (ipcProblem) {
+    console.error(red(ipcProblem));
     process.exit(1);
   }
 

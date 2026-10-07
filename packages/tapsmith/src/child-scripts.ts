@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
+import * as os from 'node:os';
 
 /**
  * Loader resolution for the child processes that discover and run test files.
@@ -67,10 +68,45 @@ export function resolveTsxBin(tapsmithPkgDir: string): string | undefined {
 }
 
 /**
+ * Why tsx cannot start in this temp directory, or `undefined` when it can.
+ *
+ * The tsx CLI (the loader for the CLI's re-exec and every forked child)
+ * listens on a Unix socket at `<tmpdir>/tsx-<uid>/<pid>.pipe`, and a socket
+ * path longer than `sun_path` (104 bytes on macOS and the BSDs, 108 on Linux,
+ * NUL included) fails with a raw `listen EINVAL` stack trace before any
+ * Tapsmith code runs (PILOT-569). Checked against the longest pid the
+ * platform hands out, so a run never passes the check and then fails on a
+ * longer pid.
+ */
+export function tsxIpcPathProblem(opts: {
+  tmpdir?: string;
+  platform?: NodeJS.Platform;
+  uid?: number | string;
+} = {}): string | undefined {
+  const platform = opts.platform ?? process.platform;
+  // Windows: a named pipe, with no such limit.
+  if (platform === 'win32') return undefined;
+  const tmpdir = opts.tmpdir ?? os.tmpdir();
+  // tsx's own naming: the effective uid, else the user name.
+  const uid = opts.uid ?? (process.geteuid ? process.geteuid() : os.userInfo().username);
+  const linux = platform === 'linux';
+  const maxBytes = linux ? 107 : 103;
+  // Linux pids go up to 2^22 (7 digits); macOS's and the BSDs' to 99999.
+  const longestPid = linux ? '4194304' : '99999';
+  const socketDir = path.posix.join(tmpdir, `tsx-${uid}`);
+  const bytes = Buffer.byteLength(path.posix.join(socketDir, `${longestPid}.pipe`));
+  if (bytes <= maxBytes) return undefined;
+  return `The temp directory's path is too long for tsx, which Tapsmith runs TypeScript with: `
+    + `its socket, ${socketDir}/<pid>.pipe, can reach ${bytes} bytes, over the ${maxBytes}-byte limit `
+    + `for a Unix socket path on this system. Point TMPDIR at a shorter directory, e.g. \`TMPDIR=/tmp npx tapsmith test\`.`;
+}
+
+/**
  * The loader for a set of forked scripts, or `undefined` when none is needed.
  * Reports through `onMissing` when TypeScript tests are present but no tsx
- * could be found — the children would otherwise fail one by one with module
- * resolution errors that look nothing like the real cause.
+ * could be found, or tsx cannot start in this temp directory — the children
+ * would otherwise fail one by one with errors that look nothing like the
+ * real cause.
  */
 export function resolveChildLoader(
   scriptPaths: string[],
@@ -79,6 +115,10 @@ export function resolveChildLoader(
   onMissing?: (message: string) => void,
 ): string | undefined {
   if (!needsTsxLoader(scriptPaths, testFiles)) return undefined;
+
+  // Every fork would fail in tsx before reaching our code (PILOT-569).
+  const ipcProblem = tsxIpcPathProblem();
+  if (ipcProblem) onMissing?.(ipcProblem);
 
   const tsxBin = resolveTsxBin(tapsmithPkgDir);
   if (!tsxBin) {
