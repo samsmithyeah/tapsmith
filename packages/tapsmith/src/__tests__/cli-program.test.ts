@@ -820,3 +820,50 @@ describe('printsBanner()', () => {
     expect(seen).toEqual(['ios network configure']);
   });
 });
+
+// ─── Refusals before a handler runs (PILOT-560) ───
+
+describe('refuse hook', () => {
+  async function refused(argv: string[]): Promise<Harness & { banners: string[] }> {
+    const calls: Array<[string, unknown]> = [];
+    const banners: string[] = [];
+    const handlers = new Proxy({} as CliHandlers, {
+      get: (_target, name: string) => async (opts: unknown) => { calls.push([name, opts]); },
+    });
+    let out = '';
+    let err = '';
+    const code = await runCli(argv, {
+      handlers,
+      version: '1.2.3',
+      io: { out: (s) => { out += s; }, err: (s) => { err += s; } },
+      beforeAction: (command) => { banners.push(command); },
+      refuse: (command) => (command === 'test' || command === 'verify'
+        ? { code: 'NOPE', message: `cannot ${command} here`, fix: 'do the other thing' }
+        : undefined),
+    });
+    return { code, out, err, calls, banners };
+  }
+
+  it('exits 1 with the message and fix, without the banner or the handler', async () => {
+    const h = await refused(['test', 'a.test.ts']);
+    expect(h.code).toBe(1);
+    expect(h.calls).toEqual([]);
+    expect(h.banners).toEqual([]);
+    expect(h.out).toBe('');
+    expect(h.err).toBe('cannot test here\ndo the other thing\n');
+  });
+
+  it('answers --json with the error envelope on stdout', async () => {
+    const h = await refused(['verify', '--json']);
+    expect(h.code).toBe(1);
+    expect(h.calls).toEqual([]);
+    expect(h.err).toBe('');
+    expect(JSON.parse(h.out)).toEqual({ error: { code: 'NOPE', message: 'cannot verify here', fix: 'do the other thing' } });
+  });
+
+  it('runs a command it does not refuse', async () => {
+    const h = await refused(['doctor']);
+    expect(h.code).toBe(0);
+    expect(h.calls.map(([name]) => name)).toEqual(['doctor']);
+  });
+});

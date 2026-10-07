@@ -637,6 +637,31 @@ describe('doctor fixes (PILOT-263 items 2, 3)', () => {
     expect(ids(json)).not.toContain('node-arch');
   });
 
+  // PILOT-560: `yarn tapsmith doctor` in a Plug'n'Play project, where `test` refuses.
+  it("under Yarn Plug'n'Play, fails with the node-modules linker fix", async () => {
+    withAdb();
+    writeConfig("export default { platform: 'android' }\n");
+    (process.versions as Record<string, string>).pnp = '3';
+    try {
+      const { code, json } = await doctorJson();
+      expect(check(json, 'yarn-pnp')).toMatchObject({
+        status: 'fail',
+        label: expect.stringContaining("Plug'n'Play"),
+        fix: expect.stringContaining('nodeLinker: node-modules'),
+      });
+      expect(code).toBe(1);
+    } finally {
+      delete (process.versions as Record<string, string>).pnp;
+    }
+  });
+
+  it('a node_modules install gets no yarn-pnp row', async () => {
+    withAdb();
+    writeConfig("export default { platform: 'android' }\n");
+    const { json } = await doctorJson();
+    expect(ids(json)).not.toContain('yarn-pnp');
+  });
+
   it('finds the mitmproxy redirector the way the daemon does, without Homebrew', async () => {
     withXcode();
     writeConfig("export default { platform: 'ios' }\n");
