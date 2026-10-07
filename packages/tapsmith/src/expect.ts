@@ -241,8 +241,12 @@ export interface TapsmithAssertions {
   /** Negate the following assertion. */
   not: TapsmithAssertions;
 
-  /** Assert the element is visible on screen. */
-  toBeVisible(options?: { timeout?: number }): Promise<void>;
+  /**
+   * Assert the element is visible on screen. With `visible: false`, assert
+   * it is hidden instead, exactly like toBeHidden() (Playwright's option, so
+   * one assertion can cover both states: `toBeVisible({ visible: isOpen })`).
+   */
+  toBeVisible(options?: { timeout?: number; visible?: boolean }): Promise<void>;
 
   /** Assert the element is enabled (interactive). */
   toBeEnabled(options?: { timeout?: number }): Promise<void>;
@@ -386,6 +390,68 @@ function containsInOrder(texts: readonly string[], expected: readonly TextExpect
   }
   return true;
 }
+
+// ─── Matcher options (PILOT-547) ───
+
+/**
+ * Playwright matcher options Tapsmith doesn't support, keyed
+ * `<matcher>.<option>`, with what to write instead.
+ */
+const UNSUPPORTED_OPTION_HINTS: Readonly<Record<string, string>> = {
+  "toBeEnabled.enabled": "Use toBeDisabled() or .not.toBeEnabled() instead.",
+  "toBeChecked.checked": "Use .not.toBeChecked() instead.",
+  "toBeEditable.editable": "Use .not.toBeEditable() instead.",
+  "toHaveText.ignoreCase": "Use a RegExp with the i flag instead.",
+  "toContainText.ignoreCase": "Use a RegExp with the i flag instead.",
+};
+
+/**
+ * Check a matcher's options object: throw at once for anything but an
+ * object (or nothing), and for an option the matcher does not support — an
+ * ignored option makes an assertion silently check something else (PILOT-547:
+ * `toBeVisible({ visible: false })` asserted visibility). Tests run through
+ * tsx aren't type-checked, so the type alone does not catch this.
+ */
+function checkMatcherOptions(
+  matcher: string,
+  options: unknown,
+  extraKeys: readonly string[],
+): { timeout?: number } {
+  if (options === undefined || options === null) return {};
+  if (typeof options !== "object" || Array.isArray(options)) {
+    const got = Array.isArray(options) ? "an array" : `a ${typeof options}`;
+    throw new TypeError(
+      `${matcher}() expects an options object such as { timeout: 5000 }, got ${got}.`,
+    );
+  }
+  const supported = ["timeout", ...extraKeys];
+  for (const key of Object.keys(options)) {
+    if (supported.includes(key)) continue;
+    const hint = UNSUPPORTED_OPTION_HINTS[`${matcher}.${key}`];
+    throw new TypeError(
+      `${matcher}() does not support the option "${key}". Supported options: ${supported.join(", ")}.${hint ? ` ${hint}` : ""}`,
+    );
+  }
+  return options as { timeout?: number };
+}
+
+/**
+ * `toBeVisible({ visible })`: `false` asserts the element is hidden, as in
+ * Playwright; omitted means `true`. Anything but a boolean is refused rather
+ * than read for its truthiness.
+ */
+function visibleOption(options: { visible?: unknown } | null | undefined): boolean {
+  const visible = options?.visible;
+  if (visible === undefined) return true;
+  if (typeof visible !== "boolean") {
+    const got = visible === null ? "null" : `a ${typeof visible}`;
+    throw new TypeError(`toBeVisible() option "visible" must be a boolean, got ${got}.`);
+  }
+  return visible;
+}
+
+/** Message suffix naming the option when toBeVisible asserts hiddenness. */
+const VISIBLE_FALSE_SUFFIX = " (toBeVisible({ visible: false }))";
 
 /**
  * Wrap an assertion method to emit trace events when tracing is active.
@@ -540,8 +606,9 @@ function createAssertions(
   handle: ElementHandle,
   negated: boolean,
 ): TapsmithAssertions {
-  const timeoutFor = (opts?: { timeout?: number }) =>
-    opts?.timeout ?? handle._timeoutMs ?? DEFAULT_ASSERTION_TIMEOUT_MS;
+  const timeoutFor = (matcher: string, opts: unknown, extraKeys: readonly string[] = []) =>
+    checkMatcherOptions(matcher, opts, extraKeys).timeout
+      ?? handle._timeoutMs ?? DEFAULT_ASSERTION_TIMEOUT_MS;
 
   const fail = (message: string, callsite?: Error): never => {
     const err = new Error(message);
@@ -583,13 +650,36 @@ function createAssertions(
     }
   };
 
+  /**
+   * toBeHidden(), and toBeVisible({ visible: false }) with `via` naming it.
+   * check() returns true when hidden. With `.not`, negated=true makes poll
+   * succeed when check returns false (= visible).
+   */
+  const expectHidden = async (timeout: number, via = ""): Promise<void> => {
+    const desc = selectorDescription(handle);
+    const result = await poll(async () => {
+      // Absence check — non-strict, hidden means EVERY match is hidden.
+      const els = await resolveTick(handle, false);
+      return els.every((el) => !el.visible);
+    }, timeout, negated);
+
+    if (!negated && !result) {
+      fail(`Expected element ${desc} to be hidden${via}, but it was visible`);
+    }
+    if (negated && result) {
+      fail(`Expected element ${desc} NOT to be hidden${via}, but it was`);
+    }
+  };
+
   const assertions: TapsmithAssertions = {
     get not(): TapsmithAssertions {
       return createAssertions(handle, !negated);
     },
 
     async toBeVisible(options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toBeVisible", options, ["visible"]);
+      // `visible: false` is toBeHidden(), `.not` included (Playwright).
+      if (!visibleOption(options)) return expectHidden(timeout, VISIBLE_FALSE_SUFFIX);
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         // Negated form is an absence check — evaluate over all matches.
@@ -606,7 +696,7 @@ function createAssertions(
     },
 
     async toBeEnabled(options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toBeEnabled", options);
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         const els = await resolveTick(handle, true);
@@ -623,7 +713,7 @@ function createAssertions(
 
     async toHaveText(expected, options) {
       assertTextExpected(expected, "toHaveText");
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toHaveText", options);
       const desc = selectorDescription(handle);
       if (isTextList(expected)) {
         // Every element the locator matches, in order (not strict).
@@ -662,7 +752,7 @@ function createAssertions(
     },
 
     async toExist(options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toExist", options);
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         // Negated form is an absence check — evaluate over all matches.
@@ -681,7 +771,7 @@ function createAssertions(
     // ─── PILOT-29: toBeChecked ───
 
     async toBeChecked(options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toBeChecked", options);
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         const els = await resolveTick(handle, true);
@@ -699,7 +789,7 @@ function createAssertions(
     // ─── PILOT-30: toBeDisabled ───
 
     async toBeDisabled(options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toBeDisabled", options);
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         const els = await resolveTick(handle, true);
@@ -715,30 +805,15 @@ function createAssertions(
     },
 
     // ─── PILOT-31: toBeHidden ───
-    // Note: check() returns true when hidden. With `.not.toBeHidden()`,
-    // negated=true makes poll succeed when check returns false (= visible).
 
     async toBeHidden(options) {
-      const timeout = timeoutFor(options);
-      const desc = selectorDescription(handle);
-      const result = await poll(async () => {
-        // Absence check — non-strict, hidden means EVERY match is hidden.
-        const els = await resolveTick(handle, false);
-        return els.every((el) => !el.visible);
-      }, timeout, negated);
-
-      if (!negated && !result) {
-        fail(`Expected element ${desc} to be hidden, but it was visible`);
-      }
-      if (negated && result) {
-        fail(`Expected element ${desc} NOT to be hidden, but it was`);
-      }
+      return expectHidden(timeoutFor("toBeHidden", options));
     },
 
     // ─── PILOT-32: toBeEmpty ───
 
     async toBeEmpty(options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toBeEmpty", options);
       const desc = selectorDescription(handle);
       let lastText = "";
       const result = await poll(async () => {
@@ -765,7 +840,7 @@ function createAssertions(
     // ─── PILOT-33: toBeFocused ───
 
     async toBeFocused(options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toBeFocused", options);
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         const els = await resolveTick(handle, true);
@@ -784,7 +859,7 @@ function createAssertions(
 
     async toContainText(expected, options) {
       assertTextExpected(expected, "toContainText");
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toContainText", options);
       const desc = selectorDescription(handle);
       if (isTextList(expected)) {
         let lastTexts: string[] = [];
@@ -822,7 +897,7 @@ function createAssertions(
     // ─── PILOT-35: toHaveCount ───
 
     async toHaveCount(count, options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toHaveCount", options);
       const desc = selectorDescription(handle);
       let lastCount = 0;
       const result = await poll(async () => {
@@ -850,7 +925,7 @@ function createAssertions(
     // ─── PILOT-36: toHaveAttribute ───
 
     async toHaveAttribute(name, value, options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toHaveAttribute", options);
       const desc = selectorDescription(handle);
       let lastValue: unknown;
       const result = await poll(async () => {
@@ -881,7 +956,7 @@ function createAssertions(
     // ─── PILOT-37: toHaveAccessibleName ───
 
     async toHaveAccessibleName(name, options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toHaveAccessibleName", options);
       const desc = selectorDescription(handle);
       let lastName = "";
       const result = await poll(async () => {
@@ -911,7 +986,7 @@ function createAssertions(
     // ─── PILOT-37: toHaveAccessibleDescription ───
 
     async toHaveAccessibleDescription(description, options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toHaveAccessibleDescription", options);
       const desc = selectorDescription(handle);
       let lastDesc = "";
       const result = await poll(async () => {
@@ -940,7 +1015,7 @@ function createAssertions(
     // ─── PILOT-38: toHaveRole ───
 
     async toHaveRole(role, options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toHaveRole", options);
       const desc = selectorDescription(handle);
       const expected = normalizeRole(role);
       let lastRole = "";
@@ -970,7 +1045,7 @@ function createAssertions(
     // ─── PILOT-39: toHaveValue ───
 
     async toHaveValue(value, options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toHaveValue", options);
       const desc = selectorDescription(handle);
       let lastValue = "";
       const result = await poll(async () => {
@@ -999,7 +1074,7 @@ function createAssertions(
     // ─── PILOT-40: toBeEditable ───
 
     async toBeEditable(options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toBeEditable", options);
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         const els = await resolveTick(handle, true);
@@ -1023,7 +1098,7 @@ function createAssertions(
     // ─── PILOT-41: toBeInViewport ───
 
     async toBeInViewport(options) {
-      const timeout = timeoutFor(options);
+      const timeout = timeoutFor("toBeInViewport", options, ["ratio"]);
       const requiredRatio = options?.ratio ?? 0;
       const desc = selectorDescription(handle);
       let lastRatio = 0;
@@ -1752,7 +1827,8 @@ function createPollAssertions(
 
 export interface WebViewAssertions {
   not: WebViewAssertions;
-  toBeVisible(options?: { timeout?: number }): Promise<void>;
+  /** With `visible: false`, asserts the element is hidden, like toBeHidden(). */
+  toBeVisible(options?: { timeout?: number; visible?: boolean }): Promise<void>;
   toBeHidden(options?: { timeout?: number }): Promise<void>;
   toExist(options?: { timeout?: number }): Promise<void>;
   toHaveText(expected: string | RegExp, options?: { timeout?: number }): Promise<void>;
@@ -1779,8 +1855,9 @@ function createWebViewAssertions(
   locator: WebViewLocator,
   negated: boolean,
 ): WebViewAssertions {
-  const timeoutFor = (opts?: { timeout?: number }) =>
-    opts?.timeout ?? locator._timeoutMs ?? DEFAULT_ASSERTION_TIMEOUT_MS;
+  const timeoutFor = (matcher: string, opts: unknown, extraKeys: readonly string[] = []) =>
+    checkMatcherOptions(matcher, opts, extraKeys).timeout
+      ?? locator._timeoutMs ?? DEFAULT_ASSERTION_TIMEOUT_MS;
 
   const fail = (message: string): never => {
     throw new Error(message);
@@ -1886,6 +1963,21 @@ function createWebViewAssertions(
     if (caughtErr !== undefined) throw caughtErr;
   };
 
+  /** toBeHidden(), and toBeVisible({ visible: false }) with `via` naming it. */
+  const expectHidden = async (timeout: number, via = ""): Promise<void> => {
+    const result = await poll(
+      // Absence check — non-strict, hidden means EVERY match is hidden.
+      async () => (await locator._handle._assertionTickLocator(locator, false)).allHidden,
+      timeout,
+      negated,
+    );
+    if (result === negated) {
+      fail(
+        `Expected "${locator._selector}" ${negated ? 'not ' : ''}to be hidden in WebView${via}`,
+      );
+    }
+  };
+
   return {
     get not(): WebViewAssertions {
       return createWebViewAssertions(locator, !negated);
@@ -1893,7 +1985,9 @@ function createWebViewAssertions(
 
     async toBeVisible(options) {
       return traceAssertion('toBeVisible', async () => {
-        const timeout = timeoutFor(options);
+        const timeout = timeoutFor("toBeVisible", options, ["visible"]);
+        // `visible: false` is toBeHidden(), `.not` included (Playwright).
+        if (!visibleOption(options)) return expectHidden(timeout, VISIBLE_FALSE_SUFFIX);
         const result = await poll(
           // Negated form is an absence check — evaluate over all matches
           // (strict mode, PILOT-227). A strict violation propagates out of
@@ -1911,25 +2005,12 @@ function createWebViewAssertions(
     },
 
     async toBeHidden(options) {
-      return traceAssertion('toBeHidden', async () => {
-        const timeout = timeoutFor(options);
-        const result = await poll(
-          // Absence check — non-strict, hidden means EVERY match is hidden.
-          async () => (await locator._handle._assertionTickLocator(locator, false)).allHidden,
-          timeout,
-          negated,
-        );
-        if (result === negated) {
-          fail(
-            `Expected "${locator._selector}" ${negated ? 'not ' : ''}to be hidden in WebView`,
-          );
-        }
-      });
+      return traceAssertion('toBeHidden', () => expectHidden(timeoutFor("toBeHidden", options)));
     },
 
     async toExist(options) {
       return traceAssertion('toExist', async () => {
-        const timeout = timeoutFor(options);
+        const timeout = timeoutFor("toExist", options);
         const result = await poll(
           // Negated form is an absence check — evaluate over all matches
           // (strict mode, PILOT-227).
@@ -1948,7 +2029,7 @@ function createWebViewAssertions(
     async toHaveText(expected, options) {
       return traceAssertion('toHaveText', async () => {
         assertWebViewTextExpected(expected, 'toHaveText');
-        const timeout = timeoutFor(options);
+        const timeout = timeoutFor("toHaveText", options);
         let lastText = '';
         const result = await poll(
           // Single-tick strict read (PILOT-227): resolves once per tick —
@@ -1983,7 +2064,7 @@ function createWebViewAssertions(
     async toContainText(expected, options) {
       return traceAssertion('toContainText', async () => {
         assertWebViewTextExpected(expected, 'toContainText');
-        const timeout = timeoutFor(options);
+        const timeout = timeoutFor("toContainText", options);
         let lastText = '';
         const result = await poll(
           async () => {
@@ -2011,7 +2092,7 @@ function createWebViewAssertions(
 
     async toHaveAttribute(name, value, options) {
       return traceAssertion('toHaveAttribute', async () => {
-        const timeout = timeoutFor(options);
+        const timeout = timeoutFor("toHaveAttribute", options);
         let lastValue: string | null = null;
         const result = await poll(
           async () => {
@@ -2042,7 +2123,7 @@ function createWebViewAssertions(
 
     async toHaveValue(expected, options) {
       return traceAssertion('toHaveValue', async () => {
-        const timeout = timeoutFor(options);
+        const timeout = timeoutFor("toHaveValue", options);
         let lastValue = '';
         const result = await poll(
           async () => {
