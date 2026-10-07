@@ -290,6 +290,26 @@ describe('runTestFile — unhandled errors during a test (PILOT-543)', () => {
     expect(printed).toContain('failed after the file ended');
   });
 
+  it('an async describe that rejects after a sibling describe failed the load does not crash the process', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const filePath = writeFile('o.test.mjs', `
+      describe('a', async () => {
+        await new Promise((r) => setTimeout(r, 30));
+        throw new Error('late async describe rejection');
+      });
+      describe('b', () => { throw new Error('sync describe throw'); });
+    `);
+
+    const [result] = collectResults(await runTestFile(filePath, makeOpts()));
+    // With the runner's listener the only one, an unhandled late rejection
+    // would be rethrown here and take the worker down.
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(result).toMatchObject({ status: 'failed', fileLevelFailure: true });
+    expect(result.error!.message).toBe('sync describe throw');
+    expect(stderr.mock.calls.map((c) => String(c[0])).join('')).not.toContain('late async describe rejection');
+  });
+
   it('leaves a rejection outside any file to the other listeners', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const other = vi.fn();

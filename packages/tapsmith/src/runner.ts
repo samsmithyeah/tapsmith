@@ -575,7 +575,14 @@ function materializeSuiteEntry(entry: SuiteEntry): SuiteContext {
   if (entry.mode) ctx.mode = entry.mode;
   try {
     const returned: unknown = entry.fn();
-    if (isThenable(returned)) asyncDescribeBodies.push({ name: entry.name, settled: Promise.resolve(returned) });
+    if (isThenable(returned)) {
+      const settled = Promise.resolve(returned);
+      // Handled from the start: a later describe can throw before
+      // settleAsyncDescribes() runs, and the file has failed to load then
+      // anyway — this one's rejection must not outlive it unhandled.
+      settled.catch(() => {});
+      asyncDescribeBodies.push({ name: entry.name, settled });
+    }
     entry.ctx = popContext();
     return entry.ctx;
   } catch (err) {
