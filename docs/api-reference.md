@@ -2227,7 +2227,7 @@ correct device.
 | `use` | `UseOptions` | Per-project option overrides (applied under file-level `test.use()`). Includes the device-shaping fields documented above. |
 | `workers` | `number` | Number of parallel workers (devices) for this project. Additive — does not consume from the global `workers` budget. When unset, the project shares the global budget proportionally to file count. |
 | `grep` | `RegExp \| RegExp[]` | Per-project grep filter, intersected with the root `grep`. A test must match at least one pattern in this set AND at least one pattern in the root set (when either is configured). |
-| `grepInvert` | `RegExp \| RegExp[]` | Per-project grep-invert filter, unioned with the root `grepInvert`. A test that matches any pattern in either set is skipped. |
+| `grepInvert` | `RegExp \| RegExp[]` | Per-project grep-invert filter, unioned with the root `grepInvert`. A test that matches any pattern in either set is left out of the run. |
 
 ### `loadConfig(dir?: string, configFile?: string): Promise<TapsmithConfig>`
 
@@ -2697,7 +2697,7 @@ When sharding is active, the `blob` reporter is automatically added so results c
 
 ### `tapsmith test --grep <pattern>` / `tapsmith test -g <pattern>`
 
-Run only the tests whose fullName (`describe > test`) matches the given regular expression. Mirrors Playwright's `--grep`.
+Run only the tests whose fullName (`describe > test`) matches the given regular expression. Mirrors Playwright's `--grep`. The tests it filters out are left out of the run entirely: they are not listed, and not counted as skipped.
 
 ```bash
 npx tapsmith test --grep checkout            # Only tests with "checkout" in their fullName
@@ -2735,7 +2735,7 @@ export default defineConfig({
 
 ### `tapsmith test --grep-invert <pattern>`
 
-Skip tests whose fullName matches the given regular expression. Mirrors Playwright's `--grep-invert`.
+Leave out the tests whose fullName matches the given regular expression: like `--grep`'s non-matches, they are not listed or counted as skipped. Mirrors Playwright's `--grep-invert`.
 
 ```bash
 npx tapsmith test --grep-invert slow          # Run everything except "slow" tests
