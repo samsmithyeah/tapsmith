@@ -113,7 +113,10 @@ data class ElementInfo(
  * testId, resourceId, xpath, and more. Maintains a cache of found elements
  * so they can be referenced by ID in subsequent commands.
  */
-class ElementFinder(private val device: UiDevice) {
+class ElementFinder(
+    private val device: UiDevice,
+    private val instrumentation: android.app.Instrumentation,
+) {
     /** Cache of element IDs to UiObject2 instances. */
     private val elementCache = ConcurrentHashMap<String, UiObject2>()
 
@@ -496,10 +499,12 @@ class ElementFinder(private val device: UiDevice) {
      * accessibility round-trip that waits for the app's main looper — so
      * reading a dozen attributes of every TextView on an animating screen
      * cost ~100 ms per candidate and seconds per query, while the walk
-     * itself (like a hierarchy dump) takes tens of milliseconds. The walk's
-     * nodes are the ones UIAutomator just matched `By.text`/`By.clazz`
-     * against, so every filter now sees the same snapshot. Actions still
-     * refresh: the cached UiObject2 re-reads its node when acted on.
+     * itself (like a hierarchy dump) takes tens of milliseconds. The walk
+     * starts from a cleared accessibility cache ([clearAccessibilityCache]),
+     * so its nodes are current, and they are the ones UIAutomator just
+     * matched `By.text`/`By.clazz` against: every filter sees one consistent
+     * snapshot. Actions still refresh: the cached UiObject2 re-reads its
+     * node when acted on.
      */
     private fun findElementsOnce(
         selector: ElementSelector,
@@ -520,6 +525,7 @@ class ElementFinder(private val device: UiDevice) {
             }
 
         val startedAt = SystemClock.uptimeMillis()
+        val fresh = clearAccessibilityCache()
         val candidates = enumerate(selector, parent)
         val enumeratedAt = SystemClock.uptimeMillis()
 
@@ -529,10 +535,10 @@ class ElementFinder(private val device: UiDevice) {
         for (obj in candidates) {
             if (matches.size >= limit) break
             examined++
-            val node = snapshotOf(obj)
-            if (!matchesSelector(node, selector) || !matchesStateFilters(node, selector)) continue
+            val node = snapshotOf(obj, fresh)
+            if (!matchesSelector(node, selector, fresh) || !matchesStateFilters(node, selector)) continue
             val extractStart = SystemClock.uptimeMillis()
-            matches.add(cacheAndConvert(obj, node))
+            matches.add(cacheAndConvert(obj, node, fresh))
             extractMs += SystemClock.uptimeMillis() - extractStart
         }
         val doneAt = SystemClock.uptimeMillis()
@@ -541,7 +547,8 @@ class ElementFinder(private val device: UiDevice) {
             "find phases [${describeSelector(selector)}]: enumerate=${enumeratedAt - startedAt}ms " +
                 "(candidates=${candidates.size}) match=${doneAt - enumeratedAt - extractMs}ms " +
                 "(examined=$examined) extract=${extractMs}ms (matched=${matches.size}" +
-                (if (limit != Int.MAX_VALUE) ", limit=$limit" else "") + ")",
+                (if (limit != Int.MAX_VALUE) ", limit=$limit" else "") + ")" +
+                (if (fresh) "" else " [cache not cleared: per-node refresh]"),
         )
         return matches
     }
@@ -622,6 +629,7 @@ class ElementFinder(private val device: UiDevice) {
     private fun matchesSelector(
         node: AccessibilityNodeInfo,
         selector: ElementSelector,
+        fresh: Boolean,
     ): Boolean {
         // Label selector: an input whose contentDescription matches the
         // label text, OR one labeled by a TextView with matching text (via
@@ -649,7 +657,7 @@ class ElementFinder(private val device: UiDevice) {
                         classSet = roleClassMap[normalized]?.toSet() ?: emptySet(),
                         ambiguous = normalized == "heading" || normalized == "link",
                     )
-                return isRole && matchesAccessibleName(node, selector)
+                return isRole && matchesAccessibleName(node, selector, fresh)
             }
         }
 
@@ -658,7 +666,7 @@ class ElementFinder(private val device: UiDevice) {
         // default and a case-sensitive whole-string match with `exact`
         // (PILOT-549); a RegExp tested against the normalized name
         // (PILOT-520).
-        if (selector.role != null && !matchesAccessibleName(node, selector)) return false
+        if (selector.role != null && !matchesAccessibleName(node, selector, fresh)) return false
 
         // Hint — UIAutomator can't query hint directly. `buildBySelector`
         // narrows the walk to EditText variants only when `hint` is the
@@ -885,15 +893,42 @@ class ElementFinder(private val device: UiDevice) {
     }
 
     /**
-     * The node [obj] captured when the tree walk found it, read without a
-     * refresh (PILOT-539) — see [findElementsOnce]. Falls back to a
-     * refreshed read (one round-trip) only if the bundled UIAutomator no
-     * longer has the field, which `FindRulesTest` pins.
+     * Clear the accessibility cache so this find's tree walk fetches every
+     * node fresh from the app (PILOT-539). UIAutomator's walk reads nodes
+     * through that cache, which the app's accessibility events keep only
+     * partly current: React Native does not report every state change (a
+     * radio button's checked state, a view appearing in a list), and
+     * UiObject2's getters used to paper over that with a refresh per
+     * attribute read. Clearing once costs a few prefetching round-trips for
+     * the whole walk instead of one round-trip per attribute per candidate.
+     * `UiAutomation.clearCache()` exists from API 34; below that, returns
+     * false and the find refreshes each node it reads instead.
      */
-    private fun snapshotOf(obj: UiObject2): AccessibilityNodeInfo =
-        cachedNodeField?.get(obj) as? AccessibilityNodeInfo
-            ?: nodeInfoFor(obj)
-            ?: throw StaleObjectException()
+    private fun clearAccessibilityCache(): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < 34) return false
+        return try {
+            instrumentation.uiAutomation.clearCache()
+        } catch (e: Exception) {
+            warnOnce("clearCache", e)
+            false
+        }
+    }
+
+    /**
+     * The node [obj] captured when the tree walk found it. After a [fresh]
+     * walk that node is current and is read as is — no round-trip (see
+     * [findElementsOnce]). Otherwise it is refreshed once: one round-trip
+     * for every attribute this find reads, where UiObject2's getters made
+     * one per attribute. Falls back to a refreshed read if the bundled
+     * UIAutomator no longer has the field, which `FindRulesTest` pins.
+     */
+    private fun snapshotOf(
+        obj: UiObject2,
+        fresh: Boolean,
+    ): AccessibilityNodeInfo {
+        val walked = if (fresh) cachedNodeField?.get(obj) as? AccessibilityNodeInfo else null
+        return walked ?: nodeInfoFor(obj) ?: throw StaleObjectException()
+    }
 
     /**
      * [obj]'s visible bounds computed from its snapshot [node], by
@@ -1054,6 +1089,7 @@ class ElementFinder(private val device: UiDevice) {
     private fun matchesAccessibleName(
         node: AccessibilityNodeInfo,
         selector: ElementSelector,
+        fresh: Boolean,
     ): Boolean {
         val regex = selector.nameRegex
         val name = selector.name
@@ -1071,7 +1107,7 @@ class ElementFinder(private val device: UiDevice) {
                 contentDescription = contentDescription,
                 text = text,
                 textIsValue = textIsValue,
-                descendantText = { collectDescendantText(node) },
+                descendantText = { collectDescendantText(node, fresh) },
                 regex = regex,
             )
         }
@@ -1079,7 +1115,7 @@ class ElementFinder(private val device: UiDevice) {
             contentDescription = contentDescription,
             text = text,
             textIsValue = textIsValue,
-            descendantText = { collectDescendantText(node) },
+            descendantText = { collectDescendantText(node, fresh) },
             name = name!!,
             exact = selector.nameExact,
         )
@@ -1102,10 +1138,13 @@ class ElementFinder(private val device: UiDevice) {
      * typical RN compositions, while bounding worst-case cost for
      * accidental deep matches.
      */
-    private fun collectDescendantText(node: AccessibilityNodeInfo): String =
+    private fun collectDescendantText(
+        node: AccessibilityNodeInfo,
+        fresh: Boolean,
+    ): String =
         FindRules.descendantTextParts(
             node,
-            children = ::visibleChildren,
+            children = { visibleChildren(it, fresh) },
             ownText = { child ->
                 child.text?.toString()?.takeIf { it.isNotEmpty() }
                     ?: child.contentDescription?.toString()?.takeIf { it.isNotEmpty() }
@@ -1113,8 +1152,18 @@ class ElementFinder(private val device: UiDevice) {
             maxDepth = MAX_DESCENDANT_TEXT_DEPTH,
         ).joinToString(" ")
 
-    private fun visibleChildren(node: AccessibilityNodeInfo): List<AccessibilityNodeInfo> =
-        (0 until node.childCount).mapNotNull { i -> node.getChild(i)?.takeIf { it.isVisibleToUser } }
+    /**
+     * [node]'s children visible to the user. Without a [fresh] walk each
+     * child is refreshed first, as UiObject2's getters did, so its text is
+     * current.
+     */
+    private fun visibleChildren(
+        node: AccessibilityNodeInfo,
+        fresh: Boolean,
+    ): List<AccessibilityNodeInfo> =
+        (0 until node.childCount).mapNotNull { i ->
+            node.getChild(i)?.takeIf { (fresh || it.refresh()) && it.isVisibleToUser }
+        }
 
     /**
      * Read [obj]'s snapshot [node] into an [ElementInfo], plus the
@@ -1124,6 +1173,7 @@ class ElementFinder(private val device: UiDevice) {
         obj: UiObject2,
         node: AccessibilityNodeInfo,
         elementId: String,
+        fresh: Boolean,
     ): Pair<ElementInfo, TargetIdentity> {
         val bounds = visibleBoundsOf(obj, node)
         val className = node.className?.toString() ?: ""
@@ -1144,7 +1194,7 @@ class ElementFinder(private val device: UiDevice) {
             FindRules.effectiveText(
                 rawText,
                 isShowingHint = { isShowingHintText(node) },
-                descendantText = { collectDescendantText(node) },
+                descendantText = { collectDescendantText(node, fresh) },
             )
 
         // Prefer the framework-set RoleDescription (React Native's
@@ -1214,9 +1264,10 @@ class ElementFinder(private val device: UiDevice) {
     private fun cacheAndConvert(
         obj: UiObject2,
         node: AccessibilityNodeInfo,
+        fresh: Boolean,
     ): ElementInfo {
         val elementId = UUID.randomUUID().toString()
-        val (info, identity) = toElementInfo(obj, node, elementId)
+        val (info, identity) = toElementInfo(obj, node, elementId, fresh)
         cacheElement(elementId, obj, identity)
         return info
     }
