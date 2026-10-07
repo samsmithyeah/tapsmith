@@ -29,6 +29,9 @@ import type { TapsmithConfig } from '../config.js';
 import { Tracing } from '../trace/tracing.js';
 import { getActiveTraceCollector, type TraceCollector } from '../trace/trace-collector.js';
 import { isCurrentAttemptClosed } from '../attempt-fence.js';
+import { EventEmitter } from 'node:events';
+import { NetworkRouteManager } from '../network.js';
+import type { TapsmithGrpcClient } from '../grpc-client.js';
 
 const { pushContext, popContext, runSuiteContext, resolvePlatformFixture, resetFixtureRegistry } = _internal;
 
@@ -963,7 +966,12 @@ describe('runner execution', () => {
         _takeRouteRegistrations: vi.fn(() => { const n = registered; registered = 0; return n; }),
         /** What a successful device.route() call does to the count. */
         registerRoute: () => { registered++; },
-        _routeManager: { hasRoutes: opts.routesLeft ?? opts.registered > 0, removeAllRoutes: vi.fn(async () => {}) },
+        _routeManager: {
+          hasRoutes: opts.routesLeft ?? opts.registered > 0,
+          hasTestRoutes: opts.routesLeft ?? opts.registered > 0,
+          removeTestRoutes: vi.fn(async () => {}),
+          removeScopeRoutes: vi.fn(async () => {}),
+        },
         _startNetworkCapture: vi.fn(async () => {
           if (opts.captureStarts === false) return { success: false, proxyPort: 0, errorMessage: 'Network Extension not approved' };
           device._networkProxyRunning = true;
@@ -1010,7 +1018,7 @@ describe('runner execution', () => {
         expect(warnings[0]).toContain('network capture was not running');
         expect(warnings[0]).toContain("trace: 'retain-on-failure'");
         // The routes are still cleaned up between tests.
-        expect(device._routeManager.removeAllRoutes).toHaveBeenCalled();
+        expect(device._routeManager.removeTestRoutes).toHaveBeenCalled();
       } finally {
         warn.mockRestore();
       }
@@ -1023,7 +1031,7 @@ describe('runner execution', () => {
       try {
         await runOne('cleans up its own routes', [{ name: 'device-1', device }]);
         expect(routeWarnings(warn)).toHaveLength(1);
-        expect(device._routeManager.removeAllRoutes).not.toHaveBeenCalled();
+        expect(device._routeManager.removeTestRoutes).not.toHaveBeenCalled();
       } finally {
         warn.mockRestore();
       }
@@ -2705,4 +2713,197 @@ describe('live network final drain', () => {
       } finally { fs.rmSync(tempRoot, { recursive: true, force: true }); }
     });
   }
+});
+
+// ─── Route scopes (PILOT-534) ───
+
+describe('route scopes (PILOT-534)', () => {
+  /** A daemon route stream double that acknowledges every register/unregister. */
+  class AckStream extends EventEmitter {
+    readonly live = new Map<string, string>();
+    write(msg: { registerRoute?: { routeId: string; urlPattern: string }; unregisterRoute?: { routeId: string } }): boolean {
+      queueMicrotask(() => {
+        if (msg.registerRoute) {
+          this.live.set(msg.registerRoute.routeId, msg.registerRoute.urlPattern);
+          this.emit('data', { registerRouteResponse: { routeId: msg.registerRoute.routeId, success: true, errorMessage: '' } });
+        } else if (msg.unregisterRoute) {
+          this.live.delete(msg.unregisterRoute.routeId);
+          this.emit('data', { unregisterRouteResponse: { routeId: msg.unregisterRoute.routeId, success: true } });
+        }
+      });
+      return true;
+    }
+    // The daemon drops a stream's routes when the stream closes.
+    end(): void { this.live.clear(); this.emit('end'); }
+  }
+
+  /**
+   * A Device double whose routes go through a real NetworkRouteManager, and
+   * whose `_disposeRouteManager` really disposes it like Device's does — the
+   * runner disposes the manager after untraced attempts.
+   */
+  const makeDevice = () => {
+    const stream = new AckStream();
+    const device = {
+      tracing: new Tracing(async () => undefined, async () => undefined),
+      waitForIdle: vi.fn(async () => {}),
+      _networkProxyRunning: true,
+      _takeRouteRegistrations: () => 0,
+      _routeManager: null as NetworkRouteManager | null,
+      _disposeRouteManager: async () => {
+        await device._routeManager?.dispose();
+        device._routeManager = null;
+      },
+      _disposeWebViewManager: vi.fn(async () => {}),
+      _resetWebViewContext: vi.fn(),
+      route: (pattern: string) => {
+        device._routeManager ??= new NetworkRouteManager({ networkRouteStream: () => stream } as unknown as TapsmithGrpcClient);
+        return device._routeManager.addRoute(pattern, () => {});
+      },
+      /** The patterns the daemon currently has registered, sorted. */
+      live: () => [...stream.live.values()].sort(),
+    };
+    return device;
+  };
+  type ScopedDevice = ReturnType<typeof makeDevice>;
+  const run = (ctx: ReturnType<typeof popContext>, devices: ScopedDevice[], config: Partial<TapsmithConfig> = {}) =>
+    runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig(config),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mocks
+      devices: devices.map((device, i) => ({ name: `device-${i + 1}`, device })) as any,
+    }));
+
+  it('keeps beforeAll routes for every test and removes each test\'s own routes after it', async () => {
+    const device = makeDevice();
+    const seen: Record<string, string[]> = {};
+    pushContext();
+    tapsmithBeforeAll(async () => { await device.route('**/file'); });
+    tapsmithBeforeEach(async () => { await device.route('**/each'); });
+    tapsmithTest('first', async () => {
+      await device.route('**/first');
+      seen.first = device.live();
+    });
+    tapsmithTest('second', async () => { seen.second = device.live(); });
+    tapsmithAfterAll(async () => { seen.afterAll = device.live(); });
+    const result = await run(popContext(), [device]);
+
+    expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed']);
+    expect(seen.first).toEqual(['**/each', '**/file', '**/first']);
+    expect(seen.second).toEqual(['**/each', '**/file']);
+    // Still there for the scope's own teardown, gone once the scope ends.
+    expect(seen.afterAll).toEqual(['**/file']);
+    expect(device.live()).toEqual([]);
+    expect(device._routeManager?.hasRoutes ?? false).toBe(false);
+  });
+
+  it('scopes a describe\'s beforeAll routes to that describe, nested describes included', async () => {
+    const device = makeDevice();
+    const seen: Record<string, string[]> = {};
+    pushContext();
+    tapsmithBeforeAll(async () => { await device.route('**/root'); });
+    tapsmithDescribe('mocked', () => {
+      tapsmithBeforeAll(async () => { await device.route('**/mocked'); });
+      tapsmithTest('outer', async () => { seen.outer = device.live(); });
+      tapsmithDescribe('nested', () => {
+        tapsmithTest('inner', async () => { seen.inner = device.live(); });
+      });
+    });
+    tapsmithDescribe('sibling', () => {
+      tapsmithTest('other', async () => { seen.other = device.live(); });
+    });
+    await run(popContext(), [device]);
+
+    expect(seen.outer).toEqual(['**/mocked', '**/root']);
+    expect(seen.inner).toEqual(['**/mocked', '**/root']);
+    expect(seen.other).toEqual(['**/root']);
+    expect(device.live()).toEqual([]);
+  });
+
+  it('removes routes from a beforeAll that failed, and from afterAll hooks', async () => {
+    const device = makeDevice();
+    pushContext();
+    tapsmithDescribe('broken setup', () => {
+      tapsmithBeforeAll(async () => {
+        await device.route('**/half-set-up');
+        throw new Error('setup failed');
+      });
+      tapsmithTest('never runs', async () => {});
+    });
+    tapsmithDescribe('teardown', () => {
+      tapsmithTest('runs', async () => {});
+      tapsmithAfterAll(async () => { await device.route('**/late'); });
+    });
+    const result = await run(popContext(), [device]);
+
+    expect(collectResults(result).map((t) => t.status)).toEqual(['failed', 'passed']);
+    expect(device.live()).toEqual([]);
+  });
+
+  it('keeps beforeAll routes across a retried attempt', async () => {
+    const device = makeDevice();
+    const seen: string[][] = [];
+    let attempt = 0;
+    pushContext();
+    tapsmithBeforeAll(async () => { await device.route('**/file'); });
+    tapsmithTest('flaky', async () => {
+      seen.push(device.live());
+      await device.route('**/attempt');
+      if (attempt++ === 0) throw new Error('first attempt fails');
+    });
+    const result = await run(popContext(), [device], { retries: 1 });
+
+    expect(collectResults(result).map((t) => t.status)).toEqual(['passed']);
+    expect(seen).toEqual([['**/file'], ['**/file']]);
+  });
+
+  it('keeps beforeAll routes through an untraced attempt and its traced retry (on-first-retry)', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-route-scope-retry-'));
+    const device = Object.assign(makeDevice(), {
+      _startNetworkCapture: vi.fn(async () => ({ success: true, proxyPort: 1, errorMessage: '' })),
+      _stopNetworkCapture: vi.fn(async () => ({ success: true, entries: [], errorMessage: '' })),
+      _stopDeviceLogStream: vi.fn(),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
+    });
+    const seen: string[][] = [];
+    let attempt = 0;
+    try {
+      pushContext();
+      tapsmithBeforeAll(async () => { await device.route('**/file'); });
+      tapsmithTest('flaky', async () => {
+        seen.push(device.live());
+        if (attempt++ === 0) throw new Error('first attempt fails');
+      });
+      tapsmithTest('next', async () => { seen.push(device.live()); });
+      const result = await run(popContext(), [device], {
+        retries: 1,
+        rootDir: tempRoot,
+        outputDir: 'out',
+        trace: { mode: 'on-first-retry', network: true, screenshots: false, snapshots: false, sources: false, deviceLogs: false },
+      });
+
+      expect(collectResults(result).map((t) => t.status)).toEqual(['passed', 'passed']);
+      expect(seen).toEqual([['**/file'], ['**/file'], ['**/file']]);
+      expect(device.live()).toEqual([]);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('tags beforeAll routes on every device of a group', async () => {
+    const a = makeDevice();
+    const b = makeDevice();
+    const seen: string[][] = [];
+    pushContext();
+    tapsmithBeforeAll(async () => {
+      await a.route('**/a');
+      await b.route('**/b');
+    });
+    tapsmithTest('one', async () => {});
+    tapsmithTest('two', async () => { seen.push(a.live(), b.live()); });
+    await run(popContext(), [a, b]);
+
+    expect(seen).toEqual([['**/a'], ['**/b']]);
+    expect([...a.live(), ...b.live()]).toEqual([]);
+  });
 });

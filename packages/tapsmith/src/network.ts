@@ -6,6 +6,7 @@
  * bidirectional gRPC stream.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import * as crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type * as grpc from '@grpc/grpc-js';
@@ -330,6 +331,44 @@ interface RegisteredRouteInfo {
   timesRemaining?: number
   sourceLocation?: SourceLocation
   stack?: SourceLocation[]
+  /** The suite scope that registered it; absent for a test's own route. */
+  scope?: RouteScope
+}
+
+// ─── Route Scopes (PILOT-534) ───
+
+/**
+ * @internal A describe scope whose `beforeAll`/`afterAll` hooks registered
+ * routes. Those routes outlive each test and are removed when the scope ends,
+ * the way Playwright keeps routes on a context created in `beforeAll` until it
+ * is closed. A route registered anywhere else (a test, `beforeEach`,
+ * `afterEach`, a test fixture) belongs to the test and is removed after it.
+ */
+export interface RouteScope {
+  /** For debugging only: the scope's describe path, or the file. */
+  readonly label: string
+  /**
+   * Set once the scope has ended and its routes are being removed. A route
+   * registered after that (work the hook left running) belongs to whatever
+   * test is running then, so it can never outlive every cleanup.
+   */
+  ended?: boolean
+}
+
+const routeScopeStorage = new AsyncLocalStorage<RouteScope>();
+
+/**
+ * @internal Run a suite-level hook so every route it registers — including
+ * from work it leaves running — is tagged with `scope`.
+ */
+export function runInRouteScope<T>(scope: RouteScope, fn: () => Promise<T>): Promise<T> {
+  return routeScopeStorage.run(scope, fn);
+}
+
+/** @internal The suite scope registering routes now; `undefined` inside a test. */
+export function currentRouteScope(): RouteScope | undefined {
+  const scope = routeScopeStorage.getStore();
+  return scope?.ended ? undefined : scope;
 }
 
 // ─── URL Pattern Matching ───
@@ -477,11 +516,18 @@ export class NetworkRouteManager {
     if (this._disposed) throw new Error('NetworkRouteManager is disposed');
     if (this._stream) return this._stream;
 
-    const stream = this._client.networkRouteStream();
+    // Opened outside any route scope: the stream outlives the beforeAll that
+    // may open it, and callbacks it drives (route handlers) must not inherit
+    // that scope, or a route a handler registers mid-test would be kept as
+    // the scope's instead of removed after the test (PILOT-534).
+    const stream = routeScopeStorage.exit(() => this._client.networkRouteStream());
     this._stream = stream;
 
+    // Route handlers run outside any route scope, whatever async context
+    // the stream's events arrive in: a route a handler registers belongs to
+    // the running test (PILOT-534).
     stream.on('data', (msg: ServerMessage) => {
-      this._onServerMessage(msg);
+      routeScopeStorage.exit(() => this._onServerMessage(msg));
     });
 
     stream.on('error', (err: Error) => {
@@ -545,6 +591,7 @@ export class NetworkRouteManager {
       timesRemaining: options?.times,
       sourceLocation,
       stack,
+      scope: currentRouteScope(),
     });
 
     const stream = this._ensureStream();
@@ -613,7 +660,24 @@ export class NetworkRouteManager {
 
   /** Remove all routes. */
   async removeAllRoutes(): Promise<void> {
-    const ids = [...this._routes.keys()];
+    await this._removeWhere(() => true);
+  }
+
+  /**
+   * Remove the routes the current test registered, keeping those a suite
+   * scope's `beforeAll`/`afterAll` registered (PILOT-534).
+   */
+  async removeTestRoutes(): Promise<void> {
+    await this._removeWhere((info) => info.scope === undefined);
+  }
+
+  /** Remove the routes `scope`'s hooks registered, once that scope has ended (see `RouteScope.ended`). */
+  async removeScopeRoutes(scope: RouteScope): Promise<void> {
+    await this._removeWhere((info) => info.scope === scope);
+  }
+
+  private async _removeWhere(match: (info: RegisteredRouteInfo) => boolean): Promise<void> {
+    const ids = [...this._routes.values()].filter(match).map((info) => info.routeId);
     await Promise.all(ids.map((id) => this._unregisterAndAwait(id)));
   }
 
@@ -714,6 +778,14 @@ export class NetworkRouteManager {
   /** Whether any routes are registered. */
   get hasRoutes(): boolean {
     return this._routes.size > 0;
+  }
+
+  /** Whether any route registered by the current test is still registered. */
+  get hasTestRoutes(): boolean {
+    for (const info of this._routes.values()) {
+      if (info.scope === undefined) return true;
+    }
+    return false;
   }
 
   /** Close the stream and clean up. */

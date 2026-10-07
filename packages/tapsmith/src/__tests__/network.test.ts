@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 import {
   TapsmithRequest, Route, FetchedAPIResponse, NetworkRouteManager,
-  matchUrlPattern, patternsEqual,
+  matchUrlPattern, patternsEqual, runInRouteScope, currentRouteScope, type RouteScope,
 } from '../network.js';
 import type { TapsmithGrpcClient } from '../grpc-client.js';
 
@@ -353,6 +353,134 @@ describe('NetworkRouteManager unregister round-trip', () => {
     // Daemon replies — the promise now resolves.
     stream.emitData({ unregisterRouteResponse: { routeId, success: true } });
     await removeP;
+    expect(manager.hasRoutes).toBe(false);
+  });
+});
+
+// ─── NetworkRouteManager route scopes (PILOT-534) ───
+
+/** A fake daemon stream that acknowledges every register/unregister at once. */
+class AutoAckStream extends FakeDuplexStream {
+  override write(msg: unknown): boolean {
+    super.write(msg);
+    const m = msg as { registerRoute?: { routeId: string }; unregisterRoute?: { routeId: string } };
+    queueMicrotask(() => {
+      if (m.registerRoute) {
+        this.emitData({ registerRouteResponse: { routeId: m.registerRoute.routeId, success: true, errorMessage: '' } });
+      } else if (m.unregisterRoute) {
+        this.emitData({ unregisterRouteResponse: { routeId: m.unregisterRoute.routeId, success: true } });
+      }
+    });
+    return true;
+  }
+}
+
+describe('NetworkRouteManager route scopes', () => {
+  function makeManager(): { manager: NetworkRouteManager; stream: AutoAckStream } {
+    const stream = new AutoAckStream();
+    const client = { networkRouteStream: () => stream } as unknown as TapsmithGrpcClient;
+    return { manager: new NetworkRouteManager(client), stream };
+  }
+  const unregistered = (stream: FakeDuplexStream): number =>
+    stream.writes.filter((m) => typeof m === 'object' && m !== null && 'unregisterRoute' in m).length;
+
+  it('reads no scope outside runInRouteScope, and the scope inside it across awaits', async () => {
+    const scope: RouteScope = { label: 'Suite' };
+    expect(currentRouteScope()).toBeUndefined();
+    await runInRouteScope(scope, async () => {
+      await new Promise((r) => setTimeout(r, 1));
+      expect(currentRouteScope()).toBe(scope);
+    });
+    expect(currentRouteScope()).toBeUndefined();
+  });
+
+  it('removeTestRoutes keeps routes registered in a scope', async () => {
+    const { manager, stream } = makeManager();
+    const scope: RouteScope = { label: 'Suite' };
+    await runInRouteScope(scope, () => manager.addRoute('**/posts*', () => {}));
+    await manager.addRoute('**/users/*', () => {});
+    expect(manager.hasTestRoutes).toBe(true);
+
+    await manager.removeTestRoutes();
+    expect(unregistered(stream)).toBe(1);
+    expect(manager.hasTestRoutes).toBe(false);
+    expect(manager.hasRoutes).toBe(true);
+
+    await manager.removeScopeRoutes(scope);
+    expect(unregistered(stream)).toBe(2);
+    expect(manager.hasRoutes).toBe(false);
+  });
+
+  it('removeScopeRoutes removes only the given scope', async () => {
+    const { manager } = makeManager();
+    const outer: RouteScope = { label: 'Outer' };
+    const inner: RouteScope = { label: 'Inner' };
+    await runInRouteScope(outer, () => manager.addRoute('**/a', () => {}));
+    await runInRouteScope(inner, () => manager.addRoute('**/b', () => {}));
+
+    await manager.removeScopeRoutes(inner);
+    expect(manager.hasRoutes).toBe(true);
+    await manager.removeTestRoutes();
+    expect(manager.hasRoutes).toBe(true);
+    await manager.removeScopeRoutes(outer);
+    expect(manager.hasRoutes).toBe(false);
+  });
+
+  it('opens the route stream outside the scope of the beforeAll that first needs it', async () => {
+    // Callbacks the stream drives (route handlers) must not inherit the
+    // scope, or a route a handler registers mid-test would outlive the test.
+    let scopeAtOpen: RouteScope | undefined | 'not-opened' = 'not-opened';
+    const stream = new AutoAckStream();
+    const client = {
+      networkRouteStream: () => { scopeAtOpen = currentRouteScope(); return stream; },
+    } as unknown as TapsmithGrpcClient;
+    const manager = new NetworkRouteManager(client);
+    await runInRouteScope({ label: 'Suite' }, () => manager.addRoute('**/a', () => {}));
+    expect(scopeAtOpen).toBeUndefined();
+  });
+
+  it('treats a route registered after its scope ended as a test route', async () => {
+    const { manager } = makeManager();
+    const scope: RouteScope = { label: 'Suite' };
+    let late: Promise<void> | undefined;
+    await runInRouteScope(scope, async () => {
+      // Work the hook leaves running, which registers once the scope is over.
+      late = new Promise<void>((resolve) => setTimeout(resolve, 5)).then(() => manager.addRoute('**/late', () => {}));
+    });
+    scope.ended = true;
+    await manager.removeScopeRoutes(scope);
+    await late;
+    expect(manager.hasTestRoutes).toBe(true);
+    await manager.removeTestRoutes();
+    expect(manager.hasRoutes).toBe(false);
+  });
+
+  it('runs route handlers outside any route scope', async () => {
+    const { manager, stream } = makeManager();
+    let scopeInHandler: RouteScope | undefined | 'not-called' = 'not-called';
+    await manager.addRoute('**/a', async (route) => {
+      scopeInHandler = currentRouteScope();
+      await route.continue();
+    });
+    const register = stream.writes.find(
+      (m): m is { registerRoute: { routeId: string } } => typeof m === 'object' && m !== null && 'registerRoute' in m,
+    )!;
+    // Deliver the intercepted request from inside a scope, as a stream
+    // whose events inherited a beforeAll's async context would.
+    await runInRouteScope({ label: 'Suite' }, async () => {
+      stream.emitData({ interceptedRequest: {
+        interceptId: 'i1', routeId: register.registerRoute.routeId, method: 'GET',
+        url: 'https://example.com/a', headers: [], body: Buffer.alloc(0), isHttps: true,
+      } });
+    });
+    await new Promise((r) => setTimeout(r, 1));
+    expect(scopeInHandler).toBeUndefined();
+  });
+
+  it('removeAllRoutes (device.unrouteAll) still removes scoped routes', async () => {
+    const { manager } = makeManager();
+    await runInRouteScope({ label: 'Suite' }, () => manager.addRoute('**/a', () => {}));
+    await manager.removeAllRoutes();
     expect(manager.hasRoutes).toBe(false);
   });
 });

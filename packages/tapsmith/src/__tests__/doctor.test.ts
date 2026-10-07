@@ -29,7 +29,7 @@ describe('buildDoctorJson()', () => {
   ];
   const inventory = {
     avds: ['Pixel_7'],
-    simulators: [{ name: 'iPhone 16', udid: 'ABC', state: 'Shutdown', runtime: 'iOS 18 2' }],
+    simulators: [{ name: 'iPhone 16', udid: 'ABC', state: 'Shutdown', runtime: 'iOS 18.2' }],
     connectedDevices: [{ serial: 'emulator-5554', state: 'device' }],
   };
 
@@ -79,7 +79,7 @@ describe('doctor --json schema (PILOT-270)', () => {
       { id: 'adb', status: 'fail', label: 'ADB not found on PATH', fix: 'Install Android platform-tools' },
     ], {
       avds: ['Pixel_7'],
-      simulators: [{ name: 'iPhone 16', udid: 'ABC', state: 'Shutdown', runtime: 'iOS 18 2' }],
+      simulators: [{ name: 'iPhone 16', udid: 'ABC', state: 'Shutdown', runtime: 'iOS 18.2' }],
       connectedDevices: [{ serial: 'emulator-5554', state: 'device' }],
     });
     expect(Object.keys(json)).toEqual(['ok', 'checks', 'inventory']);

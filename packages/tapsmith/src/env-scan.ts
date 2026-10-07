@@ -54,6 +54,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * A readable runtime name from a simctl runtime id:
+ * `com.apple.CoreSimulator.SimRuntime.iOS-26-5` is `iOS 26.5` (PILOT-562).
+ * An id not shaped `<os>-<n>-<n>…` keeps its words, hyphens as spaces.
+ */
+function simRuntimeName(id: string): string {
+  const bare = id.replace(/^com\.apple\.CoreSimulator\.SimRuntime\./, '');
+  const versioned = /^([A-Za-z]+)-(\d+(?:-\d+)*)$/.exec(bare);
+  return versioned ? `${versioned[1]} ${versioned[2].replace(/-/g, '.')}` : bare.replace(/-/g, ' ');
+}
+
 export function parseSimctlDevicesJson(output: string): SimulatorInfo[] {
   const simulators: SimulatorInfo[] = [];
   let data: unknown;
@@ -70,7 +81,7 @@ export function parseSimctlDevicesJson(output: string): SimulatorInfo[] {
     if (!Array.isArray(devs)) continue;
     for (const device of devs) {
       if (!isRecord(device)) continue;
-      const runtimeName = runtime.replace(/^com\.apple\.CoreSimulator\.SimRuntime\./, '').replace(/-/g, ' ');
+      const runtimeName = simRuntimeName(runtime);
       simulators.push({
         name: typeof device['name'] === 'string' ? device['name'] : '',
         udid: typeof device['udid'] === 'string' ? device['udid'] : '',
@@ -80,6 +91,42 @@ export function parseSimctlDevicesJson(output: string): SimulatorInfo[] {
     }
   }
   return simulators;
+}
+
+// ─── Simulator choice (PILOT-562) ───
+
+/**
+ * The simulators init offers, best first (PILOT-562): no Tapsmith worker
+ * clones, iOS runtimes only (watchOS, tvOS and visionOS simulators cannot
+ * run an iOS app, so with no iOS runtime there is nothing), one per name — a booted one, else the newest
+ * runtime's, as the config names a simulator by name and the runner adopts a
+ * booted one of that name. A booted simulator comes first, as choosing it
+ * avoids a boot, then iPhones, then the rest, each newest runtime first and
+ * in simctl's order within a runtime. The wizard lists them all with the
+ * first selected, and `init --yes` picks the first.
+ */
+export function simulatorChoices(simulators: SimulatorInfo[]): SimulatorInfo[] {
+  // Not the `<name> (Tapsmith Worker N)` clones parallel runs make: they
+  // come and go with runs, and the config names the simulator they clone.
+  const ios = simulators.filter((s) => /^iOS\b/.test(s.runtime) && !/ \(Tapsmith Worker \d+\)$/.test(s.name));
+  const byName = new Map<string, SimulatorInfo>();
+  for (const sim of ios) {
+    const existing = byName.get(sim.name);
+    if (!existing || rank(sim, existing) < 0) byName.set(sim.name, sim);
+  }
+  return [...byName.values()].sort((a, b) =>
+    Number(b.state === 'Booted') - Number(a.state === 'Booted')
+    || Number(b.name.startsWith('iPhone')) - Number(a.name.startsWith('iPhone'))
+    || newestFirst(a, b));
+}
+
+/** Booted first, then the newer runtime. */
+function rank(a: SimulatorInfo, b: SimulatorInfo): number {
+  return Number(b.state === 'Booted') - Number(a.state === 'Booted') || newestFirst(a, b);
+}
+
+function newestFirst(a: SimulatorInfo, b: SimulatorInfo): number {
+  return b.runtime.localeCompare(a.runtime, undefined, { numeric: true });
 }
 
 export function scanEnvironment(): EnvScan {

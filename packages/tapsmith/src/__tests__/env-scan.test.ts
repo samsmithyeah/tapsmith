@@ -69,8 +69,24 @@ describe('parseSimctlDevicesJson()', () => {
     });
 
     expect(parseSimctlDevicesJson(output)).toEqual([
-      { name: 'iPhone 16', udid: 'ABC', state: 'Shutdown', runtime: 'iOS 18 2' },
+      { name: 'iPhone 16', udid: 'ABC', state: 'Shutdown', runtime: 'iOS 18.2' },
     ]);
+  });
+
+  it('names runtimes as versions: iOS-26-5 is "iOS 26.5", not "iOS 26 5" (PILOT-562)', () => {
+    const runtimes = {
+      'com.apple.CoreSimulator.SimRuntime.iOS-26-5': 'iOS 26.5',
+      'com.apple.CoreSimulator.SimRuntime.iOS-18-3-1': 'iOS 18.3.1',
+      'com.apple.CoreSimulator.SimRuntime.watchOS-11-0': 'watchOS 11.0',
+      'com.apple.CoreSimulator.SimRuntime.xrOS-2-0': 'xrOS 2.0',
+      'com.apple.CoreSimulator.SimRuntime.tvOS-18-0': 'tvOS 18.0',
+      // A shape simctl has not used: hyphens still become spaces, as before.
+      'com.apple.CoreSimulator.SimRuntime.Some-Future-Runtime': 'Some Future Runtime',
+    };
+    const output = JSON.stringify({
+      devices: Object.fromEntries(Object.keys(runtimes).map((id, i) => [id, [{ name: `Sim ${i}`, udid: `U${i}`, state: 'Shutdown' }]])),
+    });
+    expect(parseSimctlDevicesJson(output).map((s) => s.runtime)).toEqual(Object.values(runtimes));
   });
 
   it('returns an empty list for malformed or unexpected JSON', () => {

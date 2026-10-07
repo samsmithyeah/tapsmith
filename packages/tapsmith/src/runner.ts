@@ -50,6 +50,7 @@ import { executeAppReset, type ExecuteAppResetOptions, type SessionPreflightCont
 import { deviceGroupSize, resolveDeviceGroup, validateAppResetOptions, validateDevicesOption, validateRecordingModes } from './config.js';
 import { onActionProgress } from './action-progress.js';
 import { runInAttemptContext, type AttemptToken } from './attempt-fence.js';
+import { runInRouteScope, type RouteScope } from './network.js';
 import { passesSelectionFilters } from './test-filter.js';
 import { startLiveNetwork } from './trace/live-network.js';
 import { telemetry, runEventFromResults, type RunMode } from './telemetry.js';
@@ -125,6 +126,16 @@ function allDevices(opts: RunOptions): Device[] {
  * session-preflight.ts.
  */
 const PRE_TEST_IDLE_TIMEOUT_MS = 1_000;
+
+/**
+ * Whether the device still holds routes a `beforeAll`/`afterAll` registered
+ * (the test's own were removed at test end): its route manager must then
+ * survive the per-test disposal, or an untraced attempt (`on-first-retry`)
+ * would drop the scope's mocks for every later test (PILOT-534).
+ */
+function keepsScopedRoutes(d: Device): boolean {
+  return d._routeManager?.hasRoutes === true;
+}
 
 /** Run `fn` against every device concurrently, swallowing per-device errors. */
 async function forEachDeviceBestEffort(opts: RunOptions, fn: (device: Device) => Promise<unknown> | unknown): Promise<void> {
@@ -1258,6 +1269,17 @@ async function invokeHookWithTestScope(
   hook: HookEntry,
   suiteFixtures: Record<string, unknown>,
   suiteRegistry: FixtureRegistry,
+  routeScope: RouteScope,
+): Promise<void> {
+  // Routes the hook registers belong to its describe scope, not to the next
+  // test: they stay until the scope ends (PILOT-534).
+  await runInRouteScope(routeScope, () => invokeSuiteHook(hook, suiteFixtures, suiteRegistry));
+}
+
+async function invokeSuiteHook(
+  hook: HookEntry,
+  suiteFixtures: Record<string, unknown>,
+  suiteRegistry: FixtureRegistry,
 ): Promise<void> {
   // A hook that takes no fixtures parameter needs no test-scoped setup.
   if (!functionHasParameters(hook.fn)) {
@@ -1624,6 +1646,9 @@ async function runSuiteContext(
 
   const result: SuiteResult = { name: parentPrefix, tests: [], suites: [], durationMs: 0 };
   const suiteStart = Date.now();
+  // Tags the routes this scope's beforeAll/afterAll hooks register, so the
+  // per-test cleanup leaves them alone and the scope's end removes them.
+  const routeScope: RouteScope = { label: parentPrefix || path.basename(opts.testFilePath ?? '') };
 
   // try/finally ensures device timeout is restored even if a hook
   // throws. Body intentionally not re-indented.
@@ -1741,7 +1766,7 @@ async function runSuiteContext(
       // The hooks group holds only the user's beforeAll code.
       beforeAllCollector?.startGroup('beforeAll Hooks');
       for (const hook of ctx.beforeAll) {
-        await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
+        await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope);
       }
     };
     if (beforeAllCollector) {
@@ -2464,8 +2489,9 @@ async function runSuiteContext(
           }
         }
 
-      // Clean up route interception between tests so routes don't leak
-      // across tests within the same describe block.
+      // Clean up the routes this test registered (and its beforeEach /
+      // afterEach hooks and fixtures) so they don't leak into the next test.
+      // Routes a beforeAll registered stay until their scope ends (PILOT-534).
       await forEachDeviceBestEffort(opts, async (d) => {
         // Route handlers only ever see requests through the daemon's network
         // proxy, which only a trace recording network starts. Without one,
@@ -2476,7 +2502,7 @@ async function runSuiteContext(
         if (registered > 0 && !d._networkProxyRunning) {
           _warnRoutesWithoutProxy(fullName, d._traceDeviceId, recording && traceConfig.network);
         }
-        if (d._routeManager?.hasRoutes) await d._routeManager.removeAllRoutes();
+        if (d._routeManager?.hasTestRoutes) await d._routeManager.removeTestRoutes();
       });
 
       // Collect soft assertion failures (PILOT-43)
@@ -2569,7 +2595,7 @@ async function runSuiteContext(
           // Keep the route stream installed while network capture is being
           // reused across tests. Registered routes were removed above, and the
           // file-level hard teardown disposes the stream after stopping capture.
-          if (!traceConfig.network && d._disposeRouteManager) {
+          if (!traceConfig.network && d._disposeRouteManager && !keepsScopedRoutes(d)) {
             await d._disposeRouteManager();
           }
           // Return to the native context but keep the WebView connection cached
@@ -2667,7 +2693,7 @@ async function runSuiteContext(
         // traced path above / PILOT-288).
         for (const d of devices) {
           if (!d._disposeRouteManager) continue;
-          await d._disposeRouteManager();
+          if (!keepsScopedRoutes(d)) await d._disposeRouteManager();
           if (d._resetWebViewContext) {
             d._resetWebViewContext();
           }
@@ -2943,7 +2969,7 @@ async function runSuiteContext(
         await withActiveTraceCollector(afterAllCollector, async () => {
           for (const hook of ctx.afterAll) {
             try {
-              await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
+              await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope);
             } catch (err) {
               if (isTestSkip(err)) continue;
               process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -2967,7 +2993,7 @@ async function runSuiteContext(
     } else {
       for (const hook of ctx.afterAll) {
         try {
-          await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
+          await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope);
         } catch (err) {
           if (isTestSkip(err)) continue;
           process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -2978,7 +3004,7 @@ async function runSuiteContext(
     // No test ran in this scope → no teardown either (beforeAll was skipped too).
     for (const hook of ctx.afterAll) {
       try {
-        await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
+        await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope);
       } catch (err) {
         if (isTestSkip(err)) continue;
         process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -2992,6 +3018,13 @@ async function runSuiteContext(
   }
 
   } finally {
+    // The scope is over — with every early return (failed or skipped
+    // beforeAll, a user stop) — so its hooks' routes go, before the next
+    // scope or file runs against the same route stream (PILOT-534).
+    routeScope.ended = true;
+    await forEachDeviceBestEffort(opts, async (d) => {
+      if (d._routeManager?.hasRoutes) await d._routeManager.removeScopeRoutes(routeScope);
+    });
     // Restore previous device timeouts when leaving this scope
     if (prevDeviceTimeouts) {
       devices.forEach((d, i) => d._setDefaultTimeout(prevDeviceTimeouts[i]));
