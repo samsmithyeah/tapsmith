@@ -283,6 +283,32 @@ describe('test.skip() inside a test', () => {
     expect(after).not.toHaveBeenCalled();
   });
 
+  // UI mode and the headless MCP run one test or group through a testFilter
+  // and report every result the runner sends: the filter must drop only the
+  // tests it excludes, never a selected test that skipped itself (PILOT-546,
+  // PILOT-569).
+  it('reports a selected test that skips itself under a test filter, and nothing for the rest', async () => {
+    const result = await run(() => {
+      tapsmithTest.describe('share', () => {
+        tapsmithTest('sheet', async () => { tapsmithTest.skip(); });
+        tapsmithTest('link', async () => {});
+      });
+      tapsmithTest('other', async () => {});
+    }, { testFilter: 'share' });
+    expect(statuses(result)).toEqual({ 'share > sheet': 'skipped', 'share > link': 'passed' });
+  });
+
+  it('reports the selected tests of a scope whose beforeAll skips it under a test filter', async () => {
+    const result = await run(() => {
+      tapsmithTest.describe('share', () => {
+        tapsmithBeforeAll(async () => { tapsmithTest.skip(); });
+        tapsmithTest('sheet', async () => {});
+        tapsmithTest('link', async () => {});
+      });
+    }, { testFilter: 'sheet' });
+    expect(statuses(result)).toEqual({ 'share > sheet': 'skipped' });
+  });
+
   it('carries on when the condition is falsy', async () => {
     const after = vi.fn();
     const result = await run(() => {
