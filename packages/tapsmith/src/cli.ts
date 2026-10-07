@@ -70,6 +70,7 @@ import { androidToolchainBlocker, assertAdbForEmulatorLaunch, iosToolchainBlocke
 import {
   createUiLaunchSteps,
   UiLaunchProgress,
+  unshownPart,
   type LaunchProgressSink,
   type LaunchStepId,
 } from './launch-progress.js';
@@ -2598,7 +2599,9 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
         // used to print "✗ Primary device" for a group member that failed.
         const message = err instanceof Error ? err.message : String(err);
         if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', message.split('\n')[0]);
-        console.error(red(message));
+        // Only what the ✗ row above does not already say (PILOT-569).
+        const unshown = launchProgress ? unshownPart(message, launchProgress.shownFailures()) : message;
+        if (unshown) console.error(red(unshown));
         if (!toleratesTargetFailure) {
           sequentialExitCode = 1;
           return;
@@ -3179,6 +3182,7 @@ main().catch(async (err) => {
   } catch { /* dispatcher not loaded — fall through */ }
 
   activeLaunchProgress?.finish();
+  const shownFailures = activeLaunchProgress?.shownFailures();
   activeLaunchProgress = undefined;
 
   let isLaunchFailure = false;
@@ -3189,7 +3193,14 @@ main().catch(async (err) => {
 
   const message = err instanceof Error ? err.message : String(err);
   if (isLaunchFailure) {
-    const { headline: summary, detail: details } = splitHeadline(message);
+    // What a ✗ launch row already showed is not repeated (PILOT-569).
+    const unshown = shownFailures ? unshownPart(message, shownFailures) : message;
+    if (!unshown) {
+      console.error(red('Test run failed to start.'));
+      if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) console.error((err as Error)?.stack ?? err);
+      process.exit(1);
+    }
+    const { headline: summary, detail: details } = splitHeadline(unshown);
     console.error(red(`Test run failed to start: ${summary}`));
     if (details) console.error(dim(details));
     if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) {

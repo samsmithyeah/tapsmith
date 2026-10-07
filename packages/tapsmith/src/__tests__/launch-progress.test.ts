@@ -2,7 +2,7 @@ import { Writable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { TapsmithConfig } from '../config.js';
 import type { ResolvedProject } from '../project.js';
-import { createUiLaunchSteps, formatLaunchTable, UiLaunchProgress, type LaunchStep } from '../launch-progress.js';
+import { createUiLaunchSteps, formatLaunchTable, UiLaunchProgress, unshownPart, type LaunchStep } from '../launch-progress.js';
 
 class CaptureStream extends Writable {
   columns = 80;
@@ -375,5 +375,56 @@ describe('UiLaunchProgress', () => {
     const output = chunks.join('');
     expect(output.match(/external log/g)).toHaveLength(1);
     expect(output).toContain('\x1b[0Jexternal log\nUI mode');
+  });
+});
+
+// A start error used to print twice: on its ✗ row, then again in red below
+// the rows (PILOT-569).
+describe('start errors the launch rows already showed', () => {
+  const AGENT_ERROR = 'The iOS agent port 18700 is held by a Tapsmith runner for another device. Stop that session.';
+  const steps = (): LaunchStep[] => [
+    { id: 'config', label: 'Config', state: 'done', detail: '1 worker | 1 test file' },
+    { id: 'agent', label: 'Agent', state: 'pending', detail: 'start iOS agent' },
+  ];
+
+  it('drops a line that only repeats a failed row\'s detail, label and all', () => {
+    expect(unshownPart(`Device (ABC): Failed to start agent: ${AGENT_ERROR}`, [AGENT_ERROR])).toBe('');
+  });
+
+  it('keeps what the error adds beyond the row', () => {
+    expect(unshownPart('No online devices found.\nStart the emulator yourself.', ['No online devices found.']))
+      .toBe('Start the emulator yourself.');
+  });
+
+  it('keeps a line the detail is only part of', () => {
+    expect(unshownPart('no online device found, and no AVD to boot', ['no online device found']))
+      .toBe('no online device found, and no AVD to boot');
+  });
+
+  it('keeps everything when nothing was shown', () => {
+    expect(unshownPart('Failed to start agent: boom', [])).toBe('Failed to start agent: boom');
+  });
+
+  it('reports a non-interactive row\'s detail as shown in full', () => {
+    const progress = new UiLaunchProgress(steps(), { stream: new CaptureStream(), forceInteractive: false, color: false, title: '' });
+    progress.fail('agent', AGENT_ERROR);
+    progress.finish();
+    expect(progress.shownFailures()).toEqual([AGENT_ERROR]);
+  });
+
+  it('does not count a detail the interactive table cut short', () => {
+    const stream = new CaptureStream();
+    const progress = new UiLaunchProgress(steps(), { stream, forceInteractive: true, color: false, title: '' });
+    progress.fail('agent', AGENT_ERROR);
+    progress.finish();
+    expect(stream.output()).toContain('…');
+    expect(progress.shownFailures()).toEqual([]);
+
+    const wide = new CaptureStream();
+    wide.columns = 200;
+    const shown = new UiLaunchProgress(steps(), { stream: wide, forceInteractive: true, color: false, title: '' });
+    shown.fail('agent', AGENT_ERROR);
+    shown.finish();
+    expect(shown.shownFailures()).toEqual([AGENT_ERROR]);
   });
 });

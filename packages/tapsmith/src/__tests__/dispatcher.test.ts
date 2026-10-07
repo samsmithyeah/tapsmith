@@ -635,6 +635,7 @@ describe('coordinateBuckets()', () => {
       complete: (id, detail) => { log.push({ id, state: 'done', detail }); },
       fail: (id, detail) => { log.push({ id, state: 'failed', detail }); },
       hasFailure: () => log.some((e) => e.state === 'failed'),
+      shownFailures: () => [],
       skip: (id, detail) => { log.push({ id, state: 'skipped', detail }); },
       update: (id, patch) => { if (patch.state) log.push({ id, state: patch.state, detail: patch.detail }); },
       note: () => {},
