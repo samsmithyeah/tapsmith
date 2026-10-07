@@ -2607,8 +2607,11 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
         // used to print "✗ Primary device" for a group member that failed.
         const message = err instanceof Error ? err.message : String(err);
         if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', message.split('\n')[0]);
-        // Only what the ✗ row above does not already say (PILOT-569).
-        const unshown = launchProgress && launchRowsShareStderr() ? unshownPart(message, launchProgress.shownFailures()) : message;
+        // Only what the ✗ row above does not already say (PILOT-569) — when
+        // the run ends here. Another target's setup would redraw the rows,
+        // taking this target's reason with them.
+        const rowsAreFinal = !toleratesTargetFailure && launchRowsShareStderr();
+        const unshown = launchProgress && rowsAreFinal ? unshownPart(message, launchProgress.shownFailures()) : message;
         if (unshown) console.error(red(unshown));
         if (!toleratesTargetFailure) {
           sequentialExitCode = 1;

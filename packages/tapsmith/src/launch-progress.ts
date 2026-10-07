@@ -485,8 +485,10 @@ function tableWidths(
  */
 export function unshownPart(message: string, shown: readonly string[]): string {
   let text = message;
-  for (const raw of shown) {
-    const detail = raw.trim();
+  // Once per distinct detail: several rows can show the same one (every
+  // unfinished phase of a failed parallel launch), and each further copy
+  // would take another line — the next device's own.
+  for (const detail of new Set(shown.map((d) => d.trim()))) {
     if (!detail) continue;
     const lines = text.split("\n");
     const detailLines = detail.split("\n");

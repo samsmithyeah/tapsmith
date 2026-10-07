@@ -401,6 +401,24 @@ describe('start errors the launch rows already showed', () => {
       .toBe('no online device found, and no AVD to boot');
   });
 
+  // The dispatcher fails every unfinished phase with the same detail.
+  it('drops a detail shown on several rows once, keeping the lines that name each device', () => {
+    const progress = new UiLaunchProgress([
+      { id: 'app-install', label: 'App install', state: 'pending', detail: '' },
+      { id: 'agent', label: 'Agent', state: 'pending', detail: '' },
+      { id: 'app-launch', label: 'App launch', state: 'pending', detail: '' },
+    ], { stream: new CaptureStream(), forceInteractive: false, color: false, title: '' });
+    for (const id of ['app-install', 'agent', 'app-launch'] as const) progress.fail(id, 'INSTALL_FAILED_INSUFFICIENT_STORAGE');
+    progress.finish();
+    const message = 'No worker could start: INSTALL_FAILED_INSUFFICIENT_STORAGE\n'
+      + 'Worker 1 (emulator-5554): INSTALL_FAILED_INSUFFICIENT_STORAGE\n'
+      + 'Worker 2 (emulator-5556): INSTALL_FAILED_INSUFFICIENT_STORAGE';
+    expect(unshownPart(message, progress.shownFailures())).toBe(
+      'Worker 1 (emulator-5554): INSTALL_FAILED_INSUFFICIENT_STORAGE\n'
+      + 'Worker 2 (emulator-5556): INSTALL_FAILED_INSUFFICIENT_STORAGE',
+    );
+  });
+
   it('keeps everything when nothing was shown', () => {
     expect(unshownPart('Failed to start agent: boom', [])).toBe('Failed to start agent: boom');
   });
