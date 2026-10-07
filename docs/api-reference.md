@@ -1480,7 +1480,10 @@ All locator assertions accept an optional `options` object:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `timeout` | `number` | Element's timeout (default 30s) | How long to wait for the condition |
+| `visible` | `boolean` | `true` | (toBeVisible only) `false` asserts the element is hidden, exactly like `toBeHidden()` |
 | `ratio` | `number` | `0` | (toBeInViewport only) Minimum fraction of element visible in viewport |
+
+An option the assertion does not support (a misspelling, or a Playwright option Tapsmith does not have yet, such as `toBeEnabled({ enabled: false })` or `toHaveText(text, { ignoreCase: true })`) throws a `TypeError` at once, naming the supported options, rather than being ignored — so the assertion never silently checks something other than what you wrote. So does an options argument that is not an object (`toBeVisible(5000)`).
 
 #### `.toBeVisible(options?): Promise<void>`
 
@@ -1492,7 +1495,12 @@ await expect(device.getByText("Spinner", { exact: true })).not.toBeVisible();
 
 // Custom timeout
 await expect(device.getByText("Welcome", { exact: true })).toBeVisible({ timeout: 10000 });
+
+// One assertion for both states: `visible: false` asserts the element is hidden
+await expect(device.getByText("Sign out", { exact: true })).toBeVisible({ visible: isLoggedIn });
 ```
+
+With `{ visible: false }` the assertion is `toBeHidden()` in every respect, as in Playwright: it passes when the element is absent or every match is hidden, waits up to the timeout for that, and `.not.toBeVisible({ visible: false })` behaves like `.not.toBeHidden()`. `visible` must be a boolean.
 
 #### `.toBeEnabled(options?): Promise<void>`
 
@@ -3398,7 +3406,7 @@ await expect(webview.locator("a")).toHaveAttribute("href", "/about")
 
 `toHaveText` and `toContainText` take a string or a RegExp here; an array of texts throws a `TypeError` (not supported for WebView locators yet).
 
-All assertions support `.not` and a `{ timeout }` option:
+All assertions support `.not` and a `{ timeout }` option; `toBeVisible` also takes `{ visible: false }`, which asserts the element is hidden, like `toBeHidden()`. Any other option throws a `TypeError`, as for native locator assertions.
 
 ```typescript
 await expect(webview.locator(".spinner")).not.toBeVisible()
