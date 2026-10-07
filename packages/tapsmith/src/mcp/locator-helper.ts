@@ -2,6 +2,7 @@ import { parseSelectorString, resolvePositionalIndex } from '../trace-viewer/com
 import type { ParsedSelector } from '../trace-viewer/components/selector-matching.js';
 import type { Selector, SelectorKind } from '../selectors.js';
 import { makeSelector } from '../selectors.js';
+import { textRegexValue } from '../text-regex.js';
 import { buildStrictModeViolationError, collapseSameTargetDuplicates, POLL_INTERVAL_MS } from '../element-handle.js';
 import type { TapsmithGrpcClient, ElementInfo } from '../grpc-client.js';
 
@@ -26,7 +27,22 @@ function parsedSelectorToKind(parsed: ParsedSelector): SelectorKind {
     case 'textContains':
       // getByText without { exact: true } — substring match, same as the SDK.
       return { type: 'textContains', value: parsed.value };
+    case 'textRegex':
+      // RegExp locators (PILOT-520): validated and translated like the SDK's.
+      return { type: 'textRegex', value: textRegexValue(regexOf(parsed.regex), 'getByText()') };
+    case 'labelRegex':
+      return { type: 'labelRegex', value: textRegexValue(regexOf(parsed.regex), 'getByLabel()') };
     case 'role':
+      if (parsed.nameRegex) {
+        return {
+          type: 'role',
+          value: {
+            role: parsed.value,
+            name: '',
+            nameRegex: textRegexValue(regexOf(parsed.nameRegex), 'getByRole() option `name`'),
+          },
+        };
+      }
       return {
         type: 'role',
         value: { role: parsed.value, name: parsed.name ?? '', ...(parsed.exact ? { exact: true } : {}) },
@@ -46,6 +62,12 @@ function parsedSelectorToKind(parsed: ParsedSelector): SelectorKind {
     default:
       throw new Error(`Unsupported locator type "${parsed.type}" for device actions. Use device.getByRole(), getByText(), getByDescription(), getByPlaceholder(), getByLabel(), or getByTestId().`);
   }
+}
+
+/** The RegExp a parsed RegExp locator carries (the parser already checked it compiles). */
+function regexOf(parsed: ParsedSelector['regex']): RegExp {
+  if (!parsed) throw new Error('Invalid locator: missing RegExp.');
+  return new RegExp(parsed.source, parsed.flags);
 }
 
 /** Format ElementInfo bounds in the hierarchy-XML style: [l,t][r,b]. */

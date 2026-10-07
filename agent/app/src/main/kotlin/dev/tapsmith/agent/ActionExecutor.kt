@@ -752,9 +752,10 @@ class ActionExecutor(
                     targetSelector.text != null -> By.text(TextMatch.exactPattern(targetSelector.text))
                     targetSelector.textContains != null ->
                         By.text(TextMatch.containsPattern(targetSelector.textContains))
+                    targetSelector.textRegex != null -> By.text(targetSelector.textRegex.fullMatchPattern())
                     targetSelector.contentDesc != null -> By.desc(targetSelector.contentDesc)
                     targetSelector.id != null -> By.res(targetSelector.id)
-                    else -> throw InvalidSelectorException("scrollTo requires text, textContains, contentDesc, or id")
+                    else -> throw InvalidSelectorException("scrollTo requires text, textContains, textRegex, contentDesc, or id")
                 }
 
             val found = container.findObject(targetBy)

@@ -138,3 +138,61 @@ enum QueryIndex {
         return count
     }
 }
+
+/// A getBy* RegExp (PILOT-520), as the daemon forwards it. `pattern` is the
+/// SDK's translation of the JavaScript RegExp, written so ICU (behind both
+/// NSRegularExpression and NSPredicate `MATCHES`) reads it with JavaScript's
+/// semantics — whitespace, digit and word classes, anchors and `.` are all
+/// spelled out — so only `ignoreCase` is left to the engine. `display` is the
+/// RegExp as written, for messages.
+struct TextRegex {
+    let pattern: String
+    let ignoreCase: Bool
+    let display: String
+    /// Nil when ICU rejects the pattern; `error` then says why.
+    let regex: NSRegularExpression?
+    let error: String?
+
+    init(pattern: String, ignoreCase: Bool, display: String) {
+        self.pattern = pattern
+        self.ignoreCase = ignoreCase
+        self.display = display
+        do {
+            regex = try NSRegularExpression(pattern: pattern, options: ignoreCase ? [.caseInsensitive] : [])
+            error = nil
+        } catch let failure {
+            regex = nil
+            error = "Invalid RegExp \(display): \(failure.localizedDescription)"
+        }
+    }
+
+    /// Parse the daemon's `{pattern, ignoreCase, display}` object; nil when absent.
+    static func fromJSON(_ value: Any?) -> TextRegex? {
+        guard let obj = value as? [String: Any] else { return nil }
+        let pattern = obj["pattern"] as? String ?? ""
+        return TextRegex(
+            pattern: pattern,
+            ignoreCase: obj["ignoreCase"] as? Bool ?? false,
+            display: obj["display"] as? String ?? "/\(pattern)/"
+        )
+    }
+
+    /// Whether the RegExp matches anywhere in `text`, like `RegExp.prototype.test`.
+    func matches(_ text: String) -> Bool {
+        guard let regex else { return false }
+        return regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    /// `matches` against the whitespace-normalized text — how a role name is
+    /// tested (Playwright tests the normalized accessible name).
+    func nameMatches(_ text: String) -> Bool {
+        matches(TextMatch.normalize(text))
+    }
+
+    /// The same test as a whole-string ICU pattern, for `label MATCHES %@`:
+    /// any prefix, the RegExp, any suffix. The wrappers are non-capturing, so
+    /// backreferences keep their numbers.
+    var fullMatchPattern: String {
+        "\(ignoreCase ? "(?i)" : "")(?s:.*?)(?:\(pattern))(?s:.*)"
+    }
+}

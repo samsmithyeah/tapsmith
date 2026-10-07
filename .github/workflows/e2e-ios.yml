@@ -421,10 +421,10 @@ jobs:
         working-directory: packages/tapsmith
         run: npm ci
 
-      # Artifacts don't preserve file modes; `npx tapsmith` execs dist/cli.js
+      # Artifacts don't preserve file modes; `npx tapsmith` execs dist/bin.js
       # directly through the npm bin symlink.
       - name: Make SDK CLI executable
-        run: chmod +x packages/tapsmith/dist/cli.js
+        run: chmod +x packages/tapsmith/dist/bin.js packages/tapsmith/dist/cli.js
 
       - name: Install E2E dependencies
         working-directory: e2e
@@ -822,10 +822,10 @@ jobs:
         working-directory: packages/tapsmith
         run: npm ci
 
-      # Artifacts don't preserve file modes; `npx tapsmith` execs dist/cli.js
+      # Artifacts don't preserve file modes; `npx tapsmith` execs dist/bin.js
       # directly through the npm bin symlink.
       - name: Make SDK CLI executable
-        run: chmod +x packages/tapsmith/dist/cli.js
+        run: chmod +x packages/tapsmith/dist/bin.js packages/tapsmith/dist/cli.js
 
       - name: Install E2E dependencies
         working-directory: e2e
@@ -907,7 +907,7 @@ jobs:
           path: packages/tapsmith/dist
 
       - name: Make SDK CLI executable
-        run: chmod +x packages/tapsmith/dist/cli.js
+        run: chmod +x packages/tapsmith/dist/bin.js packages/tapsmith/dist/cli.js
 
       - name: Download all blob reports
         uses: actions/download-artifact@v4

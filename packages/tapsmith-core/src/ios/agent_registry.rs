@@ -659,6 +659,18 @@ mod tests {
         });
     }
 
+    /// The registry's size once a reaper task has had the chance to
+    /// deregister an agent that exited. `shutdown_registry` returns as soon
+    /// as the process has exited; the reaper deregisters it when its wait
+    /// wakes, which on a loaded runner can be a few scheduler turns later.
+    async fn len_after_reapers(registry: &Registry) -> usize {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while registry.len() > 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        registry.len()
+    }
+
     fn alive(pid: u32) -> bool {
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
@@ -711,7 +723,7 @@ mod tests {
             started.elapsed() < Duration::from_secs(4),
             "SIGTERM should be enough"
         );
-        assert_eq!(registry.len(), 0);
+        assert_eq!(len_after_reapers(registry).await, 0);
         assert!(!alive(pid));
         // Its runner went with it: no udid-wide terminate needed.
         assert!(calls.lock().unwrap().is_empty());
@@ -876,7 +888,7 @@ mod tests {
             recording_terminator(&calls),
         )
         .await;
-        assert_eq!(registry.len(), 0);
+        assert_eq!(len_after_reapers(registry).await, 0);
         assert!(!alive(pid));
         assert!(!dir.path().join(format!("{pid}.json")).exists());
     }

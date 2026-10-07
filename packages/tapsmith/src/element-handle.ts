@@ -671,9 +671,10 @@ export class ElementHandle {
 
   /**
    * Locate a descendant by visible text. Substring match by default; pass
-   * `{ exact: true }` for an exact match.
+   * `{ exact: true }` for an exact match, or a RegExp to test the element's
+   * text with (PILOT-520).
    */
-  getByText(text: string, options?: { exact?: boolean }): ElementHandle {
+  getByText(text: string | RegExp, options?: { exact?: boolean }): ElementHandle {
     return this._scoped(options?.exact ? _text(text) : _textContains(text));
   }
 
@@ -704,7 +705,7 @@ export class ElementHandle {
    * Locate a descendant input element by its associated label text. Finds
    * form controls whose accessible name is derived from a nearby label.
    */
-  getByLabel(text: string): ElementHandle {
+  getByLabel(text: string | RegExp): ElementHandle {
     return this._scoped(_label(text));
   }
 

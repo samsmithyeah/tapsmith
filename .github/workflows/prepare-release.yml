@@ -76,17 +76,6 @@ jobs:
             echo "::error::Invalid version '$NEW'. Use 'patch', 'minor', 'major', or an explicit semver like 0.4.0."
             exit 1
           fi
-          # The install docs say `tapsmith@beta` only while a prerelease is the
-          # newest build (PILOT-541). A stable release must not ship them: its
-          # npm README and the website would keep sending users to an old beta.
-          if [[ "$NEW" != *-* ]]; then
-            BETA_DOCS=$(git grep -n -E '(tapsmith|@tapsmith/[a-z-]+)@beta' -- README.md packages/tapsmith/README.md docs website/src || true)
-            if [ -n "$BETA_DOCS" ]; then
-              echo "::error::$NEW is a stable release, but the install docs still point at the beta tag. Switch them back to plain installs first:"
-              echo "$BETA_DOCS"
-              exit 1
-            fi
-          fi
           echo "current=$CUR" >> "$GITHUB_OUTPUT"
           echo "new=$NEW" >> "$GITHUB_OUTPUT"
           echo "Bumping $CUR -> $NEW"

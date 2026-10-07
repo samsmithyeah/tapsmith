@@ -63,4 +63,4 @@ xcrun swiftc -sdk "$SDK" \
   Tests/TextMatchTests/main.swift \
   TapsmithAgent/TextMatch.swift \
   -o "$OUT/text-match-tests"
-"$OUT/text-match-tests"
+"$OUT/text-match-tests" "../packages/tapsmith/src/__tests__/fixtures/regex-conformance.json"

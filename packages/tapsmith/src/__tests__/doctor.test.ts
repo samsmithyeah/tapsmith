@@ -12,7 +12,6 @@ import {
   planPlatform,
   runDoctor,
   configLoadFailure,
-  isSupportedNodeVersion,
   parseNetworksetupProxy,
   summarizeAvdImages,
   type CheckEntry,
@@ -169,14 +168,6 @@ describe('runDoctor() --json with the real checks', () => {
       if (check.status === 'pass' && split.includes(check.id as string)) expect(check.label, JSON.stringify(check)).not.toMatch(/\(/);
     }
   }, 120_000);
-});
-
-describe('isSupportedNodeVersion()', () => {
-  it('requires Node.js 22 or newer', () => {
-    expect(isSupportedNodeVersion('21.9.0')).toBe(false);
-    expect(isSupportedNodeVersion('22.0.0')).toBe(true);
-    expect(isSupportedNodeVersion('24.13.0')).toBe(true);
-  });
 });
 
 describe('summarizeAvdImages()', () => {

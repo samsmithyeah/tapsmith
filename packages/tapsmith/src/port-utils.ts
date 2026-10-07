@@ -97,3 +97,58 @@ export function freeStaleAgentPort(
     }
   }
 }
+
+/** The agent port a daemon started without `--agent-port` forwards to. */
+export const DEFAULT_AGENT_PORT = 18700;
+
+const DAEMON_PROGRAM = 'tapsmith-core';
+
+/**
+ * The pids of the `tapsmith-core` daemons in `ps -A -ww -o pid=,args=` output
+ * whose agent port is `port` (`--agent-port`, else the default), leaving out
+ * `excludePids`. The program may be a path, spaces and all; only its basename
+ * has to be the daemon's.
+ */
+export function parseDaemonsOnAgentPort(ps: string, port: number, excludePids: ReadonlySet<number>): number[] {
+  const pids: number[] = [];
+  for (const raw of ps.split('\n')) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(raw);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (excludePids.has(pid)) continue;
+    const command = match[2];
+    let at = -1;
+    for (let i = command.indexOf(DAEMON_PROGRAM); i !== -1; i = command.indexOf(DAEMON_PROGRAM, i + 1)) {
+      const prefix = command.slice(0, i);
+      const rest = command.slice(i + DAEMON_PROGRAM.length);
+      if ((prefix === '' || (prefix.startsWith('/') && prefix.endsWith('/'))) && (rest === '' || rest.startsWith(' '))) {
+        at = i;
+        break;
+      }
+    }
+    if (at === -1) continue;
+    const args = command.slice(at + DAEMON_PROGRAM.length).trim().split(/\s+/);
+    let agentPort = DEFAULT_AGENT_PORT;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--agent-port') agentPort = Number(args[++i]);
+      else if (args[i].startsWith('--agent-port=')) agentPort = Number(args[i].slice('--agent-port='.length));
+    }
+    if (agentPort === port) pids.push(pid);
+  }
+  return pids;
+}
+
+/**
+ * The running daemons whose agent port is `port` — other sessions' (a
+ * sequential run on a custom `daemonAddress` uses the default agent port
+ * too), so its `adb forward` and runner on that port are live, not stale.
+ * Undefined when the processes cannot be read.
+ */
+export function daemonsOnAgentPort(port: number, excludePids: ReadonlySet<number>): number[] | undefined {
+  try {
+    const ps = execFileSync('ps', ['-A', '-ww', '-o', 'pid=,args='], { encoding: 'utf-8', timeout: 5_000 });
+    return parseDaemonsOnAgentPort(ps, port, new Set([...excludePids, process.pid]));
+  } catch {
+    return undefined;
+  }
+}

@@ -7,7 +7,7 @@ vi.mock('node:child_process');
 const mockedExecFileSync = vi.mocked(childProcess.execFileSync) as any;
 const mockedSpawnSync = vi.mocked(childProcess.spawnSync);
 
-import { findPidsOnPort, freeStaleAgentPort } from '../port-utils.js';
+import { daemonsOnAgentPort, findPidsOnPort, freeStaleAgentPort, parseDaemonsOnAgentPort } from '../port-utils.js';
 
 // ─── Tests ───
 //
@@ -198,5 +198,45 @@ describe('findPidsOnPort', () => {
     } as unknown as ReturnType<typeof childProcess.spawnSync>);
 
     expect(findPidsOnPort(50051)).toEqual([]);
+  });
+});
+
+// ─── Daemons on an agent port (PILOT-550) ───
+
+describe('parseDaemonsOnAgentPort', () => {
+  const ps = [
+    '  101 /usr/local/lib/node_modules/@tapsmith/core-darwin-arm64/tapsmith-core --port 50051 --platform android',
+    '  102 tapsmith-core --port 50961 --agent-port 18700',
+    '  103 /repo/target/release/tapsmith-core --port 50070 --agent-port 18800',
+    '  104 /bin/zsh -c grep tapsmith-core --agent-port 18700',
+    '  105 /Users/me/My Tools/tapsmith-core --port 50052',
+    '  106 /repo/target/release/tapsmith-core-helper --port 50053',
+    '  107 /repo/tapsmith-core --agent-port=18700 --port 50054',
+  ].join('\n');
+
+  it('finds daemons on the default agent port and on an explicit one', () => {
+    // 101 and 105 take the default; 102 and 107 name it; 104 is not a daemon; 106 is another binary.
+    expect(parseDaemonsOnAgentPort(ps, 18700, new Set())).toEqual([101, 102, 105, 107]);
+    expect(parseDaemonsOnAgentPort(ps, 18800, new Set())).toEqual([103]);
+    expect(parseDaemonsOnAgentPort(ps, 18900, new Set())).toEqual([]);
+  });
+
+  it('leaves out the excluded pids', () => {
+    expect(parseDaemonsOnAgentPort(ps, 18700, new Set([101, 105]))).toEqual([102, 107]);
+  });
+});
+
+describe('daemonsOnAgentPort', () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it('reads every process from ps', () => {
+    mockedExecFileSync.mockReturnValue('  7 tapsmith-core --port 50961\n');
+    expect(daemonsOnAgentPort(18700, new Set())).toEqual([7]);
+    expect(mockedExecFileSync).toHaveBeenCalledWith('ps', ['-A', '-ww', '-o', 'pid=,args='], expect.anything());
+  });
+
+  it('is undefined when ps cannot be read', () => {
+    mockedExecFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    expect(daemonsOnAgentPort(18700, new Set())).toBeUndefined();
   });
 });
