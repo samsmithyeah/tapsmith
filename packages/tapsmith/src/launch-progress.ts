@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import type { ChildProcess, ForkOptions } from "node:child_process";
@@ -501,6 +502,32 @@ export function unshownPart(message: string, shown: readonly string[]): string {
     }
   }
   return text.trim();
+}
+
+/**
+ * Whether two open files are the same destination (one terminal, pipe or
+ * file), by device and inode.
+ */
+export function writesToSamePlace(
+  a: { dev: number; ino: number } | undefined,
+  b: { dev: number; ino: number } | undefined,
+): boolean {
+  return !!a && !!b && a.dev === b.dev && a.ino === b.ino;
+}
+
+/**
+ * Whether the launch rows (stdout) and the errors printed after them
+ * (stderr) end up in the same place, so an error may leave out what a row
+ * already showed. Where they part — `verify --json` ignores the run's stdout
+ * and reports its stderr, a CI step may keep `2>` — the error stays whole
+ * (PILOT-569).
+ */
+export function launchRowsShareStderr(): boolean {
+  try {
+    return writesToSamePlace(fs.fstatSync(1), fs.fstatSync(2));
+  } catch {
+    return false;
+  }
 }
 
 export function formatLaunchTable(

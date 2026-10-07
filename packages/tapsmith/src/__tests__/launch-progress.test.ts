@@ -2,7 +2,7 @@ import { Writable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { TapsmithConfig } from '../config.js';
 import type { ResolvedProject } from '../project.js';
-import { createUiLaunchSteps, formatLaunchTable, UiLaunchProgress, unshownPart, type LaunchStep } from '../launch-progress.js';
+import { createUiLaunchSteps, formatLaunchTable, UiLaunchProgress, unshownPart, writesToSamePlace, type LaunchStep } from '../launch-progress.js';
 
 class CaptureStream extends Writable {
   columns = 80;
@@ -426,5 +426,20 @@ describe('start errors the launch rows already showed', () => {
     shown.fail('agent', AGENT_ERROR);
     shown.finish();
     expect(shown.shownFailures()).toEqual([AGENT_ERROR]);
+  });
+});
+
+// The rows go to stdout and the error to stderr: leaving the reason out of
+// the error is only safe where both reach the same place. `verify --json`
+// ignores the child's stdout and reports its stderr (PILOT-569).
+describe('writesToSamePlace', () => {
+  it('is true for one terminal, pipe or file', () => {
+    expect(writesToSamePlace({ dev: 1, ino: 7 }, { dev: 1, ino: 7 })).toBe(true);
+  });
+
+  it('is false for separate destinations, or one that cannot be read', () => {
+    expect(writesToSamePlace({ dev: 1, ino: 7 }, { dev: 1, ino: 8 })).toBe(false);
+    expect(writesToSamePlace({ dev: 1, ino: 7 }, { dev: 2, ino: 7 })).toBe(false);
+    expect(writesToSamePlace(undefined, { dev: 1, ino: 7 })).toBe(false);
   });
 });

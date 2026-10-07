@@ -117,3 +117,13 @@ export function noTestsMatchFilterMessage(
   if (miss.testNames.length > MAX_LISTED_TESTS) lines.push(`  … and ${miss.testNames.length - MAX_LISTED_TESTS} more`);
   return lines.join('\n');
 }
+
+/**
+ * Whether a run under an active selection filter ran no test: it selected
+ * none (the tests a filter excludes report no result, PILOT-569) or only
+ * skipped ones. The CLI fails such a run rather than reporting it green —
+ * the safety net for a `--grep` the pre-run check could not judge.
+ */
+export function filterRanNothing(filterActive: boolean, results: ReadonlyArray<{ status: string }>): boolean {
+  return filterActive && results.every((r) => r.status === 'skipped');
+}

@@ -34,6 +34,7 @@ import { claimDeviceOrThrow, claimFirstFree, claimUpTo, currentSession, ensureCl
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { discoverTestFiles, noTestFilesFoundMessage, relativeTestPath, resolveTestFileArgs } from './test-file-discovery.js';
 import { resolveTsxBin, tsxIpcPathProblem } from './child-scripts.js';
+import { filterRanNothing } from './test-filter.js';
 import {
   resolveTraceConfig,
   isNetworkTracingEnabled,
@@ -70,6 +71,7 @@ import { androidToolchainBlocker, assertAdbForEmulatorLaunch, iosToolchainBlocke
 import {
   createUiLaunchSteps,
   UiLaunchProgress,
+  launchRowsShareStderr,
   unshownPart,
   type LaunchProgressSink,
   type LaunchStepId,
@@ -2455,8 +2457,8 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     console.log(`\nStarting watch mode for ${testFiles.length} test file(s)...\n`);
   }
 
-  // When a selection filter selects zero runnable tests — i.e. every
-  // discovered test ends up skipped — that's a usage error (typically a typo'd
+  // When a selection filter selects zero runnable tests — none reported, or
+  // only skipped ones — that's a usage error (typically a typo'd
   // pattern), not a green run. The exit paths below fail loud rather than
   // reporting success.
   const zeroMatchFilterMessage =
@@ -2494,9 +2496,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
 
       await reporter.onRunEnd(fullResult);
       preserveEmulatorsForReuse(emulatorsLaunchedThisProcess());
-      const zeroMatch = selectionFilterActive
-        && fullResult.tests.length > 0
-        && fullResult.tests.every((t) => t.status === 'skipped');
+      const zeroMatch = filterRanNothing(!!selectionFilterActive, fullResult.tests);
       if (zeroMatch) console.error(red(zeroMatchFilterMessage));
       process.exit((fullResult.status === 'failed' || zeroMatch) ? 1 : 0);
     }
@@ -2608,7 +2608,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
         const message = err instanceof Error ? err.message : String(err);
         if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', message.split('\n')[0]);
         // Only what the ✗ row above does not already say (PILOT-569).
-        const unshown = launchProgress ? unshownPart(message, launchProgress.shownFailures()) : message;
+        const unshown = launchProgress && launchRowsShareStderr() ? unshownPart(message, launchProgress.shownFailures()) : message;
         if (unshown) console.error(red(unshown));
         if (!toleratesTargetFailure) {
           sequentialExitCode = 1;
@@ -3016,9 +3016,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       suites: allSuites,
     };
     await reporter.onRunEnd(fullResult);
-    const zeroMatch = selectionFilterActive
-      && allResults.length > 0
-      && allResults.every((r) => r.status === 'skipped');
+    const zeroMatch = filterRanNothing(!!selectionFilterActive, allResults);
     if (zeroMatch) console.error(red(zeroMatchFilterMessage));
     sequentialExitCode = (hasFailed || zeroMatch) ? 1 : 0;
   } catch (err) {
@@ -3190,7 +3188,7 @@ main().catch(async (err) => {
   } catch { /* dispatcher not loaded — fall through */ }
 
   activeLaunchProgress?.finish();
-  const shownFailures = activeLaunchProgress?.shownFailures();
+  const shownFailures = launchRowsShareStderr() ? activeLaunchProgress?.shownFailures() : undefined;
   activeLaunchProgress = undefined;
 
   let isLaunchFailure = false;

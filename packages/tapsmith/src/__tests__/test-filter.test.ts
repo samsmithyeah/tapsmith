@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findSelectionMiss, matchesTestFilter, noTestsMatchFilterMessage, passesSelectionFilters } from '../test-filter.js';
+import { filterRanNothing, findSelectionMiss, matchesTestFilter, noTestsMatchFilterMessage, passesSelectionFilters } from '../test-filter.js';
 
 describe('matchesTestFilter', () => {
   const fullName = 'Login screen > submits the form';
@@ -129,4 +129,19 @@ describe('noTestsMatchFilterMessage', () => {
     expect(message).not.toContain('t10');
   });
 
+});
+
+// Tests a filter excludes report no result (PILOT-569), so a filtered run
+// that ran nothing has no results at all, not a list of skips.
+describe('filterRanNothing', () => {
+  it('is true for a filtered run with no results, or only skips', () => {
+    expect(filterRanNothing(true, [])).toBe(true);
+    expect(filterRanNothing(true, [{ status: 'skipped' }])).toBe(true);
+  });
+
+  it('is false once a test ran, or without a filter', () => {
+    expect(filterRanNothing(true, [{ status: 'skipped' }, { status: 'passed' }])).toBe(false);
+    expect(filterRanNothing(true, [{ status: 'failed' }])).toBe(false);
+    expect(filterRanNothing(false, [])).toBe(false);
+  });
 });
