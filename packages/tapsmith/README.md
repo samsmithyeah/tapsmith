@@ -30,12 +30,14 @@ test("can navigate to settings", async ({ device }) => {
 Tapsmith requires **Node.js 22 or newer** — check with `node --version` first. On older Node, npm can install an old Tapsmith release whose commands don't match these docs, or none at all.
 
 ```bash
-npm install -D tapsmith
+npm install -D tapsmith    # or: yarn add -D tapsmith / pnpm add -D tapsmith
 npx tapsmith init
 npx tapsmith test
 ```
 
 The `init` wizard detects your environment, walks through platform configuration, and generates your config file and an example test.
+
+With Yarn, run the CLI as `yarn tapsmith`; with pnpm, `pnpm exec tapsmith`. pnpm 11+ and Yarn Plug'n'Play each need one setting first: see [Installation](https://tapsmith.dev/getting-started/#installation).
 
 ## Documentation
 

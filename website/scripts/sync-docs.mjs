@@ -11,6 +11,9 @@
 //      src/content/docs/reference/api/.
 //   3. Rewrites internal cross-reference links to match Starlight's
 //      URL scheme (e.g. `locators.md` → `/guides/locators/`).
+//   4. Turns a fenced block marked `<!-- package-manager-tabs -->` (one
+//      command per line, each starting with its package manager) into
+//      Starlight tabs, writing that page as MDX. GitHub shows the plain block.
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, cpSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -320,6 +323,33 @@ function addFrontmatter(content, title, description) {
   return `---\ntitle: "${escape(title)}"\ndescription: "${escape(description)}"\n---\n\n${content}`
 }
 
+// ─── Package-manager tabs ───
+
+const PM_TABS_MARKER = '<!-- package-manager-tabs -->'
+const PM_TABS_BLOCK = /<!-- package-manager-tabs -->\r?\n```(\w+)\r?\n([\s\S]*?)\r?\n```/g
+const PM_TABS_IMPORT = "import { Tabs, TabItem } from '@astrojs/starlight/components'"
+
+function packageManagerTabs(content, src) {
+  const tabbed = content.replace(PM_TABS_BLOCK, (_, lang, body) => {
+    const items = body
+      .split(/\r?\n/)
+      .filter((line) => line.trim() !== '')
+      .map((line) => {
+        const label = line.trim().split(/\s+/)[0]
+        return `<TabItem label="${label}">\n\n\`\`\`${lang}\n${line}\n\`\`\`\n\n</TabItem>`
+      })
+    return `<Tabs syncKey="package-manager">\n${items.join('\n')}\n</Tabs>`
+  })
+  // A marker that matched no block would reach MDX as an HTML comment, which
+  // MDX rejects with an error that does not name the cause.
+  if (tabbed.includes(PM_TABS_MARKER)) {
+    throw new Error(
+      `sync-docs: ${src} has a "${PM_TABS_MARKER}" marker not followed by a fenced code block`,
+    )
+  }
+  return tabbed
+}
+
 function ensureDir(filePath) {
   const dir = dirname(filePath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
@@ -350,9 +380,14 @@ for (const file of FILES) {
   let content = readFileSync(srcPath, 'utf-8')
   content = stripFirstHeading(content)
   content = rewriteLinks(content)
+  let dest = file.dest
+  if (content.includes(PM_TABS_MARKER)) {
+    content = `${PM_TABS_IMPORT}\n\n${packageManagerTabs(content, file.src)}`
+    dest = dest.replace(/\.md$/, '.mdx')
+  }
   content = addFrontmatter(content, file.title, file.desc)
 
-  writeDoc(file.dest, content)
+  writeDoc(dest, content)
   count++
 }
 
