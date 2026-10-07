@@ -626,7 +626,8 @@ export async function offerTapsmithInstall(
  */
 const PNPM_IGNORED_BUILDS_HINT = [
   '  pnpm stopped over the build scripts it skipped (esbuild, protobufjs). Tapsmith does not need them.',
-  '  To record that and silence the error, add this to pnpm-workspace.yaml:',
+  '  To record that and silence the error, add this to the pnpm-workspace.yaml beside pnpm-lock.yaml',
+  '  (in a monorepo, the one at the workspace root):',
   '    allowBuilds:',
   '      esbuild: false',
   '      protobufjs: false',

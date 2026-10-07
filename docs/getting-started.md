@@ -61,8 +61,8 @@ Add Tapsmith to your project as a dev dependency, with the package manager the p
 <!-- package-manager-tabs -->
 ```bash
 npm install -D tapsmith
-yarn add -D tapsmith
-pnpm add -D tapsmith
+# yarn add -D tapsmith
+# pnpm add -D tapsmith
 ```
 
 This installs the TypeScript SDK, test runner, the Tapsmith daemon binary for your platform, and the Android agent APKs (via the `@tapsmith/agent-android` optional dependency).
@@ -79,7 +79,7 @@ On npm 11.17 and later, the install may end with an `npm warn allow-scripts` (np
 
 ### pnpm: `ERR_PNPM_IGNORED_BUILDS`
 
-pnpm blocks dependency build scripts unless the project approves them. From pnpm 11, `pnpm add -D tapsmith` installs everything and then exits 1 with `ERR_PNPM_IGNORED_BUILDS: Ignored build scripts: esbuild, protobufjs` (pnpm 10 prints the same list as a warning). They are the same scripts as in the npm warning above, and Tapsmith works without them. Only the project can approve or deny them, so to record that decision and silence the error, add this to `pnpm-workspace.yaml` at the project root (create the file if there isn't one):
+pnpm blocks dependency build scripts unless the project approves them. From pnpm 11, `pnpm add -D tapsmith` installs everything and then exits 1 with `ERR_PNPM_IGNORED_BUILDS: Ignored build scripts: esbuild, protobufjs` (pnpm 10 prints the same list as a warning). They are the same scripts as in the npm warning above, and Tapsmith works without them. Only the project can approve or deny them, so to record that decision and silence the error, add this to the `pnpm-workspace.yaml` beside your `pnpm-lock.yaml` (in a monorepo, the one at the workspace root; create it if there isn't one):
 
 ```yaml
 allowBuilds:

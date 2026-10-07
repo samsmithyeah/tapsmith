@@ -12,8 +12,9 @@
 //   3. Rewrites internal cross-reference links to match Starlight's
 //      URL scheme (e.g. `locators.md` → `/guides/locators/`).
 //   4. Turns a fenced block marked `<!-- package-manager-tabs -->` (one
-//      command per line, each starting with its package manager) into
-//      Starlight tabs, writing that page as MDX. GitHub shows the plain block.
+//      command per line, each starting with its package manager; every line
+//      after the first commented out, so copying the block on GitHub runs one
+//      install) into Starlight tabs, writing that page as MDX.
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, cpSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -334,6 +335,7 @@ function packageManagerTabs(content, src) {
     const items = body
       .split(/\r?\n/)
       .filter((line) => line.trim() !== '')
+      .map((line) => line.replace(/^\s*#\s*/, ''))
       .map((line) => {
         const label = line.trim().split(/\s+/)[0]
         return `<TabItem label="${label}">\n\n\`\`\`${lang}\n${line}\n\`\`\`\n\n</TabItem>`
