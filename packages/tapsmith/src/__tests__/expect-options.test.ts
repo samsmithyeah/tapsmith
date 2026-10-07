@@ -186,6 +186,59 @@ describe("WebView toBeVisible({ visible: false }) (PILOT-547)", () => {
   });
 });
 
+// ─── Trace records what visible: false checked ───
+
+function mockCollector() {
+  return {
+    captureBeforeAction: vi.fn(async () => ({ actionIndex: 0, captures: {} })),
+    addAssertionEvent: vi.fn(),
+    _emitAssertionStarted: vi.fn(),
+    setPendingOperation: vi.fn(),
+    clearPendingOperation: vi.fn(),
+  };
+}
+
+describe("trace event for toBeVisible({ visible: false }) (PILOT-547)", () => {
+  it("native: the toBeVisible row records that it expected the element hidden", async () => {
+    const collector = mockCollector();
+    const traced = (screen: () => ElementInfo[]) => new ElementHandle(clientOf(screen), _text("Explore"), 100, {
+      traceCapture: {
+        collector,
+        takeScreenshot: async () => undefined,
+        captureHierarchy: async () => undefined,
+      } as unknown as import("../trace/trace-collector.js").TraceCapture,
+    });
+    await tapsmithExpect(traced(absent)).toBeVisible({ visible: false, timeout: 50 });
+    await tapsmithExpect(traced(visible)).not.toBeVisible({ visible: false, timeout: 50 });
+    await tapsmithExpect(traced(visible)).toBeVisible({ timeout: 50 });
+    const events = collector.addAssertionEvent.mock.calls.map((c) => c[0]);
+    vitestExpect(events.map((e) => [e.assertion, e.passed, e.expected])).toEqual([
+      ["toBeVisible", true, "hidden ({ visible: false })"],
+      ["not.toBeVisible", true, "not hidden ({ visible: false })"],
+      ["toBeVisible", true, undefined],
+    ]);
+  });
+
+  it("WebView: the toBeVisible row records that it expected the element hidden", async () => {
+    const collector = mockCollector();
+    const wv = webViewOf([{ visible: false }]);
+    wv._traceCtx = {
+      collector,
+      takeScreenshot: async () => undefined,
+      captureHierarchy: async () => undefined,
+      deviceId: "d",
+    } as unknown as NonNullable<typeof wv._traceCtx>;
+    vi.spyOn(wv, "_getElementBounds").mockResolvedValue(undefined);
+    await tapsmithExpect(wv.getByText("A")).toBeVisible({ visible: false, timeout: 100 });
+    await tapsmithExpect(wv.getByText("A")).not.toBeVisible({ timeout: 100 });
+    const events = collector.addAssertionEvent.mock.calls.map((c) => c[0]);
+    vitestExpect(events.map((e) => [e.assertion, e.passed, e.expected])).toEqual([
+      ["toBeVisible", true, "hidden ({ visible: false })"],
+      ["not.toBeVisible", true, undefined],
+    ]);
+  });
+});
+
 // ─── Unsupported options are refused ───
 
 describe("matcher options are validated (PILOT-547)", () => {

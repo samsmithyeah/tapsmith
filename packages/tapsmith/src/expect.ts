@@ -454,6 +454,14 @@ function visibleOption(options: { visible?: unknown } | null | undefined): boole
 const VISIBLE_FALSE_SUFFIX = " (toBeVisible({ visible: false }))";
 
 /**
+ * The trace's expected value for toBeVisible({ visible: false }), so its
+ * "toBeVisible" row says it checked the element was hidden.
+ */
+function visibleFalseExpected(negated: boolean): string {
+  return `${negated ? "not hidden" : "hidden"} ({ visible: false })`;
+}
+
+/**
  * Wrap an assertion method to emit trace events when tracing is active.
  */
 function wrapAssertionWithTrace(
@@ -679,7 +687,10 @@ function createAssertions(
     async toBeVisible(options) {
       const timeout = timeoutFor("toBeVisible", options, ["visible"]);
       // `visible: false` is toBeHidden(), `.not` included (Playwright).
-      if (!visibleOption(options)) return expectHidden(timeout, VISIBLE_FALSE_SUFFIX);
+      if (!visibleOption(options)) {
+        handle._assertionResult = { expected: visibleFalseExpected(negated), actual: undefined };
+        return expectHidden(timeout, VISIBLE_FALSE_SUFFIX);
+      }
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         // Negated form is an absence check — evaluate over all matches.
@@ -1863,7 +1874,11 @@ function createWebViewAssertions(
     throw new Error(message);
   };
 
-  const traceAssertion = async (name: string, fn: () => Promise<void>): Promise<void> => {
+  const traceAssertion = async (
+    name: string,
+    fn: () => Promise<void>,
+    expected: () => string | undefined = () => undefined,
+  ): Promise<void> => {
     const traceCtx = locator._handle._traceCtx;
     if (!traceCtx) return fn();
 
@@ -1908,6 +1923,7 @@ function createWebViewAssertions(
         negated,
         duration: Date.now() - start,
         attempts: Math.max(1, Math.round((Date.now() - start) / POLL_INTERVAL_MS)),
+        expected: expected(),
         error: timeoutError,
         sourceLocation,
         stack,
@@ -1949,6 +1965,7 @@ function createWebViewAssertions(
       negated,
       duration,
       attempts,
+      expected: expected(),
       error,
       bounds,
       sourceLocation,
@@ -1984,10 +2001,14 @@ function createWebViewAssertions(
     },
 
     async toBeVisible(options) {
+      let expected: string | undefined;
       return traceAssertion('toBeVisible', async () => {
         const timeout = timeoutFor("toBeVisible", options, ["visible"]);
         // `visible: false` is toBeHidden(), `.not` included (Playwright).
-        if (!visibleOption(options)) return expectHidden(timeout, VISIBLE_FALSE_SUFFIX);
+        if (!visibleOption(options)) {
+          expected = visibleFalseExpected(negated);
+          return expectHidden(timeout, VISIBLE_FALSE_SUFFIX);
+        }
         const result = await poll(
           // Negated form is an absence check — evaluate over all matches
           // (strict mode, PILOT-227). A strict violation propagates out of
@@ -2001,7 +2022,7 @@ function createWebViewAssertions(
             `Expected "${locator._selector}" ${negated ? 'not ' : ''}to be visible in WebView`,
           );
         }
-      });
+      }, () => expected);
     },
 
     async toBeHidden(options) {
