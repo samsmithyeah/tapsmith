@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { distance as levenshtein } from 'fastest-levenshtein';
 import type { ReporterConfig } from './reporter.js';
@@ -1738,18 +1739,116 @@ function errorMessage(err: unknown): string {
  * that tsx then trips over something else on).
  */
 function configLoadError(configPath: string, err: unknown, nativeError?: unknown, note?: string): Error {
-  let detail = errorMessage(err);
-  if (nativeError !== undefined && errorMessage(nativeError) !== detail && isUnresolvedForTsxToo(nativeError)) {
+  const syntax = syntaxErrorsOf(configPath, err);
+  let detail = syntax ? syntaxErrorDetail(configPath, syntax) : errorMessage(err);
+  if (nativeError !== undefined && errorMessage(nativeError) !== errorMessage(err) && isUnresolvedForTsxToo(nativeError)) {
     detail += `\n(Without tsx, Node reported: ${errorMessage(nativeError)})`;
   }
   if (note) detail += `\n(${note})`;
-  const error = new Error(`Failed to load config file ${configPath}: ${detail}`, { cause: err });
+  // A syntax error in the config itself reads `<file>:<line>:<col>: <text>`.
+  const separator = syntax && sameFile(syntax[0].file, configPath) ? '' : ' ';
+  const error = new Error(`Failed to load config file ${configPath}:${separator}${detail}`, { cause: err });
+  Object.defineProperty(error, CONFIG_LOAD_FAILURE, {
+    value: { configPath, location: syntax?.[0] } satisfies ConfigLoadFailure,
+  });
   if (nativeError !== undefined) Object.defineProperty(error, NATIVE_ERROR, { value: nativeError });
   // Callers print `stack`, which never includes `cause`: without this the
   // trace shows Tapsmith's loader frames and not the line in the config.
   const causeStack = err instanceof Error ? err.stack : undefined;
   if (causeStack) error.stack = `${error.name}: ${error.message}\nCaused by: ${causeStack}`;
   return error;
+}
+
+// ─── Config load failures (PILOT-569) ───
+
+/** Where a syntax error in a config (or a file it imports) is. */
+export interface ConfigErrorLocation {
+  file: string;
+  line: number;
+  column?: number;
+  text: string;
+}
+
+/** What the CLI needs to report a config that could not be imported. */
+export interface ConfigLoadFailure {
+  configPath: string;
+  /** The (first) syntax error's location, when the failure is one. */
+  location?: ConfigErrorLocation;
+}
+
+// Symbol.for: the error may come from another copy of this module.
+const CONFIG_LOAD_FAILURE = Symbol.for('tapsmith.configLoadFailure');
+
+/** The config file and syntax-error location of an error `loadConfig` rejected with an unloadable config. */
+export function configLoadFailureOf(err: unknown): ConfigLoadFailure | undefined {
+  if (!(err instanceof Error)) return undefined;
+  return (err as unknown as Record<symbol, ConfigLoadFailure | undefined>)[CONFIG_LOAD_FAILURE];
+}
+
+/**
+ * The syntax errors a load failure is, located: esbuild's (tsx compiling a
+ * TypeScript config) are parsed from its message; Node's own carry no
+ * location in an ES module, so `node --check` finds it for a JavaScript
+ * config. `undefined` for anything else, or a syntax error that cannot be
+ * located (one in a module the config imports, which `--check` does not
+ * follow).
+ */
+function syntaxErrorsOf(configPath: string, err: unknown): ConfigErrorLocation[] | undefined {
+  const esbuild = parseEsbuildErrors(errorMessage(err));
+  if (esbuild) return esbuild;
+  if (!(err instanceof SyntaxError) || !firstStackFrameIsCompileStep(err)) return undefined;
+  if (!/\.[cm]?js$/.test(configPath)) return undefined;
+  const located = checkSyntaxLocation(configPath);
+  return located ? [{ ...located, text: err.message }] : undefined;
+}
+
+/**
+ * esbuild's "Transform failed with N error(s):" message, one
+ * `<file>:<line>:<col>: ERROR: <text>` line per error.
+ * @internal — exported for unit testing.
+ */
+export function parseEsbuildErrors(message: string): ConfigErrorLocation[] | undefined {
+  const [first, ...rest] = message.split('\n');
+  if (!/^(?:Transform|Build) failed with \d+ errors?:$/.test(first)) return undefined;
+  const errors = rest.flatMap((line) => {
+    const m = /^(.+?):(\d+):(\d+): (?:ERROR|error): (.*)$/.exec(line);
+    return m ? [{ file: m[1], line: Number(m[2]), column: Number(m[3]) + 1, text: m[4] }] : [];
+  });
+  return errors.length > 0 ? errors : undefined;
+}
+
+function syntaxErrorDetail(configPath: string, errors: ConfigErrorLocation[]): string {
+  return errors.map((e, i) => {
+    const where = `${e.line}${e.column !== undefined ? `:${e.column}` : ''}: ${e.text}`;
+    // The headline continues "Failed to load config file <configPath>:".
+    if (i === 0 && sameFile(e.file, configPath)) return where;
+    return `${e.file}:${where}`;
+  }).join('\n');
+}
+
+function sameFile(a: string, b: string): boolean {
+  if (path.resolve(a) === path.resolve(b)) return true;
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The line and column of a JavaScript file's syntax error, from
+ * `node --check`, which prints `<file>:<line>`, the line, and a caret under
+ * the offending token. Only run once the import has already failed.
+ */
+function checkSyntaxLocation(file: string): { file: string; line: number; column?: number } | undefined {
+  const result = spawnSync(process.execPath, ['--check', file], { encoding: 'utf-8', timeout: 10_000 });
+  const lines = (result.stderr ?? '').split('\n');
+  const header = lines.findIndex((l) => l.startsWith(`${file}:`));
+  if (header === -1) return undefined;
+  const line = Number(lines[header].slice(file.length + 1));
+  if (!Number.isInteger(line) || line < 1) return undefined;
+  const caret = lines[header + 2]?.indexOf('^') ?? -1;
+  return { file, line, ...(caret >= 0 ? { column: caret + 1 } : {}) };
 }
 
 /**

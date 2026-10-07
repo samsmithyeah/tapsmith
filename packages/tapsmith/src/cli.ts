@@ -10,7 +10,7 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { claimBanner, printsBanner, runCli, type CliHandlers, type TestCommandArgs } from './cli-program.js';
-import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, primaryDevicePin, deviceGroupSize, assignGroupMemberDevices, EXPLICIT_WORKERS, isExplicitWorkers, isTapsmithNotInstalledError, isConfigValidationError, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
+import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, primaryDevicePin, deviceGroupSize, assignGroupMemberDevices, EXPLICIT_WORKERS, isExplicitWorkers, isTapsmithNotInstalledError, isConfigValidationError, configLoadFailureOf, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
 import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
@@ -3207,6 +3207,16 @@ main().catch(async (err) => {
   if (isTapsmithNotInstalledError(err) || (isConfigValidationError(err) && err.configPath)) {
     console.error(red(message));
     if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) console.error(err.stack);
+    process.exit(1);
+  }
+
+  // A config that could not be imported (PILOT-569): its message once, with
+  // a code frame, not the message three times over tsx's loader frames.
+  const configFailure = configLoadFailureOf(err);
+  if (configFailure) {
+    const { formatConfigLoadFailure } = await import('./config-load-report.js');
+    console.error(formatConfigLoadFailure(err as Error, configFailure));
+    if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) console.error((err as Error).stack);
     process.exit(1);
   }
 
