@@ -349,7 +349,7 @@ function buildProgram(deps: RunCliDeps, io: CliIo, state: ParseState): Command {
   program
     .command('test')
     .description('Run test files')
-    .argument('[files...]', 'Test files or globs (default: the config\'s testMatch)')
+    .argument('[files...]', 'Test files, directories, globs or path filters (default: the config\'s testMatch)')
     .option('-d, --device <serial>', 'Target a specific device or simulator by serial/UDID')
     .option('-j, --workers <n>', 'Number of parallel workers (default: 1)', positiveInt('--workers'))
     .option('--shard <x/y>', 'Run shard x of y across CI machines (e.g. 1/4)', parseShard)

@@ -873,7 +873,6 @@ export class HeadlessTestDispatcher implements TestDispatcher {
             const files = await discoverTestFiles(
               project.testMatch,
               config.rootDir,
-              undefined,
               project.testIgnore,
             );
             project.testFiles = files;

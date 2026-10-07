@@ -32,7 +32,7 @@ import {
 import type { PreparedState, ResetCapabilities } from './app-reset.js';
 import { claimDeviceOrThrow, claimFirstFree, claimUpTo, currentSession, ensureClaimSession, devicesHeldByThisProcess, heldDevicesNote, releaseDeviceClaim, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
-import { discoverTestFiles } from './test-file-discovery.js';
+import { discoverTestFiles, noTestFilesFoundMessage, relativeTestPath, resolveTestFileArgs } from './test-file-discovery.js';
 import { resolveTsxBin } from './child-scripts.js';
 import {
   resolveTraceConfig,
@@ -2015,6 +2015,13 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
 
   let projects: import('./project.js').ResolvedProject[];
   let projectWaves: import('./project.js').ResolvedProject[][];
+  // What the positional arguments failed to select, for "No tests found".
+  let unmatchedFileArgs: string[] = [];
+  let regexReadFileArgs: string[] = [];
+  const filesOutsideProjects: string[] = [];
+  const discoveredByProject = new Map<string, string[]>();
+  // The testMatch patterns the selection was drawn from, for that message.
+  let selectionTestMatch: string[] = config.testMatch;
 
   if (hasProjects && !hasExplicitFiles) {
     // Full project mode — discover all files per project
@@ -2031,8 +2038,9 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       projects = projects.filter((p) => required.has(p.name));
     }
     projectWaves = topologicalSort(projects);
+    selectionTestMatch = [...new Set(projects.flatMap((p) => p.testMatch))];
     for (const project of projects) {
-      project.testFiles = await discoverTestFiles(project.testMatch, config.rootDir, undefined, project.testIgnore);
+      project.testFiles = await discoverTestFiles(project.testMatch, config.rootDir, project.testIgnore);
     }
   } else if (hasProjects && hasExplicitFiles) {
     // Explicit files with projects — auto-run dependencies
@@ -2046,15 +2054,38 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       }
     }
     const selectedSet = selectedProjects ? new Set(selectedProjects) : undefined;
-    const explicitPaths = args.files.map((f: string) => path.resolve(config.rootDir, f));
+    // Directories, globs and filters select among the files the (selected)
+    // projects discover; a file named outright is kept even if none does,
+    // and is then reported below rather than silently dropped.
+    for (const project of allProjects) {
+      if (selectedSet && !selectedSet.has(project.name)) continue;
+      const files = await discoverTestFiles(project.testMatch, config.rootDir, project.testIgnore);
+      discoveredByProject.set(project.name, files);
+    }
+    selectionTestMatch = [...new Set(allProjects
+      .filter((p) => discoveredByProject.has(p.name))
+      .flatMap((p) => p.testMatch))];
+    const resolution = resolveTestFileArgs(
+      args.files,
+      [...new Set([...discoveredByProject.values()].flat())].sort(),
+      [config.rootDir, process.cwd()],
+    );
+    unmatchedFileArgs = resolution.unmatched;
+    regexReadFileArgs = resolution.readAsRegex;
+    const explicitPaths = resolution.files;
 
     // Find which projects the explicit files belong to
     const targetProjectNames = new Set<string>();
     const filesByProject = new Map<string, string[]>();
     for (const filePath of new Set(explicitPaths)) {
-      for (const name of findProjectsForFile(filePath, allProjects, config.rootDir)) {
-        // When `--project` is given, only keep matches in the selected set.
-        if (selectedSet && !selectedSet.has(name)) continue;
+      // The projects whose discovery found it — `testMatch` may be shaped
+      // (`./…`) so only glob reads it — else, for a file named outright that
+      // none discovered, the projects whose patterns match it.
+      const discoveredBy = [...discoveredByProject].filter(([, files]) => files.includes(filePath)).map(([name]) => name);
+      const owners = (discoveredBy.length > 0 ? discoveredBy : findProjectsForFile(filePath, allProjects, config.rootDir))
+        .filter((name) => !selectedSet || selectedSet.has(name));
+      if (owners.length === 0) filesOutsideProjects.push(filePath);
+      for (const name of owners) {
         targetProjectNames.add(name);
         let list = filesByProject.get(name);
         if (!list) {
@@ -2072,13 +2103,18 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     projects = allProjects.filter((p) => requiredNames.has(p.name));
     projectWaves = topologicalSort(projects);
 
-    // Discover files: dependency projects get their full testMatch, target projects get only explicit files
+    // A project another project in this run depends on runs whole, as in
+    // Playwright — even when an argument also selected some of its files, so
+    // `auth` cannot cut a setup project down to auth.setup.ts while the tests
+    // that need all of it run. Any other target runs only the selected files.
+    const dependedOn = new Set(projects.flatMap((p) => p.dependencies));
     for (const project of projects) {
-      if (targetProjectNames.has(project.name)) {
+      if (targetProjectNames.has(project.name) && !dependedOn.has(project.name)) {
         project.testFiles = filesByProject.get(project.name) ?? [];
       } else {
         // Dependency project — run all its files
-        project.testFiles = await discoverTestFiles(project.testMatch, config.rootDir, undefined, project.testIgnore);
+        project.testFiles = discoveredByProject.get(project.name)
+          ?? await discoverTestFiles(project.testMatch, config.rootDir, project.testIgnore);
       }
     }
   } else {
@@ -2096,7 +2132,15 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       effectiveConfig: config,
       deviceSignature: makeDeviceSignature(config),
     };
-    defaultProject.testFiles = await discoverTestFiles(config.testMatch, config.rootDir, args.files);
+    const discovered = await discoverTestFiles(config.testMatch, config.rootDir);
+    if (hasExplicitFiles) {
+      const resolution = resolveTestFileArgs(args.files, discovered, [config.rootDir, process.cwd()]);
+      unmatchedFileArgs = resolution.unmatched;
+      regexReadFileArgs = resolution.readAsRegex;
+      defaultProject.testFiles = resolution.files;
+    } else {
+      defaultProject.testFiles = discovered;
+    }
     projects = [defaultProject];
     projectWaves = [[defaultProject]];
   }
@@ -2106,10 +2150,24 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
   // Deduplicate (a file could match multiple projects' globs)
   testFiles = [...new Set(testFiles)].sort();
 
+  // Before any daemon, device or tsx work: an argument that selects nothing
+  // must not cost a device boot to find out (PILOT-553).
   if (testFiles.length === 0) {
-    console.error(red('No test files found.'));
+    console.error(red(noTestFilesFoundMessage({
+      args: hasExplicitFiles ? args.files : [],
+      unmatched: unmatchedFileArgs,
+      outsideProjects: filesOutsideProjects.map((f) => relativeTestPath(f, config.rootDir)),
+      testMatch: selectionTestMatch,
+      rootDir: config.rootDir,
+      projectsSelected: selectedProjects !== undefined,
+    })));
     process.exit(1);
   }
+
+  // Every project's files before sharding: whether a grep selects anything is
+  // a question about the whole suite, so every shard with files answers it the
+  // same way (a shard left with none still exits 0 below, as it always has).
+  const unshardedFiles = projects.map((p) => ({ project: p, files: [...p.testFiles] }));
 
   let shardMessage: string | undefined;
   // Apply sharding — deterministic split within each project. Setup projects
@@ -2163,6 +2221,57 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
   // pass unremarked. After the tsx re-exec, so it prints once.
   const rosettaWarning = rosettaNodeWarning();
   if (rosettaWarning) console.error(yellow(`⚠ ${rosettaWarning}`));
+
+  // After the tsx re-exec, so each prints once.
+  for (const arg of unmatchedFileArgs) {
+    console.error(yellow(`Warning: "${arg}" matched no test file — running the files the other arguments selected.`));
+  }
+  for (const arg of regexReadFileArgs) {
+    // A glob that globbed nothing can select far more as a regex (`tests/*`).
+    console.error(yellow(`Note: "${arg}" matched no file as a glob, so it was read as a regular expression over the test file paths.`));
+  }
+  for (const file of filesOutsideProjects) {
+    console.error(yellow(`Warning: ${relativeTestPath(file, config.rootDir)} is not matched by any${selectedProjects ? ' selected' : ''} project's testMatch, so it does not run.`));
+  }
+
+  // A selection filter (grep / grep-invert, at root or any project) is active.
+  const selectionFilterActive =
+    config.grep !== undefined || config.grepInvert !== undefined ||
+    (hasProjects && projects.some((p) => p.grep !== undefined || p.grepInvert !== undefined));
+
+  // A grep that selects no test fails here, before the daemon, the device and
+  // the reporters (PILOT-553). The names come from a child process, so no
+  // test file's top-level code runs in this one before the run imports it.
+  // Not in UI mode, which shows the tree to pick from, nor in watch mode,
+  // where an edit can add the test the pattern is waiting for.
+  if (selectionFilterActive && !args.ui && !args.watch) {
+    const { discoverTestNames } = await import('./selection-preflight.js');
+    const { findSelectionMiss, noTestsMatchFilterMessage } = await import('./test-filter.js');
+    const rootGrep = normalizeGrep(config.grep);
+    const rootGrepInvert = normalizeGrep(config.grepInvert);
+    const names = await discoverTestNames([...new Set(unshardedFiles.flatMap(({ files }) => files))]);
+    const miss = findSelectionMiss(
+      unshardedFiles.flatMap(({ project, files }) => files.map((file) => ({
+        file,
+        filters: {
+          grep: rootGrep,
+          grepInvert: rootGrepInvert,
+          projectGrep: normalizeGrep(project.grep),
+          projectGrepInvert: normalizeGrep(project.grepInvert),
+        },
+      }))),
+      (file) => names.get(file),
+    );
+    if (miss) {
+      console.error(red(noTestsMatchFilterMessage(
+        miss,
+        config.grep,
+        config.grepInvert,
+        hasProjects && projects.some((p) => p.grep !== undefined || p.grepInvert !== undefined),
+      )));
+      process.exit(1);
+    }
+  }
 
   // Retry-only video/trace modes start no recorder on attempt 0, so with
   // `retries: 0` they can never produce an artifact. Warn at run start —
@@ -2337,13 +2446,10 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     console.log(`\nStarting watch mode for ${testFiles.length} test file(s)...\n`);
   }
 
-  // A selection filter (grep / grep-invert, at root or any project) is active.
-  // When such a filter selects zero runnable tests — i.e. every discovered test
-  // ends up skipped — that's a usage error (typically a typo'd pattern), not a
-  // green run. The exit paths below fail loud rather than reporting success.
-  const selectionFilterActive =
-    config.grep !== undefined || config.grepInvert !== undefined ||
-    (hasProjects && projects.some((p) => p.grep !== undefined || p.grepInvert !== undefined));
+  // When a selection filter selects zero runnable tests — i.e. every
+  // discovered test ends up skipped — that's a usage error (typically a typo'd
+  // pattern), not a green run. The exit paths below fail loud rather than
+  // reporting success.
   const zeroMatchFilterMessage =
     'No tests ran: every selected test was filtered out. Check your --grep / --grep-invert pattern (it matches against the full "describe > test" name).';
 

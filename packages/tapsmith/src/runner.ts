@@ -51,7 +51,7 @@ import { deviceGroupSize, resolveDeviceGroup, validateAppResetOptions, validateD
 import { onActionProgress } from './action-progress.js';
 import { runInAttemptContext, type AttemptToken } from './attempt-fence.js';
 import { runInRouteScope, type RouteScope } from './network.js';
-import { matchesTestFilter } from './test-filter.js';
+import { passesSelectionFilters } from './test-filter.js';
 import { startLiveNetwork } from './trace/live-network.js';
 import { telemetry, runEventFromResults, type RunMode } from './telemetry.js';
 import { isRecoverableInfrastructureError } from './worker-protocol.js';
@@ -1236,28 +1236,8 @@ async function captureFailureScreenshot(
  *   (intersected: root AND project).
  * - `grepInvert` / `projectGrepInvert`: no regex in the union may match.
  */
-// Reset lastIndex before each test() — RegExp with the `g` flag is stateful.
 function passesTestFilter(fullName: string, opts: RunOptions): boolean {
-  if (opts.testFilter && !matchesTestFilter(fullName, opts.testFilter)) {
-    return false;
-  }
-  if (opts.grep && opts.grep.length > 0
-    && !opts.grep.some((re) => (re.lastIndex = 0, re.test(fullName)))) {
-    return false;
-  }
-  if (opts.projectGrep && opts.projectGrep.length > 0
-    && !opts.projectGrep.some((re) => (re.lastIndex = 0, re.test(fullName)))) {
-    return false;
-  }
-  if (opts.grepInvert && opts.grepInvert.length > 0
-    && opts.grepInvert.some((re) => (re.lastIndex = 0, re.test(fullName)))) {
-    return false;
-  }
-  if (opts.projectGrepInvert && opts.projectGrepInvert.length > 0
-    && opts.projectGrepInvert.some((re) => (re.lastIndex = 0, re.test(fullName)))) {
-    return false;
-  }
-  return true;
+  return passesSelectionFilters(fullName, opts);
 }
 
 // Dispatch based on Function.length (parameter count). Note: fn.length does

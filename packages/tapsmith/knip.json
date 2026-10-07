@@ -5,6 +5,7 @@
     "src/worker-runner.ts",
     "src/ui-mode/ui-worker.ts",
     "src/ui-mode/ui-discover.ts",
+    "src/selection-preflight-child.ts",
     "src/index.ts",
     "scripts/fetch-bezels.mjs"
   ],
