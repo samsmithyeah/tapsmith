@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { EXAMPLE_TEST_PATH, GENERATED_TEST_MATCH, androidEmulatorCaptureLine, avdPickerChoices, normalizeTypedPath, typedBuildPath, validateBuildPath, generateConfig, generatedProjects, generateExampleTest, runInit } from '../init.js';
+import { EXAMPLE_TEST_PATH, GENERATED_TEST_MATCH, androidEmulatorCaptureLine, avdPickerChoices, normalizeTypedPath, typedBuildPath, validateBuildPath, generateConfig, generatedProjects, generateExampleTest, runInit, wizardNextSteps } from '../init.js';
 import type { AndroidConfig, IosConfig, Platform } from '../init.js';
 import { platformlessIosFields } from '../doctor.js';
 import { _internal } from '../runner.js';
@@ -570,5 +570,19 @@ describe('runInit() --json without --yes', () => {
     const { out, exit } = await run(false);
     expect(exit).toBe('exit 1');
     expect((JSON.parse(out) as { error: { code: string } }).error.code).toBe('NON_INTERACTIVE_TTY');
+  });
+});
+
+describe('wizardNextSteps() (PILOT-562)', () => {
+  it('leads with `tapsmith verify`, as getting-started does, and never shows a person --json', () => {
+    const steps = wizardNextSteps(undefined);
+    expect(steps[0]).toEqual(['Verify your setup', 'npx tapsmith verify']);
+    expect(steps.map(([, cmd]) => cmd)).toEqual(['npx tapsmith verify', 'npx tapsmith test', 'npx tapsmith list-devices', 'npx tapsmith doctor']);
+  });
+
+  it('puts a declined install first (PILOT-551)', () => {
+    const steps = wizardNextSteps('npm i -D tapsmith');
+    expect(steps[0]).toEqual(['Install Tapsmith', 'npm i -D tapsmith']);
+    expect(steps[1][1]).toBe('npx tapsmith verify');
   });
 });

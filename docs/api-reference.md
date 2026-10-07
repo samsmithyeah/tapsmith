@@ -2582,7 +2582,7 @@ removing one, or changing what it means, is a breaking change.
 The results:
 
 - **`init --yes --json`**: `{ configPath, filesCreated, warnings, nextSteps }` — the config file written, every
-  file created, warnings (strings) and next steps (strings). When the project cannot resolve `tapsmith`, which the
+  file created (including `.gitignore` when init added entries to it), warnings (strings) and next steps (strings). When the project cannot resolve `tapsmith`, which the
   config and example test import, the first next step is the install command for its package manager (`--yes` never
   runs it) and a warning says so.
 - **`verify --json`**: `{ ok, passed, failed, skipped, duration, failures, testFile }` — counts, `duration` in
@@ -2590,7 +2590,7 @@ The results:
   config's `rootDir`.
 - **`doctor --json`**: `{ ok, checks, inventory }` — `ok` is false when any check has `status` `fail`;
   `checks` are health checks (below); `inventory` is `{ avds, simulators, connectedDevices }`: AVD names,
-  simulators as `{ name, udid, state, runtime }`, and connected Android devices as `{ serial, state }`.
+  simulators as `{ name, udid, state, runtime }` (`runtime` like `iOS 26.5`), and connected Android devices as `{ serial, state }`.
 - **`ios setup-device --json`**: `{ ok, checks, devices, notConnected }` — `ok` is the same verdict as the exit code;
   `checks` are health checks (below), ending with `device-connected`, which fails when no device is connected or
   a connected device is unpaired or has Developer Mode off, so `ok` is false exactly when some check fails; `devices` are the
@@ -2806,7 +2806,7 @@ npx tapsmith test --reporter json     # writes tapsmith-results/results.json
 
 ### `tapsmith init [options]`
 
-Set up a project. With no options, in a terminal, it runs the interactive wizard: it detects your environment (ADB, Xcode, simulators, emulators), offers the app builds it finds under `android/` and `ios/` (a typed path must exist), walks you through platform and app configuration, and generates a `tapsmith.config.ts`, an example test (`tests/example.tapsmith.ts`) and an `AGENTS.md` section. The config's `testMatch` is `['**/*.tapsmith.ts']`, a suffix Jest and Vitest don't run by default (outside a `__tests__` folder, where Jest runs every file), so the project's own unit-test run doesn't pick up Tapsmith tests and Tapsmith doesn't pick up its unit tests; when the project already has Tapsmith tests named `*.test.ts` or `*.spec.ts` (from an older init, say), init warns that the new config won't run them. Run outside a project that has Tapsmith installed (`npx tapsmith init` before `npm i -D tapsmith`, or a global install), it offers to install it with the project's package manager, since the files it writes import `tapsmith`; declined, it prints the command as the first next step. In an Expo project (`expo` among the dependencies, plus `app.json` or `app.config.*`) it gives the Expo build commands when it finds no build (`npx expo prebuild`, then a release `./gradlew assembleRelease` or `xcodebuild` build, with `EXPO_PUBLIC_TAPSMITH_HOOKS=1` when the app uses `@tapsmith/react-native`), and pre-fills the package and bundle ID prompts from the app config when it can't read them from the build.
+Set up a project. With no options, in a terminal, it runs the interactive wizard: it detects your environment (ADB, Xcode, simulators, emulators), offers the app builds it finds under `android/` and `ios/` (a typed path must exist), walks you through platform and app configuration, and generates a `tapsmith.config.ts`, an example test (`tests/example.tapsmith.ts`) and an `AGENTS.md` section. It adds `tapsmith-results/` (traces, screenshots, JSON and JUnit results) and `tapsmith-report/` (the HTML report) to the project's `.gitignore` (creating one if there is none), skipping any git already ignores; in the wizard, it offers every iOS simulator, with a booted one selected, and its next steps start with `npx tapsmith verify`. The config's `testMatch` is `['**/*.tapsmith.ts']`, a suffix Jest and Vitest don't run by default (outside a `__tests__` folder, where Jest runs every file), so the project's own unit-test run doesn't pick up Tapsmith tests and Tapsmith doesn't pick up its unit tests; when the project already has Tapsmith tests named `*.test.ts` or `*.spec.ts` (from an older init, say), init warns that the new config won't run them. Run outside a project that has Tapsmith installed (`npx tapsmith init` before `npm i -D tapsmith`, or a global install), it offers to install it with the project's package manager, since the files it writes import `tapsmith`; declined, it prints the command as the first next step. In an Expo project (`expo` among the dependencies, plus `app.json` or `app.config.*`) it gives the Expo build commands when it finds no build (`npx expo prebuild`, then a release `./gradlew assembleRelease` or `xcodebuild` build, with `EXPO_PUBLIC_TAPSMITH_HOOKS=1` when the app uses `@tapsmith/react-native`), and pre-fills the package and bundle ID prompts from the app config when it can't read them from the build.
 
 Pass `--yes` or any setup flag below (every flag but `--json`) to run non-interactively instead, for scripts and AI agents: anything not given is auto-detected, and a choice that cannot be made (two APKs, say) exits 1 naming the candidates and the flag that picks one. `--json` only changes the output, so an agent passes `--yes --json`. Without a terminal and without `--yes` or a setup flag, `init` exits 1 rather than waiting for input. iOS physical devices need the interactive wizard, for its code-signing preflight.
 
@@ -2819,7 +2819,7 @@ Pass `--yes` or any setup flag below (every flag but `--json`) to run non-intera
 | `--app <path>` | iOS simulator `.app` bundle (default: auto-detected under `ios/`) |
 | `--bundle-id <id>` | iOS bundle identifier (default: read from `Info.plist`, else, in an Expo project, `expo.ios.bundleIdentifier` from the app config, with a warning) |
 | `--avd <name>` | Android AVD to auto-launch (default: first available; with `--network-capture`, the first that supports HTTPS capture — Google Play images don't, and init warns if it can only pick one) |
-| `--simulator <name>` | iOS simulator name (default: newest available iPhone) |
+| `--simulator <name>` | iOS simulator name (default: a booted iOS simulator, else the newest available iPhone) |
 | `--device-type <type>` | `emulator`, `physical` or `both` (default: `emulator`) |
 | `--network-capture` | Enable HTTP(S) capture in traces |
 | `--no-example-test` | Skip scaffolding `tests/example.tapsmith.ts` |
