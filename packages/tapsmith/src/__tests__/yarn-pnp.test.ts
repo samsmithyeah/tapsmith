@@ -46,7 +46,7 @@ describe('yarnPnpRefusal()', () => {
 // Node: no `process.versions.pnp`, and the project's own tapsmith is in a zip.
 describe('isYarnPnp() without the PnP runtime', () => {
   function writeProject(root: string): string {
-    fs.writeFileSync(path.join(root, 'package.json'), '{}\n');
+    fs.writeFileSync(path.join(root, 'package.json'), '{ "devDependencies": { "tapsmith": "^0.6.0" } }\n');
     fs.writeFileSync(path.join(root, '.pnp.cjs'), '// pnp\n');
     const sub = path.join(root, 'apps', 'mobile');
     fs.mkdirSync(sub, { recursive: true });
@@ -67,6 +67,16 @@ describe('isYarnPnp() without the PnP runtime', () => {
     fs.writeFileSync(path.join(pkg, 'package.json'), '{ "name": "tapsmith", "main": "index.js" }\n');
     fs.writeFileSync(path.join(pkg, 'index.js'), '');
     expect(isYarnPnp({ versions: PLAIN_VERSIONS, cwd: sub })).toBe(false);
+  });
+
+  // A `.pnp.cjs` left in a parent directory (a `yarn` run in $HOME) must not
+  // turn `npx tapsmith test` in an npm project without tapsmith into a PnP refusal.
+  it("is false when the nearest package.json doesn't declare tapsmith", () => {
+    writeProject(dir);
+    const app = path.join(dir, 'code', 'app');
+    fs.mkdirSync(app, { recursive: true });
+    fs.writeFileSync(path.join(app, 'package.json'), '{ "dependencies": { "react": "19.0.0" } }\n');
+    expect(isYarnPnp({ versions: PLAIN_VERSIONS, cwd: app })).toBe(false);
   });
 
   it('is false with no .pnp.cjs anywhere above', () => {

@@ -39,13 +39,34 @@ const processEnv = (): PnpEnv => ({ versions: process.versions, cwd: process.cwd
  * Whether Tapsmith is running in a Plug'n'Play install. Yarn's `.pnp.cjs`
  * runtime sets `process.versions.pnp` wherever it is loaded (`yarn tapsmith …`).
  * `npx tapsmith …` in such a project runs a downloaded copy under plain Node
- * instead, so that also counts: a `.pnp.cjs` at or above `cwd`, and no
- * `tapsmith` that resolves from `node_modules` (which rules out a stray
- * `.pnp.cjs` in a parent directory of a node-modules project).
+ * instead, so that also counts: a `.pnp.cjs` at or above `cwd`, a project
+ * that declares tapsmith, and no `tapsmith` that resolves from `node_modules`.
+ * The last two keep a stray `.pnp.cjs` in a parent directory (a `yarn` run in
+ * $HOME) from turning a node-modules project, or one that hasn't installed
+ * Tapsmith yet, into a Plug'n'Play refusal.
  */
 export function isYarnPnp(env: PnpEnv = processEnv()): boolean {
   if (typeof env.versions.pnp === 'string') return true;
-  return hasPnpManifestAbove(env.cwd) && !isTapsmithResolvableFrom(env.cwd);
+  return hasPnpManifestAbove(env.cwd) && declaresTapsmith(env.cwd) && !isTapsmithResolvableFrom(env.cwd);
+}
+
+/** Whether the nearest package.json at or above `dir` depends on tapsmith. */
+function declaresTapsmith(dir: string): boolean {
+  for (let current = path.resolve(dir); ; current = path.dirname(current)) {
+    const manifest = path.join(current, 'package.json');
+    if (fs.existsSync(manifest)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(manifest, 'utf-8')) as Record<string, unknown>;
+        return ['dependencies', 'devDependencies'].some((field) => {
+          const deps = pkg[field];
+          return typeof deps === 'object' && deps !== null && 'tapsmith' in deps;
+        });
+      } catch {
+        return false;
+      }
+    }
+    if (path.dirname(current) === current) return false;
+  }
 }
 
 function hasPnpManifestAbove(dir: string): boolean {

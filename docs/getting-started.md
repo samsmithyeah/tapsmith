@@ -79,7 +79,7 @@ On npm 11.17 and later, the install may end with an `npm warn allow-scripts` (np
 
 ### pnpm: `ERR_PNPM_IGNORED_BUILDS`
 
-pnpm blocks dependency build scripts unless the project approves them. From pnpm 11, `pnpm add -D tapsmith` installs everything and then exits 1 with `ERR_PNPM_IGNORED_BUILDS: Ignored build scripts: esbuild, protobufjs` (pnpm 10 prints the same list as a warning). They are the same scripts as in the npm warning above, and Tapsmith works without them. Only the project can approve or deny them, so to record that decision and silence the error, add this to the `pnpm-workspace.yaml` beside your `pnpm-lock.yaml` (in a monorepo, the one at the workspace root; create it if there isn't one):
+pnpm blocks dependency build scripts unless the project approves them. From pnpm 11, `pnpm add -D tapsmith` installs everything and then exits 1 with `ERR_PNPM_IGNORED_BUILDS: Ignored build scripts: esbuild, protobufjs` (pnpm 10 prints the same list as a warning). They are the same scripts as in the npm warning above, and Tapsmith works without them. Only the project can approve or deny them, so to record that decision and silence the error, set them to `false` under `allowBuilds` in the `pnpm-workspace.yaml` beside your `pnpm-lock.yaml` (in a monorepo, the one at the workspace root; create it if there isn't one). Some pnpm versions have already added them there with the value `set this to true or false`: replace that value rather than adding a second `allowBuilds:`.
 
 ```yaml
 allowBuilds:
@@ -98,7 +98,7 @@ Tapsmith doesn't run under Yarn Plug'n'Play, the default for new Yarn 2+ project
 nodeLinker: node-modules
 ```
 
-Then run `yarn install`. Yarn 1 always uses `node_modules`.
+Then run `yarn install`.
 
 ## Build the app under test
 
