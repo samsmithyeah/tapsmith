@@ -89,6 +89,35 @@ describe('offerTapsmithInstall()', () => {
     expect(logged.join('\n')).toContain('⚠ Could not install Tapsmith: npm exited with code 1');
   });
 
+  // PILOT-560: pnpm 11+ installs everything, then exits 1 over the build
+  // scripts it skipped (ERR_PNPM_IGNORED_BUILDS: esbuild, protobufjs).
+  it('counts the install as done when the command failed but tapsmith resolves, and gives pnpm its allowBuilds snippet', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}\n');
+    fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
+    const failingButInstalled = (command: InstallCommand, cwd: string): true | string => {
+      ran.push({ command, cwd });
+      installTapsmithStub();
+      return 'pnpm exited with code 1';
+    };
+    expect(await offerTapsmithInstall(dir, failingButInstalled)).toBeUndefined();
+    expect(ran[0]!.command.display).toBe('pnpm add -D tapsmith');
+    const out = logged.join('\n');
+    expect(out).toContain('✓ Tapsmith installed');
+    expect(out).not.toContain('Could not install');
+    expect(out).toContain('pnpm exited with code 1');
+    expect(out).toContain('pnpm-workspace.yaml');
+    expect(out).toMatch(/allowBuilds:\n\s+esbuild: false\n\s+protobufjs: false/);
+  });
+
+  it('gives no pnpm snippet to another package manager whose install failed after installing', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}\n');
+    const failingButInstalled = (): true | string => { installTapsmithStub(); return 'npm exited with code 1'; };
+    expect(await offerTapsmithInstall(dir, failingButInstalled)).toBeUndefined();
+    const out = logged.join('\n');
+    expect(out).toContain('✓ Tapsmith installed');
+    expect(out).not.toContain('allowBuilds');
+  });
+
   // npm installs into the nearest ancestor with a package.json, which is not
   // necessarily this project: leave that to the user.
   it('does not offer to install without a package.json here, but still names the command', async () => {

@@ -24,6 +24,7 @@ import { MIN_NODE_MAJOR, isSupportedNodeVersion } from './node-runtime.js';
 import { emulatorNotFoundMessage, resolveEmulatorBinary, type EmulatorBinary } from './emulator.js';
 import { hostArch, nodeUnderRosetta, ROSETTA_NODE_FIX } from './host-arch.js';
 import { adbMissingFix, XCODE_FIX } from './toolchain.js';
+import { isYarnPnp, YARN_PNP_FIX } from './yarn-pnp.js';
 
 // ─── ANSI helpers ───
 
@@ -177,6 +178,15 @@ function checkNodeArch(report: Reporter): void {
   warn(report, 'node-arch',
     'Node.js is x64, running under Rosetta on Apple Silicon — Tapsmith\'s packages run translated and the prebuilt iOS simulator agent cannot be used',
     ROSETTA_NODE_FIX);
+}
+
+/**
+ * Yarn Plug'n'Play (PILOT-560): `test`, `verify` and `mcp-server` refuse to
+ * run there, so say so before the user gets that far.
+ */
+function checkYarnPnp(report: Reporter): void {
+  if (!isYarnPnp()) return;
+  fail(report, 'yarn-pnp', "Yarn Plug'n'Play install — Tapsmith can't run tests from zip archives", YARN_PNP_FIX);
 }
 
 function checkDaemonBin(report: Reporter): void {
@@ -1055,6 +1065,7 @@ async function doctorReport(opts: { json: boolean; config?: string }): Promise<D
   }
   checkNodeVersion(report);
   checkNodeArch(report);
+  checkYarnPnp(report);
   checkDaemonBin(report);
   checkConfigFile(report, configFile, findConfigFile);
   // A config's own platforms already fail when none can run (planPlatform);

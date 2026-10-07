@@ -48,8 +48,10 @@ The TypeScript SDK communicates with a Rust daemon over gRPC. The daemon manages
 Tapsmith requires **Node.js 22 or newer** — check with `node --version` first. On older Node, npm can install an old Tapsmith release whose commands don't match these docs, or none at all.
 
 ```bash
-npm install -D tapsmith
+npm install -D tapsmith    # or: yarn add -D tapsmith / pnpm add -D tapsmith
 ```
+
+pnpm 11+ and Yarn Plug'n'Play each need one setting first: see [Installation](docs/getting-started.md#installation).
 
 ### 2. Build your app and set up
 

@@ -6,10 +6,10 @@ non-interactive mode with machine-readable output.
 
 ## The setup loop
 
-Tapsmith needs Node.js 22 or newer: check `node --version` before installing. On older Node, npm can install an old, incompatible release. Under `--json`, the CLI reports an unsupported Node as the `UNSUPPORTED_NODE` error.
+Tapsmith needs Node.js 22 or newer: check `node --version` before installing. On older Node, npm can install an old, incompatible release. Under `--json`, the CLI reports an unsupported Node as the `UNSUPPORTED_NODE` error. With Yarn or pnpm, run the CLI as `yarn tapsmith …` or `pnpm exec tapsmith …`; a Yarn Plug'n'Play project needs `nodeLinker: node-modules` first (`verify --json` reports `YARN_PNP_UNSUPPORTED`, `doctor --json` a failing `yarn-pnp` check). [Installation](getting-started.md#installation) covers the pnpm `allowBuilds` snippet.
 
 ```bash
-npm install -D tapsmith
+npm install -D tapsmith    # or: yarn add -D tapsmith / pnpm add -D tapsmith
 
 # 1. Diagnose the environment. Every failing check includes a `fix`.
 npx tapsmith doctor --json

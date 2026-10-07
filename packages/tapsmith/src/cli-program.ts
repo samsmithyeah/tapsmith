@@ -131,6 +131,13 @@ export interface RunCliDeps {
    * hook). `command` is the full path, space-separated: `ios network configure`.
    */
   beforeAction?(command: string, opts: Record<string, unknown>): void;
+  /**
+   * Called before `beforeAction`: a reason the command cannot run in this
+   * environment at all (Yarn Plug'n'Play, PILOT-560). A refusal exits 1 with
+   * its message and fix — the error envelope under `--json` — and the handler
+   * never runs.
+   */
+  refuse?(command: string): { code: string; message: string; fix: string } | undefined;
 }
 
 /** Hidden `test` flag the tsx re-exec (cli.ts) appends for its child. */
@@ -336,6 +343,13 @@ function buildProgram(deps: RunCliDeps, io: CliIo, state: ParseState): Command {
     .addHelpText('after', ROOT_EXAMPLES);
 
   const act = <T>(name: string, handler: (opts: T) => Promise<number | void>) => async (opts: T): Promise<void> => {
+    const refusal = deps.refuse?.(name);
+    if (refusal) {
+      if (state.json) io.out(formatJson(jsonError(refusal.code, refusal.message, { fix: refusal.fix })));
+      else io.err(`${refusal.message}\n${refusal.fix}\n`);
+      state.exitCode = 1;
+      return;
+    }
     deps.beforeAction?.(name, opts as Record<string, unknown>);
     const code = await handler(opts);
     if (typeof code === 'number') state.exitCode = code;

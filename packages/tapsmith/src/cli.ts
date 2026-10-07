@@ -66,6 +66,7 @@ import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonB
 import { splitHeadline } from './error-detail.js';
 import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage, pinnedDeviceUnusableMessage, waitForPinnedDeviceAuthorization } from './device-advice.js';
 import { rosettaNodeWarning } from './host-arch.js';
+import { yarnPnpRefusal } from './yarn-pnp.js';
 import { androidToolchainBlocker, assertAdbForEmulatorLaunch, iosToolchainBlocker, toolchainBlocker } from './toolchain.js';
 import {
   createUiLaunchSteps,
@@ -1921,6 +1922,7 @@ async function main(): Promise<void> {
     beforeAction: (command, opts) => {
       if (printsBanner(command, opts)) printTapsmithBanner();
     },
+    refuse: (command) => yarnPnpRefusal(command),
   });
   // A handler that set process.exitCode itself returns nothing: keep its code.
   if (code !== 0) process.exitCode = code;
