@@ -605,13 +605,35 @@ export async function offerTapsmithInstall(
 
   console.log(dim(`  Running ${install.display}...`));
   const result = run(install, cwd);
-  if (result !== true) {
+  if (result === true) {
+    console.log(`  ${green('✓')} Tapsmith installed`);
+    return undefined;
+  }
+  // A failed exit is not always a failed install: pnpm 11 and later install
+  // everything, then exit 1 over the dependency build scripts they skipped.
+  // What the config needs is an importable `tapsmith`.
+  if (!isTapsmithResolvableFrom(cwd)) {
     console.log(`  ${YELLOW}⚠${RESET} Could not install Tapsmith: ${result}`);
     return install.display;
   }
-  console.log(`  ${green('✓')} Tapsmith installed`);
+  console.log(`  ${green('✓')} Tapsmith installed ${dim(`(${result})`)}`);
+  if (install.command === 'pnpm') console.log(dim(PNPM_IGNORED_BUILDS_HINT));
   return undefined;
 }
+
+/**
+ * pnpm 11+ fails an install with ERR_PNPM_IGNORED_BUILDS when a dependency has
+ * a build script nobody approved: here esbuild (through tsx) and protobufjs
+ * (through gRPC). Tapsmith does not need either script (PILOT-560), and a
+ * dependency cannot approve or deny them for the project, so say how.
+ */
+const PNPM_IGNORED_BUILDS_HINT = [
+  '  pnpm stopped over the build scripts it skipped (esbuild, protobufjs). Tapsmith does not need them.',
+  '  To record that and silence the error, add this to pnpm-workspace.yaml:',
+  '    allowBuilds:',
+  '      esbuild: false',
+  '      protobufjs: false',
+].join('\n');
 
 // ─── Config generation ───
 
