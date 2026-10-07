@@ -2,7 +2,7 @@ import { Writable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { TapsmithConfig } from '../config.js';
 import type { ResolvedProject } from '../project.js';
-import { createUiLaunchSteps, formatLaunchTable, UiLaunchProgress, unshownPart, writesToSamePlace, type LaunchStep } from '../launch-progress.js';
+import { createUiLaunchSteps, formatLaunchTable, UiLaunchProgress, unshownPart, withoutShownHeadline, writesToSamePlace, type LaunchStep } from '../launch-progress.js';
 
 class CaptureStream extends Writable {
   columns = 80;
@@ -459,5 +459,24 @@ describe('writesToSamePlace', () => {
     expect(writesToSamePlace({ dev: 1, ino: 7 }, { dev: 1, ino: 8 })).toBe(false);
     expect(writesToSamePlace({ dev: 1, ino: 7 }, { dev: 2, ino: 7 })).toBe(false);
     expect(writesToSamePlace(undefined, { dev: 1, ino: 7 })).toBe(false);
+  });
+});
+
+// A summary error ("No worker could start: …", "No device target could
+// start") names each worker or target on its own line; only its headline
+// can repeat a row (PILOT-569).
+describe('withoutShownHeadline', () => {
+  it('drops a headline that repeats a row, keeping every labelled line', () => {
+    expect(withoutShownHeadline('No worker could start: D\nWorker 1 (emulator-5554): D', ['D']))
+      .toBe('Worker 1 (emulator-5554): D');
+  });
+
+  it('keeps a target-labelled line whose reason a stale row shows', () => {
+    const message = 'No device target could start\n  android: D1\n  ios: D2';
+    expect(withoutShownHeadline(message, ['D1'])).toBe(message);
+  });
+
+  it('is empty for a one-line error a row showed', () => {
+    expect(withoutShownHeadline('Failed to start agent: D', ['D'])).toBe('');
   });
 });

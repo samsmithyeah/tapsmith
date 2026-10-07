@@ -507,6 +507,19 @@ export function unshownPart(message: string, shown: readonly string[]): string {
 }
 
 /**
+ * `message` without its first line when that line only repeats a detail the
+ * launch rows showed (`unshownPart` on the headline alone). For the summary
+ * errors a run ends with — "No worker could start: <reason>" over one line
+ * per worker, "No device target could start" over one per target — whose
+ * later lines name the worker or target the rows do not (PILOT-569).
+ */
+export function withoutShownHeadline(message: string, shown: readonly string[]): string {
+  const [headline, ...rest] = message.split("\n");
+  if (unshownPart(headline, shown) !== "") return message;
+  return rest.join("\n").trim();
+}
+
+/**
  * Whether two open files are the same destination (one terminal, pipe or
  * file), by device and inode.
  */

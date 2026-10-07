@@ -73,6 +73,7 @@ import {
   UiLaunchProgress,
   launchRowsShareStderr,
   unshownPart,
+  withoutShownHeadline,
   type LaunchProgressSink,
   type LaunchStepId,
 } from './launch-progress.js';
@@ -3203,7 +3204,9 @@ main().catch(async (err) => {
   const message = err instanceof Error ? err.message : String(err);
   if (isLaunchFailure) {
     // What a ✗ launch row already showed is not repeated (PILOT-569).
-    const unshown = shownFailures ? unshownPart(message, shownFailures) : message;
+    // Only the headline: the lines under it name each worker or target, and
+    // a row may still show another target's reason.
+    const unshown = shownFailures ? withoutShownHeadline(message, shownFailures) : message;
     if (!unshown) {
       console.error(red('Test run failed to start.'));
       if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) console.error((err as Error)?.stack ?? err);
