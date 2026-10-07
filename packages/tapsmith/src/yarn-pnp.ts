@@ -42,8 +42,10 @@ const processEnv = (): PnpEnv => ({ versions: process.versions, cwd: process.cwd
  * instead, so that also counts: a `.pnp.cjs` at or above `cwd`, a project
  * that declares tapsmith, and no `tapsmith` that resolves from `node_modules`.
  * The last two keep a stray `.pnp.cjs` in a parent directory (a `yarn` run in
- * $HOME) from turning a node-modules project, or one that hasn't installed
- * Tapsmith yet, into a Plug'n'Play refusal.
+ * $HOME) from turning an installed node-modules project, or one that has not
+ * added Tapsmith, into a Plug'n'Play refusal. Best effort: a project below such
+ * a stray file that declares Tapsmith but has not run its install yet still
+ * reads as Plug'n'Play.
  */
 export function isYarnPnp(env: PnpEnv = processEnv()): boolean {
   if (typeof env.versions.pnp === 'string') return true;
