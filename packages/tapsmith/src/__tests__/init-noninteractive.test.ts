@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { initArgsFromOptions, resolveInitPlan, executeInitPlan, assertConfigWritable, InitError, type DetectFns } from '../init-noninteractive.js';
 import type { ExpoProject } from '../init-detect.js';
 import { needsSimulatorAgent } from '../init.js';
-import type { EnvScan } from '../env-scan.js';
+import { simulatorChoices, type EnvScan } from '../env-scan.js';
 import type { InitCommandOptions } from '../cli-program.js';
 
 /** `tapsmith init` flags as the CLI hands them over: every boolean present, value flags only when given. */
@@ -25,8 +25,8 @@ const baseEnv: EnvScan = {
   androidHome: '/sdk',
   xcodeVersion: '16.0',
   simulators: [
-    { name: 'iPhone 16', udid: 'A', state: 'Shutdown', runtime: 'iOS 18 0' },
-    { name: 'iPhone 16', udid: 'B', state: 'Shutdown', runtime: 'iOS 18 2' },
+    { name: 'iPhone 16', udid: 'A', state: 'Shutdown', runtime: 'iOS 18.0' },
+    { name: 'iPhone 16', udid: 'B', state: 'Shutdown', runtime: 'iOS 18.2' },
   ],
   avds: ['Pixel_7', 'Pixel_8'],
   avdImages: [
@@ -561,6 +561,47 @@ describe('executeInitPlan()', () => {
     }
   });
 
+  // Next steps print for a person without --json, and --json is for agents (PILOT-562).
+  it('shows a person `tapsmith verify` and an agent `tapsmith verify --json`', () => {
+    const tmp = makeTmp();
+    try {
+      const human = initArgs({ yes: true, platform: 'android' });
+      const humanSteps = executeInitPlan(resolveInitPlan(human, baseEnv, detectStubs, tmp), human, tmp).nextSteps;
+      expect(humanSteps[0]).toBe('Verify the setup end-to-end: npx tapsmith verify');
+      expect(humanSteps.join('\n')).not.toContain('--json');
+
+      const agent = initArgs({ yes: true, json: true, platform: 'android', force: true });
+      const agentSteps = executeInitPlan(resolveInitPlan(agent, baseEnv, detectStubs, tmp), agent, tmp).nextSteps;
+      expect(agentSteps[0]).toBe('Verify the setup end-to-end: npx tapsmith verify --json');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('adds the test output folders to .gitignore and lists it, warning instead of failing when it cannot (PILOT-562)', () => {
+    const tmp = makeTmp();
+    try {
+      fs.writeFileSync(path.join(tmp, '.gitignore'), 'node_modules/\n');
+      const args = initArgs({ yes: true, platform: 'android' });
+      const result = executeInitPlan(resolveInitPlan(args, baseEnv, detectStubs, tmp), args, tmp);
+      expect(fs.readFileSync(path.join(tmp, '.gitignore'), 'utf8')).toContain('\ntapsmith-results/\n');
+      expect(result.filesCreated).toContain('.gitignore');
+
+      // Already there: not listed again.
+      const again = executeInitPlan(resolveInitPlan({ ...args, force: true }, baseEnv, detectStubs, tmp), { ...args, force: true }, tmp);
+      expect(again.filesCreated).not.toContain('.gitignore');
+
+      // Unwritable: init still succeeds, with a warning.
+      fs.rmSync(path.join(tmp, '.gitignore'));
+      fs.mkdirSync(path.join(tmp, '.gitignore'));
+      const blocked = executeInitPlan(resolveInitPlan({ ...args, force: true }, baseEnv, detectStubs, tmp), { ...args, force: true }, tmp);
+      expect(blocked.filesCreated).not.toContain('.gitignore');
+      expect(blocked.warnings.join('\n')).toMatch(/Could not add tapsmith-results\/ and tapsmith-report\/ to \.gitignore/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('respects --no-example-test and --no-agents-md', () => {
     const tmp = makeTmp();
     try {
@@ -774,5 +815,63 @@ describe('executeInitPlan()', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe('simulatorChoices() (PILOT-562)', () => {
+  const sim = (name: string, runtime: string, state = 'Shutdown', udid = `${name}-${runtime}`) => ({ name, udid, state, runtime });
+
+  it('lists every iOS simulator once, iPhones first, newest runtime first, keeping simctl order within a runtime', () => {
+    const sims = [
+      sim('iPhone 15', 'iOS 17.5'),
+      sim('iPad Air', 'iOS 26.5'),
+      sim('iPhone 17 Pro', 'iOS 26.5'),
+      sim('iPhone 17', 'iOS 26.5'),
+      sim('iPhone 17', 'iOS 26.0'),
+      ...Array.from({ length: 25 }, (_, i) => sim(`iPhone Extra ${i}`, 'iOS 18.0')),
+    ];
+    const names = simulatorChoices(sims).map((s) => s.name);
+    expect(names.slice(0, 3)).toEqual(['iPhone 17 Pro', 'iPhone 17', 'iPhone Extra 0']);
+    expect(names.at(-2)).toBe('iPhone 15');
+    expect(names.at(-1)).toBe('iPad Air');
+    // Never cut short, one entry per name, newest runtime kept.
+    expect(names).toHaveLength(29);
+    expect(new Set(names).size).toBe(29);
+    expect(simulatorChoices(sims).find((s) => s.name === 'iPhone 17')?.runtime).toBe('iOS 26.5');
+  });
+
+  it('puts a booted simulator first, even one on an older runtime than its namesake', () => {
+    const sims = [
+      sim('iPhone 17 Pro', 'iOS 26.5'),
+      sim('iPhone 16', 'iOS 26.5'),
+      sim('iPhone 16', 'iOS 18.2', 'Booted', 'BOOTED-16'),
+    ];
+    const ordered = simulatorChoices(sims);
+    expect(ordered[0]).toMatchObject({ name: 'iPhone 16', udid: 'BOOTED-16', state: 'Booted' });
+    expect(ordered.map((s) => s.name)).toEqual(['iPhone 16', 'iPhone 17 Pro']);
+  });
+
+  it('leaves out the clones parallel runs make, even a booted one', () => {
+    const sims = [sim('iPhone 17 (Tapsmith Worker 1)', 'iOS 26.5', 'Booted'), sim('iPhone 17', 'iOS 26.5')];
+    expect(simulatorChoices(sims).map((s) => s.name)).toEqual(['iPhone 17']);
+  });
+
+  it('leaves out watchOS, tvOS and visionOS simulators, which cannot run an iOS app', () => {
+    const sims = [sim('Apple Watch Ultra', 'watchOS 11.0', 'Booted'), sim('Apple TV', 'tvOS 18.0'), sim('Apple Vision Pro', 'xrOS 2.0'), sim('iPhone 17', 'iOS 26.0')];
+    expect(simulatorChoices(sims).map((s) => s.name)).toEqual(['iPhone 17']);
+  });
+
+  it('offers nothing when no iOS runtime is installed, so init warns instead of picking a watch or headset', () => {
+    const sims = [sim('Apple Vision Pro', 'xrOS 2.0'), sim('Apple Watch Ultra', 'watchOS 11.0', 'Booted')];
+    expect(simulatorChoices(sims)).toEqual([]);
+    const plan = resolveInitPlan(initArgs({ yes: true, platform: 'ios' }), { ...baseEnv, simulators: sims }, detectStubs);
+    expect(plan.ios?.simulator).toBe('iPhone 17');
+    expect(plan.warnings.join('\n')).toContain('No iOS simulators found');
+  });
+
+  it('init --yes picks the booted simulator over the newest iPhone', () => {
+    const env = { ...baseEnv, simulators: [sim('iPhone 17 Pro', 'iOS 26.5'), sim('iPhone 16', 'iOS 18.2', 'Booted')] };
+    const plan = resolveInitPlan(initArgs({ yes: true, platform: 'ios' }), env, detectStubs);
+    expect(plan.ios?.simulator).toBe('iPhone 16');
   });
 });

@@ -1151,13 +1151,17 @@ async fn handle_mitm_https_lazy_upstream<C>(
     let mut upstream_stream: Option<tokio_rustls::client::TlsStream<TcpStream>> = None;
 
     loop {
-        let handler = state.lock().await.handler.clone();
         let start = now_ms();
 
         let mut req = match read_request(&mut client_stream, hostname).await {
             ReadOutcome::Ok(r) => r,
             ReadOutcome::ConnectionClosed | ReadOutcome::Error => return,
         };
+        // Read the handler once the request has arrived, not before waiting
+        // for it: a keep-alive connection can sit idle across a NetworkRoute
+        // stream change (the next watch/MCP run), and the request must reach
+        // the routes registered now (PILOT-534).
+        let handler = state.lock().await.handler.clone();
 
         if let Some(h) = handler.as_ref() {
             h.notify_request(&req, hostname, true).await;
@@ -2914,16 +2918,18 @@ async fn handle_mitm_http<C, U>(
     U: AsyncRead + AsyncWrite + Unpin,
 {
     loop {
-        // Re-read the handler on each request so that routes registered after
-        // this connection was established are visible immediately. The lock +
-        // Arc::clone is cheap compared to the network I/O per request.
-        let handler = state.lock().await.handler.clone();
         let start = now_ms();
 
         let mut req = match read_request(&mut client_stream, hostname).await {
             ReadOutcome::Ok(r) => r,
             ReadOutcome::ConnectionClosed | ReadOutcome::Error => return,
         };
+        // Re-read the handler for each request, once it has arrived: routes
+        // registered after this connection was established — or while it sat
+        // idle across a NetworkRoute stream change (the next watch/MCP run) —
+        // must apply to it (PILOT-534). The lock + Arc::clone is cheap
+        // compared to the network I/O per request.
+        let handler = state.lock().await.handler.clone();
 
         // Fire a request event to any SDK subscribers BEFORE interception
         // runs — mirrors Playwright's `page.on('request')` timing and means
@@ -5256,6 +5262,121 @@ mod tests {
         assert_eq!(entries[0].url, "https://example.test/users/1");
         assert_eq!(entries[0].status_code, 200);
         assert_eq!(entries[0].route_action, "mocked");
+    }
+
+    /// PILOT-534: a keep-alive connection that sits idle while the route
+    /// handler changes (a new NetworkRoute stream from the next watch/MCP
+    /// run) must dispatch its next request to the *current* handler, not the
+    /// one it saw when it started waiting for that request.
+    #[tokio::test]
+    async fn https_keep_alive_request_uses_handler_installed_while_idle() {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+        let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = proxy_state_with_handler(Arc::new(SyntheticHttpsHandler {
+            seen_tx: seen_tx.clone(),
+        }));
+        // The connection starts waiting with no handler installed.
+        state.lock().await.handler = None;
+
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let server_state = state.clone();
+        let server_ca = ca.clone();
+        let server = tokio::spawn(async move {
+            let server_config = server_ca
+                .server_config_for_host("example.test")
+                .await
+                .unwrap();
+            let client_tls = tokio_rustls::LazyConfigAcceptor::new(
+                rustls::server::Acceptor::default(),
+                server_side,
+            )
+            .await
+            .unwrap()
+            .into_stream(server_config)
+            .await
+            .unwrap();
+            handle_mitm_https_lazy_upstream(
+                client_tls,
+                "example.test",
+                "192.0.2.1",
+                443,
+                server_state,
+            )
+            .await;
+        });
+
+        let client_config = client_config_trusting_ca(&ca, &[b"http/1.1"]);
+        let server_name =
+            rustls::pki_types::ServerName::try_from("example.test".to_string()).unwrap();
+        let mut client_tls = TlsConnector::from(client_config)
+            .connect(server_name, client_side)
+            .await
+            .unwrap();
+        // Let the proxy park in its read of the next request.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        state.lock().await.handler = Some(Arc::new(SyntheticHttpsHandler { seen_tx }));
+
+        client_tls
+            .write_all(b"GET /posts HTTP/1.1\r\nHost: example.test\r\n\r\n")
+            .await
+            .unwrap();
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(2), seen_rx.recv())
+            .await
+            .expect("the handler installed while the connection was idle must see the request")
+            .unwrap();
+        assert_eq!(seen, "https://example.test/posts");
+        drop(client_tls);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+        let entries = state.lock().await.entries.clone();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].route_action, "mocked");
+    }
+
+    /// PILOT-534: the same for the plain/decrypted keep-alive loop
+    /// (`handle_mitm_http`, the Android CONNECT and iOS transparent paths).
+    #[tokio::test]
+    async fn http_keep_alive_request_uses_handler_installed_while_idle() {
+        use tokio::io::AsyncWriteExt;
+
+        let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = proxy_state_with_handler(Arc::new(SyntheticHttpsHandler {
+            seen_tx: seen_tx.clone(),
+        }));
+        state.lock().await.handler = None;
+
+        let (mut client, client_server_side) = tokio::io::duplex(65536);
+        let (_upstream, upstream_server_side) = tokio::io::duplex(65536);
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            handle_mitm_http(
+                client_server_side,
+                upstream_server_side,
+                "example.test",
+                server_state,
+                false,
+            )
+            .await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        state.lock().await.handler = Some(Arc::new(SyntheticHttpsHandler { seen_tx }));
+
+        client
+            .write_all(b"GET /posts HTTP/1.1\r\nHost: example.test\r\n\r\n")
+            .await
+            .unwrap();
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(2), seen_rx.recv())
+            .await
+            .expect("the handler installed while the connection was idle must see the request")
+            .unwrap();
+        assert_eq!(seen, "http://example.test/posts");
+        drop(client);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
     /// PILOT-248: `route.abort()` over HTTP/1.1 must surface as a request

@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import Enquirer from 'enquirer';
 import figlet from 'figlet';
-import { tryExec, scanEnvironment, type EnvScan, type SimulatorInfo } from './env-scan.js';
+import { tryExec, scanEnvironment, simulatorChoices, type EnvScan } from './env-scan.js';
 import {
   detectAndroidPackage,
   detectExpoProject,
@@ -24,6 +24,8 @@ import { isTapsmithResolvableFrom, tapsmithInstallCommand, type InstallCommand }
 import { globSync } from 'glob';
 import { minimatch } from 'minimatch';
 import { DEFAULT_TEST_IGNORE } from './test-file-discovery.js';
+import { confirmQuestion } from './confirm-prompt.js';
+import { ignoreTestResultsOrWarn } from './init-gitignore.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -70,7 +72,9 @@ function displayEnvironment(env: EnvScan, expo: ExpoProject | undefined): void {
 
   if (env.isMacOS) {
     lines.push(env.xcodeVersion ? ok(`Xcode ${env.xcodeVersion}`) : warn('Xcode not found'));
-    if (env.simulators.length > 0) lines.push(ok(`${env.simulators.length} iOS simulators available`));
+    // The count the simulator picker offers (PILOT-562), not every simctl entry.
+    const sims = simulatorChoices(env.simulators).length;
+    if (sims > 0) lines.push(ok(`${sims} iOS simulator${sims === 1 ? '' : 's'} available`));
   }
 
   if (env.avds.length > 0) lines.push(ok(`${env.avds.length} Android AVDs available`));
@@ -322,6 +326,9 @@ export async function configureAndroid(env: EnvScan, expo?: ExpoProject): Promis
   return { apkPath, packageName, useEmulators, usePhysicalDevices, avd };
 }
 
+/** How many simulators the picker shows at once; the rest scroll into view. */
+const SIMULATOR_PICKER_ROWS = 12;
+
 /**
  * The iOS questions. `expo` (PILOT-557) swaps the simulator build hint for
  * the Expo one and is the last fallback for the bundle id prompt's prefill.
@@ -359,19 +366,21 @@ export async function configureIos(env: EnvScan, expo?: ExpoProject): Promise<Io
 
   let simulator: string | undefined;
   if (useSimulators) {
-    if (env.simulators.length > 0) {
-      const seen = new Map<string, SimulatorInfo>();
-      for (const sim of env.simulators) {
-        const existing = seen.get(sim.name);
-        if (!existing || sim.runtime.localeCompare(existing.runtime, undefined, { numeric: true }) > 0) {
-          seen.set(sim.name, sim);
-        }
-      }
-      const unique = [...seen.values()].slice(0, 20);
+    // Every simulator, a booted one first and selected (PILOT-562).
+    const choices = simulatorChoices(env.simulators);
+    if (choices.length > 0) {
       simulator = await ask<string>({
         type: 'select',
-        message: 'Which simulator?',
-        choices: unique.map((s) => ({ name: s.name, message: s.name, hint: s.runtime })),
+        message: choices.length > SIMULATOR_PICKER_ROWS
+          ? `Which simulator? (${choices.length} available, ↑/↓ to scroll)`
+          : 'Which simulator?',
+        choices: choices.map((s) => ({
+          name: s.name,
+          message: s.name,
+          hint: s.state === 'Booted' ? `${s.runtime}, booted` : s.runtime,
+        })),
+        initial: 0,
+        limit: SIMULATOR_PICKER_ROWS,
       });
     } else {
       console.log(`  ${YELLOW}⚠${RESET} No iOS simulators found. Install one via Xcode.`);
@@ -419,11 +428,7 @@ export async function configureIos(env: EnvScan, expo?: ExpoProject): Promise<Io
       console.log(`  ${YELLOW}⚠${RESET} Could not run preflight: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    const buildAgent = await ask<boolean>({
-      type: 'confirm',
-      message: 'Build the iOS agent for physical devices? (requires Xcode, ~30s)',
-      initial: true,
-    });
+    const buildAgent = await ask<boolean>(confirmQuestion('Build the iOS agent for physical devices? (requires Xcode, ~30s)', true));
 
     if (buildAgent) {
       console.log(dim('  Building iOS agent...'));
@@ -492,11 +497,7 @@ async function setupNetworkCapture(
   androidConfig: AndroidConfig | undefined,
   iosHasPhysicalDevice: boolean,
 ): Promise<boolean> {
-  const enableNetwork = await ask<boolean>({
-    type: 'confirm',
-    message: 'Enable network trace capture? (records HTTP/HTTPS traffic during tests)',
-    initial: true,
-  });
+  const enableNetwork = await ask<boolean>(confirmQuestion('Enable network trace capture? (records HTTP/HTTPS traffic during tests)', true));
 
   if (!enableNetwork) return false;
 
@@ -596,11 +597,7 @@ export async function offerTapsmithInstall(
   const install = await tapsmithInstallCommand(cwd);
   if (!fs.existsSync(path.join(cwd, 'package.json'))) return install.display;
 
-  const go = await ask<boolean>({
-    type: 'confirm',
-    message: `Tapsmith isn't installed in this project, and the config imports it. Install it now (${install.display})?`,
-    initial: true,
-  });
+  const go = await ask<boolean>(confirmQuestion(`Tapsmith isn't installed in this project, and the config imports it. Install it now (${install.display})?`, true));
   if (!go) return install.display;
 
   console.log(dim(`  Running ${install.display}...`));
@@ -909,7 +906,23 @@ export function testsOutsideGeneratedMatchWarning(files: string[]): string | und
 
 // ─── Main wizard ───
 
-const UNEXPECTED_FIX = 'Run: npx tapsmith doctor --json to check the environment';
+/**
+ * The wizard's Next steps as `[label, command]`: a declined install first
+ * (PILOT-551), then `tapsmith verify`, which getting-started has a new user
+ * run before writing tests (PILOT-562). Plain commands: `--json` is for agents.
+ */
+export function wizardNextSteps(installStep: string | undefined): Array<[string, string]> {
+  return [
+    ...(installStep ? [['Install Tapsmith', installStep] as [string, string]] : []),
+    ['Verify your setup', 'npx tapsmith verify'],
+    ['Run your tests', 'npx tapsmith test'],
+    ['List devices', 'npx tapsmith list-devices'],
+    ['Health check', 'npx tapsmith doctor'],
+  ];
+}
+
+/** The fix for an unexpected init error: `--json` only for an agent that asked for JSON. */
+const unexpectedFix = (json: boolean): string => `Run: npx tapsmith doctor${json ? ' --json' : ''} to check the environment`;
 
 export async function runInit(opts: InitCommandOptions): Promise<void> {
   const { initArgsFromOptions, resolveInitPlan, executeInitPlan, InitError } = await import('./init-noninteractive.js');
@@ -920,7 +933,7 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
   } catch (err) {
     const initErr = err instanceof InitError
       ? err
-      : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), { fix: UNEXPECTED_FIX });
+      : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), { fix: unexpectedFix(opts.json) });
     emitInitError(initErr, opts.json);
     process.exit(1);
     return;
@@ -984,7 +997,7 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
     } catch (err) {
       const initErr = err instanceof InitError
         ? err
-        : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), { fix: UNEXPECTED_FIX });
+        : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err), { fix: unexpectedFix(parsed.json) });
       emitInitError(initErr, parsed.json);
       process.exit(1);
     }
@@ -1025,13 +1038,9 @@ async function runInitInner(): Promise<void> {
   const configNames = ['tapsmith.config.ts', 'tapsmith.config.mjs', 'tapsmith.config.js'];
   const existingConfig = configNames.find((name) => fs.existsSync(path.resolve(process.cwd(), name)));
   if (existingConfig) {
-    const overwrite = await ask<boolean>({
-      type: 'confirm',
-      message: `Found existing ${existingConfig}. Overwrite it?`,
-      initial: false,
-    });
+    const overwrite = await ask<boolean>(confirmQuestion(`Found existing ${existingConfig}. Overwrite it?`, false));
     if (!overwrite) {
-      console.log(dim('  Keeping existing config. Run `npx tapsmith doctor` to verify your setup.'));
+      console.log(dim('  Keeping existing config. Run `npx tapsmith verify` to check your setup.'));
       return;
     }
   }
@@ -1081,11 +1090,7 @@ async function runInitInner(): Promise<void> {
       const { findSimulatorXctestrun } = await import('./ios-device-resolve.js');
       const xctestrun = findSimulatorXctestrun();
       if (!xctestrun) {
-        const buildSim = await ask<boolean>({
-          type: 'confirm',
-          message: 'No iOS simulator agent found. Build it now? (~30s, requires Xcode)',
-          initial: true,
-        });
+        const buildSim = await ask<boolean>(confirmQuestion('No iOS simulator agent found. Build it now? (~30s, requires Xcode)', true));
 
         if (buildSim) {
           console.log(dim('  Building iOS simulator agent...'));
@@ -1116,12 +1121,14 @@ async function runInitInner(): Promise<void> {
     console.log(`  ${RED}✗${RESET} Failed to write tapsmith.config.ts: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // Step 7.5: keep test output out of git (PILOT-562)
+  const ignored = ignoreTestResultsOrWarn(process.cwd());
+  if (ignored === 'created') console.log(`  ${green('✓')} .gitignore created (ignores Tapsmith's test output)`);
+  else if (ignored === 'added') console.log(`  ${green('✓')} Tapsmith's test output folders added to .gitignore`);
+  else if (typeof ignored === 'object') console.log(`  ${YELLOW}⚠${RESET} ${ignored.warning}`);
+
   // Step 8: Example test
-  const createTest = await ask<boolean>({
-    type: 'confirm',
-    message: 'Generate example test file?',
-    initial: true,
-  });
+  const createTest = await ask<boolean>(confirmQuestion('Generate example test file?', true));
 
   if (createTest) {
     try {
@@ -1136,11 +1143,7 @@ async function runInitInner(): Promise<void> {
   }
 
   // Step 8.5: AGENTS.md for coding agents
-  const writeAgents = await ask<boolean>({
-    type: 'confirm',
-    message: 'Add a Tapsmith section to AGENTS.md? (helps AI coding agents use Tapsmith correctly)',
-    initial: true,
-  });
+  const writeAgents = await ask<boolean>(confirmQuestion('Add a Tapsmith section to AGENTS.md? (helps AI coding agents use Tapsmith correctly)', true));
   if (writeAgents) {
     const { writeAgentsMd } = await import('./agents-md.js');
     writeAgentsMd(process.cwd());
@@ -1154,12 +1157,7 @@ async function runInitInner(): Promise<void> {
   console.log();
   console.log(`  ${bold('Next steps')}`);
   const projects = generatedProjects(selectedPlatforms, iosConfig);
-  const steps: Array<[string, string]> = [
-    ...(installStep ? [['Install Tapsmith', installStep] as [string, string]] : []),
-    ['Run your tests', 'npx tapsmith test'],
-    ['List devices', 'npx tapsmith list-devices'],
-    ['Health check', 'npx tapsmith doctor'],
-  ];
+  const steps = wizardNextSteps(installStep);
   const width = Math.max(...[...steps.map(([l]) => l), ...projects.map((p) => p.label)].map((l) => l.length)) + 3;
   const step = (label: string, cmd: string): void => console.log(`  ${`${label}:`.padEnd(width)}${green(cmd)}`);
   for (const [label, cmd] of steps) step(label, cmd);

@@ -567,7 +567,7 @@ describe('doctor Android devices (PILOT-263 item 4)', () => {
     writeConfig("export default { projects: [{ name: 'a' }, { name: 'i', use: { platform: 'ios' } }] }\n");
     const { json } = await doctorJson();
     expect(json.inventory.connectedDevices).toEqual([{ serial: 'emulator-5554', state: 'device' }]);
-    expect(json.inventory.simulators).toEqual([{ name: 'iPhone 17', udid: 'SIM-1', state: 'Shutdown', runtime: 'iOS 26 0' }]);
+    expect(json.inventory.simulators).toEqual([{ name: 'iPhone 17', udid: 'SIM-1', state: 'Shutdown', runtime: 'iOS 26.0' }]);
     expect(exec.calls.filter((c) => c === 'adb devices')).toHaveLength(1);
     expect(exec.calls.filter((c) => c === 'adb --version')).toHaveLength(1);
     expect(exec.calls.filter((c) => c === 'xcrun simctl list devices available -j')).toHaveLength(1);
@@ -580,7 +580,7 @@ describe('doctor Android devices (PILOT-263 item 4)', () => {
     writeConfig('export default {}\n');
     const { json } = await doctorJson();
     expect(ids(json)).not.toContain('simctl');
-    expect(json.inventory.simulators).toEqual([{ name: 'iPhone 17', udid: 'SIM-1', state: 'Shutdown', runtime: 'iOS 26 0' }]);
+    expect(json.inventory.simulators).toEqual([{ name: 'iPhone 17', udid: 'SIM-1', state: 'Shutdown', runtime: 'iOS 26.0' }]);
     // A wedged CoreSimulator or adb server must not hang doctor.
     for (const key of ['xcrun simctl list devices available -j', 'adb devices', 'adb --version']) {
       expect(exec.timeouts.get(key), key).toBeGreaterThan(0);

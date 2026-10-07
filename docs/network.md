@@ -412,27 +412,40 @@ Remove all registered route handlers at once.
 await device.unrouteAll()
 ```
 
-**Best practice:** Call `device.unrouteAll()` in `afterEach` to prevent route handlers from leaking between tests:
+### Route lifetime
+
+You rarely need to remove routes yourself. Tapsmith ties each route to the scope that registered it, the way Playwright ties a route to the page or context it was added to:
+
+- A route registered in a test, in `beforeEach` or `afterEach`, or in a test-scoped fixture is removed when that test ends.
+- A route registered in `beforeAll` stays for every test in its `describe` block (or, at the top level, the whole file), including nested `describe` blocks and retries, and is removed when that block ends, after its `afterAll` hooks. A route registered in `afterAll` is removed at the same point.
 
 ```typescript
-import { test, afterEach } from "tapsmith"
+import { test, describe, beforeAll } from "tapsmith"
 
-afterEach(async ({ device }) => {
-  await device.unrouteAll()
-})
-
-test("mocked list", async ({ device }) => {
-  await device.route("**/api/items", async (route) => {
-    await route.fulfill({ json: [{ id: 1, name: "Mocked" }] })
+describe("with a mocked feed", () => {
+  beforeAll(async ({ device }) => {
+    // Applies to both tests below.
+    await device.route("**/api/items", async (route) => {
+      await route.fulfill({ json: [{ id: 1, name: "Mocked" }] })
+    })
   })
-  // ...
+
+  test("shows the mocked item", async ({ device }) => {
+    // ...
+  })
+
+  test("still mocked in the next test", async ({ device }) => {
+    // ...
+  })
 })
 
 test("real list", async ({ device }) => {
-  // No route handler -- requests go to the real server
+  // Outside the describe block: no route handler, requests go to the real server.
   // ...
 })
 ```
+
+`device.unroute()` and `device.unrouteAll()` remove any route, whichever scope registered it, so an `afterEach(() => device.unrouteAll())` also removes routes from `beforeAll`.
 
 ---
 
