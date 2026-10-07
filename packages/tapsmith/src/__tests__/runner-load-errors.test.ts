@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 import {
   collectResults,
+  discoverTestFile,
   runTestFile,
   type RunOptions,
   type TestResult,
@@ -178,5 +179,77 @@ describe('runTestFile — a file that fails to load (PILOT-545)', () => {
     }));
 
     expect(collectResults(suite).map((r) => r.status)).toEqual(['failed']);
+  });
+});
+
+describe('runTestFile — an async describe() callback (PILOT-543)', () => {
+  it('fails the file to load when the callback rejects, instead of an unhandled rejection', async () => {
+    setup();
+    const filePath = writeFile('a-async-reject.test.mjs', `
+      import { test, describe } from ${JSON.stringify(runnerUrl)};
+      describe('suite', async () => {
+        test('registered', async () => {});
+        throw new Error('boom in an async describe');
+      });
+    `);
+
+    const results = collectResults(await runTestFile(filePath, makeOpts()));
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ status: 'failed', fileLevelFailure: true, fullName: 'a-async-reject.test.mjs — failed to load' });
+    expect(results[0].error!.message).toBe('boom in an async describe');
+  });
+
+  it('runs the tests of an async callback that registers them all before returning', async () => {
+    setup();
+    const filePath = writeFile('b-async-ok.test.mjs', `
+      import { test, describe } from ${JSON.stringify(runnerUrl)};
+      describe('suite', async () => {
+        test('one', async () => {});
+        describe('nested', async () => {
+          test('two', async () => {});
+        });
+      });
+    `);
+
+    const results = collectResults(await runTestFile(filePath, makeOpts()));
+
+    expect(results.map((r) => [r.fullName, r.status])).toEqual([
+      ['suite > one', 'passed'],
+      ['suite > nested > two', 'passed'],
+    ]);
+  });
+
+  it('fails the file to load when the callback is still running after it returned', async () => {
+    setup();
+    const filePath = writeFile('c-async-await.test.mjs', `
+      import { test, describe } from ${JSON.stringify(runnerUrl)};
+      describe('suite', async () => {
+        await new Promise((r) => setTimeout(r, 50));
+        test('registered too late', async () => {});
+      });
+    `);
+
+    const results = collectResults(await runTestFile(filePath, makeOpts()));
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ status: 'failed', fileLevelFailure: true });
+    expect(results[0].error!.message).toBe(
+      "describe('suite') callback is still running after it returned: Tapsmith collects the tests a describe() "
+      + 'callback registers synchronously, so a test registered after an await is lost. '
+      + "Remove the await (and async) from the callback; do the async work in a beforeAll hook or the tests.",
+    );
+  });
+
+  it('discovery reports a rejecting async describe as a load error too', async () => {
+    setup();
+    const filePath = writeFile('d-async-reject.test.mjs', `
+      import { test, describe } from ${JSON.stringify(runnerUrl)};
+      describe('suite', async () => {
+        throw new Error('boom at discovery');
+      });
+    `);
+
+    await expect(discoverTestFile(filePath)).rejects.toThrow('boom at discovery');
   });
 });

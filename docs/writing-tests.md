@@ -460,6 +460,8 @@ await device.getByRole("button", { name: "Load Users" }).tap()
 const response = await responsePromise
 ```
 
+If the tap fails, the test ends before it awaits `responsePromise`, and the waiter ends with the test. More generally, a promise a test never awaits that rejects while the test runs (an unhandled rejection) fails that test, and the rest of the run carries on.
+
 ---
 
 ## Organizing large test suites

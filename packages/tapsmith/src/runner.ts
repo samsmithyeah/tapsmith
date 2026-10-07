@@ -21,7 +21,7 @@ const gunzip = promisify(zlib.gunzip);
 const inflate = promisify(zlib.inflate);
 const brotliDecompress = promisify(zlib.brotliDecompress);
 import type { TapsmithConfig, Platform, UseOptions } from './config.js';
-import type { Device } from './device.js';
+import { pendingWaiterMark, type Device } from './device.js';
 import type { TapsmithReporter } from './reporter.js';
 import { fileLoadFailureTitle, loadErrorForReport } from './load-failure.js';
 import { APIRequestContext } from './api-request.js';
@@ -50,6 +50,7 @@ import { executeAppReset, type ExecuteAppResetOptions, type SessionPreflightCont
 import { deviceGroupSize, resolveDeviceGroup, validateAppResetOptions, validateDevicesOption, validateRecordingModes } from './config.js';
 import { onActionProgress } from './action-progress.js';
 import { runInAttemptContext, type AttemptToken } from './attempt-fence.js';
+import { closeErrorScope, mergeUnhandledErrors, openErrorScope, ownUnhandledErrors } from './unhandled-errors.js';
 import { runInRouteScope, type RouteScope } from './network.js';
 import { passesSelectionFilters } from './test-filter.js';
 import { startLiveNetwork } from './trace/live-network.js';
@@ -562,18 +563,72 @@ function popContext(): SuiteContext {
   return getContextStack().pop()!;
 }
 
+/**
+ * Promises returned by async describe() callbacks while a file's tree was
+ * collected, for {@link settleAsyncDescribes}. Reset per file.
+ */
+let asyncDescribeBodies: Array<{ name: string; settled: Promise<unknown> }> = [];
+
 function materializeSuiteEntry(entry: SuiteEntry): SuiteContext {
   if (entry.ctx) return entry.ctx;
   const ctx = pushContext();
   if (entry.mode) ctx.mode = entry.mode;
   try {
-    entry.fn();
+    const returned: unknown = entry.fn();
+    if (isThenable(returned)) {
+      const settled = Promise.resolve(returned);
+      // Handled from the start: a later describe can throw before
+      // settleAsyncDescribes() runs, and the file has failed to load then
+      // anyway — this one's rejection must not outlive it unhandled.
+      settled.catch(() => {});
+      asyncDescribeBodies.push({ name: entry.name, settled });
+    }
     entry.ctx = popContext();
     return entry.ctx;
   } catch (err) {
     popContext();
     throw err;
   }
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return value !== null && (typeof value === 'object' || typeof value === 'function')
+    && typeof (value as { then?: unknown }).then === 'function';
+}
+
+/**
+ * Settle the async describe() callbacks met while collecting a file's tree.
+ * Tests are collected synchronously, so such a callback is fine only if it
+ * registers everything before its first await. One that rejects, or is still
+ * running a moment later, is a load error of its file (PILOT-543) — before,
+ * a rejection was unhandled and killed the whole run.
+ */
+async function settleAsyncDescribes(): Promise<void> {
+  const bodies = asyncDescribeBodies;
+  asyncDescribeBodies = [];
+  if (bodies.length === 0) return;
+  const outcomes = bodies.map((body) => {
+    const outcome: { done: boolean; error?: unknown; rejected: boolean } = { done: false, rejected: false };
+    body.settled.then(
+      () => { outcome.done = true; },
+      (err: unknown) => { outcome.done = true; outcome.rejected = true; outcome.error = err; },
+    );
+    return outcome;
+  });
+  // One macrotask: long enough for a callback that never really awaited
+  // anything to finish, and short enough not to wait on real I/O.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  bodies.forEach((body, i) => {
+    const outcome = outcomes[i];
+    if (outcome.rejected) throw outcome.error;
+    if (!outcome.done) {
+      throw new Error(
+        `describe('${body.name}') callback is still running after it returned: Tapsmith collects the tests a describe() `
+        + 'callback registers synchronously, so a test registered after an await is lost. '
+        + 'Remove the await (and async) from the callback; do the async work in a beforeAll hook or the tests.',
+      );
+    }
+  });
 }
 
 function collectFixtureRegistries(ctx: SuiteContext, registries: Set<FixtureRegistry>): void {
@@ -1765,9 +1820,17 @@ async function runSuiteContext(
       if (ctx.beforeAll.length > 0) opts._prepared?.clear();
       // The hooks group holds only the user's beforeAll code.
       beforeAllCollector?.startGroup('beforeAll Hooks');
-      for (const hook of ctx.beforeAll) {
-        await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope);
+      // A promise the hooks leave behind that rejects unhandled while they
+      // run fails the scope as a throwing hook would (PILOT-543).
+      const hookErrors = openErrorScope();
+      try {
+        for (const hook of ctx.beforeAll) {
+          await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope);
+        }
+      } finally {
+        closeErrorScope(hookErrors);
       }
+      if (hookErrors.errors.length > 0) throw mergeUnhandledErrors(undefined, hookErrors.errors);
     };
     if (beforeAllCollector) {
       await withActiveTraceCollector(beforeAllCollector, runScopeSetup);
@@ -1971,6 +2034,11 @@ async function runSuiteContext(
       tracePath = undefined;
       videoPath = undefined;
       lastAttempt = attempt;
+      // Unhandled errors raised from here until the attempt's cleanup fail
+      // this attempt, and the network waiters it creates end with it
+      // (PILOT-543).
+      const attemptErrors = openErrorScope();
+      const waiterMark = pendingWaiterMark();
 
       // Trace recording — start if configured
       const recording = shouldRecord(traceConfig.mode, attempt);
@@ -2331,6 +2399,7 @@ async function runSuiteContext(
           let onTestAbort: (() => void) | undefined;
           const abortSignal = opts.abortSignal;
           const attemptToken: AttemptToken = { closed: false };
+          attemptErrors.attempt = attemptToken;
           // Time spent inside progress-tracked device actions does not count
           // toward the test timeout: those actions carry their own bounded
           // deadlines (agent budgets, gRPC deadlines, daemon-side recovery
@@ -2486,6 +2555,11 @@ async function runSuiteContext(
             // Finish any read before draining capture or changing test attribution.
             await stopLiveNetwork();
             requestContext.dispose();
+            // A waitForRequest/waitForResponse the attempt never awaited
+            // (the step before `await` failed) would otherwise time out
+            // later, unhandled, in whatever runs next (PILOT-543). Ending it
+            // with the attempt is what Playwright does with a page's waiters.
+            for (const d of devices) d._cancelPendingWaiters?.(waiterMark);
           }
         }
 
@@ -2504,6 +2578,17 @@ async function runSuiteContext(
         }
         if (d._routeManager?.hasTestRoutes) await d._routeManager.removeTestRoutes();
       });
+
+      // An unhandled rejection raised during the
+      // attempt fails it — only it — as in Playwright (PILOT-543).
+      const unhandledErrors = closeErrorScope(attemptErrors);
+      if (unhandledErrors.length > 0) {
+        status = 'failed';
+        error = mergeUnhandledErrors(error, unhandledErrors);
+        if (!screenshotPath && opts.config.screenshot !== 'never' && !opts.abortSignal?.aborted) {
+          screenshotPath = await captureFailureScreenshots(opts, opts.screenshotDir, fullName);
+        }
+      }
 
       // Collect soft assertion failures (PILOT-43)
       const softErrors = flushSoftErrors();
@@ -3175,6 +3260,21 @@ export async function runTestFile(
   filePath: string,
   opts: RunOptions,
 ): Promise<SuiteResult> {
+  // While the file runs, an unhandled rejection is
+  // attributed to the test it happens in rather than killing the process —
+  // every embedder runs files through here (PILOT-543).
+  const releaseUnhandledErrors = ownUnhandledErrors(filePath);
+  try {
+    return await runTestFileOwned(filePath, opts);
+  } finally {
+    releaseUnhandledErrors();
+  }
+}
+
+async function runTestFileOwned(
+  filePath: string,
+  opts: RunOptions,
+): Promise<SuiteResult> {
   // Reset context and fixture registry for the new file. Registration
   // calls (test(), test.beforeEach(), etc.) sync activeFixtureRegistry
   // back to the extended test's registry, so even cached ESM imports
@@ -3194,6 +3294,7 @@ export async function runTestFile(
   // Using getFixtureRegistry() (the mutable global) would only reflect the
   // last syncRegistry() call, missing worker fixtures from earlier extends.
   const allEntryRegistries = new Set<FixtureRegistry>();
+  asyncDescribeBodies = [];
   try {
     await import(importUrl);
     rootCtx = popContext();
@@ -3201,6 +3302,7 @@ export async function runTestFile(
     // most of a file's registration happens — so a throw there is as much a
     // load error as one at the top level, and is caught here too.
     collectFixtureRegistries(rootCtx, allEntryRegistries);
+    await settleAsyncDescribes();
   } catch (err) {
     // A file that cannot load fails on its own; the run carries on with the
     // rest (PILOT-545). Whatever it registered before throwing is discarded —
@@ -3285,7 +3387,11 @@ export async function runTestFile(
     reportRunTelemetry(fileOpts, suite, Date.now() - fileStartedAt);
     return suite;
   } finally {
-    for (const d of allDevices(fileOpts)) d._client._setAbortSignal(undefined);
+    for (const d of allDevices(fileOpts)) {
+      d._client._setAbortSignal(undefined);
+      // Waiters a beforeAll or afterAll hook left behind end with the file.
+      d._cancelPendingWaiters?.();
+    }
     restoreDeviceNames();
     try {
       if (workerTeardown) {
@@ -3448,10 +3554,13 @@ export async function discoverTestFile(filePath: string): Promise<DiscoveredSuit
   // Bust ESM cache so re-discovery in persistent processes (UI workers)
   // picks up file changes instead of returning stale cached modules.
   const importUrl = `${filePath}?t=${Date.now()}`;
+  asyncDescribeBodies = [];
   await import(importUrl);
 
   const rootCtx = popContext();
-  return discoverSuiteContext(rootCtx, '', undefined);
+  const discovered = discoverSuiteContext(rootCtx, '', undefined);
+  await settleAsyncDescribes();
+  return discovered;
 }
 
 function discoverSuiteContext(

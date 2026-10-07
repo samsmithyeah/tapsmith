@@ -39,6 +39,7 @@ import { type TraceCollector, getActiveTraceCollector, extractStack } from './tr
 import type { ActionCategory, ConsoleLevel, NetworkCaptureRoute } from './trace/types.js';
 import { tracedAction, type TracedActionExtra } from './trace/traced-action.js';
 import { appResetModeFromWire } from './grpc-client.js';
+import { fencedRejection, isCurrentAttemptClosed, TestEndedError } from './attempt-fence.js';
 import {
   NetworkRouteManager,
   type TapsmithRequest,
@@ -63,6 +64,25 @@ const WEBVIEW_RETRY_INTERVAL_MS = 500;
 const WEBVIEW_PAGE_PROBE_TIMEOUT_MS = 3_000;
 const WEBVIEW_CONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
 const WEBVIEW_CONNECT_LOG_LIMIT = 80;
+
+// ─── Pending network waiters (PILOT-543) ───
+
+/** A waitForRequest/waitForResponse still waiting, and how to end it early. */
+interface PendingWaiter {
+  readonly seq: number;
+  cancel(): void;
+}
+
+/** Process-wide creation counter, so a mark taken by the runner orders waiters on every device. */
+let waiterSeq = 0;
+
+/**
+ * @internal — A mark for {@link Device._cancelPendingWaiters}: waiters created
+ * after it are the ones a test attempt that starts now owns.
+ */
+export function pendingWaiterMark(): number {
+  return waiterSeq;
+}
 
 type WebViewInfo = Awaited<ReturnType<TapsmithGrpcClient['listWebViews']>>['webviews'][number];
 
@@ -175,6 +195,8 @@ export class Device {
   private _networkCaptureError: string | undefined;
   /** Successful `route()` calls since the runner last took the count. */
   private _routeRegistrations = 0;
+  /** waitForRequest/waitForResponse calls still waiting (PILOT-543). */
+  private readonly _pendingWaiters = new Set<PendingWaiter>();
   /**
    * @internal — How the last successful capture start routed this device's
    * traffic (recorded per device in trace metadata). Undefined when capture
@@ -1147,27 +1169,19 @@ export class Device {
     urlOrPredicate: string | RegExp | ((request: TapsmithRequest) => boolean),
     options?: { timeout?: number },
   ): Promise<TapsmithRequest> {
-    const timeout = options?.timeout ?? this._defaultTimeoutMs;
-    const manager = this._ensureRouteManager();
-
-    return new Promise<TapsmithRequest>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        manager.removeRequestListener(listener);
-        reject(new Error(`waitForRequest timed out after ${timeout}ms`));
-      }, timeout);
-
-      const listener = (req: TapsmithRequest) => {
-        const matches = typeof urlOrPredicate === 'function'
-          ? urlOrPredicate(req)
-          : matchUrlPattern(req.url, urlOrPredicate);
-        if (matches) {
-          clearTimeout(timer);
-          manager.removeRequestListener(listener);
-          resolve(req);
-        }
-      };
-      manager.addRequestListener(listener);
-    });
+    const callSite = new Error();
+    return this._waitForNetworkEvent<TapsmithRequest>(
+      'waitForRequest',
+      (manager, listener) => {
+        manager.addRequestListener(listener);
+        return () => manager.removeRequestListener(listener);
+      },
+      (req) => (typeof urlOrPredicate === 'function'
+        ? urlOrPredicate(req)
+        : matchUrlPattern(req.url, urlOrPredicate)),
+      options?.timeout ?? this._defaultTimeoutMs,
+      callSite,
+    );
   }
 
   /**
@@ -1179,27 +1193,83 @@ export class Device {
     urlOrPredicate: string | RegExp | ((response: NetworkResponseEventData) => boolean),
     options?: { timeout?: number },
   ): Promise<NetworkResponseEventData> {
-    const timeout = options?.timeout ?? this._defaultTimeoutMs;
+    const callSite = new Error();
+    return this._waitForNetworkEvent<NetworkResponseEventData>(
+      'waitForResponse',
+      (manager, listener) => {
+        manager.addResponseListener(listener);
+        return () => manager.removeResponseListener(listener);
+      },
+      (resp) => (typeof urlOrPredicate === 'function'
+        ? urlOrPredicate(resp)
+        : matchUrlPattern(resp.url, urlOrPredicate)),
+      options?.timeout ?? this._defaultTimeoutMs,
+      callSite,
+    );
+  }
+
+  /**
+   * A pending network waiter, tracked so the runner can end it with the test
+   * that created it (PILOT-543). Without that, a waiter a failed test never
+   * awaited timed out later, unhandled, and took the whole run down.
+   */
+  private _waitForNetworkEvent<T>(
+    method: 'waitForRequest' | 'waitForResponse',
+    subscribe: (manager: NetworkRouteManager, listener: (event: T) => void) => () => void,
+    matches: (event: T) => boolean,
+    timeout: number,
+    callSite: Error,
+  ): Promise<T> {
+    // A body that outlived its attempt must not leave a waiter in the next test.
+    if (isCurrentAttemptClosed()) return fencedRejection<T>(`${method}()`);
     const manager = this._ensureRouteManager();
-
-    return new Promise<NetworkResponseEventData>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        manager.removeResponseListener(listener);
-        reject(new Error(`waitForResponse timed out after ${timeout}ms`));
-      }, timeout);
-
-      const listener = (resp: NetworkResponseEventData) => {
-        const matches = typeof urlOrPredicate === 'function'
-          ? urlOrPredicate(resp)
-          : matchUrlPattern(resp.url, urlOrPredicate);
-        if (matches) {
-          clearTimeout(timer);
-          manager.removeResponseListener(listener);
-          resolve(resp);
-        }
+    const promise: Promise<T> = new Promise<T>((resolve, reject) => {
+      let unsubscribe = (): void => {};
+      const finish = (): void => {
+        clearTimeout(timer);
+        unsubscribe();
+        this._pendingWaiters.delete(waiter);
       };
-      manager.addResponseListener(listener);
+      const waiter: PendingWaiter = {
+        seq: ++waiterSeq,
+        cancel: () => {
+          finish();
+          // Nobody may be listening — the test is over. One still awaiting
+          // (a body that outlived its attempt) gets the reason.
+          promise.catch(() => {});
+          reject(new TestEndedError(`${method}()`));
+        },
+      };
+      const timer = setTimeout(() => {
+        finish();
+        const message = `${method} timed out after ${timeout}ms`;
+        const err = new Error(message);
+        // Point at the call, not this timer: the stack is what reporters
+        // draw a code frame from.
+        const frames = callSite.stack?.split('\n').slice(1).join('\n');
+        if (frames) err.stack = `Error: ${message}\n${frames}`;
+        reject(err);
+      }, timeout);
+      this._pendingWaiters.add(waiter);
+      unsubscribe = subscribe(manager, (event) => {
+        if (matches(event)) {
+          finish();
+          resolve(event);
+        }
+      });
     });
+    return promise;
+  }
+
+  /**
+   * @internal — End the network waiters created after `since` (a
+   * {@link pendingWaiterMark}), or all of them. The runner calls it when a
+   * test attempt ends, and for all of them when a file ends (PILOT-543).
+   */
+  _cancelPendingWaiters(since = 0): void {
+    for (const waiter of [...this._pendingWaiters]) {
+      if (waiter.seq > since) waiter.cancel();
+    }
   }
 
   /** Subscribe to network request/response events. */

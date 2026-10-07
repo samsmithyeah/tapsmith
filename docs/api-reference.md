@@ -701,6 +701,8 @@ Wait for a network request matching the pattern. Requires network tracing to be 
 
 Wait for a network response matching the pattern. Requires network tracing to be enabled (same prerequisite as `device.route()`).
 
+A waiter belongs to the test that creates it. If the test ends first (say, a step before `await` fails), the waiter ends with it and can't time out later in another test. A waiter that times out while its test is still running, without being awaited, fails that test. Waiters created in a `beforeAll` hook last until the file ends.
+
 #### `device.on(event, handler): void`
 
 Subscribe to network events: `'request'` or `'response'`.
@@ -1943,6 +1945,8 @@ test.describe("Login flow", () => {
 ```
 
 The title is required, and the callback is the second argument: Playwright's anonymous `test.describe(callback)` and `test.describe(title, details, callback)` forms throw an error saying they aren't supported yet.
+
+The callback must register its tests synchronously. An `async` callback that throws, or that is still running after it returns (it awaited something), fails its file to load, because tests registered after an `await` would be lost.
 
 ### `describe.only(name, fn)` / `describe.skip(name, fn)`
 

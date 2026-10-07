@@ -523,6 +523,8 @@ test("submitting the form creates an order", async ({ device }) => {
 })
 ```
 
+If the tap fails, the test ends before `await requestPromise`. The waiter ends with the test, so it can't time out later and fail a different test. Each waiter belongs to the test that created it.
+
 ---
 
 ## Subscribing to Network Events

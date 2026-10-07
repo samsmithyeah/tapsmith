@@ -15,6 +15,7 @@ import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults, markFileRetryFlakes, type RunDevice, type TestResult, type SuiteResult } from './runner.js';
+import { runnerClaimsUnhandledRejection } from './unhandled-errors.js';
 import { telemetry, readSdkVersion, ensureSessionEnv } from './telemetry.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady } from './session-preflight.js';
@@ -359,7 +360,12 @@ function installSequentialFatalHandlers(
     setImmediate(() => process.exit(1));
   };
   process.on('uncaughtException', (err) => runFatalTeardown('error', err));
-  process.on('unhandledRejection', (reason) => runFatalTeardown('rejection', reason));
+  // While a test file runs, the runner owns unhandled rejections: it fails
+  // the test the rejection happened in and the run carries on (PILOT-543).
+  // It also reports a late leftover of a test that has already ended.
+  process.on('unhandledRejection', (reason) => {
+    if (!runnerClaimsUnhandledRejection(reason)) runFatalTeardown('rejection', reason);
+  });
 }
 
 /**
