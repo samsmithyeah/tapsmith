@@ -100,6 +100,8 @@ function literalString(node: ASTNode | undefined): string | undefined {
 }
 
 // ─── Standard widgets that should use getByRole instead of locator({className}) ───
+// Each role must be one getByRole accepts and the agent resolves to that class
+// (eslint-plugin.test.ts checks both, PILOT-556). ToggleButton has no role.
 
 const STANDARD_WIDGET_MAP: Record<string, string> = {
   'android.widget.Button': 'button',
@@ -108,12 +110,11 @@ const STANDARD_WIDGET_MAP: Record<string, string> = {
   'android.widget.ImageButton': 'button',
   'android.widget.ImageView': 'image',
   'android.widget.ProgressBar': 'progressbar',
-  'android.widget.RadioButton': 'radio',
+  'android.widget.RadioButton': 'radiobutton',
   'android.widget.SeekBar': 'slider',
-  'android.widget.Spinner': 'combobox',
+  'android.widget.Spinner': 'spinner',
   'android.widget.Switch': 'switch',
   'android.widget.TextView': 'text',
-  'android.widget.ToggleButton': 'togglebutton',
 };
 
 // ─── prefer-role ───

@@ -5,6 +5,9 @@ import XCTest
 enum RoleMapping {
 
     /// Role name → list of XCUIElement.ElementType that represent that role.
+    /// The keys are the SDK's `NATIVE_ROLES` (`packages/tapsmith/src/roles.ts`),
+    /// which rejects any other role before it reaches the agent; `roles.test.ts`
+    /// pins the two together (PILOT-556).
     static let roleToElementTypes: [String: [XCUIElement.ElementType]] = [
         "button": [.button],
         "textfield": [.textField, .secureTextField],
@@ -127,11 +130,10 @@ enum RoleMapping {
     /// Tapsmith/Playwright canonical ("heading", "seekbar", "searchfield").
     ///
     /// **Parity contract:** this map MUST stay in sync with
-    /// `packages/tapsmith/src/expect.ts ROLE_ALIASES` and
-    /// `agent/app/.../ElementFinder.kt ROLE_ALIASES`. The SDK side has
-    /// the locking parity test (`expect.test.ts > ROLE_ALIASES parity`);
-    /// when you add an alias here, also update both other files and
-    /// extend that test. Drift causes silent per-platform mismatches
+    /// `packages/tapsmith/src/roles.ts ROLE_ALIASES` and
+    /// `agent/app/.../ElementFinder.kt ROLE_ALIASES`;
+    /// `packages/tapsmith/src/__tests__/roles.test.ts` reads all three
+    /// and fails on drift. Drift causes silent per-platform mismatches
     /// where the SDK normalizes one way and this side reports the
     /// other, leading `toHaveRole` to either fail loudly or (worse)
     /// match the wrong element.

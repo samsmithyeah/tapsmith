@@ -2,6 +2,7 @@ import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
 import { parseBounds, getNodeRole } from './hierarchy-utils.js';
 import { FORM_FIELD_ROLES } from './selector-generation.js';
 import { toJsRegExp } from '../../text-regex.js';
+import { ANDROID_ROLE_CLASSES, IOS_ROLE_TYPES, normalizeRole, unknownRoleMessage } from '../../roles.js';
 
 // ─── Selector Parsing ───
 
@@ -32,7 +33,7 @@ const SQ = String.raw`'((?:[^'\\]|\\.)*)'`;
 // An options object: quoted strings and RegExp literals may contain braces.
 const OPTIONS = String.raw`((?:[^{}"'/]|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|${REGEX_SOURCE.replace(/\((?!\?)/g, '(?:')})*)`;
 
-// Matches: device.getByText("value"), device.getByRole("role", { name: "n" }),
+// Matches: device.getByText("value"), device.getByRole("button", { name: "n" }),
 // device.getByText("value", { exact: true }), device.getByText(/re/i) — the
 // options object is captured as a blob and parsed by parseGetByOptions.
 // Supports both single and double quotes, optional whitespace around args.
@@ -413,8 +414,10 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
       return rid === selector.value || rid.endsWith(`:id/${selector.value}`);
     }
     case 'role': {
-      const role = getNodeRole(node);
-      if (role !== selector.value) return false;
+      // Like getByRole at runtime (PILOT-556): case-insensitive, aliases
+      // resolved, and a role it rejects matches nothing.
+      if (unknownRoleMessage(selector.value) !== null) return false;
+      if (!nodeHasRole(node, normalizeRole(selector.value))) return false;
       if (selector.nameRegex) return roleNameMatchesRegex(node, toJsRegExp(selector.nameRegex));
       if (selector.name) return roleNameMatches(node, selector.name, selector.exact === true);
       return true;
@@ -529,6 +532,46 @@ export function applyPositionalIndex<T>(items: T[], index: ParsedSelector['index
   if (index === undefined) return items;
   const idx = resolvePositionalIndex(items.length, index);
   return idx >= 0 && idx < items.length ? [items[idx]] : [];
+}
+
+/**
+ * Android roles the agent resolves on two paths (ElementFinder.kt
+ * DUAL_PATH_ROLES): a node with a role description matches only through it,
+ * one without falls back to its class — except heading and link, whose class
+ * (TextView) the agent never accepts on its own.
+ */
+const ANDROID_DUAL_PATH_ROLES = new Set(['heading', 'link', 'image', 'searchfield']);
+const ANDROID_DESCRIPTION_ONLY_ROLES = new Set(['heading', 'link']);
+
+/**
+ * Whether a native node has `role` (canonical) the way the agent's getByRole
+ * decides it: its reported role, or membership of the role's classes / element
+ * types — which covers roles the reverse map leaves out (list, listitem,
+ * scrollview, …) without making every layout suggest getByRole("listitem").
+ *
+ * iOS heading stays header-trait only here; the iOS agent currently also
+ * type-matches every static text for "heading", which is its bug to fix.
+ */
+function nodeHasRole(node: HierarchyNode, role: string): boolean {
+  const reported = getNodeRole(node);
+  if (reported && normalizeRole(reported) === role) return true;
+  const className = node.attributes.get('class');
+  if (className) {
+    if (ANDROID_DUAL_PATH_ROLES.has(role)
+      && (ANDROID_DESCRIPTION_ONLY_ROLES.has(role) || node.attributes.has('tapsmith-role'))) return false;
+    return ANDROID_ROLE_CLASSES[role]?.includes(className) ?? false;
+  }
+  const type = node.attributes.get('type') ?? node.tagName;
+  return role !== 'heading' && (IOS_ROLE_TYPES[role]?.includes(type) ?? false);
+}
+
+/**
+ * Why a parsed locator would throw when the test builds it, or `null`. Today
+ * that is a native getByRole role the runtime rejects (PILOT-556); WebView
+ * roles are DOM ARIA roles and are not checked.
+ */
+export function parsedSelectorError(selector: ParsedSelector): string | null {
+  return selector.type === 'role' ? unknownRoleMessage(selector.value) : null;
 }
 
 export function findMatchingNodes(roots: HierarchyNode[], selector: ParsedSelector): HierarchyNode[] {

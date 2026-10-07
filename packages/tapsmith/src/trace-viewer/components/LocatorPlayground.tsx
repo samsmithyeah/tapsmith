@@ -3,7 +3,7 @@ import { X } from 'lucide-preact';
 import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
 import { parseHierarchyXml } from './hierarchy-utils.js';
 import { generateSelectors, type GeneratedSelector } from './selector-generation.js';
-import { parseSelectorString, findMatchingNodes, getNodeBounds } from './selector-matching.js';
+import { parseSelectorString, findMatchingNodes, getNodeBounds, parsedSelectorError } from './selector-matching.js';
 import { disambiguateSelectors } from './selector-uniqueness.js';
 
 // ─── Locator Tab (lives in detail tabs) ───
@@ -35,6 +35,7 @@ const LOCATOR_TAB_STYLES = `
   .st-pick-hint code { background: var(--color-bg-tertiary); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
   .st-setup-hint { padding: 4px 10px 6px; font-size: 11px; color: var(--color-text-faint); font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
   .st-setup-hint code { color: var(--color-text-muted); }
+  .st-selector-error { padding: 6px 10px; font-size: 11px; color: var(--color-error); border-bottom: 1px solid var(--color-border); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; flex-shrink: 0; overflow-wrap: anywhere; }
   .st-strict-warning { padding: 6px 10px; font-size: 11px; color: var(--color-warning, #e2b340); border-bottom: 1px solid var(--color-border); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; flex-shrink: 0; }
   .st-strict-warning code { background: var(--color-bg-tertiary); padding: 1px 4px; border-radius: 3px; font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; font-size: 10px; }
   .st-source-toggle { display: inline-flex; border: 1px solid var(--color-border); border-radius: 4px; overflow: hidden; flex-shrink: 0; }
@@ -113,12 +114,19 @@ export function LocatorTab({ hierarchyXml, pickedNode, selector, onSelectorChang
 
   const isWebViewPick = pickedNode?.attributes.get('webview') === 'true';
 
+  // A locator the test would throw on when it is built (an unknown getByRole
+  // role, PILOT-556): show the runtime's message instead of "0 matches".
+  const selectorError = useMemo(() => {
+    const parsed = selector.trim() ? parseSelectorString(selector) : null;
+    return parsed ? parsedSelectorError(parsed) : null;
+  }, [selector]);
+
   const matchCount = useMemo(() => {
-    if (!selector.trim() || roots.length === 0) return null;
+    if (!selector.trim() || roots.length === 0 || selectorError) return null;
     const parsed = parseSelectorString(selector);
     if (!parsed) return null;
     return findMatchingNodes(roots, parsed).length;
-  }, [selector, roots]);
+  }, [selector, roots, selectorError]);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -210,6 +218,11 @@ export function LocatorTab({ hierarchyXml, pickedNode, selector, onSelectorChang
         </div>
         <span class={countClass} data-testid="locator-match-count">{countLabel}</span>
       </div>
+      {selectorError && (
+        <div class="st-selector-error" role="alert" data-testid="locator-error">
+          {selectorError}
+        </div>
+      )}
       {strictWarning && (
         <div class="st-strict-warning" data-testid="locator-strict-warning">
           ⚠ {matchCount} matches — runtime actions/assertions will throw a strict

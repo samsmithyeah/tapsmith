@@ -234,6 +234,9 @@ class ElementFinder(private val device: UiDevice) {
     /**
      * Role-to-class-name mappings. Each role maps to a list of Android class names
      * that could represent that role (including Material/AppCompat variants).
+     * These keys plus TRAIT_ONLY_ROLES are the SDK's `NATIVE_ROLES`
+     * (packages/tapsmith/src/roles.ts), which rejects any other role before
+     * it reaches the agent; `roles.test.ts` pins them together (PILOT-556).
      */
     private val roleClassMap =
         mapOf(

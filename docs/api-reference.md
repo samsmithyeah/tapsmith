@@ -69,6 +69,12 @@ device.getByRole("button", { name: "Details", expanded: true })
 | `selected` | `boolean` | Filter by selected state (tab, option) |
 | `expanded` | `boolean` | Filter by expanded state (accordion, dropdown) |
 
+`role` is one of the [supported roles](locators.md#getbyrolerole--name-) (case-insensitive; `header`, `slider` and `search` are aliases for `heading`, `seekbar` and `searchfield`). Any other role throws when the locator is built, listing the supported roles:
+
+```
+Unknown role "row". Supported: alert, button, checkbox, combobox, heading, image, link, list, listitem, progressbar, radiobutton, scrollview, searchfield, seekbar, spinner, switch, tab, text, textfield, toolbar (aliases: header → heading, slider → seekbar, search → searchfield). For an element with no supported role, use getByText(), getByTestId() or getByDescription().
+```
+
 The accessible name is the element's content description / accessibility label, its text, or — on Android — the joined text of its descendants. Because the default is a case-insensitive substring match, a name can match more than one element (`{ name: "Show overlay" }` also matches *Show overlay briefly*); acting on such a locator throws a [strict mode](#strict-mode) violation — add `exact: true`. The case-insensitive default also covers platform casing differences, such as React Native's `<Button title="Sign In">`, which Android renders as `SIGN IN`.
 
 ### `device.getByDescription(text: string): ElementHandle`
@@ -789,7 +795,7 @@ An `ElementHandle` is a lazy reference to a UI element. It is returned by every 
 Scoping also works after a positional or filtering modifier (`.first()`, `.last()`, `.nth()`, `.filter()`, `.and()`, `.or()`), just like Playwright. When the parent carries such a modifier it is resolved to its concrete element(s) and the child is scoped to them by geometric containment, so the parent must report bounds. A positional parent (`.first()`/`.nth()`) scopes to its single selected element; a filtering parent scopes to every match it resolves to (a child contained in any of them is in scope).
 
 ```typescript
-const list = device.getByRole("list", { name: "Shopping cart" });
+const list = device.getByTestId("cart-list"); // e.g. a FlatList with testID="cart-list"
 const item = list.getByText("Item 3", { exact: true });
 await item.tap();
 
@@ -1160,7 +1166,7 @@ await device.locator({ id: "search_box" }).clear();
 Scroll this element in the given direction.
 
 ```typescript
-await device.getByRole("list").scroll("down", { distance: 300 });
+await device.getByTestId("product-list").scroll("down", { distance: 300 }); // a FlatList with testID="product-list"
 ```
 
 #### `elementHandle.scrollIntoView(options?: { direction?: string; maxScrolls?: number; speed?: number }): Promise<void>`

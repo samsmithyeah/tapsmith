@@ -1,0 +1,215 @@
+/**
+ * Native role names for `getByRole()` and `toHaveRole()` (PILOT-556).
+ *
+ * Browser-safe (no Node imports): the trace viewer / UI-mode locator
+ * playground imports it too, so a role the playground accepts is exactly one
+ * a test can use.
+ *
+ * **Parity contract:** `NATIVE_ROLES` is the union of the Android agent's
+ * `roleClassMap` keys and `TRAIT_ONLY_ROLES` (`agent/.../ElementFinder.kt`)
+ * and the iOS agent's `RoleMapping.roleToElementTypes` keys, and
+ * `ROLE_ALIASES` matches both agents' alias maps. `roles.test.ts` reads the
+ * agents' sources and fails on drift; the role table in `docs/locators.md`
+ * is pinned to this list by `role-docs.test.ts`.
+ *
+ * WebView locators (`webview.getByRole`) query DOM ARIA roles and are not
+ * checked against this list.
+ */
+
+// ─── Role set ───
+
+/** Canonical native role names, sorted. */
+export const NATIVE_ROLES: readonly string[] = [
+  'alert',
+  'button',
+  'checkbox',
+  'combobox',
+  'heading',
+  'image',
+  'link',
+  'list',
+  'listitem',
+  'progressbar',
+  'radiobutton',
+  'scrollview',
+  'searchfield',
+  'seekbar',
+  'spinner',
+  'switch',
+  'tab',
+  'text',
+  'textfield',
+  'toolbar',
+];
+
+/**
+ * Cross-platform aliases: the React Native spelling → the canonical role.
+ * Both agents normalize these the same way.
+ */
+export const ROLE_ALIASES: Readonly<Record<string, string>> = {
+  header: 'heading',
+  slider: 'seekbar',
+  // RN's accessibilityRole="search" surfaces as a role description of
+  // "search"; the canonical role is "searchfield".
+  search: 'searchfield',
+};
+
+/**
+ * Playwright ARIA role names whose native counterpart has another name, so
+ * a test ported from Playwright gets pointed at the right one.
+ */
+const ARIA_ROLE_HINTS: Readonly<Record<string, string>> = {
+  textbox: 'textfield',
+  img: 'image',
+  radio: 'radiobutton',
+  searchbox: 'searchfield',
+};
+
+/**
+ * Android class names per role — the agent's `roleClassMap`
+ * (`agent/.../ElementFinder.kt`), which `roles.test.ts` pins. Roles the agent
+ * resolves only from an RN role description (`alert`, `combobox`) have none.
+ */
+export const ANDROID_ROLE_CLASSES: Readonly<Record<string, readonly string[]>> = {
+  button: [
+    'android.widget.Button',
+    'android.widget.ImageButton',
+    'com.google.android.material.button.MaterialButton',
+    'androidx.appcompat.widget.AppCompatButton',
+  ],
+  textfield: [
+    'android.widget.EditText',
+    'android.widget.AutoCompleteTextView',
+    'com.google.android.material.textfield.TextInputEditText',
+    'androidx.appcompat.widget.AppCompatEditText',
+  ],
+  checkbox: [
+    'android.widget.CheckBox',
+    'androidx.appcompat.widget.AppCompatCheckBox',
+    'com.google.android.material.checkbox.MaterialCheckBox',
+  ],
+  switch: [
+    'android.widget.Switch',
+    'androidx.appcompat.widget.SwitchCompat',
+    'com.google.android.material.switchmaterial.SwitchMaterial',
+  ],
+  image: [
+    'android.widget.ImageView',
+    'androidx.appcompat.widget.AppCompatImageView',
+  ],
+  text: [
+    'android.widget.TextView',
+    'androidx.appcompat.widget.AppCompatTextView',
+    'com.google.android.material.textview.MaterialTextView',
+  ],
+  heading: ['android.widget.TextView'],
+  link: ['android.widget.TextView'],
+  list: [
+    'android.widget.ListView',
+    'android.widget.GridView',
+    'androidx.recyclerview.widget.RecyclerView',
+  ],
+  listitem: [
+    'android.widget.LinearLayout',
+    'android.widget.RelativeLayout',
+    'android.widget.FrameLayout',
+  ],
+  scrollview: [
+    'android.widget.ScrollView',
+    'android.widget.HorizontalScrollView',
+    'androidx.core.widget.NestedScrollView',
+  ],
+  progressbar: [
+    'android.widget.ProgressBar',
+    'com.google.android.material.progressindicator.LinearProgressIndicator',
+    'com.google.android.material.progressindicator.CircularProgressIndicator',
+  ],
+  seekbar: [
+    'android.widget.SeekBar',
+    'com.google.android.material.slider.Slider',
+  ],
+  radiobutton: [
+    'android.widget.RadioButton',
+    'androidx.appcompat.widget.AppCompatRadioButton',
+    'com.google.android.material.radiobutton.MaterialRadioButton',
+  ],
+  spinner: [
+    'android.widget.Spinner',
+    'androidx.appcompat.widget.AppCompatSpinner',
+  ],
+  toolbar: [
+    'android.widget.Toolbar',
+    'androidx.appcompat.widget.Toolbar',
+    'com.google.android.material.appbar.MaterialToolbar',
+  ],
+  tab: [
+    'android.widget.TabWidget',
+    'com.google.android.material.tabs.TabLayout',
+  ],
+  searchfield: [
+    'android.widget.SearchView',
+    'androidx.appcompat.widget.SearchView',
+  ],
+};
+
+/**
+ * iOS element types per role — the agent's `RoleMapping.roleToElementTypes`
+ * without `.other` (a generic view, which the agent narrows by trait or name),
+ * as the `XCUIElementType…` names hierarchy dumps use. `roles.test.ts` pins it.
+ */
+export const IOS_ROLE_TYPES: Readonly<Record<string, readonly string[]>> = {
+  button: ['XCUIElementTypeButton'],
+  textfield: ['XCUIElementTypeTextField', 'XCUIElementTypeSecureTextField'],
+  checkbox: ['XCUIElementTypeCheckBox'],
+  switch: ['XCUIElementTypeSwitch', 'XCUIElementTypeToggle'],
+  image: ['XCUIElementTypeImage'],
+  text: ['XCUIElementTypeStaticText'],
+  heading: ['XCUIElementTypeStaticText'],
+  link: ['XCUIElementTypeLink'],
+  list: ['XCUIElementTypeTable', 'XCUIElementTypeCollectionView'],
+  listitem: ['XCUIElementTypeCell'],
+  scrollview: ['XCUIElementTypeScrollView'],
+  progressbar: ['XCUIElementTypeProgressIndicator'],
+  seekbar: ['XCUIElementTypeSlider'],
+  radiobutton: ['XCUIElementTypeRadioButton'],
+  spinner: ['XCUIElementTypePicker', 'XCUIElementTypeActivityIndicator'],
+  toolbar: ['XCUIElementTypeToolbar'],
+  tab: ['XCUIElementTypeTab', 'XCUIElementTypeTabBar'],
+  searchfield: ['XCUIElementTypeSearchField'],
+};
+
+const KNOWN = new Set(NATIVE_ROLES);
+
+// ─── Helpers ───
+
+/** Lowercase a role and resolve an alias to its canonical name. */
+export function normalizeRole(role: string): string {
+  const lower = role.toLowerCase();
+  return ROLE_ALIASES[lower] ?? lower;
+}
+
+/**
+ * The error message for a role no element can have, or `null` when the role
+ * is known. Matching is case-insensitive, like the agents.
+ */
+export function unknownRoleMessage(role: string): string | null {
+  if (KNOWN.has(normalizeRole(role))) return null;
+  const hint = ARIA_ROLE_HINTS[role.toLowerCase()];
+  const aliases = Object.entries(ROLE_ALIASES).map(([alias, canonical]) => `${alias} → ${canonical}`).join(', ');
+  return `Unknown role ${JSON.stringify(role)}.${hint ? ` Did you mean "${hint}"?` : ''} ` +
+    `Supported: ${NATIVE_ROLES.join(', ')} (aliases: ${aliases}). ` +
+    'For an element with no supported role, use getByText(), getByTestId() or getByDescription().';
+}
+
+/**
+ * Throw when `role` is not a native role name. `what` names the API for the
+ * TypeError a non-string gets (tests run through tsx are not type-checked).
+ */
+export function assertKnownRole(role: unknown, what: string): asserts role is string {
+  if (typeof role !== 'string') {
+    const got = role === null || role === undefined ? String(role) : `a ${typeof role}`;
+    throw new TypeError(`${what} expects a role name string, got ${got}.`);
+  }
+  const message = unknownRoleMessage(role);
+  if (message) throw new Error(message);
+}

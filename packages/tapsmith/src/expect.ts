@@ -20,6 +20,7 @@
 import { ElementHandle, ELEMENT_HANDLE_BRAND, isStrictModeViolation, isRetryableResolutionError, isStaleSnapshotError, POLL_INTERVAL_MS } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { formatSelector } from "./selectors.js";
+import { ANDROID_ROLE_CLASSES, normalizeRole } from "./roles.js";
 import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
 import { WebViewLocator, WEBVIEW_LOCATOR_BRAND } from "./webview-locator.js";
 import { defineStandIns, notSupportedYet } from "./not-supported.js";
@@ -137,95 +138,11 @@ function resolveTick(handle: ElementHandle, strict: boolean): Promise<ElementInf
   return handle._resolveForAssertion(POLL_FIND_TIMEOUT_MS, strict);
 }
 
-// ─── Role-to-class mapping (mirrors Kotlin roleClassMap) ───
-
-const ROLE_CLASS_MAP: Record<string, string[]> = {
-  button: [
-    "android.widget.Button",
-    "android.widget.ImageButton",
-    "com.google.android.material.button.MaterialButton",
-    "androidx.appcompat.widget.AppCompatButton",
-  ],
-  textfield: [
-    "android.widget.EditText",
-    "android.widget.AutoCompleteTextView",
-    "com.google.android.material.textfield.TextInputEditText",
-    "androidx.appcompat.widget.AppCompatEditText",
-  ],
-  checkbox: [
-    "android.widget.CheckBox",
-    "androidx.appcompat.widget.AppCompatCheckBox",
-    "com.google.android.material.checkbox.MaterialCheckBox",
-  ],
-  switch: [
-    "android.widget.Switch",
-    "androidx.appcompat.widget.SwitchCompat",
-    "com.google.android.material.switchmaterial.SwitchMaterial",
-  ],
-  image: [
-    "android.widget.ImageView",
-    "androidx.appcompat.widget.AppCompatImageView",
-  ],
-  text: [
-    "android.widget.TextView",
-    "androidx.appcompat.widget.AppCompatTextView",
-    "com.google.android.material.textview.MaterialTextView",
-  ],
-  heading: ["android.widget.TextView"],
-  link: ["android.widget.TextView"],
-  list: [
-    "android.widget.ListView",
-    "android.widget.GridView",
-    "androidx.recyclerview.widget.RecyclerView",
-  ],
-  listitem: [
-    "android.widget.LinearLayout",
-    "android.widget.RelativeLayout",
-    "android.widget.FrameLayout",
-  ],
-  scrollview: [
-    "android.widget.ScrollView",
-    "android.widget.HorizontalScrollView",
-    "androidx.core.widget.NestedScrollView",
-  ],
-  progressbar: [
-    "android.widget.ProgressBar",
-    "com.google.android.material.progressindicator.LinearProgressIndicator",
-    "com.google.android.material.progressindicator.CircularProgressIndicator",
-  ],
-  seekbar: [
-    "android.widget.SeekBar",
-    "com.google.android.material.slider.Slider",
-  ],
-  radiobutton: [
-    "android.widget.RadioButton",
-    "androidx.appcompat.widget.AppCompatRadioButton",
-    "com.google.android.material.radiobutton.MaterialRadioButton",
-  ],
-  spinner: [
-    "android.widget.Spinner",
-    "androidx.appcompat.widget.AppCompatSpinner",
-  ],
-  toolbar: [
-    "android.widget.Toolbar",
-    "androidx.appcompat.widget.Toolbar",
-    "com.google.android.material.appbar.MaterialToolbar",
-  ],
-  tab: [
-    "android.widget.TabWidget",
-    "com.google.android.material.tabs.TabLayout",
-  ],
-  searchfield: [
-    "android.widget.SearchView",
-    "androidx.appcompat.widget.SearchView",
-  ],
-};
-
-const EDITABLE_CLASSES = new Set(ROLE_CLASS_MAP["textfield"]);
+const EDITABLE_CLASSES = new Set(ANDROID_ROLE_CLASSES["textfield"]);
 
 const CLASS_TO_ROLE_MAP: Record<string, string> = (() => {
   const map: Record<string, string> = {};
-  for (const [role, classes] of Object.entries(ROLE_CLASS_MAP)) {
+  for (const [role, classes] of Object.entries(ANDROID_ROLE_CLASSES)) {
     for (const className of classes) {
       if (!(className in map)) {
         map[className] = role;
@@ -1083,40 +1000,8 @@ function classNameToRole(className: string): string {
   return CLASS_TO_ROLE_MAP[className] || "";
 }
 
-/**
- * Cross-platform role aliases. Lets `toHaveRole("header")` succeed when the
- * agent reports "heading" (and vice versa), and similarly for "slider" /
- * "seekbar".
- *
- * **Parity contract — three places, one canonical list:**
- * 1. This file (SDK side, used by `toHaveRole` normalization).
- * 2. `agent/.../ElementFinder.kt` (Android `ROLE_ALIASES`, used during
- *    role-description extraction).
- * 3. `ios-agent/TapsmithAgent/RoleMapping.swift` (`roleAliases`, used by
- *    `RoleMapping.elementTypes(for:)`).
- *
- * Drift here causes silent per-platform mismatch — the SDK normalizes
- * one way, the agent matches the other, and `toHaveRole` either fails
- * loudly or (worse) matches the wrong elements. The parity test in
- * `expect.test.ts > ROLE_ALIASES parity` pins the SDK side; if you add
- * or rename an alias, update all three files AND that test.
- */
-const ROLE_ALIASES: Record<string, string> = {
-  header: "heading",
-  heading: "heading",
-  slider: "seekbar",
-  seekbar: "seekbar",
-  // RN's accessibilityRole="search" surfaces as a role description of
-  // "search" via extractRoleDescription; normalize so toHaveRole("searchfield")
-  // matches.
-  search: "searchfield",
-  searchfield: "searchfield",
-};
-
-function normalizeRole(role: string): string {
-  const lower = role.toLowerCase();
-  return ROLE_ALIASES[lower] ?? lower;
-}
+// Role aliases and the native role set live in roles.ts (PILOT-556), shared
+// with getByRole's validation and the locator playground.
 
 // ─── PILOT-42: Generic value assertions ───
 

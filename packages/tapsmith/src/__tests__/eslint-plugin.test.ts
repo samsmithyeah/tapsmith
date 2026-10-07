@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import plugin from '../eslint-plugin/index.js';
+import { ANDROID_ROLE_CLASSES, normalizeRole, unknownRoleMessage } from '../roles.js';
 
 // ─── Test helpers ───
 
@@ -119,11 +120,10 @@ describe('prefer-role rule', () => {
       { className: 'android.widget.EditText', role: 'textfield' },
       { className: 'android.widget.Switch', role: 'switch' },
       { className: 'android.widget.ImageView', role: 'image' },
-      { className: 'android.widget.RadioButton', role: 'radio' },
+      { className: 'android.widget.RadioButton', role: 'radiobutton' },
       { className: 'android.widget.SeekBar', role: 'slider' },
-      { className: 'android.widget.Spinner', role: 'combobox' },
+      { className: 'android.widget.Spinner', role: 'spinner' },
       { className: 'android.widget.TextView', role: 'text' },
-      { className: 'android.widget.ToggleButton', role: 'togglebutton' },
       { className: 'android.widget.ProgressBar', role: 'progressbar' },
       { className: 'android.widget.ImageButton', role: 'button' },
     ];
@@ -138,7 +138,20 @@ describe('prefer-role rule', () => {
 
       expect(reports).toHaveLength(1);
       expect(reports[0].data?.role).toBe(role);
+      // The advice has to work: getByRole accepts the role, and the agent
+      // resolves that role to this widget's class (PILOT-556).
+      expect(unknownRoleMessage(role)).toBeNull();
+      expect(ANDROID_ROLE_CLASSES[normalizeRole(role)]).toContain(className);
     }
+  });
+
+  it('does not suggest a role for a widget no role maps (PILOT-556)', () => {
+    const reports: ReportDescriptor[] = [];
+    const visitor = rule.create(makeContext(reports));
+    visitor.CallExpression(
+      makeMethodCall('locator', objectExpr([{ key: 'className', value: 'android.widget.ToggleButton' }])),
+    );
+    expect(reports).toHaveLength(0);
   });
 
   it('does not warn for custom/non-standard class names', () => {

@@ -41,6 +41,11 @@ export class LocatorPane {
     return this.page.getByTestId("locator-match-count")
   }
 
+  /** Why the locator would throw when a test builds it, e.g. an unknown role (PILOT-556). */
+  get error() {
+    return this.page.getByTestId("locator-error")
+  }
+
   /** Shown when an ambiguous locator has no positional chain (PILOT-226). */
   get strictWarning() {
     return this.page.getByTestId("locator-strict-warning")

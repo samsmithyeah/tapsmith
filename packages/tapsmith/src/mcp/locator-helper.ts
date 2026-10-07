@@ -3,6 +3,7 @@ import type { ParsedSelector } from '../trace-viewer/components/selector-matchin
 import type { Selector, SelectorKind } from '../selectors.js';
 import { makeSelector } from '../selectors.js';
 import { textRegexValue } from '../text-regex.js';
+import { assertKnownRole } from '../roles.js';
 import { buildStrictModeViolationError, collapseSameTargetDuplicates, POLL_INTERVAL_MS } from '../element-handle.js';
 import type { TapsmithGrpcClient, ElementInfo } from '../grpc-client.js';
 
@@ -33,6 +34,9 @@ function parsedSelectorToKind(parsed: ParsedSelector): SelectorKind {
     case 'labelRegex':
       return { type: 'labelRegex', value: textRegexValue(regexOf(parsed.regex), 'getByLabel()') };
     case 'role':
+      // Same fail-fast as device.getByRole (PILOT-556): a role no element can
+      // have would otherwise poll until the resolve timeout.
+      assertKnownRole(parsed.value, 'getByRole()');
       if (parsed.nameRegex) {
         return {
           type: 'role',
