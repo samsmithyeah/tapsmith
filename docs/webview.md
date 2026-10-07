@@ -301,11 +301,12 @@ await expect(webview.locator("form")).toHaveAttribute("action", "/api/login")
 
 ### Negation and custom timeouts
 
-All assertions support `.not` for negation and a `{ timeout }` option:
+All assertions support `.not` for negation and a `{ timeout }` option. `toBeVisible` also takes `{ visible: false }`, which asserts the element is hidden, like `toBeHidden()`. Any other option throws a `TypeError` rather than being ignored:
 
 ```typescript
 await expect(webview.locator(".error")).not.toBeVisible()
 await expect(webview.locator(".results")).toBeVisible({ timeout: 15_000 })
+await expect(webview.locator(".banner")).toBeVisible({ visible: isLoggedIn })
 ```
 
 ## Complete Example
