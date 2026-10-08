@@ -142,7 +142,7 @@ class SnapshotElementFinder {
         // within the live query that finds it again (cacheQueryElement,
         // PILOT-549, PILOT-520).
         var queryNodes: [QueryNode] = []
-        if selector.reResolvesByLabel {
+        if selector.reResolvesByLabel || selector.roleOnlyReResolvesByLabel {
             SnapshotElementFinder.numberDescendants(of: &snapshotDict, into: &queryNodes)
         }
         var liveFocusedTextInputFetched = false
@@ -1119,18 +1119,23 @@ class SnapshotElementFinder {
             if placeholderValue != hint { return false }
         }
 
-        // Role selector — match by element type OR accessibility traits.
-        // React Native's Pressable/TouchableOpacity with accessibilityRole="button"
-        // sets the UIAccessibilityTraitButton trait but the element type stays .other.
-        // We need to check both to match cross-platform role() selectors.
+        // Role selector — match by element type, accessibility traits or (for
+        // React Native's generic views) role description: RN's
+        // Pressable/TouchableOpacity with accessibilityRole="button" sets the
+        // button trait but the element type stays .other. A heading needs the
+        // header trait, and a generic view isn't a checkbox, radio, alert or
+        // combobox without more to go on (RoleMapping.matches, PILOT-608).
         if let role = selector.role {
-            let types = (try? RoleMapping.elementTypes(for: role)) ?? []
             let traits = parseUInt64(node["traits"]) ?? 0
-
-            let typeMatch = types.contains(elType)
-            let traitMatch = !typeMatch && RoleMapping.matchesTrait(role: role, traits: traits)
-
-            if !typeMatch && !traitMatch { return false }
+            if !RoleMapping.matches(
+                role: role,
+                elementType: elType,
+                traits: traits,
+                value: value,
+                hasNameFilter: selector.hasNameFilter
+            ) {
+                return false
+            }
 
             // Filter by name if provided
             // Like Playwright: a case-insensitive substring by default, a
@@ -1345,6 +1350,17 @@ class SnapshotElementFinder {
             return app.descendants(matching: .any).matching(predicate)
         }
 
+        // The matched node found again by its own label (and identifier), at
+        // its index among the nodes that query returns (QueryIndex.liveIndex).
+        func byOwnLabel(_ nodeLabel: String, at labelIndex: Int) -> XCUIElement {
+            var predicates = [NSPredicate(format: "label == %@", nodeLabel)]
+            if !nodeIdentifier.isEmpty {
+                predicates.append(NSPredicate(format: "identifier == %@", nodeIdentifier))
+            }
+            return labelQuery(NSCompoundPredicate(andPredicateWithSubpredicates: predicates))
+                .element(boundBy: labelIndex)
+        }
+
         if let testId = selector.testId {
             element = app.descendants(matching: .any)
                 .matching(NSPredicate(format: "identifier == %@", testId))
@@ -1377,12 +1393,7 @@ class SnapshotElementFinder {
             // this query returns (QueryIndex.liveIndex).
             let nodeLabel = snapshotNode?["label"] as? String ?? ""
             if !nodeLabel.isEmpty, let labelIndex {
-                var predicates = [NSPredicate(format: "label == %@", nodeLabel)]
-                if !nodeIdentifier.isEmpty {
-                    predicates.append(NSPredicate(format: "identifier == %@", nodeIdentifier))
-                }
-                element = labelQuery(NSCompoundPredicate(andPredicateWithSubpredicates: predicates))
-                    .element(boundBy: labelIndex)
+                element = byOwnLabel(nodeLabel, at: labelIndex)
             } else {
                 // Matched through its title with an empty label: no label
                 // query can find this node, and a name query would bind some
@@ -1391,8 +1402,15 @@ class SnapshotElementFinder {
                 element = nil
             }
         } else if let role = selector.role {
-            // Role-only: match by type.
-            if let types = try? RoleMapping.elementTypes(for: role), let firstType = types.first {
+            let nodeLabel = snapshotNode?["label"] as? String ?? ""
+            if selector.roleOnlyReResolvesByLabel, !nodeLabel.isEmpty, let labelIndex {
+                // Role-only heading / RN checkbox, radio, alert, combobox: a
+                // type query can't tell them apart from other static texts or
+                // generic views, so find the node by its own label, as
+                // role + name does above (PILOT-608).
+                element = byOwnLabel(nodeLabel, at: labelIndex)
+            } else if let types = try? RoleMapping.elementTypes(for: role), let firstType = types.first {
+                // Role-only: match by type.
                 element = resolve(app.descendants(matching: firstType))
             } else {
                 element = nil
