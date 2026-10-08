@@ -31,8 +31,8 @@ import { resolveTraceConfig } from './trace/types.js';
 import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
 import { resolveVideoConfig } from './video/types.js';
 import { appendEventsToTrace, packageTrace, readTraceActionCount } from './trace/trace-packager.js';
-import { TraceCollector, screenshotFileName, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
-import type { AnyTraceEvent } from './trace/types.js';
+import { TraceCollector, extractSourceLocation, screenshotFileName, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
+import type { AnyTraceEvent, SourceLocation } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
 import type { NetworkCaptureRoute, NetworkEntry, TraceDeviceInfo } from './trace/types.js';
 import { TestAbortedError, isAbortError } from './abort.js';
@@ -48,8 +48,8 @@ import {
 } from './app-reset.js';
 import { executeAppReset, type ExecuteAppResetOptions, type SessionPreflightContext } from './session-preflight.js';
 import { deviceGroupSize, resolveDeviceGroup, validateAppResetOptions, validateDevicesOption, validateRecordingModes } from './config.js';
-import { onActionProgress } from './action-progress.js';
-import { runInAttemptContext, type AttemptToken } from './attempt-fence.js';
+import { type AttemptToken } from './attempt-fence.js';
+import { isRunnerTimeoutError, runBounded } from './run-bounded.js';
 import { closeErrorScope, mergeUnhandledErrors, openErrorScope, ownUnhandledErrors } from './unhandled-errors.js';
 import { runInRouteScope, type RouteScope } from './network.js';
 import { passesSelectionFilters } from './test-filter.js';
@@ -489,6 +489,15 @@ interface TestEntry {
 interface HookEntry {
   fn: HookFn
   registry?: FixtureRegistry
+  /** Where the hook was registered — named by its timeout error (PILOT-583). */
+  location?: SourceLocation
+}
+
+type HookKind = 'beforeAll' | 'afterAll' | 'beforeEach' | 'afterEach';
+
+/** The registering call's user-code frame (the `beforeEach(…)` line). */
+function hookLocation(): SourceLocation | undefined {
+  return extractSourceLocation(new Error().stack ?? '');
 }
 
 interface SuiteEntry {
@@ -827,10 +836,10 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
         setActiveFixtureRegistry(merged);
         return createTestFn<F & T>(merged);
       },
-      beforeAll: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeAll.push({ fn: hookFn, registry }); },
-      afterAll: (hookFn: HookFn) => { syncRegistry(); currentContext().afterAll.push({ fn: hookFn, registry }); },
-      beforeEach: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeEach.push({ fn: hookFn, registry }); },
-      afterEach: (hookFn: HookFn) => { syncRegistry(); currentContext().afterEach.push({ fn: hookFn, registry }); },
+      beforeAll: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeAll.push({ fn: hookFn, registry, location: hookLocation() }); },
+      afterAll: (hookFn: HookFn) => { syncRegistry(); currentContext().afterAll.push({ fn: hookFn, registry, location: hookLocation() }); },
+      beforeEach: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeEach.push({ fn: hookFn, registry, location: hookLocation() }); },
+      afterEach: (hookFn: HookFn) => { syncRegistry(); currentContext().afterEach.push({ fn: hookFn, registry, location: hookLocation() }); },
     },
   // Object.assign can't infer the generic F — cast through unknown is safe
   // because each property is typed correctly in the object literal above.
@@ -1002,19 +1011,19 @@ defineStandIns(describe, {
 export const test: TestFn = createTestFn(getActiveFixtureRegistry());
 
 export function beforeAll(fn: HookFn): void {
-  currentContext().beforeAll.push({ fn });
+  currentContext().beforeAll.push({ fn, location: hookLocation() });
 }
 
 export function afterAll(fn: HookFn): void {
-  currentContext().afterAll.push({ fn });
+  currentContext().afterAll.push({ fn, location: hookLocation() });
 }
 
 export function beforeEach(fn: HookFn): void {
-  currentContext().beforeEach.push({ fn });
+  currentContext().beforeEach.push({ fn, location: hookLocation() });
 }
 
 export function afterEach(fn: HookFn): void {
-  currentContext().afterEach.push({ fn });
+  currentContext().afterEach.push({ fn, location: hookLocation() });
 }
 
 // ─── Helpers ───
@@ -1301,14 +1310,48 @@ function passesTestFilter(fullName: string, opts: RunOptions): boolean {
 // not count parameters with default values or rest parameters, so hooks like
 // `async ({ device } = {}) => …` would be mis-classified as zero-arg. In
 // practice this is fine because hooks are simple `async ({ device }) => …`.
+//
+// Each hook runs under its own budget equal to the test timeout (PILOT-583;
+// as Playwright gives every beforeAll/afterAll), with the test body's
+// machinery (run-bounded.ts). A hook that runs out of it rejects with an
+// error naming the hook; it is fenced like a timed-out test body, so device
+// calls it still makes are refused.
+interface HookBound {
+  kind: HookKind;
+  timeoutMs: number;
+  traceCollector: TraceCollector | null;
+  /** Before-hooks only: after-hooks must still run after a stop. */
+  abortSignal?: AbortSignal;
+}
+
 async function invokeHook(
   entry: HookEntry,
   fixtures: Record<string, unknown>,
+  bound: HookBound,
 ): Promise<void> {
-  if (entry.fn.length > 0) {
-    await (entry.fn as (fixtures: Record<string, unknown>) => void | Promise<void>)(fixtures);
-  } else {
-    await (entry.fn as () => void | Promise<void>)();
+  const where = entry.location
+    ? ` at ${path.basename(entry.location.file)}:${entry.location.line}`
+    : '';
+  try {
+    await runBounded(async () => {
+      if (entry.fn.length > 0) {
+        await (entry.fn as (fixtures: Record<string, unknown>) => void | Promise<void>)(fixtures);
+      } else {
+        await (entry.fn as () => void | Promise<void>)();
+      }
+    }, {
+      subject: `"${bound.kind}" hook${where}`,
+      timeoutMs: bound.timeoutMs,
+      token: { closed: false },
+      closeOnSettle: false,
+      traceCollector: bound.traceCollector,
+      fallbackStack: entry.location ? [entry.location] : undefined,
+      abortSignal: bound.abortSignal,
+    });
+  } catch (err) {
+    // The traced action the hook was stuck in ends failed in the trace.
+    if (isRunnerTimeoutError(err)) bound.traceCollector?.failPendingOperation(err.message);
+    throw err;
   }
 }
 
@@ -1327,20 +1370,22 @@ async function invokeHookWithTestScope(
   suiteFixtures: Record<string, unknown>,
   suiteRegistry: FixtureRegistry,
   routeScope: RouteScope,
+  bound: HookBound,
 ): Promise<void> {
   // Routes the hook registers belong to its describe scope, not to the next
   // test: they stay until the scope ends (PILOT-534).
-  await runInRouteScope(routeScope, () => invokeSuiteHook(hook, suiteFixtures, suiteRegistry));
+  await runInRouteScope(routeScope, () => invokeSuiteHook(hook, suiteFixtures, suiteRegistry, bound));
 }
 
 async function invokeSuiteHook(
   hook: HookEntry,
   suiteFixtures: Record<string, unknown>,
   suiteRegistry: FixtureRegistry,
+  bound: HookBound,
 ): Promise<void> {
   // A hook that takes no fixtures parameter needs no test-scoped setup.
   if (!functionHasParameters(hook.fn)) {
-    await invokeHook(hook, suiteFixtures);
+    await invokeHook(hook, suiteFixtures, bound);
     return;
   }
   const registry = hook.registry ?? suiteRegistry;
@@ -1351,8 +1396,10 @@ async function invokeSuiteHook(
   const resolved = await resolveFixtures(
     registry, 'test', suiteFixtures, names.length > 0 ? names : undefined,
   );
+  // Only the hook itself is bounded: its fixtures' teardown still runs
+  // after it times out.
   try {
-    await invokeHook(hook, resolved.fixtures);
+    await invokeHook(hook, resolved.fixtures, bound);
   } finally {
     await resolved.teardown();
   }
@@ -1643,6 +1690,12 @@ async function runSuiteContext(
   // Apply test.use() overrides for this scope (cascading from parent) and
   // resolve the isolation policy it declares — see resolveScope.
   const { opts, policy, scopeTimeout } = resolveScope(ctx.useOptions, parentOpts, parentPolicy);
+  // Safety timeout for a test body, and the budget each of the scope's hooks
+  // gets of its own (PILOT-583): 3× the action timeout, or the scope-level
+  // override (test.use({ timeout })) when it exceeds that, so tests and
+  // hooks that need more time actually get it.
+  const defaultTestTimeoutMs = opts.config.timeout * 3;
+  const testTimeoutMs = scopeTimeout ? Math.max(defaultTestTimeoutMs, scopeTimeout) : defaultTestTimeoutMs;
   const isRoot = parentPrefix === '';
   // A serial scope inside another serial group stays part of that group.
   const serialGroup = inherited.serialGroup ?? (ctx.mode === 'serial' ? { failed: false } : undefined);
@@ -1827,7 +1880,9 @@ async function runSuiteContext(
       const hookErrors = openErrorScope();
       try {
         for (const hook of ctx.beforeAll) {
-          await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope);
+          await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope, {
+            kind: 'beforeAll', timeoutMs: testTimeoutMs, traceCollector: beforeAllCollector, abortSignal: opts.abortSignal,
+          });
         }
       } finally {
         closeErrorScope(hookErrors);
@@ -1998,11 +2053,6 @@ async function runSuiteContext(
     let screenshotPath: string | undefined;
     let tracePath: string | undefined;
     let videoPath: string | undefined;
-    // Safety timeout for the test body (hooks run outside this).
-    // Use the scope-level timeout override (from test.use({ timeout })) when
-    // it exceeds the default, so tests that need more time actually get it.
-    const defaultTestTimeoutMs = opts.config.timeout * 3;
-    const testTimeoutMs = scopeTimeout ? Math.max(defaultTestTimeoutMs, scopeTimeout) : defaultTestTimeoutMs;
     const maxRetries = opts.config.retries;
     let lastAttempt = 0;
     let attemptStart = testStart;
@@ -2226,10 +2276,11 @@ async function runSuiteContext(
       let allFixtures: Record<string, unknown> = baseFixtures;
 
       try {
-        // ── Setup phase (not subject to test timeout) ──
-          // Hooks and fixture resolution run outside the test timeout so that
+        // ── Setup phase (not subject to the test body's timeout) ──
+          // Hooks and fixture resolution run outside the body's budget so that
           // slow operations like restartApp() under heavy load don't eat into
-          // the budget for the actual test assertions.
+          // the budget for the actual test assertions. Each hook is bounded by
+          // a budget of its own instead (PILOT-583).
 
           // Notify UI mode on first attempt only — retries re-use the same
           // test slot in the UI rather than creating duplicate entries.
@@ -2368,7 +2419,9 @@ async function runSuiteContext(
 
           for (const hook of allBeforeEach) {
             validateHookFixtures(hook, registry, 'beforeEach');
-            await invokeHook(hook, allFixtures);
+            await invokeHook(hook, allFixtures, {
+              kind: 'beforeEach', timeoutMs: testTimeoutMs, traceCollector, abortSignal: opts.abortSignal,
+            });
           }
           if (hasBeforeEachWork) {
             traceCollector?.endGroup();
@@ -2389,113 +2442,24 @@ async function runSuiteContext(
             }
           };
 
-          // Wrap only the test body with a timeout — hooks run outside this
-          // so slow setup (restartApp, navigation) under load doesn't cause
-          // spurious timeouts. Also raced against the run's abort signal so a
-          // user stop interrupts even pure-JS waits that never touch the
-          // device (in-flight device calls are cancelled via the gRPC client).
-          //
-          // The body runs inside an attempt-fence context: a timed-out body
-          // cannot be cancelled (Promise.race only abandons it), so once the
-          // race settles the token is closed and any device RPC the zombie
-          // body still issues rejects immediately instead of racing the
-          // retry on the shared device.
-          let testTimer: ReturnType<typeof setTimeout> | undefined;
-          let onTestAbort: (() => void) | undefined;
-          const abortSignal = opts.abortSignal;
+          // Bound the test body with the test timeout (run-bounded.ts: time
+          // inside progress-tracked device actions is excluded, a wall-clock
+          // cap backstops it, a user stop interrupts it, and once it settles
+          // its attempt-fence token is closed so a zombie body's device RPCs
+          // reject instead of racing the retry on the shared device). Hooks
+          // each get a budget of their own (PILOT-583) rather than sharing
+          // this one, so slow setup (restartApp, navigation) under load
+          // doesn't eat into the budget for the test's assertions.
           const attemptToken: AttemptToken = { closed: false };
           attemptErrors.attempt = attemptToken;
-          // Time spent inside progress-tracked device actions does not count
-          // toward the test timeout: those actions carry their own bounded
-          // deadlines (agent budgets, gRPC deadlines, daemon-side recovery
-          // caps up to ~7 minutes for a deep link that rides out a simulator
-          // reboot), so a CoreSimulator stall that stretches one of them must
-          // not consume the whole test budget and kill the test while the
-          // framework is actively — and successfully — recovering. The wall
-          // clock still caps the attempt (WALL_CAP × the timeout) so a test
-          // looping bounded actions forever cannot run unbounded.
-          //
-          // Subscribe BEFORE creating the body promise: the body executes
-          // synchronously up to its first await, so a device action as the
-          // first statement emits its start event during creation.
-          const WALL_CAP_MULTIPLIER = 5;
-          const excluded = { totalMs: 0, depth: 0, inFlightSince: 0 };
-          const unsubscribeProgress = onActionProgress((ev) => {
-            if (ev.kind === 'start') {
-              if (excluded.depth++ === 0) excluded.inFlightSince = Date.now();
-            } else if (ev.kind === 'end' && excluded.depth > 0) {
-              if (--excluded.depth === 0) excluded.totalMs += Date.now() - excluded.inFlightSince;
-            }
+          await runBounded(testFn, {
+            subject: 'Test',
+            timeoutMs: testTimeoutMs,
+            token: attemptToken,
+            closeOnSettle: true,
+            traceCollector,
+            abortSignal: opts.abortSignal,
           });
-          const bodyStart = Date.now();
-          const bodyPromise = runInAttemptContext(attemptToken, testFn);
-          // The race may abandon the body; its eventual rejection (fenced
-          // device calls) must not surface as an unhandled rejection.
-          bodyPromise.catch(() => {});
-          try {
-            await Promise.race([
-              bodyPromise,
-              new Promise<never>((_, reject) => {
-                // A timeout Error's own stack is just this timer callback plus
-                // node timer internals — useless to the user. Re-point it at
-                // the operation that was in flight when time ran out (its
-                // user-code frames were registered via setPendingOperation),
-                // so reporters render a snippet of the test line that was
-                // executing, not framework code. Read here, before the catch
-                // block's failPendingOperation clears the registration.
-                const timeoutError = (message: string): Error => {
-                  const err = new Error(message);
-                  const frames = traceCollector?.pendingOperationStack;
-                  if (frames && frames.length > 0) {
-                    err.stack = `Error: ${message}\n`
-                      + frames.map((f) => `    at ${f.file}:${f.line}:${f.column ?? 1}`).join('\n');
-                  }
-                  return err;
-                };
-                const check = (): void => {
-                  const wallMs = Date.now() - bodyStart;
-                  const inFlightMs = excluded.depth > 0 ? Date.now() - excluded.inFlightSince : 0;
-                  const countedMs = wallMs - excluded.totalMs - inFlightMs;
-                  if (countedMs >= testTimeoutMs) {
-                    reject(timeoutError(
-                      `Test timed out after ${testTimeoutMs}ms`
-                      + (wallMs - countedMs > 1_000
-                        ? ` (${Math.round(wallMs / 1000)}s wall clock; ${Math.round((wallMs - countedMs) / 1000)}s inside device actions excluded)`
-                        : ''),
-                    ));
-                    return;
-                  }
-                  if (wallMs >= testTimeoutMs * WALL_CAP_MULTIPLIER) {
-                    reject(timeoutError(
-                      `Test timed out after ${Math.round(wallMs / 1000)}s wall clock `
-                      + `(cap: ${WALL_CAP_MULTIPLIER}× the ${testTimeoutMs}ms test timeout; `
-                      + `${Math.round((wallMs - countedMs) / 1000)}s inside device actions)`,
-                    ));
-                    return;
-                  }
-                  testTimer = setTimeout(check, Math.min(1_000, testTimeoutMs));
-                };
-                testTimer = setTimeout(check, Math.min(1_000, testTimeoutMs));
-              }),
-              ...(abortSignal ? [new Promise<never>((_, reject) => {
-                // An already-aborted signal never fires 'abort' for new
-                // listeners — reject straight away in that case.
-                if (abortSignal.aborted) {
-                  reject(new TestAbortedError());
-                  return;
-                }
-                onTestAbort = () => reject(new TestAbortedError());
-                abortSignal.addEventListener('abort', onTestAbort, { once: true });
-              })] : []),
-            ]);
-          } finally {
-            attemptToken.closed = true;
-            // Clear the timeout here (not via testFn().finally) so an abort
-            // settling the race doesn't leave a long-lived timer behind.
-            if (testTimer) clearTimeout(testTimer);
-            unsubscribeProgress();
-            if (onTestAbort) abortSignal?.removeEventListener('abort', onTestAbort);
-          }
         } catch (err) {
           if (isTestSkip(err) && !opts.abortSignal?.aborted) {
             // test.skip() in the body, a beforeEach hook or a fixture: the
@@ -2515,7 +2479,7 @@ async function runSuiteContext(
             // If a WebView/CDP operation is the thing that hit the runner timeout,
             // close it before screenshot/network teardown so stale async work does
             // not bleed into the next test.
-            if (error.message.startsWith('Test timed out after ')) {
+            if (isRunnerTimeoutError(error)) {
               await forEachDeviceBestEffort(opts, (d) => d._disposeWebViewManager?.());
             }
 
@@ -2538,12 +2502,29 @@ async function runSuiteContext(
               for (const hook of allAfterEach) {
                 try {
                   validateHookFixtures(hook, registry, 'afterEach');
-                  await invokeHook(hook, allFixtures);
+                  await invokeHook(hook, allFixtures, {
+                    kind: 'afterEach', timeoutMs: testTimeoutMs, traceCollector,
+                  });
                 } catch (err) {
                   // test.skip() in afterEach: a test that passed is reported
                   // as skipped; a failure stays a failure (PILOT-546).
                   if (isTestSkip(err)) {
                     if (status === 'passed') status = 'skipped';
+                    continue;
+                  }
+                  // A hung afterEach fails the test, as in Playwright
+                  // (PILOT-583); the remaining afterEach hooks still run.
+                  if (isRunnerTimeoutError(err)) {
+                    if (status === 'failed' && error) {
+                      error.message += `\n\n--- Additionally ---\n${err.message}`;
+                    } else {
+                      status = 'failed';
+                      error = err;
+                    }
+                    await forEachDeviceBestEffort(opts, (d) => d._disposeWebViewManager?.());
+                    if (!screenshotPath && opts.config.screenshot !== 'never' && !opts.abortSignal?.aborted) {
+                      screenshotPath = await captureFailureScreenshots(opts, opts.screenshotDir, fullName);
+                    }
                     continue;
                   }
                   process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -3059,7 +3040,9 @@ async function runSuiteContext(
         await withActiveTraceCollector(afterAllCollector, async () => {
           for (const hook of ctx.afterAll) {
             try {
-              await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope);
+              await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope, {
+                kind: 'afterAll', timeoutMs: testTimeoutMs, traceCollector: afterAllCollector,
+              });
             } catch (err) {
               if (isTestSkip(err)) continue;
               process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -3083,7 +3066,9 @@ async function runSuiteContext(
     } else {
       for (const hook of ctx.afterAll) {
         try {
-          await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope);
+          await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope, {
+            kind: 'afterAll', timeoutMs: testTimeoutMs, traceCollector: null,
+          });
         } catch (err) {
           if (isTestSkip(err)) continue;
           process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -3094,7 +3079,9 @@ async function runSuiteContext(
     // No test ran in this scope → no teardown either (beforeAll was skipped too).
     for (const hook of ctx.afterAll) {
       try {
-        await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope);
+        await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry, routeScope, {
+          kind: 'afterAll', timeoutMs: testTimeoutMs, traceCollector: null,
+        });
       } catch (err) {
         if (isTestSkip(err)) continue;
         process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);

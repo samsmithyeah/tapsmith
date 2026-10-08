@@ -2031,6 +2031,17 @@ beforeEach(async ({ device }) => {
 
 Run a function after each test in the current suite. Runs even if the test fails. Receives the same fixtures as `beforeEach`.
 
+#### Hook timeouts
+
+Each hook call gets its own time budget, equal to the test timeout: 3× the config `timeout`, or a larger `test.use({ timeout })` of its scope. Time spent inside device actions that carry their own deadlines (app launches, deep links) does not count, as for a test body. A hook that is still running when its budget runs out fails with an error that names it, for example `"beforeEach" hook at login.test.ts:12 timed out after 90000ms`:
+
+- `beforeAll`: every test of its scope fails with that error, as when the hook throws.
+- `beforeEach`: the test fails. Its `afterEach` hooks still run.
+- `afterEach`: the test fails, even if its body passed. If the test had already failed, the timeout is added to its error. The remaining `afterEach` hooks still run.
+- `afterAll`: the error is printed, like an error thrown by an `afterAll` hook, and the run carries on.
+
+Unlike Playwright, `beforeEach`/`afterEach` hooks do not share the test body's budget: slow setup such as `device.restartApp()` on a loaded machine does not eat into the time the test itself has. A hook that timed out keeps no hold on the device: device calls it still makes afterwards are refused.
+
 ### `test.beforeAll(fn)` / `test.afterAll(fn)` / `test.beforeEach(fn)` / `test.afterEach(fn)`
 
 Hook methods on the extended test function. Use these instead of standalone hooks when you need custom fixtures in your hooks:
