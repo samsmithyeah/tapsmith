@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { initArgsFromOptions, resolveInitPlan, executeInitPlan, assertConfigWritable, InitError, type DetectFns } from '../init-noninteractive.js';
+import { initArgsFromOptions, resolveInitPlan, executeInitPlan, assertConfigWritable, assertProjectWritable, InitError, type DetectFns } from '../init-noninteractive.js';
 import type { ExpoProject } from '../init-detect.js';
 import { needsSimulatorAgent } from '../init.js';
 import { simulatorChoices, type EnvScan } from '../env-scan.js';
@@ -780,34 +780,42 @@ describe('executeInitPlan()', () => {
     const tmp = makeTmp();
     try {
       fs.writeFileSync(path.join(tmp, 'tapsmith.config.mjs'), '// existing mjs');
-      assertConfigWritable(true, tmp);
+      const args = initArgs({ yes: true, force: true, platform: 'android' });
+      executeInitPlan(resolveInitPlan(args, baseEnv, detectStubs, tmp), args, tmp);
       expect(fs.existsSync(path.join(tmp, 'tapsmith.config.mjs'))).toBe(false);
-      expect(fs.existsSync(path.join(tmp, 'tapsmith.config.ts'))).toBe(false);
+      expect(fs.readFileSync(path.join(tmp, 'tapsmith.config.ts'), 'utf8')).toContain('defineConfig');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  it('removes an existing tapsmith.config.ts when force is enabled', () => {
+  // The early --force guard runs before the iOS agent build and every write:
+  // it must not delete the config a failed init would then leave missing (PILOT-623).
+  it('assertConfigWritable() only checks: --force leaves the existing configs in place', () => {
     const tmp = makeTmp();
     try {
       fs.writeFileSync(path.join(tmp, 'tapsmith.config.ts'), '// existing ts');
+      fs.writeFileSync(path.join(tmp, 'tapsmith.config.mjs'), '// existing mjs');
       assertConfigWritable(true, tmp);
-      expect(fs.existsSync(path.join(tmp, 'tapsmith.config.ts'))).toBe(false);
+      expect(fs.readFileSync(path.join(tmp, 'tapsmith.config.ts'), 'utf8')).toBe('// existing ts');
+      expect(fs.existsSync(path.join(tmp, 'tapsmith.config.mjs'))).toBe(true);
+      expectInitError(() => assertConfigWritable(false, tmp), 'CONFIG_EXISTS');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  it('replaces a symlinked config without clobbering the link target on force', () => {
+  it.skipIf(process.platform === 'win32')('replaces a symlinked config without clobbering the link target on force', () => {
     const tmp = makeTmp();
     try {
       const target = path.join(tmp, 'real-config.ts');
       fs.writeFileSync(target, '// link target');
       fs.symlinkSync(target, path.join(tmp, 'tapsmith.config.ts'));
-      assertConfigWritable(true, tmp);
-      // The symlink is removed; its target is left untouched.
-      expect(fs.existsSync(path.join(tmp, 'tapsmith.config.ts'))).toBe(false);
+      const args = initArgs({ yes: true, force: true, platform: 'android' });
+      executeInitPlan(resolveInitPlan(args, baseEnv, detectStubs, tmp), args, tmp);
+      // The symlink is replaced by a regular file; its target is left untouched.
+      expect(fs.lstatSync(path.join(tmp, 'tapsmith.config.ts')).isSymbolicLink()).toBe(false);
+      expect(fs.readFileSync(path.join(tmp, 'tapsmith.config.ts'), 'utf8')).toContain('defineConfig');
       expect(fs.readFileSync(target, 'utf8')).toBe('// link target');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -950,6 +958,118 @@ describe('executeInitPlan()', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── A file init cannot write (PILOT-623, PILOT-624) ───
+
+// chmod cannot take write access away from root, and Windows ignores it.
+const canDenyWrites = process.platform !== 'win32' && process.getuid?.() !== 0;
+
+describe('executeInitPlan() when a file cannot be written', () => {
+  let tmp: string;
+  const locked: string[] = [];
+  beforeEach(() => {
+    tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-write-')));
+  });
+  afterEach(() => {
+    for (const dir of locked.splice(0)) fs.chmodSync(dir, 0o755);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+  const lock = (dir: string): void => {
+    fs.chmodSync(dir, 0o555);
+    locked.push(dir);
+  };
+  const run = (over: Partial<InitCommandOptions> = {}) => {
+    const args = initArgs({ yes: true, platform: 'android', ...over });
+    return () => executeInitPlan(resolveInitPlan(args, baseEnv, detectStubs, tmp), args, tmp);
+  };
+  const listing = (): string[] => fs.readdirSync(tmp).sort();
+
+  it.skipIf(!canDenyWrites)('stops with WRITE_FAILED before writing anything when tests/ is read-only', () => {
+    fs.mkdirSync(path.join(tmp, 'tests'));
+    lock(path.join(tmp, 'tests'));
+    const err = expectInitError(run(), 'WRITE_FAILED');
+    expect(err.message).toContain('tests/example.tapsmith.ts');
+    expect(err.message).toContain(path.join(tmp, 'tests'));
+    expect(err.message).toContain('Nothing was written');
+    expect(err.fix).toMatch(/--no-example-test/);
+    expect(listing()).toEqual(['tests']);
+  });
+
+  it('stops with WRITE_FAILED when tests is a file', () => {
+    fs.writeFileSync(path.join(tmp, 'tests'), 'not a directory');
+    const err = expectInitError(run(), 'WRITE_FAILED');
+    expect(err.message).toContain('tests/example.tapsmith.ts');
+    expect(err.message).toMatch(/not a directory/);
+    expect(listing()).toEqual(['tests']);
+  });
+
+  it.skipIf(!canDenyWrites)('stops with WRITE_FAILED naming tapsmith.config.ts when the project directory is read-only', () => {
+    lock(tmp);
+    const err = expectInitError(run({ exampleTest: false, agentsMd: false }), 'WRITE_FAILED');
+    expect(err.message).toContain('tapsmith.config.ts');
+    expect(err.message).toContain('Nothing was written');
+    expect(listing()).toEqual([]);
+  });
+
+  it.skipIf(!canDenyWrites)('keeps the existing config when --force cannot write the new one', () => {
+    fs.writeFileSync(path.join(tmp, 'tapsmith.config.ts'), '// existing');
+    lock(tmp);
+    expectInitError(run({ force: true }), 'WRITE_FAILED');
+    expect(fs.readFileSync(path.join(tmp, 'tapsmith.config.ts'), 'utf8')).toBe('// existing');
+    expect(listing()).toEqual(['tapsmith.config.ts']);
+  });
+
+  // Checked again before the questions and the iOS agent build, so a
+  // read-only project fails at once rather than after minutes of work.
+  it.skipIf(!canDenyWrites)('assertProjectWritable() refuses a read-only project with the same WRITE_FAILED', () => {
+    expect(() => assertProjectWritable(tmp)).not.toThrow();
+    lock(tmp);
+    const err = expectInitError(() => assertProjectWritable(tmp), 'WRITE_FAILED');
+    expect(err.message).toBe(`Could not write tapsmith.config.ts: ${tmp} is not writable. Nothing was written.`);
+    expect(err.fix).toContain(`Give yourself write access to ${tmp}`);
+  });
+
+  it('stops with WRITE_FAILED naming AGENTS.md when it is a directory', () => {
+    fs.mkdirSync(path.join(tmp, 'AGENTS.md'));
+    const err = expectInitError(run(), 'WRITE_FAILED');
+    expect(err.message).toContain('AGENTS.md');
+    expect(err.message).toContain('Nothing was written');
+    expect(err.fix).toMatch(/--no-agents-md/);
+    expect(listing()).toEqual(['AGENTS.md']);
+  });
+
+  it.skipIf(!canDenyWrites)('stops with WRITE_FAILED naming a read-only AGENTS.md', () => {
+    fs.writeFileSync(path.join(tmp, 'AGENTS.md'), '# mine\n');
+    fs.chmodSync(path.join(tmp, 'AGENTS.md'), 0o444);
+    const err = expectInitError(run(), 'WRITE_FAILED');
+    expect(err.message).toContain('AGENTS.md');
+    expect(listing()).toEqual(['AGENTS.md']);
+  });
+
+  it.skipIf(!canDenyWrites)('checks only the files it was asked to write', () => {
+    fs.mkdirSync(path.join(tmp, 'tests'));
+    lock(path.join(tmp, 'tests'));
+    fs.mkdirSync(path.join(tmp, 'AGENTS.md'));
+    const result = run({ exampleTest: false, agentsMd: false })();
+    expect(result.filesCreated).toContain('tapsmith.config.ts');
+  });
+
+  // A failure the up-front check cannot foresee (a full disk, a directory
+  // where the config goes): the config is written last, so none is left
+  // behind, and the error lists what was written.
+  it('writes the config last, and names the files already written when it fails', () => {
+    fs.mkdirSync(path.join(tmp, 'tapsmith.config.ts'));
+    fs.writeFileSync(path.join(tmp, 'tapsmith.config.ts', 'keep'), '');
+    const err = expectInitError(run({ force: true }), 'WRITE_FAILED');
+    expect(err.message).toContain('Could not write tapsmith.config.ts');
+    // The reason is Node's, without the temp file or a rename of the config onto itself.
+    expect(err.message).toMatch(/Could not write tapsmith\.config\.ts: E[A-Z]+: [^,']+\. Already written/);
+    expect(err.message).not.toContain('.tmp');
+    expect(err.message).toContain('Already written: tests/example.tapsmith.ts, AGENTS.md');
+    expect(listing()).toEqual(['AGENTS.md', 'tapsmith.config.ts', 'tests']);
+    expect(fs.statSync(path.join(tmp, 'tapsmith.config.ts')).isDirectory()).toBe(true);
   });
 });
 

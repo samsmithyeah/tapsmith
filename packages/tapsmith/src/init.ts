@@ -970,8 +970,9 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
 
       // Guard BEFORE the iOS agent build so a 5-minute xcodebuild is never
       // launched against a project that already has a config (unless --force).
-      const { assertConfigWritable } = await import('./init-noninteractive.js');
+      const { assertConfigWritable, assertProjectWritable } = await import('./init-noninteractive.js');
       assertConfigWritable(parsed.force);
+      assertProjectWritable();
 
       if (needsSimulatorAgent(plan.ios)) {
         const agentResult = await initSimulatorAgent();
@@ -1009,7 +1010,9 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
     await runInitInner();
   } catch (err) {
     console.log();
-    if (err === '' || (err instanceof Error && err.message === '')) {
+    if (err instanceof InitError) {
+      emitInitError(err, false);
+    } else if (err === '' || (err instanceof Error && err.message === '')) {
       console.log(dim('  Setup cancelled.'));
     } else {
       console.error(`  ${RED}✗${RESET} ${err instanceof Error ? err.message : String(err)}`);
@@ -1045,6 +1048,11 @@ async function runInitInner(): Promise<void> {
       return;
     }
   }
+
+  // A project that cannot take the config fails now, not after every question
+  // (PILOT-624). Declining the overwrite above needs no write access.
+  const { assertProjectWritable } = await import('./init-noninteractive.js');
+  assertProjectWritable();
 
   // Step 1: Environment scan
   const env = scanEnvironment();
@@ -1110,46 +1118,33 @@ async function runInitInner(): Promise<void> {
     }
   }
 
-  // Step 7: Generate config
-  const configContent = generateConfig(selectedPlatforms, androidConfig, iosConfig, enableNetwork);
+  // Step 7: Example test and AGENTS.md. Asked before anything is written, so
+  // a file that cannot be written stops init before it writes any (PILOT-624).
+  const createTest = await ask<boolean>(confirmQuestion('Generate example test file?', true));
+  const writeAgents = await ask<boolean>(confirmQuestion('Add a Tapsmith section to AGENTS.md? (helps AI coding agents use Tapsmith correctly)', true));
 
-  try {
-    fs.writeFileSync(path.resolve(process.cwd(), 'tapsmith.config.ts'), configContent);
-    console.log(`  ${green('✓')} tapsmith.config.ts created`);
-    const unmatched = testsOutsideGeneratedMatchWarning(tapsmithTestsOutsideGeneratedMatch(process.cwd()));
-    if (unmatched) console.log(`  ${YELLOW}⚠${RESET} ${unmatched}`);
-  } catch (err) {
-    console.log(`  ${RED}✗${RESET} Failed to write tapsmith.config.ts: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  // Step 8: Write the files; a failure throws WRITE_FAILED, which ends init.
+  const { writeInitFiles } = await import('./init-noninteractive.js');
+  const { written, exampleTestExisted } = writeInitFiles({
+    config: generateConfig(selectedPlatforms, androidConfig, iosConfig, enableNetwork),
+    exampleTest: createTest,
+    agentsMd: writeAgents,
+    replaceConfig: existingConfig !== undefined,
+    interactive: true,
+  });
+  console.log(`  ${green('✓')} tapsmith.config.ts created`);
+  const unmatched = testsOutsideGeneratedMatchWarning(tapsmithTestsOutsideGeneratedMatch(process.cwd()));
+  if (unmatched) console.log(`  ${YELLOW}⚠${RESET} ${unmatched}`);
 
-  // Step 7.5: keep test output out of git (PILOT-562)
+  // Keep test output out of git (PILOT-562)
   const ignored = ignoreTestResultsOrWarn(process.cwd());
   if (ignored === 'created') console.log(`  ${green('✓')} .gitignore created (ignores Tapsmith's test output)`);
   else if (ignored === 'added') console.log(`  ${green('✓')} Tapsmith's test output folders added to .gitignore`);
   else if (typeof ignored === 'object') console.log(`  ${YELLOW}⚠${RESET} ${ignored.warning}`);
 
-  // Step 8: Example test
-  const createTest = await ask<boolean>(confirmQuestion('Generate example test file?', true));
-
-  if (createTest) {
-    try {
-      if (writeExampleTest(process.cwd()) === 'exists') {
-        console.log(`  ${YELLOW}⚠${RESET} ${EXAMPLE_TEST_PATH} already exists, skipping.`);
-      } else {
-        console.log(`  ${green('✓')} ${EXAMPLE_TEST_PATH} created`);
-      }
-    } catch (err) {
-      console.log(`  ${RED}✗${RESET} Failed to write ${EXAMPLE_TEST_PATH}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  // Step 8.5: AGENTS.md for coding agents
-  const writeAgents = await ask<boolean>(confirmQuestion('Add a Tapsmith section to AGENTS.md? (helps AI coding agents use Tapsmith correctly)', true));
-  if (writeAgents) {
-    const { writeAgentsMd } = await import('./agents-md.js');
-    writeAgentsMd(process.cwd());
-    console.log(`  ${green('✓')} AGENTS.md updated`);
-  }
+  if (exampleTestExisted) console.log(`  ${YELLOW}⚠${RESET} ${EXAMPLE_TEST_PATH} already exists, skipping.`);
+  else if (written.includes(EXAMPLE_TEST_PATH)) console.log(`  ${green('✓')} ${EXAMPLE_TEST_PATH} created`);
+  if (written.includes('AGENTS.md')) console.log(`  ${green('✓')} AGENTS.md updated`);
 
   // Step 8.6: Tapsmith itself, which the config and test import (PILOT-551)
   const installStep = await offerTapsmithInstall(process.cwd());
