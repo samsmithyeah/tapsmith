@@ -237,6 +237,69 @@ describe('resolveInitPlan()', () => {
     }));
   });
 
+  describe('says when it leaves iOS out of a React Native project on macOS (PILOT-625)', () => {
+    const managedExpo: ExpoProject = { hasAndroidDir: true, hasIosDir: false, usesTapsmithHooks: false };
+    /** A project with android/ (unless `androidDir` is false) and the given package.json dependencies. */
+    function withProject(deps: Record<string, string> | 'unreadable', fn: (dir: string) => void, androidDir = true): void {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-'));
+      try {
+        if (androidDir) fs.mkdirSync(path.join(tmp, 'android'));
+        fs.writeFileSync(path.join(tmp, 'package.json'), deps === 'unreadable' ? '{not json' : JSON.stringify({ dependencies: deps }));
+        fn(tmp);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+    const iosNote = (warnings: string[]) => warnings.find((w) => w.startsWith('iOS left out'));
+
+    it('notes the missing ios/ and how to add iOS in a bare React Native project', () => withProject({ 'react-native': '0.79.0' }, (tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true }), baseEnv, { ...detectStubs, detectExpoProject: () => undefined }, tmp);
+      expect(plan.platforms).toEqual(['android']);
+      const note = iosNote(plan.warnings);
+      expect(note).toContain('no ios/ directory');
+      expect(note).toContain('npx tapsmith init --force');
+      expect(note).toContain('--platform android,ios --app <path>');
+      expect(note).not.toContain('expo');
+    }));
+
+    it('gives the Expo iOS build in an Expo project', () => withProject({ expo: '54.0.0', 'react-native': '0.81.0' }, (tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true }), baseEnv, { ...detectStubs, detectExpoProject: () => managedExpo }, tmp);
+      const note = iosNote(plan.warnings);
+      expect(note).toContain('npx expo prebuild --platform ios');
+      expect(note).toContain('npx tapsmith init --force');
+    }));
+
+    it('notes it when --apk alone configured Android in a managed Expo project', () => withProject({ expo: '54.0.0' }, (tmp) => {
+      const plan = resolveInitPlan(
+        initArgs({ yes: true, apk: 'build/app.apk' }), baseEnv,
+        { ...detectStubs, detectExpoProject: () => ({ ...managedExpo, hasAndroidDir: false }) }, tmp,
+      );
+      expect(plan.platforms).toEqual(['android']);
+      expect(iosNote(plan.warnings)).toContain('npx expo prebuild --platform ios');
+    }, false));
+
+    it('carries the note into the --json result', () => withProject({ 'react-native': '0.79.0' }, (tmp) => {
+      const args = initArgs({ yes: true, json: true, exampleTest: false, agentsMd: false });
+      const plan = resolveInitPlan(args, baseEnv, { ...detectStubs, detectExpoProject: () => undefined }, tmp);
+      const result = executeInitPlan(plan, args, tmp);
+      expect(iosNote(result.warnings)).toContain('no ios/ directory');
+    }));
+
+    it('says nothing in a native Android project, off macOS, with an explicit --platform, or with an unreadable package.json', () => {
+      const noExpo = { ...detectStubs, detectExpoProject: () => undefined };
+      withProject({ lodash: '4.0.0' }, (tmp) => {
+        expect(iosNote(resolveInitPlan(initArgs({ yes: true }), baseEnv, noExpo, tmp).warnings)).toBeUndefined();
+      });
+      withProject({ 'react-native': '0.79.0' }, (tmp) => {
+        expect(iosNote(resolveInitPlan(initArgs({ yes: true }), { ...baseEnv, isMacOS: false }, noExpo, tmp).warnings)).toBeUndefined();
+        expect(iosNote(resolveInitPlan(initArgs({ yes: true, platform: 'android' }), baseEnv, noExpo, tmp).warnings)).toBeUndefined();
+      });
+      withProject('unreadable', (tmp) => {
+        expect(iosNote(resolveInitPlan(initArgs({ yes: true }), baseEnv, noExpo, tmp).warnings)).toBeUndefined();
+      });
+    });
+  });
+
   it('errors NO_PLATFORM when nothing inferable', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-'));
     try {

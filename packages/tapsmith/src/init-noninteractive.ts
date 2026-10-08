@@ -162,6 +162,11 @@ export function resolveInitPlan(
       });
     }
     platforms = inferred;
+    // A React Native app usually targets both, so an inferred Android-only
+    // setup on a Mac says why iOS is missing and how to add it (PILOT-625).
+    if (env.isMacOS && !inferred.includes('ios') && detectDefaults.isReactNativeProject(cwd)) {
+      warnings.push(iosLeftOutNote(expo()));
+    }
   }
 
   if (platforms.includes('ios') && !env.isMacOS) {
@@ -296,6 +301,14 @@ export function resolveInitPlan(
   }
 
   return { platforms, android, ios, networkCapture: args.networkCapture, warnings };
+}
+
+/** Why an inferred setup has no iOS, and the two ways to add it — init has written a config by then, so a re-run needs --force. */
+function iosLeftOutNote(expoProject: detectDefaults.ExpoProject | undefined): string {
+  const reason = 'iOS left out of the config: this project has no ios/ directory yet, so there is no iOS app to test.';
+  const rerun = 'Then re-run `npx tapsmith init --force`, or pass --platform android,ios --app <path>.';
+  if (expoProject) return `${reason} To test iOS too: ${detectDefaults.expoBuildHint(['ios'], expoProject, rerun)}`;
+  return `${reason} To test iOS too, generate the iOS project and build the app for the simulator. ${rerun}`;
 }
 
 // ─── Execution ───
