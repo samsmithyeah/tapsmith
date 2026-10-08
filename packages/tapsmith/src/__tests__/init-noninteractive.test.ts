@@ -257,8 +257,8 @@ describe('resolveInitPlan()', () => {
       expect(plan.platforms).toEqual(['android']);
       const note = iosNote(plan.warnings);
       expect(note).toContain('no ios/ directory');
-      expect(note).toContain('npx tapsmith init --force');
-      expect(note).toContain('npx tapsmith init --force` (with `--platform android,ios --app <path>');
+      expect(note).toContain('re-run `npx tapsmith init --force` with any other flags you passed');
+      expect(note).toContain('--app <path>');
       expect(note).not.toContain('expo');
     }));
 
@@ -287,7 +287,18 @@ describe('resolveInitPlan()', () => {
         { ...detectStubs, detectExpoProject: () => ({ ...managedExpo, hasAndroidDir: false }) }, tmp,
       );
       expect(plan.platforms).toEqual(['android']);
-      expect(iosNote(plan.warnings)).toContain('npx expo prebuild --platform ios');
+      const note = iosNote(plan.warnings);
+      expect(note).toContain('npx expo prebuild --platform ios');
+      // The re-run it gives keeps Android once ios/ exists: without --apk it would come back iOS-only.
+      expect(note).toContain('`npx tapsmith init --force --apk build/app.apk`');
+      fs.mkdirSync(path.join(tmp, 'ios'));
+      const rerun = resolveInitPlan(initArgs({ yes: true, force: true, apk: 'build/app.apk' }), baseEnv, detectStubs, tmp);
+      expect(rerun.platforms).toEqual(['android', 'ios']);
+    }, false));
+
+    it('quotes an --apk path the shell would split', () => withProject({ 'react-native': '0.79.0' }, (tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true, apk: "my builds/it's.apk" }), baseEnv, { ...detectStubs, detectExpoProject: () => undefined }, tmp);
+      expect(iosNote(plan.warnings)).toContain("`npx tapsmith init --force --apk 'my builds/it'\\''s.apk'`");
     }, false));
 
     it('carries the note into the --json result', () => withProject({ 'react-native': '0.79.0' }, (tmp) => {

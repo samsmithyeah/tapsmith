@@ -168,7 +168,7 @@ export function resolveInitPlan(
       // The note needs only whether this is Expo, not the app config's ids,
       // so the config is not read: that would run the project's Expo CLI.
       const detectExpo = detect.detectExpoProject ?? detectDefaults.detectExpoProject;
-      warnings.push(iosLeftOutNote(detectExpo(cwd, () => undefined)));
+      warnings.push(iosLeftOutNote(detectExpo(cwd, () => undefined), args.apk));
     }
   }
 
@@ -306,10 +306,16 @@ export function resolveInitPlan(
   return { platforms, android, ios, networkCapture: args.networkCapture, warnings };
 }
 
-/** Why an inferred setup has no iOS, and the two ways to add it — init has written a config by then, so a re-run needs --force. */
-function iosLeftOutNote(expoProject: detectDefaults.ExpoProject | undefined): string {
+/**
+ * Why an inferred setup has no iOS, and how to add it. Init has written a
+ * config by then, so the re-run needs --force, and it must repeat an --apk:
+ * without one, a project whose APK is not under android/ would come back
+ * iOS-only, its Android setup deleted by --force.
+ */
+function iosLeftOutNote(expoProject: detectDefaults.ExpoProject | undefined, apk: string | undefined): string {
   const reason = 'iOS left out of the config: this project has no ios/ directory yet, so there is no iOS app to test.';
-  const rerun = 'Then re-run `npx tapsmith init --force` (with `--platform android,ios --app <path>` if the build is outside ios/).';
+  const apkFlag = apk ? ` --apk ${/^[\w./@:+=-]+$/.test(apk) ? apk : `'${apk.replace(/'/g, `'\\''`)}'`}` : '';
+  const rerun = `Then re-run \`npx tapsmith init --force${apkFlag}\` with any other flags you passed this time, adding \`--app <path>\` if the iOS build is outside ios/.`;
   if (expoProject) return `${reason} To test iOS too: ${detectDefaults.expoBuildHint(['ios'], expoProject, rerun)}`;
   return `${reason} To test iOS too, generate the iOS project and build the app for the simulator. ${rerun}`;
 }
