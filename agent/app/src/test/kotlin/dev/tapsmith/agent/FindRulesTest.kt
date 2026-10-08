@@ -143,5 +143,8 @@ class FindRulesTest {
                 AccessibilityNodeInfo::class.java,
             )
         assertEquals(android.graphics.Rect::class.java, method.returnType)
+        // The refreshed read every find falls back to below API 34.
+        val refreshed = UiObject2::class.java.getDeclaredMethod("getAccessibilityNodeInfo")
+        assertEquals(AccessibilityNodeInfo::class.java, refreshed.returnType)
     }
 }

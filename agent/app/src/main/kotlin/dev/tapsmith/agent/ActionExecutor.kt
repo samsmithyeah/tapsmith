@@ -46,7 +46,7 @@ class ActionExecutor(
         private const val SWIPE_SETTLE_QUIET_MS = 300L
 
         /** Upper bound on a swipe's settle, for a screen that never goes quiet. */
-        private const val SWIPE_SETTLE_MAX_MS = 1000L
+        private const val SWIPE_SETTLE_MAX_MS = 600L
 
         /** How long each press of an injected tap is held (see injectTap). */
         private const val TAP_PRESS_MS = 50L
@@ -658,6 +658,7 @@ class ActionExecutor(
         // UIAutomator swipe is step-based (~5ms/step). Convert duration to steps.
         val steps = (durationMs / 5).coerceIn(5L, 200L).toInt()
         device.swipe(x1, y1, x2, y2, steps)
+        settleAfterSwipe()
     }
 
     // ─── Streamed touch (interactive mirror live-drag) ───
