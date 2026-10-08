@@ -71,3 +71,19 @@ internal object FindRules {
         return parts
     }
 }
+
+/** The pure part of a swipe's settle (PILOT-539), host-testable. */
+internal object SwipeSettle {
+    /**
+     * Whether a TYPE_VIEW_SCROLLED event with these scroll deltas (API 28+;
+     * -1 when the view didn't report one) moves along the swipe's axis.
+     * A sideways carousel scrolling on its own must not hold a vertical
+     * swipe's settle open. An unreported delta counts, so an unknown
+     * scroll still holds the settle.
+     */
+    fun isAlongAxis(
+        deltaX: Int,
+        deltaY: Int,
+        vertical: Boolean,
+    ): Boolean = (if (vertical) deltaY else deltaX) != 0
+}

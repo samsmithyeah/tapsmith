@@ -583,7 +583,7 @@ class ActionExecutor(
         val dir = parseDirection(direction)
         try {
             element.swipe(dir, distance.toFloat(), speed)
-            settleAfterSwipe()
+            settleAfterSwipe(vertical = dir == Direction.UP || dir == Direction.DOWN)
         } catch (e: StaleObjectException) {
             throw e
         } catch (e: Exception) {
@@ -626,7 +626,7 @@ class ActionExecutor(
             }
             else -> throw ActionFailedException("Unknown swipe direction: $direction. Use up/down/left/right.")
         }
-        settleAfterSwipe()
+        settleAfterSwipe(vertical = direction.lowercase() == "up" || direction.lowercase() == "down")
     }
 
     /**
@@ -637,11 +637,12 @@ class ActionExecutor(
      * after a swipe silently does nothing. A moving scroll view emits
      * TYPE_VIEW_SCROLLED events, so wait until none has arrived for
      * [SWIPE_SETTLE_QUIET_MS], bounded by [SWIPE_SETTLE_MAX_MS]. Only scroll
-     * events count: a screen whose animation emits other events all the time
-     * (the never-idle screens PILOT-539 is about) settles as soon as its
-     * scrolling stops, not at the bound.
+     * events along the swipe's axis count ([SwipeSettle.isAlongAxis]): a
+     * screen whose animation emits other events all the time (the never-idle
+     * screens PILOT-539 is about), or whose carousel keeps scrolling
+     * sideways, settles as soon as the swiped content stops.
      */
-    private fun settleAfterSwipe() {
+    private fun settleAfterSwipe(vertical: Boolean) {
         val automation = instrumentation.uiAutomation
         val start = SystemClock.uptimeMillis()
         val deadline = start + SWIPE_SETTLE_MAX_MS
@@ -652,7 +653,13 @@ class ActionExecutor(
             try {
                 automation.executeAndWaitForEvent(
                     {},
-                    { it.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED },
+                    { event ->
+                        event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED &&
+                            (
+                                android.os.Build.VERSION.SDK_INT < 28 ||
+                                    SwipeSettle.isAlongAxis(event.scrollDeltaX, event.scrollDeltaY, vertical)
+                            )
+                    },
                     SWIPE_SETTLE_QUIET_MS.coerceAtMost(remaining),
                 )
                 scrollEvents++
@@ -677,7 +684,7 @@ class ActionExecutor(
         // UIAutomator swipe is step-based (~5ms/step). Convert duration to steps.
         val steps = (durationMs / 5).coerceIn(5L, 200L).toInt()
         device.swipe(x1, y1, x2, y2, steps)
-        settleAfterSwipe()
+        settleAfterSwipe(vertical = kotlin.math.abs(y2 - y1) >= kotlin.math.abs(x2 - x1))
     }
 
     // ─── Streamed touch (interactive mirror live-drag) ───

@@ -511,7 +511,11 @@ class ElementFinder(
         parentId: String?,
         limit: Int,
     ): List<ElementInfo> {
-        // XPath-based search uses a different path
+        val startedAt = SystemClock.uptimeMillis()
+        val fresh = clearAccessibilityCache()
+
+        // XPath-based search uses a different path (a hierarchy dump, which
+        // reads through the same cache, so it is cleared first as well).
         if (selector.xpath != null) {
             return findByXPath(selector.xpath).take(limit)
         }
@@ -524,8 +528,6 @@ class ElementFinder(
                 null
             }
 
-        val startedAt = SystemClock.uptimeMillis()
-        val fresh = clearAccessibilityCache()
         val candidates = enumerate(selector, parent)
         val enumeratedAt = SystemClock.uptimeMillis()
 

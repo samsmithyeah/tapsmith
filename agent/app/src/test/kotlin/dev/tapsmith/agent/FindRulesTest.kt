@@ -148,3 +148,26 @@ class FindRulesTest {
         assertEquals(AccessibilityNodeInfo::class.java, refreshed.returnType)
     }
 }
+
+/** Host-side tests for the swipe settle's scroll-event filter (PILOT-539). */
+class SwipeSettleTest {
+    @Test
+    fun `a vertical swipe settles on vertical scrolling only`() {
+        assertTrue(SwipeSettle.isAlongAxis(deltaX = 0, deltaY = 42, vertical = true))
+        assertTrue(SwipeSettle.isAlongAxis(deltaX = 0, deltaY = -42, vertical = true))
+        // A carousel scrolling sideways on its own does not hold it open.
+        assertFalse(SwipeSettle.isAlongAxis(deltaX = 300, deltaY = 0, vertical = true))
+    }
+
+    @Test
+    fun `a horizontal swipe settles on horizontal scrolling only`() {
+        assertTrue(SwipeSettle.isAlongAxis(deltaX = 120, deltaY = 0, vertical = false))
+        assertFalse(SwipeSettle.isAlongAxis(deltaX = 0, deltaY = 80, vertical = false))
+    }
+
+    @Test
+    fun `an unreported delta still counts as scrolling`() {
+        assertTrue(SwipeSettle.isAlongAxis(deltaX = -1, deltaY = -1, vertical = true))
+        assertTrue(SwipeSettle.isAlongAxis(deltaX = -1, deltaY = -1, vertical = false))
+    }
+}
