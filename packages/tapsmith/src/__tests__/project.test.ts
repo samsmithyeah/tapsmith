@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, deviceSignature, allocateBucketWorkers as allocateWithPins, bucketizeProjects, pinnedBucketSignatures, workerPlanNote, devicePinWorkersConflict, platformOfSerial, scopeDevicePinToPlatform, devicesPinnedByManyBuckets, type ResolvedProject } from '../project.js';
+import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, deviceSignature, allocateBucketWorkers as allocateWithPins, bucketizeProjects, pinnedBucketSignatures, workerPlanNote, devicePinWorkersConflict, platformOfSerial, scopeDevicePinToPlatform, devicesPinnedByManyBuckets, shardProjects, type ResolvedProject } from '../project.js';
 import { effectiveConfigForProject, type TapsmithConfig } from '../config.js';
 
 function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
@@ -859,5 +859,101 @@ describe('devicesPinnedByManyBuckets()', () => {
       project('app-b', { device: 'emulator-5556', package: 'b' }),
     ]);
     expect(devicesPinnedByManyBuckets(buckets, pinnedBucketSignatures(buckets))).toEqual([]);
+  });
+});
+
+// ─── shardProjects ───
+
+describe('shardProjects()', () => {
+  function project(name: string, testFiles: string[], extra: Partial<ResolvedProject> = {}): ResolvedProject {
+    const config = makeConfig();
+    return {
+      name,
+      testMatch: ['**/*.test.ts'],
+      testIgnore: [],
+      dependencies: [],
+      testFiles,
+      effectiveConfig: config,
+      deviceSignature: deviceSignature(config),
+      ...extra,
+    };
+  }
+
+  const files = ['/r/a.test.ts', '/r/b.test.ts', '/r/c.test.ts', '/r/d.test.ts'];
+
+  it('splits a config without projects: each shard runs its own files, and together all of them (PILOT-596)', () => {
+    const ran: string[][] = [];
+    for (const current of [1, 2]) {
+      // The project a config without `projects` runs under, as the CLI builds it.
+      const defaultProject = project('default', [...files], { synthesized: true });
+      const shardFiles = shardProjects([defaultProject], { current, total: 2 });
+      // What the sequential run iterates is the project's list, not the flat one.
+      expect(defaultProject.testFiles).toEqual(shardFiles);
+      expect(shardFiles).toHaveLength(2);
+      ran.push(defaultProject.testFiles);
+    }
+    expect(ran[0].filter((f) => ran[1].includes(f))).toEqual([]);
+    expect([...ran[0], ...ran[1]].sort()).toEqual(files);
+  });
+
+  it('leaves a shard with nothing when there are fewer files than shards', () => {
+    const defaultProject = project('default', ['/r/a.test.ts'], { synthesized: true });
+    expect(shardProjects([defaultProject], { current: 2, total: 2 })).toEqual([]);
+    expect(defaultProject.testFiles).toEqual([]);
+  });
+
+  it('splits within each project and runs a setup project only on shards with its dependents\' files', () => {
+    const run = (current: number) => {
+      const setup = project('setup', ['/r/auth.setup.ts']);
+      const api = project('api', ['/r/api1.test.ts', '/r/api2.test.ts'], { dependencies: ['setup'] });
+      const ui = project('ui', ['/r/ui1.test.ts'], { testMatch: ['ui/**'] });
+      const shardFiles = shardProjects([setup, api, ui], { current, total: 2 });
+      return { setup: setup.testFiles, api: api.testFiles, ui: ui.testFiles, shardFiles };
+    };
+    expect(run(1)).toEqual({
+      setup: ['/r/auth.setup.ts'],
+      api: ['/r/api1.test.ts'],
+      ui: ['/r/ui1.test.ts'],
+      shardFiles: ['/r/api1.test.ts', '/r/auth.setup.ts', '/r/ui1.test.ts'],
+    });
+    const second = run(2);
+    expect(second.api).toEqual(['/r/api2.test.ts']);
+    expect(second.ui).toEqual([]);
+    expect(second.setup).toEqual(['/r/auth.setup.ts']);
+
+    // A shard where the dependent has nothing skips the setup project too.
+    const setup = project('setup', ['/r/auth.setup.ts']);
+    const api = project('api', ['/r/api1.test.ts'], { dependencies: ['setup'] });
+    expect(shardProjects([setup, api], { current: 2, total: 2 })).toEqual([]);
+    expect(setup.testFiles).toEqual([]);
+  });
+
+  it('skips every setup project in a chain on a shard with none of the last project\'s files', () => {
+    const setup = project('setup', ['/r/auth.setup.ts']);
+    const api = project('api', ['/r/api1.test.ts'], { dependencies: ['setup'] });
+    const e2e = project('e2e', ['/r/e2e1.test.ts'], { dependencies: ['api'] });
+    expect(shardProjects([setup, api, e2e], { current: 2, total: 2 })).toEqual([]);
+    expect(setup.testFiles).toEqual([]);
+    expect(api.testFiles).toEqual([]);
+  });
+
+  it('splits files the same way whatever order the command line named them in', () => {
+    const ran = (order: string[], current: number) => {
+      const defaultProject = project('default', [...order], { synthesized: true });
+      return shardProjects([defaultProject], { current, total: 2 });
+    };
+    const reversed = [...files].reverse();
+    expect(ran(files, 1)).toEqual(ran(reversed, 1));
+    expect([...ran(files, 1), ...ran(reversed, 2)].sort()).toEqual(files);
+    // The run keeps the order the files were named in.
+    const defaultProject = project('default', [...reversed], { synthesized: true });
+    shardProjects([defaultProject], { current: 1, total: 2 });
+    expect(defaultProject.testFiles).toEqual(['/r/c.test.ts', '/r/a.test.ts']);
+  });
+
+  it('lists a file two projects share once in the shard\'s flat list', () => {
+    const a = project('a', ['/r/shared.test.ts']);
+    const b = project('b', ['/r/shared.test.ts']);
+    expect(shardProjects([a, b], { current: 1, total: 2 })).toEqual(['/r/shared.test.ts']);
   });
 });

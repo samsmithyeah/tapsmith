@@ -654,6 +654,56 @@ export function collectTransitiveDeps(
   return result;
 }
 
+// ─── Sharding ───
+
+/**
+ * Cut every project's `testFiles` down to one shard (`--shard=current/total`),
+ * in place, and return the shard's files as one deduplicated, sorted list.
+ *
+ * Each project is split on its own, by each file's position in the sorted
+ * list, so every machine splits it the same way even when the command lines
+ * name the files in different orders; the run keeps the given order. A project another one
+ * depends on (a setup project) is not split: it runs whole on a shard that
+ * has files from one of its dependents, and not at all on one that has none.
+ *
+ * The run iterates the projects' lists, so the split has to land there — a
+ * config without `projects` runs under one synthesized project, which is cut
+ * like any other (PILOT-596: cutting only a flat copy ran every file on
+ * every shard).
+ */
+export function shardProjects(
+  projects: ResolvedProject[],
+  shard: { current: number; total: number },
+): string[] {
+  const { current, total } = shard;
+  const dependedOn = new Set(projects.flatMap((p) => p.dependencies));
+  for (const project of projects) {
+    if (dependedOn.has(project.name)) continue;
+    // Split by sorted position, not list position: explicit file arguments
+    // keep their command-line order, which need not match across machines.
+    const sorted = [...new Set(project.testFiles)].sort();
+    const mine = new Set(sorted.filter((_, i) => i % total === current - 1));
+    project.testFiles = project.testFiles.filter((f) => mine.delete(f));
+  }
+  // Until nothing changes: emptying one setup project in a chain
+  // (`setup` → `api` → `e2e`) can leave the one it depends on with no
+  // dependent files either, whatever order the config lists them in.
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const project of projects) {
+      if (!dependedOn.has(project.name) || project.testFiles.length === 0) continue;
+      const hasDependentTests = projects.some(
+        (p) => p.dependencies.includes(project.name) && p.testFiles.length > 0,
+      );
+      if (!hasDependentTests) {
+        project.testFiles = [];
+        changed = true;
+      }
+    }
+  }
+  return [...new Set(projects.flatMap((p) => p.testFiles))].sort();
+}
+
 /**
  * Validate that every requested `--project` name matches a configured project.
  * Throws with the list of available names if any name is unknown.

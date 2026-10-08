@@ -2017,7 +2017,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
   }
 
   // ─── Project resolution & test file discovery ───
-  const { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, projectLabel } = await import('./project.js');
+  const { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, projectLabel, shardProjects } = await import('./project.js');
   const hasProjects = config.projects && config.projects.length > 0;
   const hasExplicitFiles = args.files && args.files.length > 0;
   const selectedProjects = args.project && args.project.length > 0 ? args.project : undefined;
@@ -2190,31 +2190,11 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
   const unshardedFiles = projects.map((p) => ({ project: p, files: [...p.testFiles] }));
 
   let shardMessage: string | undefined;
-  // Apply sharding — deterministic split within each project. Setup projects
-  // (depended on by others) only run on shards that have tests from their dependents.
+  // Apply sharding — a deterministic split within each project, the default
+  // one included, since the run iterates the projects' lists (PILOT-596).
   if (config.shard) {
     const { current, total } = config.shard;
-    if (hasProjects) {
-      const depTargets = new Set(projects.flatMap((p) => p.dependencies));
-      // First pass: shard non-setup projects
-      for (const project of projects) {
-        if (depTargets.has(project.name)) continue;
-        project.testFiles = project.testFiles.filter((_, i) => i % total === current - 1);
-      }
-      // Second pass: skip setup projects whose dependents have no files in this shard
-      for (const project of projects) {
-        if (!depTargets.has(project.name)) continue;
-        const hasDependentTests = projects.some(
-          (p) => p.dependencies.includes(project.name) && p.testFiles.length > 0,
-        );
-        if (!hasDependentTests) {
-          project.testFiles = [];
-        }
-      }
-      testFiles = projects.flatMap((p) => p.testFiles);
-    } else {
-      testFiles = testFiles.filter((_, i) => i % total === current - 1);
-    }
+    testFiles = shardProjects(projects, config.shard);
     if (testFiles.length === 0) {
       console.log(dim(`Shard ${current}/${total}: no test files in this shard.`));
       // Still leave this shard's (empty) blob, or merge-reports would report

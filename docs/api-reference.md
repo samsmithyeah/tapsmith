@@ -2714,7 +2714,7 @@ Overrides the `workers` config option. Requires enough connected devices or `lau
 
 ### `tapsmith test --shard=x/y` / `tapsmith test --shard x/y`
 
-Split the test suite deterministically across `y` machines, running only shard `x`. Shards are assigned by file index (`file_index % total === current - 1`).
+Split the test suite deterministically across `y` machines, running only shard `x`. Each project's files are split on their own, by position in that project's sorted file list (`file_index % total === current - 1`), so every machine gets the same split whatever order the files are named in. A project another project depends on (a setup project) is not split: it runs whole on every shard that has files from one of its dependents, and is skipped on a shard that has none.
 
 ```bash
 # In a CI matrix with 4 jobs:
