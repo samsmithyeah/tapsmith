@@ -358,7 +358,7 @@ export interface WrittenInitFiles {
   exampleTestExisted: boolean;
 }
 
-/** How a write failure reads: the errno message without the absolute path noise. */
+/** A write failure's message (Node's errno text, which names the path it was writing). */
 function reasonOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -477,7 +477,8 @@ export function writeInitFiles(files: InitFiles, cwd: string = process.cwd()): W
     fs.renameSync(tmpPath, configPath);
   } catch (err) {
     fs.rmSync(tmpPath, { force: true });
-    throw failure('tapsmith.config.ts', reasonOf(err), written);
+    // Name the config, not the temp file the user never asked for.
+    throw failure('tapsmith.config.ts', reasonOf(err).split(tmpPath).join(configPath), written);
   }
   // A leftover .mjs or .js config would shadow or confuse the new one.
   for (const name of CONFIG_NAMES.slice(1)) {
