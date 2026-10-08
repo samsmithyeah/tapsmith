@@ -12,9 +12,10 @@
 // The fence gives each attempt an AsyncLocalStorage token. The runner
 // closes the token as soon as the attempt settles; any device RPC issued
 // from that attempt's async context afterwards rejects immediately with
-// TestEndedError, and trace writes from it are dropped. Runner code, hooks,
-// and later attempts run outside the token (or under a fresh one) and are
-// unaffected.
+// TestEndedError, and trace writes from it are dropped. Runner code and
+// later attempts run outside the token (or under a fresh one) and are
+// unaffected. Each hook call runs under a token of its own, closed only if
+// the hook times out (PILOT-583).
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 

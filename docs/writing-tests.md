@@ -589,6 +589,8 @@ test("android notification shade", async ({ device, platform }) => {
 
 Hooks run setup and teardown code around your tests. They are registered inside `describe()` blocks and apply to all tests within that block.
 
+Each hook gets a time budget equal to the test timeout. A hook that never finishes (for example, one waiting on a promise that never settles) fails with an error that names it instead of hanging the run. See [hook timeouts](api-reference.md#hook-timeouts).
+
 ### `beforeEach` / `afterEach`
 
 Run before and after every test in the enclosing `describe`. Use these for per-test setup like resetting app state:

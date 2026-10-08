@@ -18,8 +18,8 @@
 // Uncaught exceptions are deliberately not taken over. A rejection nobody
 // handles is, by definition, awaited by nothing, so recording it holds nothing
 // up; an exception thrown from a callback can be the callback that would have
-// settled a promise a hook is awaiting — hooks have no timeout — and
-// swallowing it would turn a loud crash into a silent hang.
+// settled a promise a hook or test is awaiting, and swallowing it would turn a
+// loud crash into a silent wait for the whole test timeout.
 //
 // Outside `runTestFile` nothing changes: the CLI's fatal handler (which asks
 // `runnerClaimsUnhandledRejection()` first) still tears a crashed run down cleanly.
