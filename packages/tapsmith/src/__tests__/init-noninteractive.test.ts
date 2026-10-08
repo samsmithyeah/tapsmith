@@ -188,6 +188,55 @@ describe('resolveInitPlan()', () => {
     }
   });
 
+  describe('infers the platform from --apk and --app (PILOT-626)', () => {
+    /** An empty project (no android/ or ios/), as an Expo managed app is before prebuild. */
+    function withEmptyProject(fn: (dir: string) => void): void {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-'));
+      try {
+        fn(tmp);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+
+    it('--apk alone configures Android', () => withEmptyProject((tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true, apk: 'build/app.apk' }), baseEnv, detectStubs, tmp);
+      expect(plan.platforms).toEqual(['android']);
+      expect(plan.android?.apkPath).toBe('build/app.apk');
+      expect(plan.ios).toBeUndefined();
+    }));
+
+    it('--app alone configures iOS', () => withEmptyProject((tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true, app: 'build/App.app' }), baseEnv, detectStubs, tmp);
+      expect(plan.platforms).toEqual(['ios']);
+      expect(plan.ios?.appPath).toBe('build/App.app');
+      expect(plan.android).toBeUndefined();
+    }));
+
+    it('--apk and --app configure both', () => withEmptyProject((tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true, apk: 'build/app.apk', app: 'build/App.app' }), baseEnv, detectStubs, tmp);
+      expect(plan.platforms).toEqual(['android', 'ios']);
+    }));
+
+    it('still adds a platform its directory implies, so --apk does not drop iOS', () => withEmptyProject((tmp) => {
+      fs.mkdirSync(path.join(tmp, 'ios'));
+      const plan = resolveInitPlan(initArgs({ yes: true, apk: 'build/app.apk' }), baseEnv, detectStubs, tmp);
+      expect(plan.platforms).toEqual(['android', 'ios']);
+    }));
+
+    it('--app off macOS is refused as iOS, not NO_PLATFORM', () => withEmptyProject((tmp) => {
+      expectInitError(
+        () => resolveInitPlan(initArgs({ yes: true, app: 'build/App.app' }), { ...baseEnv, isMacOS: false }, detectStubs, tmp),
+        'IOS_REQUIRES_MACOS',
+      );
+    }));
+
+    it('an explicit --platform still wins over --app', () => withEmptyProject((tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true, platform: 'android', app: 'build/App.app' }), baseEnv, detectStubs, tmp);
+      expect(plan.platforms).toEqual(['android']);
+    }));
+  });
+
   it('errors NO_PLATFORM when nothing inferable', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-'));
     try {

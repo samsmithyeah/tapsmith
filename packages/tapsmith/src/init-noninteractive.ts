@@ -139,12 +139,16 @@ export function resolveInitPlan(
     return expoMemo.value;
   };
 
-  // Platform: explicit flag, else infer from project layout.
+  // Platform: explicit flag, else infer from the builds given and the
+  // project layout. A given build names its platform (PILOT-626) — an Expo
+  // managed project has no android/ or ios/ — and adds to, rather than
+  // replaces, what the directories imply, so `--apk` alone in a project with
+  // both never drops iOS. `--app` off macOS is an explicit iOS ask, refused below.
   let platforms = args.platforms;
   if (!platforms) {
     const inferred: Platform[] = [];
-    if (fs.existsSync(path.join(cwd, 'android'))) inferred.push('android');
-    if (env.isMacOS && fs.existsSync(path.join(cwd, 'ios'))) inferred.push('ios');
+    if (args.apk || fs.existsSync(path.join(cwd, 'android'))) inferred.push('android');
+    if (args.app || (env.isMacOS && fs.existsSync(path.join(cwd, 'ios')))) inferred.push('ios');
     if (inferred.length === 0) {
       const expoProject = expo();
       if (expoProject) {
