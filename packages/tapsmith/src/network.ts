@@ -600,22 +600,32 @@ export class NetworkRouteManager {
       this._subscribedStream = stream;
       stream.write({ subscribeEvents: {} });
     }
-    for (const info of this._routes.values()) {
-      if (!info.confirmed) continue;
-      const routeId = info.routeId;
-      const onReply = (msg: ServerMessage) => {
-        if (msg.registerRouteResponse?.routeId !== routeId) return;
-        stream.removeListener('data', onReply);
-        if (!msg.registerRouteResponse.success) {
-          console.warn(
-            `[tapsmith] Could not restore route ${formatRoutePattern(info.originalPattern)} after the ` +
-            `NetworkRoute stream reconnected: ${msg.registerRouteResponse.errorMessage || 'unknown error'}`,
-          );
-        }
-      };
-      stream.on('data', onReply);
-      stream.once('end', () => stream.removeListener('data', onReply));
-      stream.write({ registerRoute: { routeId, urlPattern: info.urlPattern } });
+    const replayed = [...this._routes.values()].filter((info) => info.confirmed);
+    if (replayed.length === 0) return;
+    // One listener for all the replies, removed with the last one, so a
+    // replay of many routes adds no per-route listeners to the stream.
+    const awaiting = new Map(replayed.map((info) => [info.routeId, info]));
+    const done = () => {
+      stream.removeListener('data', onReply);
+      stream.removeListener('end', done);
+    };
+    const onReply = (msg: ServerMessage) => {
+      const reply = msg.registerRouteResponse;
+      const info = reply && awaiting.get(reply.routeId);
+      if (!reply || !info) return;
+      awaiting.delete(reply.routeId);
+      if (!reply.success) {
+        console.warn(
+          `[tapsmith] Could not restore route ${formatRoutePattern(info.originalPattern)} after the ` +
+          `NetworkRoute stream reconnected: ${reply.errorMessage || 'unknown error'}`,
+        );
+      }
+      if (awaiting.size === 0) done();
+    };
+    stream.on('data', onReply);
+    stream.on('end', done);
+    for (const info of replayed) {
+      stream.write({ registerRoute: { routeId: info.routeId, urlPattern: info.urlPattern } });
     }
   }
 

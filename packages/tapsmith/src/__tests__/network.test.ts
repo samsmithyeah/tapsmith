@@ -724,6 +724,28 @@ describe('NetworkRouteManager stream reconnect (PILOT-581)', () => {
     expect(streams).toHaveLength(2);
   });
 
+  it('leaves no replay listeners behind once the daemon acknowledges, however many routes', async () => {
+    const { manager, streams } = makeManager();
+    for (let i = 0; i < 12; i++) await manager.addRoute(`**/r${i}`, () => {});
+    const warnings: Error[] = [];
+    const onWarning = (w: Error): void => { warnings.push(w); };
+    process.on('warning', onWarning);
+    try {
+      drop(streams[0]);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(writesOf(streams[1], 'registerRoute')).toHaveLength(12);
+      await flush();
+      // Only the manager's own data/error/end listeners remain.
+      expect(streams[1].listenerCount('data')).toBe(1);
+      expect(streams[1].listenerCount('end')).toBe(1);
+      await new Promise<void>((r) => process.nextTick(r));
+      expect(warnings.filter((w) => w.name === 'MaxListenersExceededWarning')).toEqual([]);
+    } finally {
+      process.off('warning', onWarning);
+    }
+    await manager.dispose();
+  });
+
   it('does not keep the process alive while waiting to reopen', async () => {
     const { manager, streams } = makeManager();
     await manager.addRoute('**/a', () => {});
