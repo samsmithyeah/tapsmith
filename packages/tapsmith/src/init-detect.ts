@@ -167,6 +167,19 @@ export function readExpoAppConfig(cwd: string): unknown {
   return readJson(path.join(cwd, 'app.json'));
 }
 
+/** The project's dependencies and devDependencies, or undefined without a readable package.json. */
+function projectDependencies(cwd: string): Record<string, unknown> | undefined {
+  const pkg = readJson(path.join(cwd, 'package.json'));
+  if (!isRecord(pkg)) return undefined;
+  return { ...(isRecord(pkg['devDependencies']) ? pkg['devDependencies'] : {}), ...(isRecord(pkg['dependencies']) ? pkg['dependencies'] : {}) };
+}
+
+/** A React Native app (bare or Expo), which usually targets both platforms. */
+export function isReactNativeProject(cwd: string): boolean {
+  const deps = projectDependencies(cwd);
+  return deps !== undefined && ('react-native' in deps || 'expo' in deps);
+}
+
 /**
  * The Expo project at `cwd`, or undefined when it is not one: `expo` among
  * its dependencies and an app config (`app.json` or `app.config.*`) beside
@@ -177,10 +190,8 @@ export function detectExpoProject(
   cwd: string,
   readConfig: (cwd: string) => unknown = readExpoAppConfig,
 ): ExpoProject | undefined {
-  const pkg = readJson(path.join(cwd, 'package.json'));
-  if (!isRecord(pkg)) return undefined;
-  const deps = { ...(isRecord(pkg['devDependencies']) ? pkg['devDependencies'] : {}), ...(isRecord(pkg['dependencies']) ? pkg['dependencies'] : {}) };
-  if (!('expo' in deps)) return undefined;
+  const deps = projectDependencies(cwd);
+  if (!deps || !('expo' in deps)) return undefined;
   if (!EXPO_CONFIG_FILES.some((f) => fs.existsSync(path.join(cwd, f)))) return undefined;
   return {
     ...parseExpoAppConfig(readConfig(cwd)),

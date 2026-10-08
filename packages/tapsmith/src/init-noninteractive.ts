@@ -74,7 +74,7 @@ export interface DetectFns {
   findIosAppCandidates: (cwd: string) => string[];
   detectIosBundleId: (appPath: string) => string | undefined;
   /** Optional so callers that stub the build detectors need not stub this too (PILOT-557). */
-  detectExpoProject?: (cwd: string) => detectDefaults.ExpoProject | undefined;
+  detectExpoProject?: (cwd: string, readConfig?: (cwd: string) => unknown) => detectDefaults.ExpoProject | undefined;
 }
 
 // ─── Flag validation ───
@@ -139,12 +139,16 @@ export function resolveInitPlan(
     return expoMemo.value;
   };
 
-  // Platform: explicit flag, else infer from project layout.
+  // Platform: explicit flag, else infer from the builds given and the
+  // project layout. A given build names its platform (PILOT-626) — an Expo
+  // managed project has no android/ or ios/ — and adds to, rather than
+  // replaces, what the directories imply, so `--apk` alone in a project with
+  // both never drops iOS. `--app` off macOS is an explicit iOS ask, refused below.
   let platforms = args.platforms;
   if (!platforms) {
     const inferred: Platform[] = [];
-    if (fs.existsSync(path.join(cwd, 'android'))) inferred.push('android');
-    if (env.isMacOS && fs.existsSync(path.join(cwd, 'ios'))) inferred.push('ios');
+    if (args.apk || fs.existsSync(path.join(cwd, 'android'))) inferred.push('android');
+    if (args.app || (env.isMacOS && fs.existsSync(path.join(cwd, 'ios')))) inferred.push('ios');
     if (inferred.length === 0) {
       const expoProject = expo();
       if (expoProject) {
@@ -158,6 +162,14 @@ export function resolveInitPlan(
       });
     }
     platforms = inferred;
+    // A React Native app usually targets both, so an inferred Android-only
+    // setup on a Mac says why iOS is missing and how to add it (PILOT-625).
+    if (env.isMacOS && !inferred.includes('ios') && detectDefaults.isReactNativeProject(cwd)) {
+      // The note needs only whether this is Expo, not the app config's ids,
+      // so the config is not read: that would run the project's Expo CLI.
+      const detectExpo = detect.detectExpoProject ?? detectDefaults.detectExpoProject;
+      warnings.push(iosLeftOutNote(detectExpo(cwd, () => undefined), args.apk));
+    }
   }
 
   if (platforms.includes('ios') && !env.isMacOS) {
@@ -292,6 +304,20 @@ export function resolveInitPlan(
   }
 
   return { platforms, android, ios, networkCapture: args.networkCapture, warnings };
+}
+
+/**
+ * Why an inferred setup has no iOS, and how to add it. Init has written a
+ * config by then, so the re-run needs --force, and it must repeat an --apk:
+ * without one, a project whose APK is not under android/ would come back
+ * iOS-only, its Android setup deleted by --force.
+ */
+function iosLeftOutNote(expoProject: detectDefaults.ExpoProject | undefined, apk: string | undefined): string {
+  const reason = 'iOS left out of the config: this project has no ios/ directory yet, so there is no iOS app to test.';
+  const apkFlag = apk ? ` --apk ${/^[\w./@:+=-]+$/.test(apk) ? apk : `'${apk.replace(/'/g, `'\\''`)}'`}` : '';
+  const rerun = `Then re-run \`npx tapsmith init --force${apkFlag}\` with any other flags you passed this time, adding \`--app <path>\` if the iOS build is outside ios/.`;
+  if (expoProject) return `${reason} To test iOS too: ${detectDefaults.expoBuildHint(['ios'], expoProject, rerun)}`;
+  return `${reason} To test iOS too, generate the iOS project and build the app for the simulator. ${rerun}`;
 }
 
 // ─── Execution ───

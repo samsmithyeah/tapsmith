@@ -188,6 +188,141 @@ describe('resolveInitPlan()', () => {
     }
   });
 
+  describe('infers the platform from --apk and --app (PILOT-626)', () => {
+    /** An empty project (no android/ or ios/), as an Expo managed app is before prebuild. */
+    function withEmptyProject(fn: (dir: string) => void): void {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-'));
+      try {
+        fn(tmp);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+
+    it('--apk alone configures Android', () => withEmptyProject((tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true, apk: 'build/app.apk' }), baseEnv, detectStubs, tmp);
+      expect(plan.platforms).toEqual(['android']);
+      expect(plan.android?.apkPath).toBe('build/app.apk');
+      expect(plan.ios).toBeUndefined();
+    }));
+
+    it('--app alone configures iOS', () => withEmptyProject((tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true, app: 'build/App.app' }), baseEnv, detectStubs, tmp);
+      expect(plan.platforms).toEqual(['ios']);
+      expect(plan.ios?.appPath).toBe('build/App.app');
+      expect(plan.android).toBeUndefined();
+    }));
+
+    it('--apk and --app configure both', () => withEmptyProject((tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true, apk: 'build/app.apk', app: 'build/App.app' }), baseEnv, detectStubs, tmp);
+      expect(plan.platforms).toEqual(['android', 'ios']);
+    }));
+
+    it('still adds a platform its directory implies, so --apk does not drop iOS', () => withEmptyProject((tmp) => {
+      fs.mkdirSync(path.join(tmp, 'ios'));
+      const plan = resolveInitPlan(initArgs({ yes: true, apk: 'build/app.apk' }), baseEnv, detectStubs, tmp);
+      expect(plan.platforms).toEqual(['android', 'ios']);
+    }));
+
+    it('--app off macOS is refused as iOS, not NO_PLATFORM', () => withEmptyProject((tmp) => {
+      expectInitError(
+        () => resolveInitPlan(initArgs({ yes: true, app: 'build/App.app' }), { ...baseEnv, isMacOS: false }, detectStubs, tmp),
+        'IOS_REQUIRES_MACOS',
+      );
+    }));
+
+    it('an explicit --platform still wins over --app', () => withEmptyProject((tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true, platform: 'android', app: 'build/App.app' }), baseEnv, detectStubs, tmp);
+      expect(plan.platforms).toEqual(['android']);
+    }));
+  });
+
+  describe('says when it leaves iOS out of a React Native project on macOS (PILOT-625)', () => {
+    const managedExpo: ExpoProject = { hasAndroidDir: true, hasIosDir: false, usesTapsmithHooks: false };
+    /** A project with android/ (unless `androidDir` is false) and the given package.json dependencies. */
+    function withProject(deps: Record<string, string> | 'unreadable', fn: (dir: string) => void, androidDir = true): void {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-'));
+      try {
+        if (androidDir) fs.mkdirSync(path.join(tmp, 'android'));
+        fs.writeFileSync(path.join(tmp, 'package.json'), deps === 'unreadable' ? '{not json' : JSON.stringify({ dependencies: deps }));
+        fn(tmp);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+    const iosNote = (warnings: string[]) => warnings.find((w) => w.startsWith('iOS left out'));
+
+    it('notes the missing ios/ and how to add iOS in a bare React Native project', () => withProject({ 'react-native': '0.79.0' }, (tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true }), baseEnv, { ...detectStubs, detectExpoProject: () => undefined }, tmp);
+      expect(plan.platforms).toEqual(['android']);
+      const note = iosNote(plan.warnings);
+      expect(note).toContain('no ios/ directory');
+      expect(note).toContain('re-run `npx tapsmith init --force` with any other flags you passed');
+      expect(note).toContain('--app <path>');
+      expect(note).not.toContain('expo');
+    }));
+
+    it('gives the Expo iOS build in an Expo project', () => withProject({ expo: '54.0.0', 'react-native': '0.81.0' }, (tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true }), baseEnv, { ...detectStubs, detectExpoProject: () => managedExpo }, tmp);
+      const note = iosNote(plan.warnings);
+      expect(note).toContain('npx expo prebuild --platform ios');
+      expect(note).toContain('npx tapsmith init --force');
+    }));
+
+    it('never reads the app config (which runs the Expo CLI) just for the note', () => withProject({ expo: '54.0.0' }, (tmp) => {
+      const readers: Array<((cwd: string) => unknown) | undefined> = [];
+      const plan = resolveInitPlan(initArgs({ yes: true }), baseEnv, {
+        ...detectStubs,
+        detectExpoProject: (_cwd, readConfig) => { readers.push(readConfig); return managedExpo; },
+      }, tmp);
+      expect(iosNote(plan.warnings)).toContain('npx expo prebuild --platform ios');
+      expect(readers).toHaveLength(1);
+      expect(readers[0]).toBeDefined();
+      expect(readers[0]?.(tmp)).toBeUndefined();
+    }));
+
+    it('notes it when --apk alone configured Android in a managed Expo project', () => withProject({ expo: '54.0.0' }, (tmp) => {
+      const plan = resolveInitPlan(
+        initArgs({ yes: true, apk: 'build/app.apk' }), baseEnv,
+        { ...detectStubs, detectExpoProject: () => ({ ...managedExpo, hasAndroidDir: false }) }, tmp,
+      );
+      expect(plan.platforms).toEqual(['android']);
+      const note = iosNote(plan.warnings);
+      expect(note).toContain('npx expo prebuild --platform ios');
+      // The re-run it gives keeps Android once ios/ exists: without --apk it would come back iOS-only.
+      expect(note).toContain('`npx tapsmith init --force --apk build/app.apk`');
+      fs.mkdirSync(path.join(tmp, 'ios'));
+      const rerun = resolveInitPlan(initArgs({ yes: true, force: true, apk: 'build/app.apk' }), baseEnv, detectStubs, tmp);
+      expect(rerun.platforms).toEqual(['android', 'ios']);
+    }, false));
+
+    it('quotes an --apk path the shell would split', () => withProject({ 'react-native': '0.79.0' }, (tmp) => {
+      const plan = resolveInitPlan(initArgs({ yes: true, apk: "my builds/it's.apk" }), baseEnv, { ...detectStubs, detectExpoProject: () => undefined }, tmp);
+      expect(iosNote(plan.warnings)).toContain("`npx tapsmith init --force --apk 'my builds/it'\\''s.apk'`");
+    }, false));
+
+    it('carries the note into the --json result', () => withProject({ 'react-native': '0.79.0' }, (tmp) => {
+      const args = initArgs({ yes: true, json: true, exampleTest: false, agentsMd: false });
+      const plan = resolveInitPlan(args, baseEnv, { ...detectStubs, detectExpoProject: () => undefined }, tmp);
+      const result = executeInitPlan(plan, args, tmp);
+      expect(iosNote(result.warnings)).toContain('no ios/ directory');
+    }));
+
+    it('says nothing in a native Android project, off macOS, with an explicit --platform, or with an unreadable package.json', () => {
+      const noExpo = { ...detectStubs, detectExpoProject: () => undefined };
+      withProject({ lodash: '4.0.0' }, (tmp) => {
+        expect(iosNote(resolveInitPlan(initArgs({ yes: true }), baseEnv, noExpo, tmp).warnings)).toBeUndefined();
+      });
+      withProject({ 'react-native': '0.79.0' }, (tmp) => {
+        expect(iosNote(resolveInitPlan(initArgs({ yes: true }), { ...baseEnv, isMacOS: false }, noExpo, tmp).warnings)).toBeUndefined();
+        expect(iosNote(resolveInitPlan(initArgs({ yes: true, platform: 'android' }), baseEnv, noExpo, tmp).warnings)).toBeUndefined();
+      });
+      withProject('unreadable', (tmp) => {
+        expect(iosNote(resolveInitPlan(initArgs({ yes: true }), baseEnv, noExpo, tmp).warnings)).toBeUndefined();
+      });
+    });
+  });
+
   it('errors NO_PLATFORM when nothing inferable', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-'));
     try {
