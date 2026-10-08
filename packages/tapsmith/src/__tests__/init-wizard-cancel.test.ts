@@ -47,17 +47,26 @@ const env: EnvScan = {
   avdImages: [{ name: 'Pixel_API_36', tagId: 'google_apis' }],
   isMacOS: false,
 };
+const androidOnly = { ...env };
 vi.mock('../env-scan.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../env-scan.js')>(),
   scanEnvironment: () => env,
 }));
 
 const APK = 'android/app/build/outputs/apk/debug/app-debug.apk';
+const IOS_APP = 'ios/build/Build/Products/Debug-iphonesimulator/App.app';
 vi.mock('../init-detect.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../init-detect.js')>(),
   findApkCandidates: () => [APK],
   detectAndroidPackage: () => 'com.acme.app',
   detectExpoProject: () => undefined,
+  findIosAppCandidates: () => [IOS_APP],
+  detectIosBundleId: () => 'com.acme.app',
+}));
+// No simulator agent built yet, so the wizard offers to build one.
+vi.mock('../ios-device-resolve.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../ios-device-resolve.js')>(),
+  findSimulatorXctestrun: () => undefined,
 }));
 
 const { runInit } = await import('../init.js');
@@ -101,6 +110,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  Object.assign(env, androidOnly);
   process.chdir(startCwd);
   if (ttyDescriptor) Object.defineProperty(process.stdin, 'isTTY', ttyDescriptor);
   else delete (process.stdin as { isTTY?: boolean }).isTTY;
@@ -144,5 +154,20 @@ describe('init wizard cancelled at a prompt (PILOT-518)', () => {
     expect(output).toMatch(/Setup cancelled\. The files above are written, but Tapsmith is not installed: run \S.* tapsmith$/m);
     expect(output).not.toContain('Next steps');
     expect(fs.readdirSync(dir).sort()).toEqual(['.gitignore', 'AGENTS.md', 'package.json', 'tapsmith.config.ts', 'tests']);
+  });
+
+  it('at the iOS simulator agent build offer: stops there instead of carrying on', async () => {
+    Object.assign(env, { isMacOS: true, xcodeVersion: '27.0', simulators: [{ name: 'iPhone 17', udid: 'SIM-1', state: 'Shutdown', runtime: 'iOS 26.0' }] });
+    for (const pattern of answers.keys()) if (pattern.source === 'Which platform') answers.delete(pattern);
+    answers.set(/Which platform/, 'ios');
+    answers.set(/How will you run iOS tests/, 'simulators');
+    answers.set(/Where is your iOS \.app/, IOS_APP);
+    answers.set(/Which simulator/, 'iPhone 17');
+    cancelAt = /Build it now/;
+    const { exit, output } = await wizard();
+    expect(questions.at(-1)).toMatch(/Build it now/);
+    expect(exit).toBe('exit 130');
+    expect(output.trimEnd().split('\n').at(-1)).toBe('  Setup cancelled.');
+    expect(fs.readdirSync(dir)).toEqual([]);
   });
 });

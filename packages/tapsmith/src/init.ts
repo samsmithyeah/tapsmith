@@ -582,17 +582,18 @@ function runInstallCommand(install: InstallCommand, cwd: string): true | string 
   return true;
 }
 
+/** The user cancelled the wizard at a point where "Setup cancelled." alone would mislead; the message says what was done. */
+class SetupCancelled extends Error {}
+
 /**
  * `npx tapsmith init` and a global install run from outside the project, but
  * the config and example test import `tapsmith`. When the project cannot
  * resolve it, offer the project's package manager's install and run it.
  * Returns the command still to run (declined, failed, or not offered because
  * there is no package.json here — npm would install into whichever ancestor
- * has one), or undefined when Tapsmith is in place.
+ * has one), or undefined when Tapsmith is in place. Cancelling the prompt
+ * throws SetupCancelled.
  */
-/** The user cancelled the wizard at a point where "Setup cancelled." alone would mislead; the message says what was done. */
-class SetupCancelled extends Error {}
-
 export async function offerTapsmithInstall(
   cwd: string,
   run: (install: InstallCommand, cwd: string) => true | string = runInstallCommand,
@@ -1129,7 +1130,9 @@ async function runInitInner(): Promise<void> {
           }
         }
       }
-    } catch {
+    } catch (err) {
+      // A cancel at the build prompt ends the wizard like any other (PILOT-518).
+      if (isPromptCancel(err)) throw err;
       // ios-device-resolve import failed — skip
     }
   }
