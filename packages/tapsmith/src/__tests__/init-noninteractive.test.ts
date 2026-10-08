@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { initArgsFromOptions, resolveInitPlan, executeInitPlan, assertConfigWritable, InitError, type DetectFns } from '../init-noninteractive.js';
+import { initArgsFromOptions, resolveInitPlan, executeInitPlan, assertConfigWritable, assertProjectWritable, InitError, type DetectFns } from '../init-noninteractive.js';
 import type { ExpoProject } from '../init-detect.js';
 import { needsSimulatorAgent } from '../init.js';
 import { simulatorChoices, type EnvScan } from '../env-scan.js';
@@ -1019,6 +1019,16 @@ describe('executeInitPlan() when a file cannot be written', () => {
     expectInitError(run({ force: true }), 'WRITE_FAILED');
     expect(fs.readFileSync(path.join(tmp, 'tapsmith.config.ts'), 'utf8')).toBe('// existing');
     expect(listing()).toEqual(['tapsmith.config.ts']);
+  });
+
+  // Checked again before the questions and the iOS agent build, so a
+  // read-only project fails at once rather than after minutes of work.
+  it.skipIf(!canDenyWrites)('assertProjectWritable() refuses a read-only project with the same WRITE_FAILED', () => {
+    expect(() => assertProjectWritable(tmp)).not.toThrow();
+    lock(tmp);
+    const err = expectInitError(() => assertProjectWritable(tmp), 'WRITE_FAILED');
+    expect(err.message).toBe(`Could not write tapsmith.config.ts: ${tmp} is not writable. Nothing was written.`);
+    expect(err.fix).toContain(`Give yourself write access to ${tmp}`);
   });
 
   it('stops with WRITE_FAILED naming AGENTS.md when it is a directory', () => {

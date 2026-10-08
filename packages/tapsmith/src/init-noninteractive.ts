@@ -413,6 +413,38 @@ function unwritableReason(file: string): { reason: string; fix: string } | undef
 }
 
 /**
+ * The WRITE_FAILED error for `rel`. `fix` comes from the up-front check; a
+ * failure it could not foresee (a full disk) gets a general one.
+ */
+function writeFailed(cwd: string, interactive: boolean, rel: string, reason: string, written: string[], fix?: string): InitError {
+  const skipFlag: Record<string, string> = interactive
+    ? { [EXAMPLE_TEST_PATH]: ', or answer no to the example test', 'AGENTS.md': ', or answer no to AGENTS.md' }
+    : { [EXAMPLE_TEST_PATH]: ', or pass --no-example-test', 'AGENTS.md': ', or pass --no-agents-md' };
+  return new InitError(
+    'WRITE_FAILED',
+    `Could not write ${rel}: ${reason}. ${written.length === 0 ? 'Nothing was written.' : `Already written: ${written.join(', ')}.`}`,
+    {
+      fix: fix
+        ? `${fix}${skipFlag[rel] ?? ''}, then run init again`
+        : `Check you can write to ${path.dirname(path.join(cwd, rel))} and the disk has space${skipFlag[rel] ?? ''}, then run init again`,
+    },
+  );
+}
+
+/** The temp file the config is written to before it is renamed into place. */
+const configTmpPath = (cwd: string): string => path.join(cwd, `.tapsmith.config.ts.${process.pid}.tmp`);
+
+/**
+ * Throws WRITE_FAILED when the project directory cannot take the config, so
+ * init stops before its questions and the iOS agent build rather than after
+ * them. writeInitFiles() checks every file again when it writes.
+ */
+export function assertProjectWritable(cwd: string = process.cwd()): void {
+  const blocked = unwritableReason(configTmpPath(cwd));
+  if (blocked) throw writeFailed(cwd, false, 'tapsmith.config.ts', blocked.reason, [], blocked.fix);
+}
+
+/**
  * Writes init's files, all or as few as possible: every target is checked
  * before anything is written, and the config, which marks a project as set
  * up (CONFIG_EXISTS), is written last and atomically, so a write that fails
@@ -424,23 +456,11 @@ function unwritableReason(file: string): { reason: string; fix: string } | undef
 export function writeInitFiles(files: InitFiles, cwd: string = process.cwd()): WrittenInitFiles {
   assertConfigWritable(files.replaceConfig, cwd);
 
-  const skipFlag: Record<string, string> = files.interactive
-    ? { [EXAMPLE_TEST_PATH]: ', or answer no to the example test', 'AGENTS.md': ', or answer no to AGENTS.md' }
-    : { [EXAMPLE_TEST_PATH]: ', or pass --no-example-test', 'AGENTS.md': ', or pass --no-agents-md' };
-  // `fix` comes from the up-front check; a failure it could not foresee
-  // (a full disk) gets a general one.
-  const failure = (rel: string, reason: string, written: string[], fix?: string): InitError => new InitError(
-    'WRITE_FAILED',
-    `Could not write ${rel}: ${reason}. ${written.length === 0 ? 'Nothing was written.' : `Already written: ${written.join(', ')}.`}`,
-    {
-      fix: fix
-        ? `${fix}${skipFlag[rel] ?? ''}, then run init again`
-        : `Check you can write to ${path.dirname(path.join(cwd, rel))} and the disk has space${skipFlag[rel] ?? ''}, then run init again`,
-    },
-  );
+  const failure = (rel: string, reason: string, written: string[], fix?: string): InitError =>
+    writeFailed(cwd, files.interactive, rel, reason, written, fix);
 
   const configPath = path.join(cwd, 'tapsmith.config.ts');
-  const tmpPath = path.join(cwd, `.tapsmith.config.ts.${process.pid}.tmp`);
+  const tmpPath = configTmpPath(cwd);
   const exampleAbs = path.join(cwd, EXAMPLE_TEST_PATH);
   const exampleTestExisted = files.exampleTest && fs.existsSync(exampleAbs);
   // Checked in the order a reader expects (the config first); written with the config last.

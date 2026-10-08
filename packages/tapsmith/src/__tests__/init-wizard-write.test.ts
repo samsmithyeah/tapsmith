@@ -129,8 +129,8 @@ describe('init wizard when a file cannot be written (PILOT-624)', () => {
     expect(output).toContain(`→ Give yourself write access to ${dir} (check its permissions and owner, or whether the filesystem is read-only), then run init again`);
     expect(output).not.toContain('Next steps');
     expect(output).not.toContain('created');
-    // The wizard stopped before offering the install.
-    expect(questions.some((q) => /Install/.test(q))).toBe(false);
+    // Found before the first question, not after the user has answered them all.
+    expect(questions).toEqual([]);
   });
 
   it.skipIf(!canDenyWrites)('stops at an unwritable tests/ before writing the config', async () => {

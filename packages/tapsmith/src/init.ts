@@ -970,8 +970,9 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
 
       // Guard BEFORE the iOS agent build so a 5-minute xcodebuild is never
       // launched against a project that already has a config (unless --force).
-      const { assertConfigWritable } = await import('./init-noninteractive.js');
+      const { assertConfigWritable, assertProjectWritable } = await import('./init-noninteractive.js');
       assertConfigWritable(parsed.force);
+      assertProjectWritable();
 
       if (needsSimulatorAgent(plan.ios)) {
         const agentResult = await initSimulatorAgent();
@@ -1036,6 +1037,10 @@ async function runInitInner(): Promise<void> {
   const banner = figlet.textSync('Tapsmith', { font: 'Three Point' });
   console.log(banner.split('\n').map((l) => `${GREEN}${l}${RESET}`).join('\n'));
   console.log(dim(`v${getVersion()}`));
+
+  // A project that cannot take the config fails before the first question (PILOT-624).
+  const { assertProjectWritable } = await import('./init-noninteractive.js');
+  assertProjectWritable();
 
   // Check for existing config
   const configNames = ['tapsmith.config.ts', 'tapsmith.config.mjs', 'tapsmith.config.js'];
