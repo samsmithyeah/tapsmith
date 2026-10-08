@@ -1,0 +1,113 @@
+package dev.tapsmith.agent
+
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.IOException
+import java.io.InputStream
+import java.io.InputStreamReader
+import java.io.OutputStream
+import java.io.OutputStreamWriter
+import java.io.PrintWriter
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Future
+
+/**
+ * Serves one daemon connection: newline-delimited JSON requests in, one
+ * response line per request out, one command at a time and in order.
+ *
+ * Each command runs on a thread of its own from [executor] while this
+ * connection's thread goes on reading (PILOT-605). The daemon sends the next
+ * request only after the answer to the last one, so what that read sees
+ * while a command runs is the daemon dropping the connection — it has given
+ * up on the command — and the command's [CommandCancellation] is cancelled,
+ * so its long-running loops stop at their next checkpoint instead of running
+ * on (and touching the screen) after nobody waits for them. A request that
+ * does arrive early waits for the one before it.
+ *
+ * [serve] returns as soon as the connection closes, without waiting for a
+ * cancelled command to reach a checkpoint: it may be stuck in a native call
+ * that cannot be stopped, and the caller frees the connection's resources.
+ * Plain JVM code with an injected logger, for the unit tests.
+ */
+internal class CommandConnection(
+    input: InputStream,
+    output: OutputStream,
+    private val executor: ExecutorService,
+    private val handle: (String) -> String,
+    private val isRunning: () -> Boolean = { true },
+    private val log: (String) -> Unit,
+) {
+    private val reader = BufferedReader(InputStreamReader(input, Charsets.UTF_8))
+    private val writer = PrintWriter(OutputStreamWriter(output, Charsets.UTF_8), true)
+
+    fun serve() {
+        var inFlight: Future<*>? = null
+        var token: CommandCancellation? = null
+        try {
+            while (isRunning()) {
+                val line =
+                    try {
+                        reader.readLine()
+                    } catch (e: IOException) {
+                        log("Client read error: ${e.message}")
+                        null
+                    }
+                if (line == null) {
+                    log("Client disconnected")
+                    break
+                }
+                if (line.isBlank()) continue
+
+                // One command at a time per connection, as before.
+                inFlight?.let(::awaitQuietly)
+                val command = CommandCancellation()
+                token = command
+                inFlight = executor.submit { run(line, command) }
+            }
+        } finally {
+            // Nobody will read the answer now. A command that has already
+            // answered is not affected.
+            token?.cancel("the daemon closed the connection before the command finished")
+        }
+    }
+
+    private fun run(
+        line: String,
+        command: CommandCancellation,
+    ) {
+        val response =
+            try {
+                CommandCancellation.runWith(command) { handle(line) }
+            } catch (e: Exception) {
+                log("Unhandled error processing command: $e")
+                JSONObject()
+                    .put("id", JSONObject.NULL)
+                    .put(
+                        "error",
+                        JSONObject()
+                            .put("type", "INTERNAL_ERROR")
+                            .put("message", e.message ?: e.javaClass.name),
+                    ).toString()
+            }
+        if (command.isCancelled) {
+            log("Dropped the answer to an abandoned command (the daemon closed the connection)")
+            return
+        }
+        synchronized(writer) {
+            writer.println(response)
+            writer.flush()
+            // PrintWriter swallows I/O errors: the connection went away just
+            // as the command finished, and its reader sees that as EOF.
+            if (writer.checkError()) log("Client write error: the connection closed before the answer was sent")
+        }
+    }
+
+    private fun awaitQuietly(future: Future<*>) {
+        try {
+            future.get()
+        } catch (_: ExecutionException) {
+            // run() answers every failure itself.
+        }
+    }
+}

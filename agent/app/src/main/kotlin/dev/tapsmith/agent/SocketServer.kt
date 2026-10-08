@@ -3,9 +3,6 @@ package dev.tapsmith.agent
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.PrintWriter
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
@@ -19,8 +16,9 @@ import java.util.concurrent.Executors
  * Response: {"id": "uuid", "result": {...}} or {"id": "uuid", "error": {...}}
  *
  * Commands are dispatched to the CommandHandler which runs UIAutomator2
- * operations. Each client connection is handled on a dedicated thread from
- * a fixed thread pool to ensure UIAutomator calls have the right context.
+ * operations. Each connection is served by [CommandConnection]: a thread
+ * reading it, and a thread for each command, which is cancelled when the
+ * daemon drops the connection (PILOT-605).
  */
 class SocketServer(
     private val port: Int,
@@ -30,7 +28,19 @@ class SocketServer(
         private const val TAG = "TapsmithSocket"
     }
 
-    private val executor = Executors.newFixedThreadPool(2)
+    /**
+     * Unbounded, so a new connection never queues behind one whose command
+     * the daemon gave up on (PILOT-605). The daemon drops a connection when it
+     * stops waiting and opens another for the next command — and its liveness
+     * ping opens one too. With a fixed pool of 2, two abandoned commands still
+     * running (a find on a busy screen, a wait the SDK cancelled) held both
+     * threads, and every later command, ping included, waited for one of
+     * them to finish: the daemon then declared a working agent dead. A
+     * cancelled command stops at its next checkpoint, but a native call (a
+     * hierarchy dump) cannot be stopped, so it must not hold up the next
+     * connection. Idle threads exit after 60 s.
+     */
+    private val executor = Executors.newCachedThreadPool()
     private var serverSocket: ServerSocket? = null
 
     @Volatile
@@ -78,46 +88,17 @@ class SocketServer(
         try {
             socket.use { s ->
                 s.tcpNoDelay = true
-                val reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8))
-                val writer = PrintWriter(s.getOutputStream(), true)
-
-                while (running && !s.isClosed) {
-                    val line =
-                        try {
-                            reader.readLine()
-                        } catch (e: SocketException) {
-                            Log.d(TAG, "Client read error: ${e.message}")
-                            null
-                        }
-
-                    if (line == null) {
-                        Log.i(TAG, "Client disconnected")
-                        break
-                    }
-
-                    if (line.isBlank()) continue
-
-                    Log.d(TAG, "Received: $line")
-
-                    val response =
-                        try {
-                            commandHandler.handle(line)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Unhandled error processing command", e)
-                            val msg = e.message?.replace("\"", "\\\"") ?: "Unknown error"
-                            """{"id":null,"error":{"type":"INTERNAL_ERROR","message":"$msg"}}"""
-                        }
-
-                    Log.d(TAG, "Responding: $response")
-
-                    try {
-                        writer.println(response)
-                        writer.flush()
-                    } catch (e: SocketException) {
-                        Log.d(TAG, "Client write error: ${e.message}")
-                        break
-                    }
-                }
+                CommandConnection(
+                    input = s.getInputStream(),
+                    output = s.getOutputStream(),
+                    executor = executor,
+                    handle = { line ->
+                        Log.d(TAG, "Received: $line")
+                        commandHandler.handle(line).also { Log.d(TAG, "Responding: $it") }
+                    },
+                    isRunning = { running && !s.isClosed },
+                    log = { Log.d(TAG, it) },
+                ).serve()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Client handler error", e)
