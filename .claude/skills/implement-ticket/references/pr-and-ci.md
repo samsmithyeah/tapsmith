@@ -6,6 +6,11 @@ Facts about this repo that shape every rule below:
   gets no CI at all.
 - **Every push cancels the in-flight run** of each workflow (`cancel-in-progress: true`).
   The E2E workflows take tens of minutes; pushing in the middle throws that away.
+- **`E2E iOS` skips draft PRs** (its checks read *skipped*) and starts when the PR is
+  marked ready (`ready_for_review`). It also never runs on a PR that touches only docs,
+  the website, the Android agent, Android-only e2e files, tooling or other workflows (the
+  `paths` lists in `e2e-ios.yml`). The org gets 5 concurrent macOS jobs across every
+  workflow and PR, so iOS runs are kept for code that is about to merge.
 - **PRs are squash-merged**, so branch history is not what lands on `main`. Merge
   commits on the branch are fine, and there is never a reason to force-push.
 - **The `main` ruleset requires only the DCO check.** GitHub will offer the merge button
@@ -186,6 +191,34 @@ while :; do
 done
 ```
 
+**E2E iOS after ready** — the newest run for head that is not a draft's all-skipped run
+(those conclude `skipped`; a run still going has no conclusion yet). It works the same
+after a pass-2 fix, when the run started at push time. A head with no `E2E iOS` run at
+all after 10 minutes is outside the workflow's `paths`, which meets the gate item. Long
+queues for macOS runners are normal — this is not a stuck run:
+
+```bash
+end=$((SECONDS+6000)); start=$SECONDS
+q='if length == 0 then "none" else (([.[] | select(.conclusion != "skipped")][0]) // {status: "waiting"} | "\(.status) \(.conclusion // "")") end'
+while :; do
+  now=$(gh pr view $n -R $R --json headRefOid -q .headRefOid 2>/dev/null) || now=$head
+  [ "$now" = "$head" ] || { echo "WAIT_DONE: head moved off $head"; exit 0; }
+  r=$(gh run list -R $R --workflow e2e-ios.yml --commit $head --limit 10 \
+      --json status,conclusion -q "$q" 2>/dev/null) || r=""
+  case "$r" in
+    completed*) echo "WAIT_DONE: E2E iOS $r on $head"; exit 0;;
+    none) [ $((SECONDS-start)) -ge 600 ] && { echo "WAIT_DONE: no E2E iOS run for $head (outside its paths)"; exit 0; };;
+  esac
+  [ $SECONDS -ge $end ] && { echo "WAIT_TIMEOUT: E2E iOS ${r:-unknown} on $head"; exit 124; }
+  sleep 60
+done
+```
+
+`WAIT_DONE: E2E iOS completed success` is the pass, and so is `no E2E iOS run` (say so in
+the PR); any other conclusion is a red check for Phase 6. Only the draft's skipped run 10
+minutes after `gh pr ready` (`waiting`) is the *CI checks to register* timeout in SKILL.md
+*Waiting*.
+
 **CodeRabbit reviewed this head** — its commit status, which ends `Review completed` (or
 `Review skipped`, which is not a review):
 
@@ -201,10 +234,14 @@ done
 
 ## Keeping up with the base
 
-Check before the gate, and whenever GitHub reports a conflict:
+Before the Phase 7 gate passes, merge the base in only when GitHub reports a conflict, or
+when the branch needs something that has since landed on it. After the gate passes, only
+on a conflict (Phase 8). Never merge it just because it moved: every push re-runs every
+workflow on the PR (iOS E2E included unless its `paths` exclude the PR, on the scarce
+macOS runners), and `main`'s own CI tests the combination after the squash-merge.
 
 ```bash
-gh pr view <n> --json mergeable,mergeStateStatus
+gh pr view <n> --json mergeable,mergeStateStatus   # CONFLICTING → merge the base in
 git fetch origin && git merge origin/<base>     # resolve, run package checks, commit -s
 ```
 

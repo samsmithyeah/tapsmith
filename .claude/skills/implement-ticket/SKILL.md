@@ -44,7 +44,7 @@ plan (constraints, hints, "don't touch X").
 | `base=<ref>` | branch to build on and target. CI only triggers on PRs to `main`, so any other base is a stop-and-ask: the gate cannot be met without CI | `main` |
 | `after=<branch>` | stack on another ticket's unmerged branch: start from `origin/<branch>`, review and QA against it, PR still targets `<base>` — see *Stacked branches*. Used by `/implement-tickets` in auto mode for dependent tickets | off |
 | `no-jira` | make no Jira writes at all. By default the ticket moves to **In Progress** at the start, gets a comment with the PR link when the PR opens and one with the final result at the end, and is never moved to **Done** — that waits for the merge (Phase 7) | Jira updates on |
-| `leave-draft` | stop at the gate with the PR still a draft | mark it ready for review |
+| `leave-draft` | stop at the gate with the PR still a draft — so iOS E2E, which skips drafts, has not run (Phase 7) | mark it ready for review |
 | `merge` | once the gate passes, squash-merge the PR yourself (Phase 8). Overrides `leave-draft` | stop at ready; a human merges |
 | `max-qa=<n>` | cap on QA → fix cycles before escalating | `3` |
 | `worker` | run as one of several parallel workers under `/implement-tickets` — see *Worker mode* | off |
@@ -131,7 +131,7 @@ replaced. So **every wait has a deadline**, in every mode:
 | Waiting for | Deadline | On timeout |
 |---|---|---|
 | CI checks to register after a push | 10 min | `gh run list --branch <branch> --limit 5`: no run for head → close and reopen the PR once (`gh pr close <n> && gh pr reopen <n>`, which re-fires its workflows); still none → infra (below) |
-| CI (workflow checks) on one head | 100 min per watch; re-arm up to twice while jobs are moving | jobs `queued` over 60 min with no runner, or running far past their usual time → cancel and re-run that run once (`gh run cancel <id>`, then `gh run rerun <id>`); still stuck → infra: tell the user (interactive) or `best-effort` with the evidence (`auto`) |
+| CI (workflow checks) on one head | 100 min per watch; re-arm up to twice while jobs are moving | macOS jobs (`E2E iOS`) queued for a long time are waiting for the org's 5 macOS slots, not stuck — re-arm, never cancel them (a re-run goes to the back of the queue). Other jobs `queued` over 60 min with no runner, or running far past their usual time → cancel and re-run that run once (`gh run cancel <id>`, then `gh run rerun <id>`); still stuck → infra: tell the user (interactive) or `best-effort` with the evidence (`auto`) |
 | CodeRabbit's review of head | 30 min, then comment `@coderabbitai review` and wait 30 more | record in the PR "CodeRabbit did not review <sha> (status: …)". The gate item is then met by the clean `/review-loop` on head — CodeRabbit is a second opinion, not the gate |
 | a device | as *Devices* says (60 min of polling) | as *Devices* says |
 | a human (a re-review, an answer) | do not wait | report it; the gate item stays unmet |
@@ -156,8 +156,10 @@ With `worker`, you are one of several `implement-ticket` runs coordinated by
 - **Shared machine.** Builds, devices and CI runners are shared with the other workers:
   lease devices, and keep the push-batching rule strictly — every push costs CI time that
   other workers' PRs are queued behind.
-- **Main moves under you.** If the coordinator tells you another PR merged, fetch, merge
-  `origin/<base>` into your branch, and re-run the gate (Phase 7).
+- **Main moves under you.** If the coordinator tells you another PR merged, check
+  `gh pr view <n> --json mergeable`: only on `CONFLICTING` fetch, merge `origin/<base>`
+  into your branch, and re-run the gate (Phase 7). Otherwise carry on — `main`'s own CI
+  tests the combination (*Keeping up with the base* in `references/pr-and-ci.md`).
 
 ## When to stop and ask a human
 
@@ -231,8 +233,9 @@ wake). Your final message is a report, not an offer: no "want me to…?".
 
 - `ready-to-merge` — the gate passed; the PR is marked ready (unless `leave-draft`).
 - `merged` — with `merge`: the gate passed and Phase 8 merged it.
-- `ready-stacked` — the gate passed on a stacked branch (`after=`); the PR stays draft
-  until its dependency merges (*Stacked branches*).
+- `ready-stacked` — the gate's first pass (Phase 7) passed on a stacked branch
+  (`after=`); the PR stays draft until its dependency merges (*Stacked branches*), so
+  iOS E2E has not run on it yet.
 - `best-effort` — a PR exists but some gate item cannot be met without a human; it stays
   a **draft**, and the report and PR description list each unmet item and why.
 - `held` — nothing to build: the ticket is unreadable, already fixed on `<base>`, or a
@@ -362,7 +365,9 @@ When the plan's slices are all built and the package checks are green:
 2. **Push and open a draft PR** (`references/pr-and-ci.md` — title, body, labels), and
    unless `no-jira`, comment its link on the ticket. CI
    only runs on PRs, so the PR exists to get CI going as early as it is worth the runner
-   time: once the change is complete and reviewed, not for a half-built skeleton.
+   time: once the change is complete and reviewed, not for a half-built skeleton. On a
+   draft, CI runs everything except iOS E2E, which waits for the PR to be marked ready
+   (Phase 7) because macOS runners are scarce.
 3. Start watching CI in the background (`references/pr-and-ci.md` §CI) and move straight
    on to QA — they run in parallel.
 
@@ -379,7 +384,7 @@ and, if you hold device leases, `devices=<ids>` so QA uses yours first. On later
 |---|---|
 | `needs-fixes` | For each blocking finding: add the automated test its card suggests, watch it fail, fix, go green (Phase 3 discipline). Fix cheap minors too; propose tickets for pre-existing bugs. Then decide re-review (below), push, and re-run QA with `leads=`. |
 | `incomplete` | Remove the gap if you can (rebuild; release a device *you* hold; wait for one by polling `--pick` as *Devices* says — never kill or disturb a session you did not start), then re-run. If you cannot, stop and ask (rule 5). |
-| `ready-pending-ci` | Push if anything is unpushed, then wait for the listed checks (Phase 6). |
+| `ready-pending-ci` | Push if anything is unpushed, then wait for the listed checks (Phase 6) — except `e2e-ios`, which cannot run until Phase 7 marks the PR ready. |
 | `ready` | On to Phase 6. |
 
 Every QA run is a full retest — never ask QA to skip anything because a previous cycle
@@ -419,8 +424,9 @@ with `auto`, follow *Auto mode* for rules 4 and 5.
 
 Work these until both are clean (`references/pr-and-ci.md` has the commands):
 
-- **CI** — every check on the PR's **head SHA** green, including both device E2E
-  workflows, not just the required DCO check. A red job: read the failed log, decide
+- **CI** — every check on the PR's **head SHA** green, including `E2E Android`, not just
+  the required DCO check. `E2E iOS` reads *skipped* while the PR is a draft; it runs
+  once Phase 7 marks the PR ready. A red job: read the failed log, decide
   branch-caused vs flake vs infra, and act (fix test-first; re-run failed jobs once for a
   flake with evidence; never paper over).
 - **Review threads** — CodeRabbit reviews every PR and humans may too. Triage each
@@ -429,7 +435,8 @@ Work these until both are clean (`references/pr-and-ci.md` has the commands):
   leave a human's thread for the human unless they asked you to resolve it.
 
 **Batch your pushes.** Each push cancels the in-flight E2E run (`cancel-in-progress`), so
-collect fixes and push once, then wait. Any code change pushed here goes through
+collect fixes and push once, then wait. Once the PR is ready, every push also starts a
+new iOS E2E run on the scarce macOS runners, so batching matters even more there. Any code change pushed here goes through
 *When to review and QA* (Phase 5) first.
 
 ## Phase 7 — The ready-to-merge gate
@@ -446,8 +453,12 @@ checklist with evidence:
       `git diff <its clean-round SHA>..HEAD` is a recorded trivial skip or a conflict-free
       merge of `<base>` (for a ticket that is trivial throughout, the recorded skip stands
       in for the loop). `max-rounds` never passes this item;
-- [ ] every CI check on head is green, the `CI` and both E2E workflows actually ran on
-      head (zero checks is not green), and no job is green only because a step is advisory;
+- [ ] every CI check on head is green, the `CI` and `E2E Android` workflows actually ran
+      on head (zero checks is not green), and no job is green only because a step is
+      advisory;
+- [ ] `E2E iOS` ran on head **after the PR was marked ready** and passed — or never runs
+      for this PR because it touches none of the workflow's `paths` (there is no `E2E iOS`
+      run for head at all, not even a skipped draft one; say so in the PR);
 - [ ] no unresolved review thread you can act on; no outstanding "changes requested";
       and CodeRabbit has reviewed the head commit, not an earlier one (its `CodeRabbit`
       commit status on head reads `Review completed`), or did not within the deadline
@@ -459,8 +470,18 @@ checklist with evidence:
       what changed, how it was tested (tiers, QA verdict and its not-tested list), known
       limitations, assumptions, and follow-ups.
 
-Then, unless `leave-draft`: `gh pr ready`, and if that triggers a first CodeRabbit review,
-go back to Phase 6 for its threads. Unless `no-jira`: comment the result on the ticket
+`E2E iOS` skips drafts, so check the gate in two passes:
+
+1. **Every item but `E2E iOS`.** When they all hold — and only then, so iOS runs on a
+   head you expect to merge — mark the PR ready (`gh pr ready <n>`; a no-op once it is
+   ready, after a pass-2 fix). With `leave-draft`, stop here
+   instead: the PR stays a draft and the report lists iOS E2E as not run (it starts when
+   someone marks the PR ready). A `ready-stacked` or `best-effort` PR also stops here.
+2. **`E2E iOS` on head.** Wait for it (`references/pr-and-ci.md` §Waiting recipes, *E2E
+   iOS after ready*). A red job is Phase 6 work as usual — the PR stays ready, and any fix
+   re-opens pass 1 for what it touched. Marking ready may also trigger CodeRabbit's first
+   review (it can skip drafts): its threads are Phase 6 work too. The gate passes when
+   pass 1 still holds on the head where `E2E iOS` went green. Unless `no-jira`: comment the result on the ticket
 (ready to merge, or what is still open) and leave it **In Progress** — the project has no
 review status, and **Done** means merged — that happens in Phase 8 with `merge`, or when
 you see the PR merged during the run (e.g. relayed by `/implement-tickets`).
@@ -475,9 +496,11 @@ its head** — never a `best-effort`, `ready-stacked` or `blocked` PR, and never
    `gh pr view <n> --json headRefOid,mergeable,mergeStateStatus,reviewDecision,isDraft`.
    The head must be the SHA the gate passed on; no "changes requested"; no new
    unresolved thread since the gate (re-run the Phase 6 thread query).
-2. **Up to date with the base.** If `origin/<base>` has moved since the head's CI run,
-   merge it in (Keeping up with the base), push, and run the gate again on the new head —
-   CI that passed against an older `main` says nothing about the combination.
+2. **No conflict with the base.** Do not merge `origin/<base>` in just because it has
+   moved: that push re-runs every workflow on the PR, and `main`'s own CI tests the
+   combination after the squash-merge. Only if GitHub reports a conflict
+   (`mergeable: CONFLICTING`) merge it in (Keeping up with the base), push, and run the
+   gate again on the new head.
 3. **Merge**, pinned to the gated head so nothing pushed in between slips through:
 
    ```bash

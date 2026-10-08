@@ -41,11 +41,13 @@ Also on PRs, path-filtered: **iOS Agent** (`ios.yml`, on `ios-agent/**`,
 | Workflow | Coverage |
 |---|---|
 | `e2e-android.yml` | KVM emulator, **5 shards**, `tapsmith.config.android-ci.mjs`, `--workers 1`; shard 1 also runs `verify-trace-archive.mjs`; plus a **Multi-device** job (two emulators, `use.devices` project) |
-| `e2e-ios.yml` | macOS simulators, **5 shards**, `tapsmith.config.ios-ci.mjs`, `--workers 1`; shard 1 runs `verify-trace-archive.mjs`. Its **Multi-device** job runs only on `workflow_dispatch`, and its test step is `continue-on-error` — **no iOS multi-device coverage on a PR** |
+| `e2e-ios.yml` | macOS simulators, **3 shards**, **not on draft PRs** (it starts when the PR is marked ready) nor on PRs touching only docs, the website, the Android agent, Android-only e2e files, tooling or other workflows (its `paths` lists); `tapsmith.config.ios-ci.mjs`, `--workers 1`; shard 1 runs `verify-trace-archive.mjs`. Its **Multi-device** job runs only on `workflow_dispatch`, and its test step is `continue-on-error` — **no iOS multi-device coverage on a PR** |
 | `e2e-android-hookless.yml` | the hook-less reset path; on PRs only when they touch `app_reset.rs`, `app-reset.ts`, `session-preflight.ts`, `enabled.ts`, `app-reset.hookless.ts`, its config or workflow |
 
 So the whole `e2e/tests/**` suite runs on both platforms on a PR. Running an e2e file
-locally to see it pass is duplicated work.
+locally to see it pass is duplicated work. On a **draft** PR the `E2E iOS` checks read
+*skipped*: that is not coverage, but it is not a gap for you to fill either — iOS cells
+are `pending-ci: e2e-ios (runs when the PR is marked ready)`.
 
 ## Proving a check covers HEAD
 

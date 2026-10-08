@@ -297,7 +297,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ios-agent/.build-sim
-          key: ios-agent-build-${{ steps.xcode.outputs.version }}-${{ hashFiles('ios-agent/**') }}
+          key: ios-agent-build-${{ hashFiles('ios-agent/**') }}-${{ steps.xcode.outputs.version }}
 
       - name: Generate Xcode project
         if: steps.agent-cache.outputs.cache-hit != 'true'

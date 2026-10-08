@@ -30,7 +30,7 @@ rules) — no mode needs the user's permission when it reports FREE.
 cd e2e && node ../packages/tapsmith/dist/cli.js test tests/home.test.ts -c tapsmith.config.ios.mjs --device <leased udid>
 ```
 
-The only path device CI exercises — on both platforms, 5 shards each, on your PR — so
+The only path device CI exercises — on both platforms, on your PR (iOS once it is out of draft) — so
 it is the best-covered and the least interesting to re-test. Do not re-run the e2e
 suite here. It is still the only place CLI arg parsing, `--shard`, reporters and
 `show-report`/`show-trace` output are wired, and those are where a hand-check pays.
