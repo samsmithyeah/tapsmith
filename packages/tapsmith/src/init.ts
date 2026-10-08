@@ -25,6 +25,7 @@ import { globSync } from 'glob';
 import { minimatch } from 'minimatch';
 import { DEFAULT_TEST_IGNORE } from './test-file-discovery.js';
 import { confirmQuestion } from './confirm-prompt.js';
+import { isPromptCancel, tolerateClosedReadline } from './prompt-cancel.js';
 import { ignoreTestResultsOrWarn } from './init-gitignore.js';
 
 const DIM = '\x1b[2m';
@@ -93,7 +94,7 @@ function displayEnvironment(env: EnvScan, expo: ExpoProject | undefined): void {
 
 async function ask<T>(question: Record<string, unknown>): Promise<T> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- enquirer's PromptOptions union is too narrow for dynamic question objects
-  const result = await enquirer.prompt({ ...question, name: '_' } as any) as Record<string, T>;
+  const result = await enquirer.prompt({ ...question, name: '_', onRun: tolerateClosedReadline } as any) as Record<string, T>;
   return result['_'];
 }
 
@@ -589,6 +590,9 @@ function runInstallCommand(install: InstallCommand, cwd: string): true | string 
  * there is no package.json here — npm would install into whichever ancestor
  * has one), or undefined when Tapsmith is in place.
  */
+/** The user cancelled the wizard at a point where "Setup cancelled." alone would mislead; the message says what was done. */
+class SetupCancelled extends Error {}
+
 export async function offerTapsmithInstall(
   cwd: string,
   run: (install: InstallCommand, cwd: string) => true | string = runInstallCommand,
@@ -597,7 +601,15 @@ export async function offerTapsmithInstall(
   const install = await tapsmithInstallCommand(cwd);
   if (!fs.existsSync(path.join(cwd, 'package.json'))) return install.display;
 
-  const go = await ask<boolean>(confirmQuestion(`Tapsmith isn't installed in this project, and the config imports it. Install it now (${install.display})?`, true));
+  let go: boolean;
+  try {
+    go = await ask<boolean>(confirmQuestion(`Tapsmith isn't installed in this project, and the config imports it. Install it now (${install.display})?`, true));
+  } catch (err) {
+    // Cancelled after the files are written: a bare "Setup cancelled." would
+    // read as if nothing was (PILOT-518).
+    if (isPromptCancel(err)) throw new SetupCancelled(`Setup cancelled. The files above are written, but Tapsmith is not installed: run ${install.display}`);
+    throw err;
+  }
   if (!go) return install.display;
 
   console.log(dim(`  Running ${install.display}...`));
@@ -1012,8 +1024,12 @@ export async function runInit(opts: InitCommandOptions): Promise<void> {
     console.log();
     if (err instanceof InitError) {
       emitInitError(err, false);
-    } else if (err === '' || (err instanceof Error && err.message === '')) {
-      console.log(dim('  Setup cancelled.'));
+    } else if (err instanceof SetupCancelled || isPromptCancel(err)) {
+      // Ctrl-C or Esc at a prompt: 130, as for SIGINT (PILOT-518).
+      console.log(dim(`  ${err instanceof SetupCancelled ? err.message : 'Setup cancelled.'}`));
+      console.log();
+      process.exit(130);
+      return;
     } else {
       console.error(`  ${RED}✗${RESET} ${err instanceof Error ? err.message : String(err)}`);
     }
