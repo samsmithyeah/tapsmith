@@ -1054,6 +1054,9 @@ describe('executeInitPlan() when a file cannot be written', () => {
     fs.writeFileSync(path.join(tmp, 'tapsmith.config.ts', 'keep'), '');
     const err = expectInitError(run({ force: true }), 'WRITE_FAILED');
     expect(err.message).toContain('Could not write tapsmith.config.ts');
+    // The reason is Node's, without the temp file or a rename of the config onto itself.
+    expect(err.message).toMatch(/Could not write tapsmith\.config\.ts: E[A-Z]+: [^,']+\. Already written/);
+    expect(err.message).not.toContain('.tmp');
     expect(err.message).toContain('Already written: tests/example.tapsmith.ts, AGENTS.md');
     expect(listing()).toEqual(['AGENTS.md', 'tapsmith.config.ts', 'tests']);
     expect(fs.statSync(path.join(tmp, 'tapsmith.config.ts')).isDirectory()).toBe(true);
