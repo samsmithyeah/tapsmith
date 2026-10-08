@@ -169,5 +169,13 @@ class SwipeSettleTest {
     fun `an unreported delta still counts as scrolling`() {
         assertTrue(SwipeSettle.isAlongAxis(deltaX = -1, deltaY = -1, vertical = true))
         assertTrue(SwipeSettle.isAlongAxis(deltaX = -1, deltaY = -1, vertical = false))
+        assertTrue(SwipeSettle.isAlongAxis(deltaX = -1, deltaY = 0, vertical = true))
+    }
+
+    @Test
+    fun `a ListView's zero-delta scroll events count as scrolling`() {
+        // AbsListView reports every scroll through onScrollChanged(0, 0, 0, 0).
+        assertTrue(SwipeSettle.isAlongAxis(deltaX = 0, deltaY = 0, vertical = true))
+        assertTrue(SwipeSettle.isAlongAxis(deltaX = 0, deltaY = 0, vertical = false))
     }
 }

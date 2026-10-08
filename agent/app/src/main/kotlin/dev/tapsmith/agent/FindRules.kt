@@ -75,15 +75,23 @@ internal object FindRules {
 /** The pure part of a swipe's settle (PILOT-539), host-testable. */
 internal object SwipeSettle {
     /**
-     * Whether a TYPE_VIEW_SCROLLED event with these scroll deltas (API 28+;
-     * -1 when the view didn't report one) moves along the swipe's axis.
-     * A sideways carousel scrolling on its own must not hold a vertical
-     * swipe's settle open. An unreported delta counts, so an unknown
-     * scroll still holds the settle.
+     * Whether a TYPE_VIEW_SCROLLED event with these scroll deltas (API 28+)
+     * may be the swiped content moving. Only an event that moved purely
+     * across the swipe's axis is left out — a sideways carousel scrolling
+     * on its own must not hold a vertical swipe's settle open. An event
+     * without usable deltas counts: -1 is "not reported", and ListView /
+     * GridView report every scroll as (0, 0).
      */
     fun isAlongAxis(
         deltaX: Int,
         deltaY: Int,
         vertical: Boolean,
-    ): Boolean = (if (vertical) deltaY else deltaX) != 0
+    ): Boolean {
+        val along = if (vertical) deltaY else deltaX
+        val across = if (vertical) deltaX else deltaY
+        return !(along == 0 && across != 0 && across != UNREPORTED_DELTA)
+    }
+
+    /** AccessibilityEvent's scroll delta when the view didn't report one. */
+    private const val UNREPORTED_DELTA = -1
 }

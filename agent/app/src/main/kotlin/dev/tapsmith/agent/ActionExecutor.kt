@@ -637,7 +637,7 @@ class ActionExecutor(
      * after a swipe silently does nothing. A moving scroll view emits
      * TYPE_VIEW_SCROLLED events, so wait until none has arrived for
      * [SWIPE_SETTLE_QUIET_MS], bounded by [SWIPE_SETTLE_MAX_MS]. Only scroll
-     * events along the swipe's axis count ([SwipeSettle.isAlongAxis]): a
+     * events that may be along the swipe's axis count ([SwipeSettle.isAlongAxis]): a
      * screen whose animation emits other events all the time (the never-idle
      * screens PILOT-539 is about), or whose carousel keeps scrolling
      * sideways, settles as soon as the swiped content stops.
