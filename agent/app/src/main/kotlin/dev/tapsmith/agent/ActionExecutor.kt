@@ -644,8 +644,10 @@ class ActionExecutor(
         // drops events stamped before each wait began, so on a slow device
         // (delivery latency over the 100 ms scroll-event interval) a
         // per-event wait loop would miss a fling that is still moving. This
-        // replaces UIAutomator's QueryController listener, which only tracks
-        // the legacy UiObject "last traversed text" the agent never reads.
+        // replaces UIAutomator's QueryController listener, which tracks only
+        // UiDevice.getCurrentActivityName() and the legacy UiObject "last
+        // traversed text" — neither of which the agent uses (they return
+        // stale values once this is installed).
         try {
             instrumentation.uiAutomation.setOnAccessibilityEventListener(::onAccessibilityEvent)
         } catch (e: Exception) {

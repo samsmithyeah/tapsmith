@@ -209,6 +209,8 @@ if (device.platform === "android") {
 
 Perform a swipe gesture across the screen in the given direction.
 
+On Android, `swipe()` (like `dragXY()`) returns once any scrolling it started has come to rest: it waits until no scroll along the swipe's axis has been reported for 300 ms, at most 3 s. A scroll view that is still flinging takes the next touch as "stop scrolling", so a `tap()` made straight after the swipe would otherwise be lost.
+
 ```typescript
 await device.swipe("up");
 await device.swipe("left", { speed: 500, distance: 0.5 });
