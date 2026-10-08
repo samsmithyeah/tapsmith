@@ -10,6 +10,7 @@ import {
   type RunOptions,
 } from '../runner.js';
 import type { TapsmithConfig } from '../config.js';
+import { STOPPED_BY_USER } from '../abort.js';
 
 // PILOT-583: hooks used to run unbounded, so a beforeAll/beforeEach/afterEach/
 // afterAll awaiting something that never settles hung the whole run — no
@@ -291,6 +292,41 @@ describe('runTestFile — hook timeouts (PILOT-583)', () => {
 
     expect(result.status).toBe('passed');
     expect((globalThis as Record<string, unknown>).__pilot583).toBe(false);
+  });
+
+  it('keeps a stopped test reported as stopped when its afterEach then times out', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const controller = new AbortController();
+    const filePath = writeFile('abort-after-each.test.mjs', `
+      afterEach(async () => { await never(); });
+      test('stopped mid-body', async () => { await never(); });
+    `);
+
+    setTimeout(() => controller.abort(), 20);
+    const [result] = collectResults(await runTestFile(filePath, makeOpts({ abortSignal: controller.signal })));
+
+    // UI mode and MCP tell a stopped test from a failed one by this exact message.
+    expect(result.error?.message).toBe(STOPPED_BY_USER);
+    expect(stderrText(stderr)).toContain(
+      `[tapsmith] afterEach hook error: "afterEach" hook at abort-after-each.test.mjs:8 timed out after ${BUDGET}ms`,
+    );
+  });
+
+  it('stops a hung beforeAll when the run is stopped, without waiting for the timeout', async () => {
+    const controller = new AbortController();
+    const filePath = writeFile('abort-before-all.test.mjs', `
+      beforeAll(async () => { await never(); });
+      test('never starts', async () => {});
+    `);
+
+    const started = Date.now();
+    setTimeout(() => controller.abort(), 20);
+    await runTestFile(filePath, makeOpts({
+      config: makeConfig({ timeout: 10_000 }),
+      abortSignal: controller.signal,
+    }));
+
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 
   it('stops a hung beforeEach when the run is stopped, without waiting for the timeout', async () => {

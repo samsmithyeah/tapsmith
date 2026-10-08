@@ -2514,7 +2514,9 @@ async function runSuiteContext(
                   }
                   // A hung afterEach fails the test, as in Playwright
                   // (PILOT-583); the remaining afterEach hooks still run.
-                  if (isRunnerTimeoutError(err)) {
+                  // After a user stop the test stays reported as stopped:
+                  // UI mode and MCP recognise it by its exact message.
+                  if (isRunnerTimeoutError(err) && !opts.abortSignal?.aborted) {
                     if (status === 'failed' && error) {
                       error.message += `\n\n--- Additionally ---\n${err.message}`;
                     } else {
