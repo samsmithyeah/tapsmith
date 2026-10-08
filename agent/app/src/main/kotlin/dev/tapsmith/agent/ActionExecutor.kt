@@ -7,6 +7,7 @@ import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.accessibility.AccessibilityEvent
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.StaleObjectException
@@ -41,6 +42,16 @@ class ActionExecutor(
 
         /** Interval between taps for double-tap gesture. */
         private const val DOUBLE_TAP_INTERVAL_MS = 100L
+
+        /**
+         * A swipe's settle ([settleAfterSwipe]) ends once no scroll event has
+         * arrived for this long. A moving scroll view reports one at least
+         * every 100 ms (the framework's recurring-event interval).
+         */
+        private const val SWIPE_SETTLE_QUIET_MS = 300L
+
+        /** Upper bound on a swipe's settle, for a scroll view that keeps moving. */
+        private const val SWIPE_SETTLE_MAX_MS = 3000L
 
         /** How long each press of an injected tap is held (see injectTap). */
         private const val TAP_PRESS_MS = 50L
@@ -572,6 +583,7 @@ class ActionExecutor(
         val dir = parseDirection(direction)
         try {
             element.swipe(dir, distance.toFloat(), speed)
+            settleAfterSwipe(vertical = dir == Direction.UP || dir == Direction.DOWN)
         } catch (e: StaleObjectException) {
             throw e
         } catch (e: Exception) {
@@ -614,6 +626,72 @@ class ActionExecutor(
             }
             else -> throw ActionFailedException("Unknown swipe direction: $direction. Use up/down/left/right.")
         }
+        settleAfterSwipe(vertical = direction.lowercase() == "up" || direction.lowercase() == "down")
+    }
+
+    /**
+     * Arrival time (uptime) of the last TYPE_VIEW_SCROLLED event that may be
+     * along each axis, recorded by [onAccessibilityEvent] for
+     * [settleAfterSwipe].
+     */
+    @Volatile private var lastVerticalScrollAt = 0L
+
+    @Volatile private var lastHorizontalScrollAt = 0L
+
+    init {
+        // One listener for the agent's lifetime, so the settle measures quiet
+        // from when scroll events ARRIVE. UiAutomation.executeAndWaitForEvent
+        // drops events stamped before each wait began, so on a slow device
+        // (delivery latency over the 100 ms scroll-event interval) a
+        // per-event wait loop would miss a fling that is still moving. This
+        // replaces UIAutomator's QueryController listener, which tracks only
+        // UiDevice.getCurrentActivityName() and the legacy UiObject "last
+        // traversed text" — neither of which the agent uses (they return
+        // stale values once this is installed).
+        try {
+            instrumentation.uiAutomation.setOnAccessibilityEventListener(::onAccessibilityEvent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not listen for scroll events; swipes will not wait for flings to settle", e)
+        }
+    }
+
+    private fun onAccessibilityEvent(event: AccessibilityEvent) {
+        if (event.eventType != AccessibilityEvent.TYPE_VIEW_SCROLLED) return
+        val now = SystemClock.uptimeMillis()
+        val hasDeltas = android.os.Build.VERSION.SDK_INT >= 28
+        if (!hasDeltas || SwipeSettle.isAlongAxis(event.scrollDeltaX, event.scrollDeltaY, vertical = true)) {
+            lastVerticalScrollAt = now
+        }
+        if (!hasDeltas || SwipeSettle.isAlongAxis(event.scrollDeltaX, event.scrollDeltaY, vertical = false)) {
+            lastHorizontalScrollAt = now
+        }
+    }
+
+    /**
+     * Let the fling a swipe starts come to rest before the swipe returns
+     * (PILOT-539). A scroll view that is still moving takes the next touch
+     * as "stop scrolling" — React Native's ScrollView captures every touch
+     * between its momentum-scroll begin and end events — so a tap made right
+     * after a swipe silently does nothing. A moving scroll view emits
+     * TYPE_VIEW_SCROLLED events, so wait until none has arrived for
+     * [SWIPE_SETTLE_QUIET_MS], bounded by [SWIPE_SETTLE_MAX_MS]. Only scroll
+     * events that may be along the swipe's axis count
+     * ([SwipeSettle.isAlongAxis]): a screen whose animation emits other
+     * events all the time (the never-idle screens PILOT-539 is about), or
+     * whose carousel keeps scrolling sideways, settles as soon as the swiped
+     * content stops.
+     */
+    private fun settleAfterSwipe(vertical: Boolean) {
+        val start = SystemClock.uptimeMillis()
+        val deadline = start + SWIPE_SETTLE_MAX_MS
+        while (true) {
+            val now = SystemClock.uptimeMillis()
+            val lastScroll = if (vertical) lastVerticalScrollAt else lastHorizontalScrollAt
+            val wait = SwipeSettle.remainingQuietMs(now, start, lastScroll, SWIPE_SETTLE_QUIET_MS)
+            if (wait <= 0 || now >= deadline) break
+            SystemClock.sleep(wait.coerceAtMost(deadline - now))
+        }
+        Log.d(TAG, "swipe settle: ${SystemClock.uptimeMillis() - start}ms")
     }
 
     /**
@@ -630,6 +708,7 @@ class ActionExecutor(
         // UIAutomator swipe is step-based (~5ms/step). Convert duration to steps.
         val steps = (durationMs / 5).coerceIn(5L, 200L).toInt()
         device.swipe(x1, y1, x2, y2, steps)
+        settleAfterSwipe(vertical = kotlin.math.abs(y2 - y1) >= kotlin.math.abs(x2 - x1))
     }
 
     // ─── Streamed touch (interactive mirror live-drag) ───

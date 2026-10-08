@@ -2,6 +2,7 @@ package dev.tapsmith.agent
 
 import android.graphics.Rect
 import android.os.SystemClock
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.BySelector
 import androidx.test.uiautomator.StaleObjectException
@@ -112,7 +113,10 @@ data class ElementInfo(
  * testId, resourceId, xpath, and more. Maintains a cache of found elements
  * so they can be referenced by ID in subsequent commands.
  */
-class ElementFinder(private val device: UiDevice) {
+class ElementFinder(
+    private val device: UiDevice,
+    private val instrumentation: android.app.Instrumentation,
+) {
     /** Cache of element IDs to UiObject2 instances. */
     private val elementCache = ConcurrentHashMap<String, UiObject2>()
 
@@ -133,10 +137,9 @@ class ElementFinder(private val device: UiDevice) {
      * `obj.javaClass` reports, so a single lookup is enough.
      *
      * Wrapped in `runCatching` so a future UIAutomator that renames or
-     * removes the method doesn't crash every textfield-related assertion
-     * via an `ExceptionInInitializerError` on first access. Callers route
-     * the null through `extractHint` / `extractRoleDescription` /
-     * `isShowingHintText`, all of which already handle null cleanly.
+     * removes the method doesn't crash the agent via an
+     * `ExceptionInInitializerError` on first access; [nodeInfoFor] then
+     * returns null.
      */
     private val nodeInfoMethod: java.lang.reflect.Method? by lazy {
         runCatching {
@@ -148,10 +151,43 @@ class ElementFinder(private val device: UiDevice) {
         }.getOrNull()
     }
 
+    /**
+     * UiObject2's node from the tree walk that found it (PILOT-539), read
+     * without the refresh every UiObject2 getter does. Pinned to the
+     * bundled UIAutomator by `FindRulesTest`.
+     */
+    private val cachedNodeField: java.lang.reflect.Field? by lazy {
+        runCatching {
+            UiObject2::class.java
+                .getDeclaredField(CACHED_NODE_FIELD)
+                .apply { isAccessible = true }
+        }.onFailure { e ->
+            warnOnce("cachedNodeField-init", e)
+        }.getOrNull()
+    }
+
+    /** UiObject2's visible-bounds rule applied to a given node (PILOT-539). */
+    private val visibleBoundsMethod: java.lang.reflect.Method? by lazy {
+        runCatching {
+            UiObject2::class.java
+                .getDeclaredMethod(VISIBLE_BOUNDS_METHOD, AccessibilityNodeInfo::class.java)
+                .apply { isAccessible = true }
+        }.onFailure { e ->
+            warnOnce("visibleBoundsMethod-init", e)
+        }.getOrNull()
+    }
+
     /** Names of reflection sites we've already warned about. */
     private val warnedSites: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     companion object {
+        /** Private UiObject2 members the snapshot reader uses (PILOT-539). */
+        const val CACHED_NODE_FIELD: String = "mCachedNode"
+        const val VISIBLE_BOUNDS_METHOD: String = "getVisibleBounds"
+
+        /** Logcat tag of the per-find phase timings. */
+        const val FIND_LOG_TAG: String = "TapsmithFind"
+
         // Class names that can carry a hint (placeholder) attribute.
         // Used as a candidate filter when only `hint` is supplied; the actual
         // hint match is applied as a post-filter via extractHint().
@@ -404,31 +440,36 @@ class ElementFinder(private val device: UiDevice) {
     }
 
     /**
-     * Find a single element matching the selector.
+     * Find a single element matching the selector: the first match, in tree
+     * order. Stops at that match, so a broad selector reads one element's
+     * attributes, not every candidate's (PILOT-539).
      * @throws ElementNotFoundException if no element matches
      */
     fun findElement(
         selector: ElementSelector,
         parentId: String? = null,
-    ): ElementInfo {
-        val elements = findElements(selector, parentId)
-        if (elements.isEmpty()) {
-            throw ElementNotFoundException("No element found matching: ${describeSelector(selector)}")
-        }
-        return elements.first()
-    }
+    ): ElementInfo =
+        findWithStaleRetry(selector, parentId, limit = 1).firstOrNull()
+            ?: throw ElementNotFoundException("No element found matching: ${describeSelector(selector)}")
 
     /**
      * Find all elements matching the selector.
-     *
-     * Retries on a transient StaleObjectException: a re-render between the
-     * tree walk and reading an element's attributes invalidates UiObject2
-     * handles, and a fresh snapshot of the (now-settled) tree usually
-     * succeeds. See [STALE_RETRY_ATTEMPTS].
      */
     fun findElements(
         selector: ElementSelector,
         parentId: String? = null,
+    ): List<ElementInfo> = findWithStaleRetry(selector, parentId, limit = Int.MAX_VALUE)
+
+    /**
+     * Retries on a transient StaleObjectException: a re-render during the
+     * tree walk (or a scoped find's parent refresh) invalidates the nodes it
+     * is walking, and a fresh walk of the (now-settled) tree usually
+     * succeeds. See [STALE_RETRY_ATTEMPTS].
+     */
+    private fun findWithStaleRetry(
+        selector: ElementSelector,
+        parentId: String?,
+        limit: Int,
     ): List<ElementInfo> {
         // Coerce to >= 1 so the loop always runs at least once and the
         // fallback below is unreachable in practice (guards a future edit
@@ -437,7 +478,7 @@ class ElementFinder(private val device: UiDevice) {
         var lastStale: StaleObjectException? = null
         for (attempt in 0 until maxAttempts) {
             try {
-                return findElementsOnce(selector, parentId)
+                return findElementsOnce(selector, parentId, limit)
             } catch (e: StaleObjectException) {
                 lastStale = e
                 if (attempt < maxAttempts - 1) {
@@ -448,13 +489,35 @@ class ElementFinder(private val device: UiDevice) {
         throw lastStale ?: error("findElements retry loop ran zero attempts")
     }
 
+    /**
+     * One find: walk the tree once for the candidates UIAutomator can
+     * select natively ([enumerate]), then match and read each candidate from
+     * the node that walk captured ([snapshotOf]) until [limit] matches.
+     *
+     * Reading the walk's snapshot is what keeps a query cheap on a busy app
+     * (PILOT-539). Every UiObject2 getter refreshes its node first — an
+     * accessibility round-trip that waits for the app's main looper — so
+     * reading a dozen attributes of every TextView on an animating screen
+     * cost ~100 ms per candidate and seconds per query, while the walk
+     * itself (like a hierarchy dump) takes tens of milliseconds. The walk
+     * starts from a cleared accessibility cache ([clearAccessibilityCache]),
+     * so its nodes are current, and they are the ones UIAutomator just
+     * matched `By.text`/`By.clazz` against: every filter sees one consistent
+     * snapshot. Actions still refresh: the cached UiObject2 re-reads its
+     * node when acted on.
+     */
     private fun findElementsOnce(
         selector: ElementSelector,
-        parentId: String? = null,
+        parentId: String?,
+        limit: Int,
     ): List<ElementInfo> {
-        // XPath-based search uses a different path
+        val startedAt = SystemClock.uptimeMillis()
+        val fresh = clearAccessibilityCache()
+
+        // XPath-based search uses a different path (a hierarchy dump, which
+        // reads through the same cache, so it is cleared first as well).
         if (selector.xpath != null) {
-            return findByXPath(selector.xpath)
+            return findByXPath(selector.xpath).take(limit)
         }
 
         val parent =
@@ -465,23 +528,31 @@ class ElementFinder(private val device: UiDevice) {
                 null
             }
 
-        val objects = findUiObjects(selector, parent)
+        val candidates = enumerate(selector, parent)
+        val enumeratedAt = SystemClock.uptimeMillis()
 
-        // Apply additional attribute filters
-        val filtered =
-            objects.filter { obj ->
-                (selector.enabled == null || obj.isEnabled == selector.enabled) &&
-                    (selector.checked == null || obj.isChecked == selector.checked) &&
-                    (selector.focused == null || obj.isFocused == selector.focused) &&
-                    (selector.selected == null || obj.isSelected == selector.selected) &&
-                    (selector.expanded == null || isExpanded(obj) == selector.expanded)
-            }
-
-        // Let a StaleObjectException during info extraction bubble to
-        // findElements(), which re-snapshots a settled tree. Swallowing it
-        // here would silently drop the element and return a partial/empty
-        // result, defeating the retry for the very case it exists to handle.
-        return filtered.map { obj -> cacheAndConvert(obj) }
+        val matches = mutableListOf<ElementInfo>()
+        var examined = 0
+        var extractMs = 0L
+        for (obj in candidates) {
+            if (matches.size >= limit) break
+            examined++
+            val node = snapshotOf(obj, fresh)
+            if (!matchesSelector(node, selector, fresh) || !matchesStateFilters(node, selector)) continue
+            val extractStart = SystemClock.uptimeMillis()
+            matches.add(cacheAndConvert(obj, node, fresh))
+            extractMs += SystemClock.uptimeMillis() - extractStart
+        }
+        val doneAt = SystemClock.uptimeMillis()
+        android.util.Log.d(
+            FIND_LOG_TAG,
+            "find phases [${describeSelector(selector)}]: enumerate=${enumeratedAt - startedAt}ms " +
+                "(candidates=${candidates.size}) match=${doneAt - enumeratedAt - extractMs}ms " +
+                "(examined=$examined) extract=${extractMs}ms (matched=${matches.size}" +
+                (if (limit != Int.MAX_VALUE) ", limit=$limit" else "") + ")" +
+                (if (fresh) "" else " [cache not cleared: per-node refresh]"),
+        )
+        return matches
     }
 
     /**
@@ -503,113 +574,128 @@ class ElementFinder(private val device: UiDevice) {
     }
 
     /**
-     * Get the bounds of a cached element for action execution.
+     * Get the bounds of a cached element for action execution — a live
+     * (refreshed) read, unlike a find's snapshot.
      */
     fun getElementBounds(elementId: String): Rect {
         val obj = getElement(elementId)
         return obj.visibleBounds
     }
 
-    private fun findUiObjects(
+    /** Input classes a label can name (getByLabel). */
+    private val labelInputClassPattern: java.util.regex.Pattern by lazy {
+        val inputClasses =
+            roleClassMap["textfield"].orEmpty() +
+                roleClassMap["checkbox"].orEmpty() +
+                roleClassMap["switch"].orEmpty() +
+                roleClassMap["radiobutton"].orEmpty() +
+                roleClassMap["seekbar"].orEmpty() +
+                roleClassMap["spinner"].orEmpty()
+        java.util.regex.Pattern.compile(inputClasses.joinToString("|") { Regex.escape(it) })
+    }
+
+    /**
+     * The one tree walk of a find: every element the selector's native
+     * UIAutomator part ([buildBySelector]) selects, in tree order.
+     */
+    private fun enumerate(
         selector: ElementSelector,
         parent: UiObject2?,
     ): List<UiObject2> {
-        // Label selector: find input elements whose accessible name matches the label text.
-        // Strategy: find inputs whose contentDescription matches, OR inputs labeled by a
-        // TextView with matching text (via AccessibilityNodeInfo.getLabeledBy).
+        val bySelector =
+            if (selector.label != null || selector.labelRegex != null) {
+                // Label selector: input elements, filtered by label in
+                // matchesSelector — a single walk with a class pattern.
+                By.clazz(labelInputClassPattern)
+            } else {
+                buildBySelector(selector)
+                    ?: if (selector.role != null) {
+                        // Trait/dual-path role: no class constraint. Broad
+                        // match required because BySelector can't express
+                        // desc-OR-text. The byName and role post-filters
+                        // in matchesSelector handle precise matching.
+                        By.clazz(java.util.regex.Pattern.compile(".*"))
+                    } else {
+                        throw InvalidSelectorException("No valid selector criteria provided")
+                    }
+            }
+        return (if (parent != null) parent.findObjects(bySelector) else device.findObjects(bySelector))
+            ?: emptyList()
+    }
+
+    /**
+     * The parts of the selector UIAutomator can't express natively, checked
+     * against a candidate's snapshot [node]: label, trait-based role, role
+     * name and hint.
+     */
+    private fun matchesSelector(
+        node: AccessibilityNodeInfo,
+        selector: ElementSelector,
+        fresh: Boolean,
+    ): Boolean {
+        // Label selector: an input whose contentDescription matches the
+        // label text, OR one labeled by a TextView with matching text (via
+        // AccessibilityNodeInfo.getLabeledBy).
         if (selector.label != null) {
-            return findByLabel(parent) { TextMatch.equalsNormalized(it, selector.label) }
+            return matchesLabel(node) { TextMatch.equalsNormalized(it, selector.label) }
         }
         if (selector.labelRegex != null) {
-            return findByLabel(parent) { selector.labelRegex.matches(it) }
+            return matchesLabel(node) { selector.labelRegex.matches(it) }
         }
 
-        val bySelector =
-            buildBySelector(selector)
-                ?: if (selector.role != null) {
-                    // Trait/dual-path role: no class constraint. Broad
-                    // match required because BySelector can't express
-                    // desc-OR-text. The byName and role post-filters
-                    // below handle precise matching.
-                    By.clazz(java.util.regex.Pattern.compile(".*"))
-                } else {
-                    throw InvalidSelectorException("No valid selector criteria provided")
-                }
-
-        val results =
-            if (parent != null) {
-                parent.findObjects(bySelector)
-            } else {
-                device.findObjects(bySelector)
-            }
-                ?: emptyList()
-
-        // Post-filter for trait-based and dual-path roles. These use a
-        // broad By.clazz(".*") initial search, so we filter by trait FIRST
-        // to narrow the set before checking names. Running the name filter
-        // on the full broad result is unreliable — UiObject2.getText() can
-        // return null for View elements whose AccessibilityNodeInfo text
-        // is aggregated from children, causing false negatives.
+        // Trait-based and dual-path roles use the broad By.clazz(".*")
+        // walk, so the trait decides first, then the name. Matching the
+        // name alone on the broad set is unreliable — a View whose
+        // AccessibilityNodeInfo text is aggregated from children reports
+        // null text.
         if (selector.role != null) {
             val normalized = ROLE_ALIASES[selector.role.lowercase()] ?: selector.role.lowercase()
             if (normalized in TRAIT_ONLY_ROLES || normalized in DUAL_PATH_ROLES) {
-                val acceptable = acceptableRoleDescriptions(normalized)
-                val ambiguousClassSet = normalized == "heading" || normalized == "link"
-                val classSet = roleClassMap[normalized]?.toSet() ?: emptySet()
-                val byTrait =
-                    results.filter { obj ->
-                        val roleDesc = extractRoleDescription(obj)
-                        if (roleDesc != null) {
-                            roleDesc in acceptable
-                        } else if (!ambiguousClassSet && classSet.isNotEmpty()) {
-                            (obj.className ?: "") in classSet
-                        } else {
-                            false
-                        }
-                    }
-                return if (selector.name != null || selector.nameRegex != null) {
-                    byTrait.filter { matchesAccessibleName(it, selector) }
-                } else {
-                    byTrait
-                }
+                val isRole =
+                    FindRules.matchesTraitRole(
+                        roleDescription = extractRoleDescription(node),
+                        className = node.className?.toString(),
+                        acceptable = acceptableRoleDescriptions(normalized),
+                        classSet = roleClassMap[normalized]?.toSet() ?: emptySet(),
+                        ambiguous = normalized == "heading" || normalized == "link",
+                    )
+                return isRole && matchesAccessibleName(node, selector, fresh)
             }
         }
 
-        // Post-filter by role name: match contentDescription, text, or the
-        // joined descendant text. Like Playwright, a case-insensitive
-        // substring by default and a case-sensitive whole-string match with
-        // `exact` (PILOT-549); a RegExp tested against the normalized name
+        // Role name: match contentDescription, text, or the joined
+        // descendant text. Like Playwright, a case-insensitive substring by
+        // default and a case-sensitive whole-string match with `exact`
+        // (PILOT-549); a RegExp tested against the normalized name
         // (PILOT-520).
-        val byName =
-            if (selector.role != null && (selector.name != null || selector.nameRegex != null)) {
-                results.filter { matchesAccessibleName(it, selector) }
-            } else {
-                results
-            }
+        if (selector.role != null && !matchesAccessibleName(node, selector, fresh)) return false
 
-        // Post-filter by hint — UIAutomator can't query hint directly so we
-        // filter the candidate set ourselves. `buildBySelector` narrows the
-        // initial candidates to EditText variants only when `hint` is the
-        // *only* selector; when combined with another selector (e.g.
-        // `locator({ className: "TextView", hint: "Email" })`) the initial
-        // set can include arbitrary classes, so we require the EditText
-        // class here too before accepting the `obj.text == hint` fallback.
-        // Without that guard a TextView with the literal visible label
-        // "Email" would match a getByPlaceholder("Email") query.
-        val byHint =
-            if (selector.hint != null) {
-                byName.filter { obj ->
-                    val className = obj.className ?: ""
-                    val isEditText = EDIT_TEXT_HINT_CLASS_PATTERN.matcher(className).matches()
-                    if (!isEditText) return@filter false
-                    extractHint(obj) == selector.hint || obj.text == selector.hint
-                }
-            } else {
-                byName
-            }
-
-        return byHint
+        // Hint — UIAutomator can't query hint directly. `buildBySelector`
+        // narrows the walk to EditText variants only when `hint` is the
+        // *only* selector; combined with another selector (e.g.
+        // `locator({ className: "TextView", hint: "Email" })`) the walk can
+        // return arbitrary classes, so require the EditText class here too
+        // before accepting the `text == hint` fallback. Without that guard a
+        // TextView with the literal visible label "Email" would match a
+        // getByPlaceholder("Email") query.
+        if (selector.hint != null) {
+            val className = node.className?.toString() ?: ""
+            if (!EDIT_TEXT_HINT_CLASS_PATTERN.matcher(className).matches()) return false
+            return extractHint(node) == selector.hint || node.text?.toString() == selector.hint
+        }
+        return true
     }
+
+    /** The enabled/checked/focused/selected/expanded state filters. */
+    private fun matchesStateFilters(
+        node: AccessibilityNodeInfo,
+        selector: ElementSelector,
+    ): Boolean =
+        (selector.enabled == null || node.isEnabled == selector.enabled) &&
+            (selector.checked == null || node.isChecked == selector.checked) &&
+            (selector.focused == null || node.isFocused == selector.focused) &&
+            (selector.selected == null || node.isSelected == selector.selected) &&
+            (selector.expanded == null || isExpanded(node) == selector.expanded)
 
     private fun buildBySelector(selector: ElementSelector): BySelector? {
         // Reject incompatible combinations up front so the failure mode
@@ -646,7 +732,7 @@ class ElementFinder(private val device: UiDevice) {
                 // Trait/dual-path roles: skip class constraint. RN
                 // surfaces these via roleDescription on generic views
                 // (ReactViewGroup), not via class name. The post-filter
-                // in findUiObjects matches by extractRoleDescription()
+                // in matchesSelector matches by extractRoleDescription()
                 // and falls back to class membership for dual-path roles.
             } else if (classNames != null) {
                 val pattern = classNames.joinToString("|") { Regex.escape(it) }
@@ -660,7 +746,7 @@ class ElementFinder(private val device: UiDevice) {
 
             // If a name is also given, filter by accessible name (contentDescription
             // or text on the element itself, or text on a descendant). We can't express
-            // OR conditions in a single BySelector, so we filter in findElements() below.
+            // OR conditions in a single BySelector, so matchesSelector filters by it.
             // Store the name requirement but don't add it to `by` here.
         }
 
@@ -706,7 +792,7 @@ class ElementFinder(private val device: UiDevice) {
 
         // Hint text — UIAutomator has no By.hint(), so narrow to EditText
         // candidates here and post-filter on the actual hint value in
-        // findUiObjects(). Conflicting combinations (hint + className /
+        // matchesSelector(). Conflicting combinations (hint + className /
         // role / id / testId) were rejected up front, so by the time
         // we get here `hint` is either the only selector or paired
         // with text/textContains/contentDesc/enabled-style filters
@@ -779,61 +865,25 @@ class ElementFinder(private val device: UiDevice) {
     }
 
     /**
-     * Find input elements by their associated label text.
-     *
-     * Resolution strategy:
-     * 1. Find inputs whose contentDescription matches the label text (most common
-     *    in React Native where accessibilityLabel is set directly on the input).
-     * 2. Find inputs that are labeled by a TextView via AccessibilityNodeInfo's
-     *    labeledBy/labelFor relationship (native Android labelFor pattern).
+     * Whether input [node] is named by a label that [labelMatches]:
+     * 1. its contentDescription (most common in React Native, where
+     *    accessibilityLabel is set directly on the input), or
+     * 2. the text of the node it is labeled by (AccessibilityNodeInfo's
+     *    labeledBy/labelFor relationship — the native Android pattern; one
+     *    round-trip, only for inputs strategy 1 rejects).
      */
-    private fun findByLabel(
-        parent: UiObject2?,
+    private fun matchesLabel(
+        node: AccessibilityNodeInfo,
         labelMatches: (CharSequence?) -> Boolean,
-    ): List<UiObject2> {
-        val results = mutableListOf<UiObject2>()
-
-        val inputClasses =
-            roleClassMap["textfield"].orEmpty() +
-                roleClassMap["checkbox"].orEmpty() +
-                roleClassMap["switch"].orEmpty() +
-                roleClassMap["radiobutton"].orEmpty() +
-                roleClassMap["seekbar"].orEmpty() +
-                roleClassMap["spinner"].orEmpty()
-
-        // Single IPC call using a regex pattern to find all input-type elements
-        val classPattern =
-            java.util.regex.Pattern.compile(
-                inputClasses.joinToString("|") { Regex.escape(it) },
-            )
-        val by = By.clazz(classPattern)
-        val allInputs =
-            (if (parent != null) parent.findObjects(by) else device.findObjects(by))
-                ?: emptyList()
-
-        for (input in allInputs) {
-            // Strategy 1: contentDescription matches the label text
-            if (labelMatches(input.contentDescription)) {
-                results.add(input)
-                continue
-            }
-            // Strategy 2: labeledBy relationship points to a node with matching text
-            val nodeInfo = nodeInfoFor(input) ?: continue
-            try {
-                val labelNode = nodeInfo.labeledBy ?: continue
-                try {
-                    if (labelMatches(labelNode.text)) {
-                        results.add(input)
-                    }
-                } finally {
-                    labelNode.recycle()
-                }
-            } finally {
-                nodeInfo.recycle()
-            }
+    ): Boolean {
+        if (labelMatches(node.contentDescription?.toString())) return true
+        val labelNode = node.labeledBy ?: return false
+        try {
+            return labelMatches(labelNode.text)
+        } finally {
+            @Suppress("DEPRECATION")
+            labelNode.recycle()
         }
-
-        return results
     }
 
     private fun parseBounds(boundsStr: String): Rect {
@@ -845,44 +895,87 @@ class ElementFinder(private val device: UiDevice) {
     }
 
     /**
-     * Extract hint text from a UiObject2 via AccessibilityNodeInfo.
-     * getHintText() is available on API 26+; returns null on older devices.
+     * Clear the accessibility cache so this find's tree walk fetches every
+     * node fresh from the app (PILOT-539). UIAutomator's walk reads nodes
+     * through that cache, which the app's accessibility events keep only
+     * partly current: React Native does not report every state change (a
+     * radio button's checked state, a view appearing in a list), and
+     * UiObject2's getters used to paper over that with a refresh per
+     * attribute read. Clearing once costs a few prefetching round-trips for
+     * the whole walk instead of one round-trip per attribute per candidate.
+     * `UiAutomation.clearCache()` exists from API 34; below that, returns
+     * false and the find refreshes each node it reads instead.
      */
-    private fun extractHint(obj: UiObject2): String? {
-        if (android.os.Build.VERSION.SDK_INT < 26) return null
-        val nodeInfo = nodeInfoFor(obj) ?: return null
-        try {
-            return nodeInfo.hintText?.toString()
+    private fun clearAccessibilityCache(): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < 34) return false
+        return try {
+            instrumentation.uiAutomation.clearCache()
         } catch (e: Exception) {
-            android.util.Log.w("ElementFinder", "Failed to extract hint text for ${obj.className}", e)
-            return null
-        } finally {
-            nodeInfo.recycle()
+            warnOnce("clearCache", e)
+            false
         }
     }
 
     /**
-     * Check if a UiObject2 is in the expanded state via AccessibilityNodeInfo.
-     * Returns null if the expanded state cannot be determined (element doesn't
-     * support expand/collapse actions).
+     * The node [obj] captured when the tree walk found it. After a [fresh]
+     * walk that node is current and is read as is — no round-trip (see
+     * [findElementsOnce]). Otherwise it is refreshed once: one round-trip
+     * for every attribute this find reads, where UiObject2's getters made
+     * one per attribute. Falls back to a refreshed read if the bundled
+     * UIAutomator no longer has the field, which `FindRulesTest` pins.
      */
-    private fun isExpanded(obj: UiObject2): Boolean? {
-        val nodeInfo = nodeInfoFor(obj) ?: return null
+    private fun snapshotOf(
+        obj: UiObject2,
+        fresh: Boolean,
+    ): AccessibilityNodeInfo {
+        val walked = if (fresh) cachedNodeField?.get(obj) as? AccessibilityNodeInfo else null
+        return walked ?: nodeInfoFor(obj) ?: throw StaleObjectException()
+    }
+
+    /**
+     * [obj]'s visible bounds computed from its snapshot [node], by
+     * UiObject2's own rule (clipped to the display, its window and its
+     * first scrollable ancestor). Falls back to the live read if the
+     * reflective helper is unavailable.
+     */
+    private fun visibleBoundsOf(
+        obj: UiObject2,
+        node: AccessibilityNodeInfo,
+    ): Rect {
+        val method = visibleBoundsMethod
         return try {
-            val actions = nodeInfo.actionList ?: return null
-            val expandId =
-                android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_EXPAND.id
-            val collapseId =
-                android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE.id
-            val hasExpand = actions.any { it.id == expandId }
-            val hasCollapse = actions.any { it.id == collapseId }
-            when {
-                hasCollapse -> true
-                hasExpand -> false
-                else -> null
+            if (method != null) {
+                method.invoke(obj, node) as? Rect ?: Rect(0, 0, 0, 0)
+            } else {
+                obj.visibleBounds
             }
-        } finally {
-            nodeInfo.recycle()
+        } catch (_: Exception) {
+            Rect(0, 0, 0, 0)
+        }
+    }
+
+    /**
+     * Hint text of [node]. getHintText() is available on API 26+; returns
+     * null on older devices.
+     */
+    private fun extractHint(node: AccessibilityNodeInfo): String? {
+        if (android.os.Build.VERSION.SDK_INT < 26) return null
+        return node.hintText?.toString()
+    }
+
+    /**
+     * Whether [node] is in the expanded state. Returns null if the expanded
+     * state cannot be determined (element doesn't support expand/collapse
+     * actions).
+     */
+    private fun isExpanded(node: AccessibilityNodeInfo): Boolean? {
+        val actions = node.actionList ?: return null
+        val expandId = AccessibilityNodeInfo.AccessibilityAction.ACTION_EXPAND.id
+        val collapseId = AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE.id
+        return when {
+            actions.any { it.id == collapseId } -> true
+            actions.any { it.id == expandId } -> false
+            else -> null
         }
     }
 
@@ -905,18 +998,17 @@ class ElementFinder(private val device: UiDevice) {
      *
      * Returns null when no role is published.
      */
-    private fun extractRoleDescription(obj: UiObject2): String? {
-        val nodeInfo = nodeInfoFor(obj) ?: return null
+    private fun extractRoleDescription(node: AccessibilityNodeInfo): String? {
         try {
             // 1. Heading flag (API 28+) — React Native writes here for
             //    `accessibilityRole="header"`.
-            if (android.os.Build.VERSION.SDK_INT >= 28 && nodeInfo.isHeading) {
+            if (android.os.Build.VERSION.SDK_INT >= 28 && node.isHeading) {
                 return "heading"
             }
 
             // 2. Compat-shimmed heading flag for older API levels: read the
             // packed boolean-properties int and test the IS_HEADING bit.
-            val extras = nodeInfo.extras
+            val extras = node.extras
             if (extras != null) {
                 val packed = extras.getInt(COMPAT_BOOLEAN_PROPERTY_KEY, 0)
                 if ((packed and COMPAT_BOOLEAN_PROPERTY_IS_HEADING) != 0) {
@@ -937,13 +1029,10 @@ class ElementFinder(private val device: UiDevice) {
             // toHaveRole("heading") would not match through the alias.
             return raw?.takeIf { it.isNotEmpty() }?.lowercase()
         } catch (e: Exception) {
-            // Reflection on UiObject2 is the load-bearing path here; if it
-            // breaks (AndroidX rename, restricted API), every role-from-RN
-            // mapping silently regresses. Log so the failure is visible.
+            // A malformed extras bundle must not fail the whole find; log so
+            // a regression in every role-from-RN mapping is visible.
             warnOnce("extractRoleDescription", e)
             return null
-        } finally {
-            nodeInfo.recycle()
         }
     }
 
@@ -952,17 +1041,9 @@ class ElementFinder(private val device: UiDevice) {
      * than user-entered text. AccessibilityNodeInfo.isShowingHintText is
      * available on API 26+. On older devices this returns false.
      */
-    private fun isShowingHintText(obj: UiObject2): Boolean {
+    private fun isShowingHintText(node: AccessibilityNodeInfo): Boolean {
         if (android.os.Build.VERSION.SDK_INT < 26) return false
-        val nodeInfo = nodeInfoFor(obj) ?: return false
-        try {
-            return nodeInfo.isShowingHintText
-        } catch (e: Exception) {
-            warnOnce("isShowingHintText", e)
-            return false
-        } finally {
-            nodeInfo.recycle()
-        }
+        return node.isShowingHintText
     }
 
     /**
@@ -988,10 +1069,10 @@ class ElementFinder(private val device: UiDevice) {
      * reflective accessor is unavailable. Throws StaleObjectException when
      * the node is gone.
      */
-    fun nodeInfoFor(obj: UiObject2): android.view.accessibility.AccessibilityNodeInfo? {
+    fun nodeInfoFor(obj: UiObject2): AccessibilityNodeInfo? {
         val method = nodeInfoMethod ?: return null
         return try {
-            method.invoke(obj) as? android.view.accessibility.AccessibilityNodeInfo
+            method.invoke(obj) as? AccessibilityNodeInfo
         } catch (e: java.lang.reflect.InvocationTargetException) {
             // Unwrap so a StaleObjectException thrown mid-re-render surfaces as
             // itself instead of an InvocationTargetException with a null
@@ -1003,127 +1084,124 @@ class ElementFinder(private val device: UiDevice) {
     }
 
     /**
-     * Recursively walk the element subtree and concatenate any text or
-     * content-description from descendants. Used so locator assertions like
+     * Whether [node]'s accessible name matches the selector's role name:
+     * its contentDescription, its text, or its joined descendant text (read
+     * only when the first two don't match).
+     */
+    private fun matchesAccessibleName(
+        node: AccessibilityNodeInfo,
+        selector: ElementSelector,
+        fresh: Boolean,
+    ): Boolean {
+        val regex = selector.nameRegex
+        val name = selector.name
+        if (regex == null && name == null) return true
+        val text = node.text?.toString()
+        val contentDescription = node.contentDescription?.toString()
+        // An empty EditText reports its hint as its text; that hint is a
+        // name, not a typed value.
+        val textIsValue =
+            text != null &&
+                EDIT_TEXT_HINT_CLASS_PATTERN.matcher(node.className?.toString() ?: "").matches() &&
+                text != extractHint(node)
+        if (regex != null) {
+            return TextMatch.accessibleNameMatches(
+                contentDescription = contentDescription,
+                text = text,
+                textIsValue = textIsValue,
+                descendantText = { collectDescendantText(node, fresh) },
+                regex = regex,
+            )
+        }
+        return TextMatch.accessibleNameMatches(
+            contentDescription = contentDescription,
+            text = text,
+            textIsValue = textIsValue,
+            descendantText = { collectDescendantText(node, fresh) },
+            name = name!!,
+            exact = selector.nameExact,
+        )
+    }
+
+    /**
+     * Concatenate the text or content-description of [node]'s descendants
+     * (see [FindRules.descendantTextParts]), so locator assertions like
      * `toContainText` see the visible label of a wrapping View whose own
      * `text` attribute is empty (common with React Native).
      *
      * Per child we take `text` *or* `contentDescription` (preferring text)
      * to avoid duplicating the same string when both attributes carry it,
-     * matching the iOS aggregation in SnapshotElementFinder.
+     * matching the iOS aggregation in SnapshotElementFinder. Only children
+     * visible to the user count, as UiObject2.getChildren() lists them.
      *
-     * Recursion is capped at MAX_DESCENDANT_TEXT_DEPTH because each
-     * `obj.children` access is an IPC to the accessibility service —
-     * unbounded recursion on a deeply nested screen turns into O(N) IPC
-     * calls per matched container. The cap covers the common
-     * `<View><Text/></View>` toast / alert pattern (depth 1) and typical
-     * RN compositions, while bounding worst-case cost for accidental
-     * deep matches.
+     * Recursion is capped at MAX_DESCENDANT_TEXT_DEPTH because a child the
+     * walk didn't prefetch is an accessibility round-trip; the cap covers
+     * the common `<View><Text/></View>` toast / alert pattern (depth 1) and
+     * typical RN compositions, while bounding worst-case cost for
+     * accidental deep matches.
      */
-    private fun matchesAccessibleName(
-        obj: UiObject2,
-        selector: ElementSelector,
-    ): Boolean {
-        val text = obj.text
-        // An empty EditText reports its hint as its text; that hint is a
-        // name, not a typed value.
-        val textIsValue =
-            text != null &&
-                EDIT_TEXT_HINT_CLASS_PATTERN.matcher(obj.className ?: "").matches() &&
-                text.toString() != extractHint(obj)
-        val regex = selector.nameRegex
-        if (regex != null) {
-            return TextMatch.accessibleNameMatches(
-                contentDescription = obj.contentDescription,
-                text = text,
-                textIsValue = textIsValue,
-                descendantText = { collectDescendantText(obj) },
-                regex = regex,
-            )
-        }
-        val name = selector.name ?: return true
-        return TextMatch.accessibleNameMatches(
-            contentDescription = obj.contentDescription,
-            text = text,
-            textIsValue = textIsValue,
-            descendantText = { collectDescendantText(obj) },
-            name = name,
-            exact = selector.nameExact,
-        )
-    }
-
-    private fun collectDescendantTextParts(
-        obj: UiObject2,
-        depth: Int = 0,
-    ): List<String> {
-        if (depth >= MAX_DESCENDANT_TEXT_DEPTH) return emptyList()
-        val parts = mutableListOf<String>()
-        for (child in obj.children.orEmpty()) {
-            val ownText =
-                child.text?.takeIf { it.isNotEmpty() }
-                    ?: child.contentDescription?.takeIf { it.isNotEmpty() }
-            if (ownText != null) {
-                parts.add(ownText)
-            } else {
-                parts.addAll(collectDescendantTextParts(child, depth + 1))
-            }
-        }
-        return parts
-    }
-
     private fun collectDescendantText(
-        obj: UiObject2,
-        depth: Int = 0,
-    ): String = collectDescendantTextParts(obj, depth).joinToString(" ")
+        node: AccessibilityNodeInfo,
+        fresh: Boolean,
+    ): String =
+        FindRules.descendantTextParts(
+            node,
+            children = { visibleChildren(it, fresh) },
+            ownText = { child ->
+                child.text?.toString()?.takeIf { it.isNotEmpty() }
+                    ?: child.contentDescription?.toString()?.takeIf { it.isNotEmpty() }
+            },
+            maxDepth = MAX_DESCENDANT_TEXT_DEPTH,
+        ).joinToString(" ")
 
     /**
-     * Read [obj] into an [ElementInfo], plus the [TargetIdentity] actions
-     * re-check before touching it — built from the same reads, since each
-     * UiObject2 property read is an accessibility round-trip.
+     * [node]'s children visible to the user. Without a [fresh] walk each
+     * child is refreshed first, as UiObject2's getters did, so its text is
+     * current.
+     */
+    private fun visibleChildren(
+        node: AccessibilityNodeInfo,
+        fresh: Boolean,
+    ): List<AccessibilityNodeInfo> =
+        (0 until node.childCount).mapNotNull { i ->
+            node.getChild(i)?.takeIf { (fresh || it.refresh()) && it.isVisibleToUser }
+        }
+
+    /**
+     * Read [obj]'s snapshot [node] into an [ElementInfo], plus the
+     * [TargetIdentity] actions re-check before touching it.
      */
     private fun toElementInfo(
         obj: UiObject2,
+        node: AccessibilityNodeInfo,
         elementId: String,
+        fresh: Boolean,
     ): Pair<ElementInfo, TargetIdentity> {
-        val bounds =
-            try {
-                obj.visibleBounds
-            } catch (_: Exception) {
-                Rect(0, 0, 0, 0)
-            }
-        val className = obj.className ?: ""
-        val rawText = obj.text
-        val contentDescription = obj.contentDescription
-        val resourceId = obj.resourceName
-        val hint = extractHint(obj)
+        val bounds = visibleBoundsOf(obj, node)
+        val className = node.className?.toString() ?: ""
+        val rawText = node.text?.toString()
+        val contentDescription = node.contentDescription?.toString()
+        val resourceId = node.viewIdResourceName
 
         // PILOT-133/toBeEmpty: UIAutomator surfaces the placeholder/hint as
         // `text` when an EditText is empty. Strip it so callers see the actual
         // typed value (empty after clear). We gate on
         // AccessibilityNodeInfo.isShowingHintText (API 26+) so an EditText
         // whose user-typed value happens to equal its placeholder isn't
-        // mis-reported as empty. Pre-API-26 we fall back to the equality
-        // check, which is wrong for the equal-typed-value edge case but
-        // preserves the toBeEmpty behavior most users rely on.
-        val effectiveText: String? =
-            if (rawText.isNullOrEmpty()) {
-                // Aggregate descendant text so wrapping containers (RN
-                // ReactViewGroup, plain ViewGroup, ConstraintLayout, etc.)
-                // expose their visible label. Earlier this was gated on a
-                // small allowlist of class names — that excluded the actual
-                // RN class users have on real apps. Aggregation cost is
-                // bounded by MAX_DESCENDANT_TEXT_DEPTH so unconditional
-                // recursion on empty-own-text elements is safe.
-                collectDescendantText(obj).ifEmpty { null }
-            } else if (isShowingHintText(obj)) {
-                null
-            } else {
-                rawText
-            }
+        // mis-reported as empty. An element with no text of its own
+        // aggregates its descendants' text so wrapping containers (RN
+        // ReactViewGroup, plain ViewGroup, ConstraintLayout, etc.) expose
+        // their visible label.
+        val effectiveText =
+            FindRules.effectiveText(
+                rawText,
+                isShowingHint = { isShowingHintText(node) },
+                descendantText = { collectDescendantText(node, fresh) },
+            )
 
         // Prefer the framework-set RoleDescription (React Native's
         // accessibilityRole) over the className-based mapping when present.
-        val role = extractRoleDescription(obj) ?: resolveRole(className)
+        val role = extractRoleDescription(node) ?: resolveRole(className)
         val viewportRatio = computeViewportRatio(bounds)
 
         val info =
@@ -1133,17 +1211,17 @@ class ElementFinder(private val device: UiDevice) {
                 text = effectiveText,
                 contentDescription = contentDescription,
                 resourceId = resourceId,
-                hint = hint,
+                hint = extractHint(node),
                 bounds = bounds,
-                isEnabled = obj.isEnabled,
-                isChecked = obj.isChecked,
-                isFocused = obj.isFocused,
-                isClickable = obj.isClickable,
-                isFocusable = obj.isFocusable,
-                isScrollable = obj.isScrollable,
+                isEnabled = node.isEnabled,
+                isChecked = node.isChecked,
+                isFocused = node.isFocused,
+                isClickable = node.isClickable,
+                isFocusable = node.isFocusable,
+                isScrollable = node.isScrollable,
                 isVisible = viewportRatio > 0f,
-                isSelected = obj.isSelected,
-                childCount = obj.childCount,
+                isSelected = node.isSelected,
+                childCount = node.childCount,
                 role = role,
                 viewportRatio = viewportRatio,
             )
@@ -1185,9 +1263,13 @@ class ElementFinder(private val device: UiDevice) {
         }
     }
 
-    private fun cacheAndConvert(obj: UiObject2): ElementInfo {
+    private fun cacheAndConvert(
+        obj: UiObject2,
+        node: AccessibilityNodeInfo,
+        fresh: Boolean,
+    ): ElementInfo {
         val elementId = UUID.randomUUID().toString()
-        val (info, identity) = toElementInfo(obj, elementId)
+        val (info, identity) = toElementInfo(obj, node, elementId, fresh)
         cacheElement(elementId, obj, identity)
         return info
     }
