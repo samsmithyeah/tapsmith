@@ -10,11 +10,12 @@ import android.view.accessibility.AccessibilityWindowInfo
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 
-/** The real clock: uptime, and a thread sleep. */
+/** The real clock: uptime, and a thread sleep that a cancelled command cuts
+ *  short (PILOT-605). */
 object SystemGuardClock : GuardClock {
     override fun now(): Long = SystemClock.uptimeMillis()
 
-    override fun sleep(ms: Long) = SystemClock.sleep(ms)
+    override fun sleep(ms: Long) = CommandCancellation.sleep(ms)
 }
 
 /**

@@ -113,6 +113,7 @@ class WaitEngine(private val device: UiDevice) {
         var checks = 0
         var slowestReadMs = 0L
         while (checks < SETTLE_MAX_CHECKS) {
+            CommandCancellation.checkpoint()
             val remaining = deadline - SystemClock.uptimeMillis()
             if (remaining <= 0) break
 
@@ -197,6 +198,7 @@ class WaitEngine(private val device: UiDevice) {
         timeoutMs: Long,
     ): ElementInfo {
         while (true) {
+            CommandCancellation.checkpoint()
             try {
                 return elementFinder.findElement(selector)
             } catch (_: ElementNotFoundException) {
@@ -207,7 +209,7 @@ class WaitEngine(private val device: UiDevice) {
                             "Selector: ${selector.describe()}",
                     )
                 }
-                SystemClock.sleep(FIND_POLL_INTERVAL_MS.coerceAtMost(remaining))
+                CommandCancellation.sleep(FIND_POLL_INTERVAL_MS.coerceAtMost(remaining))
             }
         }
     }

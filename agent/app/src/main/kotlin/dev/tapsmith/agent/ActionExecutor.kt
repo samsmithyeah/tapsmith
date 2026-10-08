@@ -161,7 +161,7 @@ class ActionExecutor(
         val deadline = SystemClock.uptimeMillis() + timeoutMs
         var prev = element.visibleBounds
         while (SystemClock.uptimeMillis() < deadline) {
-            SystemClock.sleep(STABLE_BOUNDS_POLL_MS)
+            CommandCancellation.sleep(STABLE_BOUNDS_POLL_MS)
             val readStart = SystemClock.uptimeMillis()
             val current = element.visibleBounds
             val readMs = SystemClock.uptimeMillis() - readStart
@@ -377,7 +377,7 @@ class ActionExecutor(
                 // Transient read failure (mid-layout, window transition) —
                 // keep waiting.
             }
-            SystemClock.sleep(100)
+            CommandCancellation.sleep(100)
         }
     }
 
@@ -441,10 +441,11 @@ class ActionExecutor(
     /**
      * Rethrow a touch that was refused rather than attempted (covered, changed
      * into another element, too late) so a fallback path does not retry it —
-     * or bury its error type in a generic ACTION_FAILED.
+     * or bury its error type in a generic ACTION_FAILED. A command the daemon
+     * gave up on (PILOT-605) is not retried either.
      */
     private fun rethrowTouchRefusal(e: Exception) {
-        if (e is TouchRefusedException) throw e
+        if (e is TouchRefusedException || e is CommandCancelledException) throw e
     }
 
     /**
@@ -689,7 +690,7 @@ class ActionExecutor(
             val lastScroll = if (vertical) lastVerticalScrollAt else lastHorizontalScrollAt
             val wait = SwipeSettle.remainingQuietMs(now, start, lastScroll, SWIPE_SETTLE_QUIET_MS)
             if (wait <= 0 || now >= deadline) break
-            SystemClock.sleep(wait.coerceAtMost(deadline - now))
+            CommandCancellation.sleep(wait.coerceAtMost(deadline - now))
         }
         Log.d(TAG, "swipe settle: ${SystemClock.uptimeMillis() - start}ms")
     }
@@ -825,6 +826,9 @@ class ActionExecutor(
         maxScrolls: Int = 20,
     ) {
         for (i in 0 until maxScrolls) {
+            // Up to 20 scrolls with no deadline of their own: never scroll on
+            // after the daemon has given up (PILOT-605).
+            CommandCancellation.checkpoint()
             // Check if target is already visible
             val targetBy =
                 when {
