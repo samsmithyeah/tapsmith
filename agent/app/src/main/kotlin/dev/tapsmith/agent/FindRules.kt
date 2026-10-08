@@ -92,6 +92,19 @@ internal object SwipeSettle {
         return !(along == 0 && across != 0 && across != UNREPORTED_DELTA)
     }
 
+    /**
+     * How much longer a swipe's settle must wait for [quietMs] without a
+     * scroll event, at [now]: quiet is counted from the last scroll event's
+     * arrival ([lastScrollAt]), or from when the settle [started] if that
+     * was later. Zero or less means settled.
+     */
+    fun remainingQuietMs(
+        now: Long,
+        started: Long,
+        lastScrollAt: Long,
+        quietMs: Long,
+    ): Long = maxOf(started, lastScrollAt) + quietMs - now
+
     /** AccessibilityEvent's scroll delta when the view didn't report one. */
     private const val UNREPORTED_DELTA = -1
 }

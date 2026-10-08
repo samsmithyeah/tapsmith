@@ -732,7 +732,7 @@ class ElementFinder(
                 // Trait/dual-path roles: skip class constraint. RN
                 // surfaces these via roleDescription on generic views
                 // (ReactViewGroup), not via class name. The post-filter
-                // in findUiObjects matches by extractRoleDescription()
+                // in matchesSelector matches by extractRoleDescription()
                 // and falls back to class membership for dual-path roles.
             } else if (classNames != null) {
                 val pattern = classNames.joinToString("|") { Regex.escape(it) }
@@ -746,7 +746,7 @@ class ElementFinder(
 
             // If a name is also given, filter by accessible name (contentDescription
             // or text on the element itself, or text on a descendant). We can't express
-            // OR conditions in a single BySelector, so we filter in findElements() below.
+            // OR conditions in a single BySelector, so matchesSelector filters by it.
             // Store the name requirement but don't add it to `by` here.
         }
 
@@ -792,7 +792,7 @@ class ElementFinder(
 
         // Hint text — UIAutomator has no By.hint(), so narrow to EditText
         // candidates here and post-filter on the actual hint value in
-        // findUiObjects(). Conflicting combinations (hint + className /
+        // matchesSelector(). Conflicting combinations (hint + className /
         // role / id / testId) were rejected up front, so by the time
         // we get here `hint` is either the only selector or paired
         // with text/textContains/contentDesc/enabled-style filters

@@ -630,6 +630,42 @@ class ActionExecutor(
     }
 
     /**
+     * Arrival time (uptime) of the last TYPE_VIEW_SCROLLED event that may be
+     * along each axis, recorded by [onAccessibilityEvent] for
+     * [settleAfterSwipe].
+     */
+    @Volatile private var lastVerticalScrollAt = 0L
+
+    @Volatile private var lastHorizontalScrollAt = 0L
+
+    init {
+        // One listener for the agent's lifetime, so the settle measures quiet
+        // from when scroll events ARRIVE. UiAutomation.executeAndWaitForEvent
+        // drops events stamped before each wait began, so on a slow device
+        // (delivery latency over the 100 ms scroll-event interval) a
+        // per-event wait loop would miss a fling that is still moving. This
+        // replaces UIAutomator's QueryController listener, which only tracks
+        // the legacy UiObject "last traversed text" the agent never reads.
+        try {
+            instrumentation.uiAutomation.setOnAccessibilityEventListener(::onAccessibilityEvent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not listen for scroll events; swipes will not wait for flings to settle", e)
+        }
+    }
+
+    private fun onAccessibilityEvent(event: AccessibilityEvent) {
+        if (event.eventType != AccessibilityEvent.TYPE_VIEW_SCROLLED) return
+        val now = SystemClock.uptimeMillis()
+        val hasDeltas = android.os.Build.VERSION.SDK_INT >= 28
+        if (!hasDeltas || SwipeSettle.isAlongAxis(event.scrollDeltaX, event.scrollDeltaY, vertical = true)) {
+            lastVerticalScrollAt = now
+        }
+        if (!hasDeltas || SwipeSettle.isAlongAxis(event.scrollDeltaX, event.scrollDeltaY, vertical = false)) {
+            lastHorizontalScrollAt = now
+        }
+    }
+
+    /**
      * Let the fling a swipe starts come to rest before the swipe returns
      * (PILOT-539). A scroll view that is still moving takes the next touch
      * as "stop scrolling" — React Native's ScrollView captures every touch
@@ -637,37 +673,23 @@ class ActionExecutor(
      * after a swipe silently does nothing. A moving scroll view emits
      * TYPE_VIEW_SCROLLED events, so wait until none has arrived for
      * [SWIPE_SETTLE_QUIET_MS], bounded by [SWIPE_SETTLE_MAX_MS]. Only scroll
-     * events that may be along the swipe's axis count ([SwipeSettle.isAlongAxis]): a
-     * screen whose animation emits other events all the time (the never-idle
-     * screens PILOT-539 is about), or whose carousel keeps scrolling
-     * sideways, settles as soon as the swiped content stops.
+     * events that may be along the swipe's axis count
+     * ([SwipeSettle.isAlongAxis]): a screen whose animation emits other
+     * events all the time (the never-idle screens PILOT-539 is about), or
+     * whose carousel keeps scrolling sideways, settles as soon as the swiped
+     * content stops.
      */
     private fun settleAfterSwipe(vertical: Boolean) {
-        val automation = instrumentation.uiAutomation
         val start = SystemClock.uptimeMillis()
         val deadline = start + SWIPE_SETTLE_MAX_MS
-        var scrollEvents = 0
         while (true) {
-            val remaining = deadline - SystemClock.uptimeMillis()
-            if (remaining <= 0) break
-            try {
-                automation.executeAndWaitForEvent(
-                    {},
-                    { event ->
-                        event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED &&
-                            (
-                                android.os.Build.VERSION.SDK_INT < 28 ||
-                                    SwipeSettle.isAlongAxis(event.scrollDeltaX, event.scrollDeltaY, vertical)
-                            )
-                    },
-                    SWIPE_SETTLE_QUIET_MS.coerceAtMost(remaining),
-                )
-                scrollEvents++
-            } catch (_: java.util.concurrent.TimeoutException) {
-                break // no scroll event for the quiet window: settled
-            }
+            val now = SystemClock.uptimeMillis()
+            val lastScroll = if (vertical) lastVerticalScrollAt else lastHorizontalScrollAt
+            val wait = SwipeSettle.remainingQuietMs(now, start, lastScroll, SWIPE_SETTLE_QUIET_MS)
+            if (wait <= 0 || now >= deadline) break
+            SystemClock.sleep(wait.coerceAtMost(deadline - now))
         }
-        Log.d(TAG, "swipe settle: ${SystemClock.uptimeMillis() - start}ms ($scrollEvents scroll events)")
+        Log.d(TAG, "swipe settle: ${SystemClock.uptimeMillis() - start}ms")
     }
 
     /**

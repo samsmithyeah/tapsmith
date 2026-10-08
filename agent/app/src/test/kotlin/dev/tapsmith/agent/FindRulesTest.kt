@@ -179,3 +179,18 @@ class SwipeSettleTest {
         assertTrue(SwipeSettle.isAlongAxis(deltaX = 0, deltaY = 0, vertical = false))
     }
 }
+
+/** Host-side tests for the swipe settle's quiet-window arithmetic (PILOT-539). */
+class SwipeSettleQuietTest {
+    @Test
+    fun `quiet is counted from the settle start when no scroll event came after it`() {
+        assertEquals(300L, SwipeSettle.remainingQuietMs(now = 1000, started = 1000, lastScrollAt = 0, quietMs = 300))
+        assertEquals(0L, SwipeSettle.remainingQuietMs(now = 1300, started = 1000, lastScrollAt = 900, quietMs = 300))
+    }
+
+    @Test
+    fun `a scroll event that arrived during the settle restarts the quiet window`() {
+        assertEquals(250L, SwipeSettle.remainingQuietMs(now = 1100, started = 1000, lastScrollAt = 1050, quietMs = 300))
+        assertTrue(SwipeSettle.remainingQuietMs(now = 1400, started = 1000, lastScrollAt = 1050, quietMs = 300) < 0)
+    }
+}
