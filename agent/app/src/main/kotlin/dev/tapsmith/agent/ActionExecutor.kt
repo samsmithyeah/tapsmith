@@ -326,6 +326,7 @@ class ActionExecutor(
             // idempotent re-set and a persistent mismatch only logs.
             if (element.text != text) {
                 device.waitForIdle(500)
+                CommandCancellation.checkpoint()
                 element.text = text
                 if (element.text != text) {
                     Log.w(
@@ -480,6 +481,10 @@ class ActionExecutor(
      */
     fun typeTextWithoutFocus(text: String) {
         if (text.isEmpty()) return
+        // Reached after idle and focus waits (the typeText fallback): keys
+        // for a command the daemon gave up on would go to whatever field is
+        // focused during the next step (PILOT-605).
+        CommandCancellation.checkpoint()
         val buffer = StringBuilder()
         // Batch consecutive control chars into a single
         // `input keyevent KEYCODE_X KEYCODE_X ...` call. Each shell
@@ -548,6 +553,9 @@ class ActionExecutor(
         try {
             clickToFocus(element, null, budget, expected, FOCUS_FOLLOW_UP_MS)
             device.waitForIdle(500)
+            // A skipped focusing tap and the idle wait both run after the
+            // planner's last check (PILOT-605).
+            CommandCancellation.checkpoint()
             // Select all (Ctrl+A) then delete
             element.clear()
         } catch (e: StaleObjectException) {
@@ -558,6 +566,7 @@ class ActionExecutor(
             try {
                 refocusForFallback(element, budget, expected)
                 device.waitForIdle(200)
+                CommandCancellation.checkpoint()
                 // Use shell to select all and delete
                 device.executeShellCommand("input keyevent KEYCODE_MOVE_HOME")
                 device.executeShellCommand("input keyevent --longpress KEYCODE_SHIFT_LEFT KEYCODE_MOVE_END")

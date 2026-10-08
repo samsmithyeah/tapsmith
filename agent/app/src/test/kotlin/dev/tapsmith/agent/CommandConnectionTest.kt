@@ -10,7 +10,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
-import java.util.Collections
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicReference
 class CommandConnectionTest {
     // The pool SocketServer serves connections on.
     private val executor = newConnectionExecutor()
-    private val logs = Collections.synchronizedList(mutableListOf<String>())
+    private val logs = CopyOnWriteArrayList<String>()
 
     @After
     fun tearDown() {
