@@ -1038,10 +1038,6 @@ async function runInitInner(): Promise<void> {
   console.log(banner.split('\n').map((l) => `${GREEN}${l}${RESET}`).join('\n'));
   console.log(dim(`v${getVersion()}`));
 
-  // A project that cannot take the config fails before the first question (PILOT-624).
-  const { assertProjectWritable } = await import('./init-noninteractive.js');
-  assertProjectWritable();
-
   // Check for existing config
   const configNames = ['tapsmith.config.ts', 'tapsmith.config.mjs', 'tapsmith.config.js'];
   const existingConfig = configNames.find((name) => fs.existsSync(path.resolve(process.cwd(), name)));
@@ -1052,6 +1048,11 @@ async function runInitInner(): Promise<void> {
       return;
     }
   }
+
+  // A project that cannot take the config fails now, not after every question
+  // (PILOT-624). Declining the overwrite above needs no write access.
+  const { assertProjectWritable } = await import('./init-noninteractive.js');
+  assertProjectWritable();
 
   // Step 1: Environment scan
   const env = scanEnvironment();

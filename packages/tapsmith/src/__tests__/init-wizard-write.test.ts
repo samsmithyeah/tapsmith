@@ -91,7 +91,6 @@ beforeEach(() => {
   answers.set(/Generate example test file/, true);
   answers.set(/AGENTS\.md/, true);
   answers.set(/Install/, false);
-  answers.set(/Overwrite it/, true);
   const record = (...args: unknown[]): void => { out.push(stripAnsi(args.join(' '))); };
   vi.spyOn(console, 'log').mockImplementation(record);
   vi.spyOn(console, 'error').mockImplementation(record);
@@ -144,8 +143,21 @@ describe('init wizard when a file cannot be written (PILOT-624)', () => {
     expect(output).not.toContain('Next steps');
   });
 
+  // Declining needs no write access, so a read-only project that already
+  // has a config keeps its old answer: "Keeping existing config", exit 0.
+  it.skipIf(!canDenyWrites)('asks about an existing config before checking the project can be written', async () => {
+    fs.writeFileSync(path.join(dir, 'tapsmith.config.ts'), '// existing');
+    lock(dir);
+    answers.set(/Overwrite it/, false);
+    const { exit, output } = await wizard();
+    expect(exit).toBeUndefined();
+    expect(output).toContain('Keeping existing config');
+    expect(fs.readFileSync(path.join(dir, 'tapsmith.config.ts'), 'utf8')).toBe('// existing');
+  });
+
   it.skipIf(!canDenyWrites)('keeps the config it was told to overwrite when the new one cannot be written', async () => {
     fs.writeFileSync(path.join(dir, 'tapsmith.config.ts'), '// existing');
+    answers.set(/Overwrite it/, true);
     lock(dir);
     const { exit } = await wizard();
     expect(exit).toBe('exit 1');
