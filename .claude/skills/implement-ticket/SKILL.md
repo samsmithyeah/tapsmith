@@ -156,8 +156,10 @@ With `worker`, you are one of several `implement-ticket` runs coordinated by
 - **Shared machine.** Builds, devices and CI runners are shared with the other workers:
   lease devices, and keep the push-batching rule strictly — every push costs CI time that
   other workers' PRs are queued behind.
-- **Main moves under you.** If the coordinator tells you another PR merged, fetch, merge
-  `origin/<base>` into your branch, and re-run the gate (Phase 7).
+- **Main moves under you.** If the coordinator tells you another PR merged, check
+  `gh pr view <n> --json mergeable`: only on `CONFLICTING` fetch, merge `origin/<base>`
+  into your branch, and re-run the gate (Phase 7). Otherwise carry on — `main`'s own CI
+  tests the combination (*Keeping up with the base* in `references/pr-and-ci.md`).
 
 ## When to stop and ask a human
 
@@ -382,7 +384,7 @@ and, if you hold device leases, `devices=<ids>` so QA uses yours first. On later
 |---|---|
 | `needs-fixes` | For each blocking finding: add the automated test its card suggests, watch it fail, fix, go green (Phase 3 discipline). Fix cheap minors too; propose tickets for pre-existing bugs. Then decide re-review (below), push, and re-run QA with `leads=`. |
 | `incomplete` | Remove the gap if you can (rebuild; release a device *you* hold; wait for one by polling `--pick` as *Devices* says — never kill or disturb a session you did not start), then re-run. If you cannot, stop and ask (rule 5). |
-| `ready-pending-ci` | Push if anything is unpushed, then wait for the listed checks (Phase 6). |
+| `ready-pending-ci` | Push if anything is unpushed, then wait for the listed checks (Phase 6) — except `e2e-ios`, which cannot run until Phase 7 marks the PR ready. |
 | `ready` | On to Phase 6. |
 
 Every QA run is a full retest — never ask QA to skip anything because a previous cycle
@@ -471,8 +473,8 @@ checklist with evidence:
 `E2E iOS` skips drafts, so check the gate in two passes:
 
 1. **Every item but `E2E iOS`.** When they all hold — and only then, so iOS runs on a
-   head you expect to merge — record the time and mark the PR ready:
-   `t0=$(date -u +%Y-%m-%dT%H:%M:%SZ); gh pr ready <n>`. With `leave-draft`, stop here
+   head you expect to merge — mark the PR ready (`gh pr ready <n>`; a no-op once it is
+   ready, after a pass-2 fix). With `leave-draft`, stop here
    instead: the PR stays a draft and the report lists iOS E2E as not run (it starts when
    someone marks the PR ready). A `ready-stacked` or `best-effort` PR also stops here.
 2. **`E2E iOS` on head.** Wait for it (`references/pr-and-ci.md` §Waiting recipes, *E2E

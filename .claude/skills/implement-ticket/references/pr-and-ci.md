@@ -191,27 +191,33 @@ while :; do
 done
 ```
 
-**E2E iOS after ready** (set `t0` just before `gh pr ready`, as Phase 7 says; only runs
-created after it count, so the draft's skipped run never reads as a result). Long queues
-for macOS runners are normal — this is not a stuck run:
+**E2E iOS after ready** — the newest run for head that is not a draft's all-skipped run
+(those conclude `skipped`; a run still going has no conclusion yet). It works the same
+after a pass-2 fix, when the run started at push time. A head with no `E2E iOS` run at
+all after 10 minutes is outside the workflow's `paths`, which meets the gate item. Long
+queues for macOS runners are normal — this is not a stuck run:
 
 ```bash
-end=$((SECONDS+6000))
+end=$((SECONDS+6000)); start=$SECONDS
+q='if length == 0 then "none" else (([.[] | select(.conclusion != "skipped")][0]) // {status: "waiting"} | "\(.status) \(.conclusion // "")") end'
 while :; do
   now=$(gh pr view $n -R $R --json headRefOid -q .headRefOid 2>/dev/null) || now=$head
   [ "$now" = "$head" ] || { echo "WAIT_DONE: head moved off $head"; exit 0; }
   r=$(gh run list -R $R --workflow e2e-ios.yml --commit $head --limit 10 \
-      --json createdAt,status,conclusion \
-      -q "[.[] | select(.createdAt >= \"$t0\")][0] | \"\(.status) \(.conclusion)\"" 2>/dev/null) || r=""
-  case "$r" in completed*) echo "WAIT_DONE: E2E iOS $r on $head"; exit 0;; esac
+      --json status,conclusion -q "$q" 2>/dev/null) || r=""
+  case "$r" in
+    completed*) echo "WAIT_DONE: E2E iOS $r on $head"; exit 0;;
+    none) [ $((SECONDS-start)) -ge 600 ] && { echo "WAIT_DONE: no E2E iOS run for $head (outside its paths)"; exit 0; };;
+  esac
   [ $SECONDS -ge $end ] && { echo "WAIT_TIMEOUT: E2E iOS ${r:-unknown} on $head"; exit 124; }
   sleep 60
 done
 ```
 
-`WAIT_DONE: E2E iOS completed success` is the pass; any other conclusion is a red check
-for Phase 6. No run at all for this head 10 minutes after `gh pr ready` is the *CI checks
-to register* timeout in SKILL.md *Waiting*.
+`WAIT_DONE: E2E iOS completed success` is the pass, and so is `no E2E iOS run` (say so in
+the PR); any other conclusion is a red check for Phase 6. Only the draft's skipped run 10
+minutes after `gh pr ready` (`waiting`) is the *CI checks to register* timeout in SKILL.md
+*Waiting*.
 
 **CodeRabbit reviewed this head** — its commit status, which ends `Review completed` (or
 `Review skipped`, which is not a review):
