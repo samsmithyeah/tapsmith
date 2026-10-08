@@ -844,6 +844,7 @@ class ActionExecutor(
             val found = container.findObject(targetBy)
             if (found != null) return
 
+            CommandCancellation.checkpoint()
             val canScroll = container.scroll(direction, 0.8f)
             if (!canScroll) {
                 throw ElementNotFoundException(
@@ -1010,6 +1011,8 @@ class ActionExecutor(
             val option =
                 device.wait(Until.findObject(By.text(optionText)), DROPDOWN_WAIT_TIMEOUT_MS)
                     ?: throw ElementNotFoundException("Option '$optionText' not found in dropdown")
+            // The dropdown wait cannot be cut short (PILOT-605).
+            CommandCancellation.checkpoint()
             option.click()
         } catch (e: StaleObjectException) {
             throw e
@@ -1047,6 +1050,8 @@ class ActionExecutor(
             if (index < 0 || index >= children.size) {
                 throw ActionFailedException("Index $index out of range (0..${children.size - 1})")
             }
+            // The popup wait cannot be cut short (PILOT-605).
+            CommandCancellation.checkpoint()
             children[index].click()
         } catch (e: StaleObjectException) {
             throw e

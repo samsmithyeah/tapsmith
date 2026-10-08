@@ -182,6 +182,10 @@ class WaitEngine(private val device: UiDevice) {
                 "(checks=$checks, slowestBoundsRead=${slowestReadMs}ms)",
         )
 
+        // The settle reads can be slow: callers act on the match next (a
+        // swipe, a scroll, a drag), so not for a command the daemon gave up
+        // on meanwhile (PILOT-605).
+        CommandCancellation.checkpoint()
         return match
     }
 

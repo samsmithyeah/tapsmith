@@ -440,4 +440,18 @@ class TouchPlannerTest {
         }
         assertTrue("stopped at the first pass after the cancel", clock.nowMs < 600)
     }
+
+    @Test
+    fun `a command abandoned during the last pass's reads does not touch`() {
+        val token = CommandCancellation()
+        // The element is clear, but the daemon gives up while it is read.
+        target.readAt = {
+            token.cancel("the daemon closed the connection")
+            snapshot(BUTTON)
+        }
+        assertThrows<CommandCancelledException> {
+            CommandCancellation.runWith(token) { planner.plan(target, BUTTON, budget(), LABELLED) }
+        }
+        assertEquals(1, target.reads)
+    }
 }
