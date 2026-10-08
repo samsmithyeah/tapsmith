@@ -364,12 +364,12 @@ function reasonOf(err: unknown): string {
 }
 
 /**
- * Why `file` (absolute) could not be created or overwritten, or undefined
- * when it can. A new file needs its nearest existing ancestor to be a
- * directory the user can write to (init creates any missing ones); an
- * existing one must be a file the user can write to.
+ * Why `file` (absolute) could not be created or overwritten, and what to do
+ * about it, or undefined when it can. A new file needs its nearest existing
+ * ancestor to be a directory the user can write to (init creates any
+ * missing ones); an existing one must be a file the user can write to.
  */
-function unwritableReason(file: string): string | undefined {
+function unwritableReason(file: string): { reason: string; fix: string } | undefined {
   const writable = (p: string): boolean => {
     try {
       fs.accessSync(p, fs.constants.W_OK);
@@ -385,8 +385,8 @@ function unwritableReason(file: string): string | undefined {
     // Missing (or behind a non-directory, found below).
   }
   if (stat) {
-    if (stat.isDirectory()) return `${file} is a directory`;
-    return writable(file) ? undefined : `${file} is not writable`;
+    if (stat.isDirectory()) return { reason: `${file} is a directory`, fix: `Move or rename the ${file} directory` };
+    return writable(file) ? undefined : { reason: `${file} is not writable`, fix: `Give yourself write access to ${file} (check its permissions and owner, or whether the filesystem is read-only)` };
   }
   let dir = path.dirname(file);
   for (;;) {
@@ -397,13 +397,13 @@ function unwritableReason(file: string): string | undefined {
       // Missing: init creates it, so its parent must be writable.
     }
     if (dirStat) {
-      if (!dirStat.isDirectory()) return `${dir} is not a directory`;
+      if (!dirStat.isDirectory()) return { reason: `${dir} is not a directory`, fix: `Move or rename ${dir}, which is a file` };
       // Creating an entry needs write and search permission on the directory.
       try {
         fs.accessSync(dir, fs.constants.W_OK | fs.constants.X_OK);
         return undefined;
       } catch {
-        return `${dir} is not writable`;
+        return { reason: `${dir} is not writable`, fix: `Give yourself write access to ${dir} (check its permissions and owner, or whether the filesystem is read-only)` };
       }
     }
     const parent = path.dirname(dir);
@@ -427,11 +427,15 @@ export function writeInitFiles(files: InitFiles, cwd: string = process.cwd()): W
   const skipFlag: Record<string, string> = files.interactive
     ? { [EXAMPLE_TEST_PATH]: ', or answer no to the example test', 'AGENTS.md': ', or answer no to AGENTS.md' }
     : { [EXAMPLE_TEST_PATH]: ', or pass --no-example-test', 'AGENTS.md': ', or pass --no-agents-md' };
-  const failure = (rel: string, reason: string, written: string[]): InitError => new InitError(
+  // `fix` comes from the up-front check; a failure it could not foresee
+  // (a full disk) gets a general one.
+  const failure = (rel: string, reason: string, written: string[], fix?: string): InitError => new InitError(
     'WRITE_FAILED',
     `Could not write ${rel}: ${reason}. ${written.length === 0 ? 'Nothing was written.' : `Already written: ${written.join(', ')}.`}`,
     {
-      fix: `Make sure you can write to ${path.dirname(path.join(cwd, rel))} (its permissions and owner, a read-only filesystem, free disk space)${skipFlag[rel] ?? ''}, then run init again`,
+      fix: fix
+        ? `${fix}${skipFlag[rel] ?? ''}, then run init again`
+        : `Check you can write to ${path.dirname(path.join(cwd, rel))} and the disk has space${skipFlag[rel] ?? ''}, then run init again`,
     },
   );
 
@@ -439,14 +443,13 @@ export function writeInitFiles(files: InitFiles, cwd: string = process.cwd()): W
   const tmpPath = path.join(cwd, `.tapsmith.config.ts.${process.pid}.tmp`);
   const exampleAbs = path.join(cwd, EXAMPLE_TEST_PATH);
   const exampleTestExisted = files.exampleTest && fs.existsSync(exampleAbs);
-  const targets: Array<[string, string]> = [];
+  // Checked in the order a reader expects (the config first); written with the config last.
+  const targets: Array<[string, string]> = [['tapsmith.config.ts', tmpPath]];
   if (files.exampleTest && !exampleTestExisted) targets.push([EXAMPLE_TEST_PATH, exampleAbs]);
   if (files.agentsMd) targets.push(['AGENTS.md', path.join(cwd, 'AGENTS.md')]);
-  // The config is written beside itself and renamed over the old one.
-  targets.push(['tapsmith.config.ts', tmpPath]);
   for (const [rel, abs] of targets) {
-    const reason = unwritableReason(abs);
-    if (reason) throw failure(rel, reason, []);
+    const blocked = unwritableReason(abs);
+    if (blocked) throw failure(rel, blocked.reason, [], blocked.fix);
   }
 
   const written: string[] = [];
