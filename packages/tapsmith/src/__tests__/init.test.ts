@@ -573,6 +573,47 @@ describe('runInit() --json without --yes', () => {
   });
 });
 
+// ─── init --yes --json when a file cannot be written (PILOT-623) ───
+
+describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('runInit() --yes --json with an unwritable tests/', () => {
+  const ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (ttyDescriptor) Object.defineProperty(process.stdin, 'isTTY', ttyDescriptor);
+    else delete (process.stdin as { isTTY?: boolean }).isTTY;
+  });
+
+  it('exits 1 with WRITE_FAILED naming the file, and writes no config', async () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-ro-')));
+    const cwd = process.cwd();
+    try {
+      fs.mkdirSync(path.join(dir, 'tests'));
+      fs.chmodSync(path.join(dir, 'tests'), 0o555);
+      process.chdir(dir);
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      let out = '';
+      vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out += String(chunk); return true; });
+      vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new Error(`exit ${code}`); }) as never);
+      const exit = await runInit({
+        yes: true, json: true, force: false, networkCapture: false, exampleTest: true, agentsMd: true,
+        platform: 'android', apk: 'app.apk', package: 'com.acme.app', avd: 'Pixel_9',
+      }).then(() => undefined, (err: unknown) => (err as Error).message);
+      expect(exit).toBe('exit 1');
+      const { error } = JSON.parse(out) as { error: { code: string; message: string; fix?: string } };
+      expect(error.code).toBe('WRITE_FAILED');
+      expect(error.message).toContain('tests/example.tapsmith.ts');
+      expect(error.fix).toContain('--no-example-test');
+      expect(fs.existsSync(path.join(dir, 'tapsmith.config.ts'))).toBe(false);
+    } finally {
+      process.chdir(cwd);
+      fs.chmodSync(path.join(dir, 'tests'), 0o755);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('wizardNextSteps() (PILOT-562)', () => {
   it('leads with `tapsmith verify`, as getting-started does, and never shows a person --json', () => {
     const steps = wizardNextSteps(undefined);

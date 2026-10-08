@@ -1,6 +1,6 @@
 /**
  * Non-interactive `tapsmith init` — flag validation, auto-detection resolution,
- * and file writing. Pure of process.exit and console; the CLI shell in
+ * and file writing (writeInitFiles(), which the wizard shares). Pure of process.exit and console; the CLI shell in
  * init.ts owns printing and exit codes.
  */
 
@@ -322,22 +322,171 @@ function iosLeftOutNote(expoProject: detectDefaults.ExpoProject | undefined, apk
 
 // ─── Execution ───
 
-/** Throws CONFIG_EXISTS unless force or no config present. Removes every existing config on force. */
+const CONFIG_NAMES = ['tapsmith.config.ts', 'tapsmith.config.mjs', 'tapsmith.config.js'];
+
+/**
+ * Throws CONFIG_EXISTS unless force or no config present. Only checks: the
+ * configs `--force` replaces are removed by writeInitFiles(), once the new
+ * one is written, so a failed init never leaves the project without one.
+ */
 export function assertConfigWritable(force: boolean, cwd: string = process.cwd()): void {
-  const existing = ['tapsmith.config.ts', 'tapsmith.config.mjs', 'tapsmith.config.js']
-    .filter((name) => fs.existsSync(path.join(cwd, name)));
-  if (existing.length === 0) return;
-  if (!force) {
-    throw new InitError('CONFIG_EXISTS', `Found existing ${existing[0]}`, {
+  const existing = CONFIG_NAMES.find((name) => fs.existsSync(path.join(cwd, name)));
+  if (existing && !force) {
+    throw new InitError('CONFIG_EXISTS', `Found existing ${existing}`, {
       fix: 'Pass --force to overwrite, or delete the existing config',
     });
   }
-  // Remove every existing config, including tapsmith.config.ts itself, so the
-  // subsequent write starts from a clean slate — writing over a symlink would
-  // otherwise clobber its target, and restricted permissions could fail mid-write.
-  for (const name of existing) {
-    fs.rmSync(path.join(cwd, name), { force: true });
+}
+
+// ─── Writing the files (PILOT-623, PILOT-624) ───
+
+export interface InitFiles {
+  /** The generated tapsmith.config.ts. */
+  config: string;
+  exampleTest: boolean;
+  agentsMd: boolean;
+  /** Replace an existing config (`--force`, or the wizard's "Overwrite it?"). */
+  replaceConfig: boolean;
+  /** The wizard, rather than `--yes`: decides how the fix says to skip a file. */
+  interactive: boolean;
+}
+
+export interface WrittenInitFiles {
+  /** Project-relative paths written, config first. */
+  written: string[];
+  /** EXAMPLE_TEST_PATH was already there and was left untouched. */
+  exampleTestExisted: boolean;
+}
+
+/** How a write failure reads: the errno message without the absolute path noise. */
+function reasonOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Why `file` (absolute) could not be created or overwritten, or undefined
+ * when it can. A new file needs its nearest existing ancestor to be a
+ * directory the user can write to (init creates any missing ones); an
+ * existing one must be a file the user can write to.
+ */
+function unwritableReason(file: string): string | undefined {
+  const writable = (p: string): boolean => {
+    try {
+      fs.accessSync(p, fs.constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let stat: fs.Stats | undefined;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    // Missing (or behind a non-directory, found below).
   }
+  if (stat) {
+    if (stat.isDirectory()) return `${file} is a directory`;
+    return writable(file) ? undefined : `${file} is not writable`;
+  }
+  let dir = path.dirname(file);
+  for (;;) {
+    let dirStat: fs.Stats | undefined;
+    try {
+      dirStat = fs.statSync(dir);
+    } catch {
+      // Missing: init creates it, so its parent must be writable.
+    }
+    if (dirStat) {
+      if (!dirStat.isDirectory()) return `${dir} is not a directory`;
+      // Creating an entry needs write and search permission on the directory.
+      try {
+        fs.accessSync(dir, fs.constants.W_OK | fs.constants.X_OK);
+        return undefined;
+      } catch {
+        return `${dir} is not writable`;
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/**
+ * Writes init's files, all or as few as possible: every target is checked
+ * before anything is written, and the config, which marks a project as set
+ * up (CONFIG_EXISTS), is written last and atomically, so a write that fails
+ * anyway (a full disk) leaves no new config behind and never loses the old
+ * one. Throws WRITE_FAILED naming the file and what was already written.
+ * `.gitignore` is not one of these files: it is optional, and init warns
+ * when it cannot update it.
+ */
+export function writeInitFiles(files: InitFiles, cwd: string = process.cwd()): WrittenInitFiles {
+  assertConfigWritable(files.replaceConfig, cwd);
+
+  const skipFlag: Record<string, string> = files.interactive
+    ? { [EXAMPLE_TEST_PATH]: ', or answer no to the example test', 'AGENTS.md': ', or answer no to AGENTS.md' }
+    : { [EXAMPLE_TEST_PATH]: ', or pass --no-example-test', 'AGENTS.md': ', or pass --no-agents-md' };
+  const failure = (rel: string, reason: string, written: string[]): InitError => new InitError(
+    'WRITE_FAILED',
+    `Could not write ${rel}: ${reason}. ${written.length === 0 ? 'Nothing was written.' : `Already written: ${written.join(', ')}.`}`,
+    {
+      fix: `Make sure you can write to ${path.dirname(path.join(cwd, rel))} (its permissions and owner, a read-only filesystem, free disk space)${skipFlag[rel] ?? ''}, then run init again`,
+    },
+  );
+
+  const configPath = path.join(cwd, 'tapsmith.config.ts');
+  const tmpPath = path.join(cwd, `.tapsmith.config.ts.${process.pid}.tmp`);
+  const exampleAbs = path.join(cwd, EXAMPLE_TEST_PATH);
+  const exampleTestExisted = files.exampleTest && fs.existsSync(exampleAbs);
+  const targets: Array<[string, string]> = [];
+  if (files.exampleTest && !exampleTestExisted) targets.push([EXAMPLE_TEST_PATH, exampleAbs]);
+  if (files.agentsMd) targets.push(['AGENTS.md', path.join(cwd, 'AGENTS.md')]);
+  // The config is written beside itself and renamed over the old one.
+  targets.push(['tapsmith.config.ts', tmpPath]);
+  for (const [rel, abs] of targets) {
+    const reason = unwritableReason(abs);
+    if (reason) throw failure(rel, reason, []);
+  }
+
+  const written: string[] = [];
+  if (files.exampleTest && !exampleTestExisted) {
+    try {
+      writeExampleTest(cwd);
+    } catch (err) {
+      throw failure(EXAMPLE_TEST_PATH, reasonOf(err), written);
+    }
+    written.push(EXAMPLE_TEST_PATH);
+  }
+  if (files.agentsMd) {
+    try {
+      writeAgentsMd(cwd);
+    } catch (err) {
+      throw failure('AGENTS.md', reasonOf(err), written);
+    }
+    written.push('AGENTS.md');
+  }
+
+  // Written beside the config and renamed over it: the old config (or a
+  // symlink, whose target is never touched) survives any failure.
+  try {
+    fs.writeFileSync(tmpPath, files.config);
+    fs.renameSync(tmpPath, configPath);
+  } catch (err) {
+    fs.rmSync(tmpPath, { force: true });
+    throw failure('tapsmith.config.ts', reasonOf(err), written);
+  }
+  // A leftover .mjs or .js config would shadow or confuse the new one.
+  for (const name of CONFIG_NAMES.slice(1)) {
+    try {
+      fs.rmSync(path.join(cwd, name), { force: true });
+    } catch (err) {
+      throw new InitError('WRITE_FAILED', `Wrote tapsmith.config.ts but could not remove the old ${name}: ${reasonOf(err)}`, {
+        fix: `Delete ${name} yourself: Tapsmith loads only one config`,
+      });
+    }
+  }
+  return { written: ['tapsmith.config.ts', ...written], exampleTestExisted };
 }
 
 /**
@@ -356,9 +505,13 @@ export function executeInitPlan(
   const warnings = [...plan.warnings];
 
   const configPath = path.join(cwd, 'tapsmith.config.ts');
-  assertConfigWritable(args.force, cwd);
-
-  fs.writeFileSync(configPath, generateConfig(plan.platforms, plan.android, plan.ios, plan.networkCapture));
+  const { written, exampleTestExisted } = writeInitFiles({
+    config: generateConfig(plan.platforms, plan.android, plan.ios, plan.networkCapture),
+    exampleTest: args.exampleTest,
+    agentsMd: args.agentsMd,
+    replaceConfig: args.force,
+    interactive: false,
+  }, cwd);
   filesCreated.push('tapsmith.config.ts');
 
   const unmatched = testsOutsideGeneratedMatchWarning(tapsmithTestsOutsideGeneratedMatch(cwd));
@@ -368,18 +521,8 @@ export function executeInitPlan(
   if (ignored === 'created' || ignored === 'added') filesCreated.push('.gitignore');
   else if (typeof ignored === 'object') warnings.push(ignored.warning);
 
-  if (args.exampleTest) {
-    if (writeExampleTest(cwd) === 'exists') {
-      warnings.push(`${EXAMPLE_TEST_PATH} already exists — left untouched`);
-    } else {
-      filesCreated.push(EXAMPLE_TEST_PATH);
-    }
-  }
-
-  if (args.agentsMd) {
-    writeAgentsMd(cwd);
-    filesCreated.push('AGENTS.md');
-  }
+  if (exampleTestExisted) warnings.push(`${EXAMPLE_TEST_PATH} already exists — left untouched`);
+  filesCreated.push(...written.filter((f) => f !== 'tapsmith.config.ts'));
 
   if (missingTapsmith) {
     warnings.push(`Tapsmith isn't installed in this project, and the files init wrote import it: run ${missingTapsmith.display} before anything else`);
