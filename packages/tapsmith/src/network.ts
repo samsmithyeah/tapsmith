@@ -333,6 +333,12 @@ interface RegisteredRouteInfo {
   stack?: SourceLocation[]
   /** The suite scope that registered it; absent for a test's own route. */
   scope?: RouteScope
+  /**
+   * The daemon acknowledged the registration. Only confirmed routes are
+   * replayed onto a replacement stream: one still awaiting its reply when
+   * the stream dropped is rejected and removed by `addRoute` (PILOT-581).
+   */
+  confirmed?: boolean
 }
 
 // ─── Route Scopes (PILOT-534) ───
@@ -489,6 +495,17 @@ function patternToGlob(pattern: string | RegExp | ((url: URL) => boolean)): stri
 
 // ─── NetworkRouteManager ───
 
+/** First delay before reopening a dropped route stream; doubles per failed attempt. */
+const REOPEN_INITIAL_DELAY_MS = 250;
+/** Upper bound on the reopen backoff. */
+const REOPEN_MAX_DELAY_MS = 5_000;
+
+function formatRoutePattern(pattern: string | RegExp | ((url: URL) => boolean)): string {
+  if (typeof pattern === 'string') return pattern;
+  if (pattern instanceof RegExp) return String(pattern);
+  return '(predicate)';
+}
+
 /**
  * Manages the bidirectional gRPC stream for network route interception.
  * Opened lazily on the first `device.route()` call.
@@ -504,17 +521,29 @@ export class NetworkRouteManager {
   }> = new Map();
   private _requestListeners: Set<(req: TapsmithRequest) => void> = new Set();
   private _responseListeners: Set<(resp: NetworkResponseEventData) => void> = new Set();
-  private _eventsSubscribed = false;
+  /**
+   * Whether daemon network events are wanted (a listener, or network
+   * capture's eager subscription). This is intent, kept across streams; the
+   * subscription itself lives on the daemon's per-stream handler, so every
+   * new stream re-sends it (PILOT-581).
+   */
+  private _eventsWanted = false;
+  /** The stream `subscribeEvents` was last sent on. */
+  private _subscribedStream: grpc.ClientDuplexStream<unknown, unknown> | null = null;
+  /** Pending eager reopen after a dropped stream, and its current backoff. */
+  private _reopenTimer: ReturnType<typeof setTimeout> | null = null;
+  private _reopenDelayMs = REOPEN_INITIAL_DELAY_MS;
   private _disposed = false;
 
   constructor(client: TapsmithGrpcClient) {
     this._client = client;
   }
 
-  /** Lazily open the bidi stream. */
+  /** Lazily open the bidi stream, replaying its state onto a fresh one. */
   private _ensureStream(): grpc.ClientDuplexStream<unknown, unknown> {
     if (this._disposed) throw new Error('NetworkRouteManager is disposed');
     if (this._stream) return this._stream;
+    this._cancelReopen();
 
     // Opened outside any route scope: the stream outlives the beforeAll that
     // may open it, and callbacks it drives (route handlers) must not inherit
@@ -527,16 +556,17 @@ export class NetworkRouteManager {
     // the stream's events arrive in: a route a handler registers belongs to
     // the running test (PILOT-534).
     stream.on('data', (msg: ServerMessage) => {
+      // The daemon is answering on this stream: a later drop starts its
+      // reconnect backoff from the beginning again.
+      if (this._stream === stream) this._reopenDelayMs = REOPEN_INITIAL_DELAY_MS;
       routeScopeStorage.exit(() => this._onServerMessage(msg));
     });
 
     stream.on('error', (err: Error) => {
-      // Drop the broken stream so subsequent operations don't try to
-      // write to it. Next ensureStream() call will reconnect.
-      this._stream = null;
       // CANCELLED (1) and UNAVAILABLE (14) are expected during teardown
       // and daemon reconnection. RST_STREAM with code 0 is a clean HTTP/2
-      // close (e.g. proxy teardown between test files) that auto-recovers.
+      // close (e.g. proxy teardown between test files); the manager reopens
+      // and replays its state either way (PILOT-581).
       const code = (err as grpc.ServiceError).code;
       const isCleanReset = code === 13 && err.message.includes('RST_STREAM with code 0');
       // `dispose()` half-closes the stream with `end()`; the daemon's own close
@@ -544,28 +574,109 @@ export class NetworkRouteManager {
       // once we have stopped reading. That raced teardown is not actionable —
       // it printed after every run's summary — but the same code mid-run means
       // a lost route decision, so only suppress it once we are disposing.
-      if (!this._disposed && code !== 1 && code !== 14 && !isCleanReset) {
+      // A stale stream (already replaced) has nothing left to report.
+      if (!this._disposed && this._stream === stream && code !== 1 && code !== 14 && !isCleanReset) {
         console.warn('[tapsmith] NetworkRoute stream error:', err.message);
       }
-      this._rejectPendingFetches(`NetworkRoute stream error: ${err.message}`);
+      this._onStreamDropped(stream, `NetworkRoute stream error: ${err.message}`);
     });
 
     stream.on('end', () => {
-      this._stream = null;
-      this._rejectPendingFetches('NetworkRoute stream closed');
+      this._onStreamDropped(stream, 'NetworkRoute stream closed');
     });
 
+    this._replayState(stream);
     return stream;
+  }
+
+  /**
+   * Restore what lived on the daemon's handler for the previous stream: the
+   * event subscription and every confirmed route, under the same ids so
+   * their handlers, scopes and `times` counters carry on (PILOT-581). Written
+   * before any caller's own message, so a lazy reopen keeps their order.
+   */
+  private _replayState(stream: grpc.ClientDuplexStream<unknown, unknown>): void {
+    if (this._eventsWanted) {
+      this._subscribedStream = stream;
+      stream.write({ subscribeEvents: {} });
+    }
+    for (const info of this._routes.values()) {
+      if (!info.confirmed) continue;
+      const routeId = info.routeId;
+      const onReply = (msg: ServerMessage) => {
+        if (msg.registerRouteResponse?.routeId !== routeId) return;
+        stream.removeListener('data', onReply);
+        if (!msg.registerRouteResponse.success) {
+          console.warn(
+            `[tapsmith] Could not restore route ${formatRoutePattern(info.originalPattern)} after the ` +
+            `NetworkRoute stream reconnected: ${msg.registerRouteResponse.errorMessage || 'unknown error'}`,
+          );
+        }
+      };
+      stream.on('data', onReply);
+      stream.once('end', () => stream.removeListener('data', onReply));
+      stream.write({ registerRoute: { routeId, urlPattern: info.urlPattern } });
+    }
+  }
+
+  /**
+   * A stream errored or ended. Only the live stream's drop counts — a
+   * replaced stream's late `end` must not discard its replacement. When
+   * there is state the daemon has lost (routes, an event subscription),
+   * reopen without waiting for user code: a `beforeAll` route must keep
+   * mocking a test that never touches the network API (PILOT-581).
+   */
+  private _onStreamDropped(stream: grpc.ClientDuplexStream<unknown, unknown>, reason: string): void {
+    if (this._stream !== stream) return;
+    this._stream = null;
+    this._subscribedStream = null;
+    this._rejectPendingFetches(reason);
+    this._scheduleReopen();
+  }
+
+  private _hasStateToRestore(): boolean {
+    if (this._eventsWanted) return true;
+    for (const info of this._routes.values()) {
+      if (info.confirmed) return true;
+    }
+    return false;
+  }
+
+  private _scheduleReopen(): void {
+    if (this._disposed || this._reopenTimer) return;
+    // Deferred (never synchronous), so a registration the drop interrupted
+    // settles first and is not replayed.
+    const delay = this._reopenDelayMs;
+    this._reopenDelayMs = Math.min(delay * 2, REOPEN_MAX_DELAY_MS);
+    this._reopenTimer = setTimeout(() => {
+      this._reopenTimer = null;
+      if (this._disposed || this._stream || !this._hasStateToRestore()) return;
+      try {
+        this._ensureStream();
+      } catch {
+        // Opening a call does not throw for an unreachable daemon (the
+        // stream errors instead, which schedules the next attempt).
+      }
+    }, delay);
+    // A run that is ending must not wait on a reconnect attempt.
+    this._reopenTimer.unref?.();
+  }
+
+  private _cancelReopen(): void {
+    if (!this._reopenTimer) return;
+    clearTimeout(this._reopenTimer);
+    this._reopenTimer = null;
   }
 
   /** Best-effort write to the stream. Silently no-ops if the stream is down. */
   private _safeWrite(msg: unknown): void {
-    if (!this._stream) return;
+    const stream = this._stream;
+    if (!stream) return;
     try {
-      this._stream.write(msg);
+      stream.write(msg);
     } catch {
       // Stream closed between check and write — drop the message.
-      this._stream = null;
+      this._onStreamDropped(stream, 'NetworkRoute stream closed');
     }
   }
 
@@ -610,6 +721,8 @@ export class NetworkRouteManager {
         if (msg.registerRouteResponse?.routeId === routeId) {
           cleanup();
           if (msg.registerRouteResponse.success) {
+            const info = this._routes.get(routeId);
+            if (info) info.confirmed = true;
             resolve();
           } else {
             this._routes.delete(routeId);
@@ -739,9 +852,11 @@ export class NetworkRouteManager {
    * the subscribe message.
    */
   ensureEventsSubscribed(): void {
-    if (this._eventsSubscribed) return;
-    this._eventsSubscribed = true;
+    this._eventsWanted = true;
+    // A new stream sends the subscription as part of its replay.
     const stream = this._ensureStream();
+    if (this._subscribedStream === stream) return;
+    this._subscribedStream = stream;
     stream.write({ subscribeEvents: {} });
   }
 
@@ -754,10 +869,7 @@ export class NetworkRouteManager {
   /** Unsubscribe from request events. */
   removeRequestListener(handler: (req: TapsmithRequest) => void): void {
     this._requestListeners.delete(handler);
-    if (this._requestListeners.size === 0 && this._responseListeners.size === 0 && this._eventsSubscribed && this._stream) {
-      this._eventsSubscribed = false;
-      this._stream.write({ unsubscribeEvents: {} });
-    }
+    this._unsubscribeIfUnused();
   }
 
   /** Subscribe to response events. */
@@ -769,9 +881,15 @@ export class NetworkRouteManager {
   /** Unsubscribe from response events. */
   removeResponseListener(handler: (resp: NetworkResponseEventData) => void): void {
     this._responseListeners.delete(handler);
-    if (this._responseListeners.size === 0 && this._requestListeners.size === 0 && this._eventsSubscribed && this._stream) {
-      this._eventsSubscribed = false;
-      this._stream.write({ unsubscribeEvents: {} });
+    this._unsubscribeIfUnused();
+  }
+
+  private _unsubscribeIfUnused(): void {
+    if (this._requestListeners.size > 0 || this._responseListeners.size > 0 || !this._eventsWanted) return;
+    this._eventsWanted = false;
+    if (this._stream && this._subscribedStream === this._stream) {
+      this._subscribedStream = null;
+      this._safeWrite({ unsubscribeEvents: {} });
     }
   }
 
@@ -792,6 +910,7 @@ export class NetworkRouteManager {
   async dispose(): Promise<void> {
     if (this._disposed) return;
     this._disposed = true;
+    this._cancelReopen();
 
     this._routes.clear();
     this._rejectPendingFetches('NetworkRouteManager disposed');
