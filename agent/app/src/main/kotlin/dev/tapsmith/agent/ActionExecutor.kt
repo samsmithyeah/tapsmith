@@ -7,6 +7,7 @@ import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.accessibility.AccessibilityEvent
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.StaleObjectException
@@ -42,11 +43,15 @@ class ActionExecutor(
         /** Interval between taps for double-tap gesture. */
         private const val DOUBLE_TAP_INTERVAL_MS = 100L
 
-        /** Accessibility-event quiet time that ends a swipe's settle ([settleAfterSwipe]). */
+        /**
+         * A swipe's settle ([settleAfterSwipe]) ends once no scroll event has
+         * arrived for this long. A moving scroll view reports one at least
+         * every 100 ms (the framework's recurring-event interval).
+         */
         private const val SWIPE_SETTLE_QUIET_MS = 300L
 
-        /** Upper bound on a swipe's settle, for a screen that never goes quiet. */
-        private const val SWIPE_SETTLE_MAX_MS = 600L
+        /** Upper bound on a swipe's settle, for a scroll view that keeps moving. */
+        private const val SWIPE_SETTLE_MAX_MS = 3000L
 
         /** How long each press of an injected tap is held (see injectTap). */
         private const val TAP_PRESS_MS = 50L
@@ -629,19 +634,33 @@ class ActionExecutor(
      * (PILOT-539). A scroll view that is still moving takes the next touch
      * as "stop scrolling" — React Native's ScrollView captures every touch
      * between its momentum-scroll begin and end events — so a tap made right
-     * after a swipe silently does nothing. Scrolling emits accessibility
-     * events, so wait until they have been quiet for
-     * [SWIPE_SETTLE_QUIET_MS], bounded by [SWIPE_SETTLE_MAX_MS] so a screen
-     * that never goes quiet (a running animation) costs at most that.
+     * after a swipe silently does nothing. A moving scroll view emits
+     * TYPE_VIEW_SCROLLED events, so wait until none has arrived for
+     * [SWIPE_SETTLE_QUIET_MS], bounded by [SWIPE_SETTLE_MAX_MS]. Only scroll
+     * events count: a screen whose animation emits other events all the time
+     * (the never-idle screens PILOT-539 is about) settles as soon as its
+     * scrolling stops, not at the bound.
      */
     private fun settleAfterSwipe() {
+        val automation = instrumentation.uiAutomation
         val start = SystemClock.uptimeMillis()
-        try {
-            instrumentation.uiAutomation.waitForIdle(SWIPE_SETTLE_QUIET_MS, SWIPE_SETTLE_MAX_MS)
-        } catch (_: java.util.concurrent.TimeoutException) {
-            // Never quiet within the bound: proceed, as documented above.
+        val deadline = start + SWIPE_SETTLE_MAX_MS
+        var scrollEvents = 0
+        while (true) {
+            val remaining = deadline - SystemClock.uptimeMillis()
+            if (remaining <= 0) break
+            try {
+                automation.executeAndWaitForEvent(
+                    {},
+                    { it.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED },
+                    SWIPE_SETTLE_QUIET_MS.coerceAtMost(remaining),
+                )
+                scrollEvents++
+            } catch (_: java.util.concurrent.TimeoutException) {
+                break // no scroll event for the quiet window: settled
+            }
         }
-        Log.d(TAG, "swipe settle: ${SystemClock.uptimeMillis() - start}ms")
+        Log.d(TAG, "swipe settle: ${SystemClock.uptimeMillis() - start}ms ($scrollEvents scroll events)")
     }
 
     /**
