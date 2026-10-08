@@ -258,7 +258,7 @@ describe('resolveInitPlan()', () => {
       const note = iosNote(plan.warnings);
       expect(note).toContain('no ios/ directory');
       expect(note).toContain('npx tapsmith init --force');
-      expect(note).toContain('--platform android,ios --app <path>');
+      expect(note).toContain('npx tapsmith init --force` (with `--platform android,ios --app <path>');
       expect(note).not.toContain('expo');
     }));
 
@@ -267,6 +267,18 @@ describe('resolveInitPlan()', () => {
       const note = iosNote(plan.warnings);
       expect(note).toContain('npx expo prebuild --platform ios');
       expect(note).toContain('npx tapsmith init --force');
+    }));
+
+    it('never reads the app config (which runs the Expo CLI) just for the note', () => withProject({ expo: '54.0.0' }, (tmp) => {
+      const readers: Array<((cwd: string) => unknown) | undefined> = [];
+      const plan = resolveInitPlan(initArgs({ yes: true }), baseEnv, {
+        ...detectStubs,
+        detectExpoProject: (_cwd, readConfig) => { readers.push(readConfig); return managedExpo; },
+      }, tmp);
+      expect(iosNote(plan.warnings)).toContain('npx expo prebuild --platform ios');
+      expect(readers).toHaveLength(1);
+      expect(readers[0]).toBeDefined();
+      expect(readers[0]?.(tmp)).toBeUndefined();
     }));
 
     it('notes it when --apk alone configured Android in a managed Expo project', () => withProject({ expo: '54.0.0' }, (tmp) => {

@@ -74,7 +74,7 @@ export interface DetectFns {
   findIosAppCandidates: (cwd: string) => string[];
   detectIosBundleId: (appPath: string) => string | undefined;
   /** Optional so callers that stub the build detectors need not stub this too (PILOT-557). */
-  detectExpoProject?: (cwd: string) => detectDefaults.ExpoProject | undefined;
+  detectExpoProject?: (cwd: string, readConfig?: (cwd: string) => unknown) => detectDefaults.ExpoProject | undefined;
 }
 
 // ─── Flag validation ───
@@ -165,7 +165,10 @@ export function resolveInitPlan(
     // A React Native app usually targets both, so an inferred Android-only
     // setup on a Mac says why iOS is missing and how to add it (PILOT-625).
     if (env.isMacOS && !inferred.includes('ios') && detectDefaults.isReactNativeProject(cwd)) {
-      warnings.push(iosLeftOutNote(expo()));
+      // The note needs only whether this is Expo, not the app config's ids,
+      // so the config is not read: that would run the project's Expo CLI.
+      const detectExpo = detect.detectExpoProject ?? detectDefaults.detectExpoProject;
+      warnings.push(iosLeftOutNote(detectExpo(cwd, () => undefined)));
     }
   }
 
@@ -306,7 +309,7 @@ export function resolveInitPlan(
 /** Why an inferred setup has no iOS, and the two ways to add it — init has written a config by then, so a re-run needs --force. */
 function iosLeftOutNote(expoProject: detectDefaults.ExpoProject | undefined): string {
   const reason = 'iOS left out of the config: this project has no ios/ directory yet, so there is no iOS app to test.';
-  const rerun = 'Then re-run `npx tapsmith init --force`, or pass --platform android,ios --app <path>.';
+  const rerun = 'Then re-run `npx tapsmith init --force` (with `--platform android,ios --app <path>` if the build is outside ios/).';
   if (expoProject) return `${reason} To test iOS too: ${detectDefaults.expoBuildHint(['ios'], expoProject, rerun)}`;
   return `${reason} To test iOS too, generate the iOS project and build the app for the simulator. ${rerun}`;
 }
