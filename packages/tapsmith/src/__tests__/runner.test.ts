@@ -1435,7 +1435,7 @@ describe('test.use()', () => {
 // ─── testFilter (single-test) filtering ───
 
 describe('testFilter', () => {
-  it('runs the matching test and skips the rest (case-insensitive substring)', async () => {
+  it('runs the matching test and leaves the rest out (case-insensitive substring)', async () => {
     pushContext();
     tapsmithDescribe('Login screen', () => {
       tapsmithTest('submits the form', async () => {});
@@ -1449,7 +1449,7 @@ describe('testFilter', () => {
 
     const byName = new Map(collectResults(result).map((t) => [t.fullName, t.status]));
     expect(byName.get('Login screen > submits the form')).toBe('passed');
-    expect(byName.get('Login screen > shows an error')).toBe('skipped');
+    expect(byName.get('Login screen > shows an error')).toBeUndefined();
   });
 
   it('matches a describe prefix (runs all tests under it)', async () => {
@@ -1470,7 +1470,7 @@ describe('testFilter', () => {
     const byName = new Map(collectResults(result).map((t) => [t.fullName, t.status]));
     expect(byName.get('Login screen > a')).toBe('passed');
     expect(byName.get('Login screen > b')).toBe('passed');
-    expect(byName.get('Home screen > c')).toBe('skipped');
+    expect(byName.get('Home screen > c')).toBeUndefined();
   });
 
   it('can match multiple tests by a shared substring', async () => {
@@ -1487,10 +1487,10 @@ describe('testFilter', () => {
     const byName = new Map(collectResults(result).map((t) => [t.name, t.status]));
     expect(byName.get('renders header')).toBe('passed');
     expect(byName.get('renders footer')).toBe('passed');
-    expect(byName.get('taps button')).toBe('skipped');
+    expect(byName.get('taps button')).toBeUndefined();
   });
 
-  it('skips every test when nothing matches', async () => {
+  it('reports no test when nothing matches', async () => {
     pushContext();
     tapsmithTest('alpha', async () => {});
     tapsmithTest('beta', async () => {});
@@ -1500,15 +1500,14 @@ describe('testFilter', () => {
       testFilter: 'does-not-exist',
     }));
 
-    const flat = collectResults(result);
-    expect(flat.every((t) => t.status === 'skipped')).toBe(true);
+    expect(collectResults(result)).toEqual([]);
   });
 });
 
 // ─── grep / grepInvert filtering ───
 
 describe('grep / grepInvert', () => {
-  it('grep keeps only matching tests, marks the rest skipped', async () => {
+  it('grep keeps only matching tests and reports none of the rest, as Playwright filters them out', async () => {
     pushContext();
     tapsmithTest('login flow', async () => {});
     tapsmithTest('logout flow', async () => {});
@@ -1520,11 +1519,11 @@ describe('grep / grepInvert', () => {
     }));
 
     const flat = collectResults(result);
-    expect(flat).toHaveLength(3);
+    expect(flat).toHaveLength(2);
     const byName = new Map(flat.map((t) => [t.name, t.status]));
     expect(byName.get('login flow')).toBe('passed');
     expect(byName.get('logout flow')).toBe('passed');
-    expect(byName.get('signup flow')).toBe('skipped');
+    expect(byName.get('signup flow')).toBeUndefined();
   });
 
   it('grep matches against fullName so describe scope counts', async () => {
@@ -1543,14 +1542,14 @@ describe('grep / grepInvert', () => {
     }));
 
     const flat = collectResults(result);
-    expect(flat).toHaveLength(3);
+    expect(flat).toHaveLength(2);
     const byName = new Map(flat.map((t) => [t.fullName, t.status]));
     expect(byName.get('checkout > happy path')).toBe('passed');
     expect(byName.get('checkout > failure')).toBe('passed');
-    expect(byName.get('login > happy path')).toBe('skipped');
+    expect(byName.get('login > happy path')).toBeUndefined();
   });
 
-  it('grepInvert skips matching tests', async () => {
+  it('grepInvert leaves matching tests out', async () => {
     pushContext();
     tapsmithTest('fast assert', async () => {});
     tapsmithTest('slow integration', async () => {});
@@ -1564,8 +1563,8 @@ describe('grep / grepInvert', () => {
     const flat = collectResults(result);
     const byName = new Map(flat.map((t) => [t.name, t.status]));
     expect(byName.get('fast assert')).toBe('passed');
-    expect(byName.get('slow integration')).toBe('skipped');
-    expect(byName.get('slow load')).toBe('skipped');
+    expect(byName.get('slow integration')).toBeUndefined();
+    expect(byName.get('slow load')).toBeUndefined();
   });
 
   it('grep and grepInvert together: must match grep AND not match grepInvert', async () => {
@@ -1583,8 +1582,8 @@ describe('grep / grepInvert', () => {
     const flat = collectResults(result);
     const byName = new Map(flat.map((t) => [t.name, t.status]));
     expect(byName.get('login fast')).toBe('passed');
-    expect(byName.get('login slow')).toBe('skipped');
-    expect(byName.get('signup fast')).toBe('skipped');
+    expect(byName.get('login slow')).toBeUndefined();
+    expect(byName.get('signup fast')).toBeUndefined();
   });
 
   it('grep with multiple patterns matches union (any pattern is enough)', async () => {
@@ -1601,7 +1600,7 @@ describe('grep / grepInvert', () => {
     const flat = collectResults(result);
     const byName = new Map(flat.map((t) => [t.name, t.status]));
     expect(byName.get('alpha')).toBe('passed');
-    expect(byName.get('beta')).toBe('skipped');
+    expect(byName.get('beta')).toBeUndefined();
     expect(byName.get('gamma')).toBe('passed');
   });
 
@@ -1621,8 +1620,8 @@ describe('grep / grepInvert', () => {
     const byName = new Map(flat.map((t) => [t.name, t.status]));
     // Only the test matching BOTH the root grep and the project grep runs.
     expect(byName.get('login fast')).toBe('passed');
-    expect(byName.get('login slow')).toBe('skipped');
-    expect(byName.get('signup fast')).toBe('skipped');
+    expect(byName.get('login slow')).toBeUndefined();
+    expect(byName.get('signup fast')).toBeUndefined();
   });
 
   it('projectGrepInvert is unioned with grepInvert', async () => {
@@ -1639,9 +1638,53 @@ describe('grep / grepInvert', () => {
 
     const flat = collectResults(result);
     const byName = new Map(flat.map((t) => [t.name, t.status]));
-    expect(byName.get('alpha')).toBe('skipped');
+    expect(byName.get('alpha')).toBeUndefined();
     expect(byName.get('beta')).toBe('passed');
-    expect(byName.get('gamma')).toBe('skipped');
+    expect(byName.get('gamma')).toBeUndefined();
+  });
+
+  // Playwright filters non-matching tests out of the run: they are neither
+  // listed nor counted as skipped (PILOT-569).
+  it('reports nothing to the reporter for a filtered-out test', async () => {
+    pushContext();
+    tapsmithTest('login flow', async () => {});
+    tapsmithTest('signup flow', async () => {});
+    const ctx = popContext();
+
+    const reported: TestResult[] = [];
+    await runSuiteContext(ctx, '', [], [], makeOpts({
+      grep: [/login/],
+      reporter: { onTestEnd: (t: TestResult) => { reported.push(t); } },
+    }));
+
+    expect(reported.map((t) => [t.fullName, t.status])).toEqual([['login flow', 'passed']]);
+  });
+
+  it('still reports a selected test of a skipped describe as skipped, and leaves the rest out', async () => {
+    pushContext();
+    tapsmithDescribe.skip('checkout', () => {
+      tapsmithTest('login then pay', async () => {});
+      tapsmithTest('pay', async () => {});
+    });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({ grep: [/login/] }));
+
+    expect(collectResults(result).map((t) => [t.fullName, t.status])).toEqual([['checkout > login then pay', 'skipped']]);
+  });
+
+  it('fails only the selected tests when their beforeAll fails', async () => {
+    pushContext();
+    tapsmithDescribe('checkout', () => {
+      tapsmithBeforeAll(async () => { throw new Error('setup broke'); });
+      tapsmithTest('login then pay', async () => {});
+      tapsmithTest('pay', async () => {});
+    });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({ grep: [/login/] }));
+
+    expect(collectResults(result).map((t) => [t.fullName, t.status])).toEqual([['checkout > login then pay', 'failed']]);
   });
 
   it('empty grep arrays behave the same as undefined', async () => {
@@ -2493,7 +2536,6 @@ describe('scope setup attribution across nested describes', () => {
       expect(ran).toEqual(['beforeAll:text fields', 'test:finds by label', 'afterAll:text fields']);
       expect(collectResults(result).map((t) => [t.fullName, t.status])).toEqual([
         ['text fields > finds by label', 'passed'],
-        ['switches > finds switch', 'skipped'],
       ]);
       // Only the running test is ever announced (start + afterAll re-tag) —
       // never a filtered one.

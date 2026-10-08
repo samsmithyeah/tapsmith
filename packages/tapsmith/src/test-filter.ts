@@ -119,11 +119,11 @@ export function noTestsMatchFilterMessage(
 }
 
 /**
- * Whether a test result is only the runner's synthetic skip for a test the
- * `testFilter` excluded, which a filtered run should not report. A skip of a
- * test the filter did select (`.skip`, or a runtime `test.skip()` — PILOT-546)
- * is a real result and must be reported.
+ * Whether a run under an active selection filter ran no test: it selected
+ * none (the tests a filter excludes report no result, PILOT-569) or only
+ * skipped ones. The CLI fails such a run rather than reporting it green —
+ * the safety net for a `--grep` the pre-run check could not judge.
  */
-export function isFilteredOutSkip(result: { status: string; fullName: string }, filter: string | undefined): boolean {
-  return !!filter && result.status === 'skipped' && !matchesTestFilter(result.fullName, filter);
+export function filterRanNothing(filterActive: boolean, results: ReadonlyArray<{ status: string }>): boolean {
+  return filterActive && results.every((r) => r.status === 'skipped');
 }

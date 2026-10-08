@@ -1,7 +1,49 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { RunQueue, mapKeyToAction, type RunRequest, type WatchAction } from '../watch-queue.js';
+import { RunQueue, mapKeyToAction, watchUsage, WATCH_KEYS, type RunRequest, type WatchAction } from '../watch-queue.js';
+import { printsRunSummary } from '../reporter.js';
+import * as nodeFs from 'node:fs';
+import * as nodePath from 'node:path';
 import { reconcileFailedFiles, takeFileForWorker, filesNoWorkerCanRun } from '../watch.js';
 import type { WatchRunMessage, WatchRunChildMessage } from '../watch-run.js';
+
+// ─── Watch usage (PILOT-569) ───
+
+describe('watchUsage', () => {
+  it('lists every key, with the files Enter re-runs once there are some', () => {
+    expect(watchUsage([])).toEqual([
+      { key: 'a', action: 'run all test files' },
+      { key: 'f', action: 're-run the files that had failures' },
+      { key: 'q', action: 'quit (Ctrl+C also quits)' },
+    ]);
+    expect(watchUsage(['/p/tests/login.test.ts', '/p/tests/home.test.ts'])).toContainEqual(
+      { key: 'Enter', action: 're-run the last run\'s files: login.test.ts, home.test.ts' },
+    );
+  });
+
+  // The terminal's key list and docs/watch-mode.md drifted apart once.
+  it('matches the keyboard table in docs/watch-mode.md', () => {
+    const doc = nodeFs.readFileSync(nodePath.resolve(__dirname, '..', '..', '..', '..', 'docs', 'watch-mode.md'), 'utf-8');
+    const rows = [...doc.matchAll(/^\| `([^`]+)` \| (.+?) \|$/gm)].map((m) => ({ key: m[1], action: m[2] }));
+    expect(rows).toEqual(WATCH_KEYS.map(({ key, action }) => ({ key, action: action[0].toUpperCase() + action.slice(1) })));
+  });
+
+  it('maps every listed key to an action', () => {
+    for (const { key } of WATCH_KEYS) expect(mapKeyToAction(key === 'Enter' ? '\r' : key)).not.toBeNull();
+  });
+});
+
+describe('printsRunSummary', () => {
+  it('is true when a terminal reporter prints the summary, so watch mode does not print a second one', () => {
+    expect(printsRunSummary(undefined)).toBe(true);
+    expect(printsRunSummary('dot')).toBe(true);
+    expect(printsRunSummary(['line', ['json', { outputFile: 'r.json' }]])).toBe(true);
+  });
+
+  it('is false for reporters that print none', () => {
+    expect(printsRunSummary('json')).toBe(false);
+    expect(printsRunSummary([['junit', { outputFile: 'r.xml' }], 'html'])).toBe(false);
+  });
+});
 
 // ─── Tests for mapKeyToAction ───
 

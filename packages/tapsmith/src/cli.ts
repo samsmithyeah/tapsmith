@@ -10,7 +10,7 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { claimBanner, printsBanner, runCli, type CliHandlers, type TestCommandArgs } from './cli-program.js';
-import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, primaryDevicePin, deviceGroupSize, assignGroupMemberDevices, EXPLICIT_WORKERS, isExplicitWorkers, isTapsmithNotInstalledError, isConfigValidationError, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
+import { loadConfig, configPathOf, normalizeGrep, resolveDeviceStrategy, resolveDeviceGroup, primaryDevicePin, deviceGroupSize, assignGroupMemberDevices, EXPLICIT_WORKERS, isExplicitWorkers, isTapsmithNotInstalledError, isConfigValidationError, configLoadFailureOf, type DeviceGroupEntry, type TapsmithConfig } from './config.js';
 import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
@@ -34,7 +34,8 @@ import type { PreparedState, ResetCapabilities } from './app-reset.js';
 import { claimDeviceOrThrow, claimFirstFree, claimUpTo, currentSession, ensureClaimSession, devicesHeldByThisProcess, heldDevicesNote, releaseDeviceClaim, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { discoverTestFiles, noTestFilesFoundMessage, relativeTestPath, resolveTestFileArgs } from './test-file-discovery.js';
-import { resolveTsxBin } from './child-scripts.js';
+import { resolveTsxBin, tsxIpcPathProblem } from './child-scripts.js';
+import { filterRanNothing } from './test-filter.js';
 import {
   resolveTraceConfig,
   isNetworkTracingEnabled,
@@ -72,6 +73,9 @@ import { androidToolchainBlocker, assertAdbForEmulatorLaunch, iosToolchainBlocke
 import {
   createUiLaunchSteps,
   UiLaunchProgress,
+  launchRowsShareStderr,
+  unshownPart,
+  withoutShownHeadline,
   type LaunchProgressSink,
   type LaunchStepId,
 } from './launch-progress.js';
@@ -161,6 +165,13 @@ function reExecWithTsx(args: string[]): never {
     // tsx is one of our dependencies, so a missing one means a broken install.
     console.error(red('TypeScript test files were found, but Tapsmith could not find the tsx loader it runs them with.'));
     console.error(dim('tsx ships as a dependency of tapsmith; reinstall it (npm install tapsmith), or install tsx: npm install -D tsx'));
+    process.exit(1);
+  }
+
+  // tsx would crash on its own socket before running anything (PILOT-569).
+  const ipcProblem = tsxIpcPathProblem();
+  if (ipcProblem) {
+    console.error(red(ipcProblem));
     process.exit(1);
   }
 
@@ -2168,6 +2179,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       testMatch: selectionTestMatch,
       rootDir: config.rootDir,
       projectsSelected: selectedProjects !== undefined,
+      configFound: configPath !== undefined,
     })));
     process.exit(1);
   }
@@ -2454,8 +2466,8 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
     console.log(`\nStarting watch mode for ${testFiles.length} test file(s)...\n`);
   }
 
-  // When a selection filter selects zero runnable tests — i.e. every
-  // discovered test ends up skipped — that's a usage error (typically a typo'd
+  // When a selection filter selects zero runnable tests — none reported, or
+  // only skipped ones — that's a usage error (typically a typo'd
   // pattern), not a green run. The exit paths below fail loud rather than
   // reporting success.
   const zeroMatchFilterMessage =
@@ -2493,9 +2505,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
 
       await reporter.onRunEnd(fullResult);
       preserveEmulatorsForReuse(emulatorsLaunchedThisProcess());
-      const zeroMatch = selectionFilterActive
-        && fullResult.tests.length > 0
-        && fullResult.tests.every((t) => t.status === 'skipped');
+      const zeroMatch = filterRanNothing(!!selectionFilterActive, fullResult.tests);
       if (zeroMatch) console.error(red(zeroMatchFilterMessage));
       process.exit((fullResult.status === 'failed' || zeroMatch) ? 1 : 0);
     }
@@ -2606,7 +2616,12 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
         // used to print "✗ Primary device" for a group member that failed.
         const message = err instanceof Error ? err.message : String(err);
         if (!launchProgress?.hasFailure()) launchProgress?.fail('primary-device', message.split('\n')[0]);
-        console.error(red(message));
+        // Only what the ✗ row above does not already say (PILOT-569) — when
+        // the run ends here. Another target's setup would redraw the rows,
+        // taking this target's reason with them.
+        const rowsAreFinal = !toleratesTargetFailure && launchRowsShareStderr();
+        const unshown = launchProgress && rowsAreFinal ? unshownPart(message, launchProgress.shownFailures()) : message;
+        if (unshown) console.error(red(unshown));
         if (!toleratesTargetFailure) {
           sequentialExitCode = 1;
           return;
@@ -3013,9 +3028,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       suites: allSuites,
     };
     await reporter.onRunEnd(fullResult);
-    const zeroMatch = selectionFilterActive
-      && allResults.length > 0
-      && allResults.every((r) => r.status === 'skipped');
+    const zeroMatch = filterRanNothing(!!selectionFilterActive, allResults);
     if (zeroMatch) console.error(red(zeroMatchFilterMessage));
     sequentialExitCode = (hasFailed || zeroMatch) ? 1 : 0;
   } catch (err) {
@@ -3187,6 +3200,7 @@ main().catch(async (err) => {
   } catch { /* dispatcher not loaded — fall through */ }
 
   activeLaunchProgress?.finish();
+  const shownFailures = launchRowsShareStderr() ? activeLaunchProgress?.shownFailures() : undefined;
   activeLaunchProgress = undefined;
 
   let isLaunchFailure = false;
@@ -3197,7 +3211,16 @@ main().catch(async (err) => {
 
   const message = err instanceof Error ? err.message : String(err);
   if (isLaunchFailure) {
-    const { headline: summary, detail: details } = splitHeadline(message);
+    // What a ✗ launch row already showed is not repeated (PILOT-569).
+    // Only the headline: the lines under it name each worker or target, and
+    // a row may still show another target's reason.
+    const unshown = shownFailures ? withoutShownHeadline(message, shownFailures) : message;
+    if (!unshown) {
+      console.error(red('Test run failed to start.'));
+      if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) console.error((err as Error)?.stack ?? err);
+      process.exit(1);
+    }
+    const { headline: summary, detail: details } = splitHeadline(unshown);
     console.error(red(`Test run failed to start: ${summary}`));
     if (details) console.error(dim(details));
     if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) {
@@ -3215,6 +3238,16 @@ main().catch(async (err) => {
   if (isTapsmithNotInstalledError(err) || (isConfigValidationError(err) && err.configPath)) {
     console.error(red(message));
     if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) console.error(err.stack);
+    process.exit(1);
+  }
+
+  // A config that could not be imported (PILOT-569): its message once, with
+  // a code frame, not the message three times over tsx's loader frames.
+  const configFailure = configLoadFailureOf(err);
+  if (configFailure) {
+    const { formatConfigLoadFailure } = await import('./config-load-report.js');
+    console.error(formatConfigLoadFailure(err as Error, configFailure));
+    if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) console.error((err as Error).stack);
     process.exit(1);
   }
 

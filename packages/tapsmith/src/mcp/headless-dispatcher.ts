@@ -21,7 +21,6 @@ import { telemetry } from '../telemetry.js';
 import { ensurePlatformTarget, platformTargetIsLive, type PlatformTarget } from './connection.js';
 import { deviceGroupNames, deviceGroupSize, pinnedDeviceSerials, primaryDevicePin, resolveDeviceGroup, type TapsmithConfig } from '../config.js';
 import { deviceGroupSignature, deviceSignature } from '../project.js';
-import { isFilteredOutSkip } from '../test-filter.js';
 import type {
   TestDispatcher,
   TestRunResult,
@@ -1300,7 +1299,6 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         switch (response.type) {
           case 'test-end': {
             const result = deserializeTestResult(response.result);
-            if (isFilteredOutSkip(result, testFilter)) break;
             const key = resultEntryKey(projectName, filePath, result.fullName);
             this._testResults.set(key, {
               fullName: result.fullName,

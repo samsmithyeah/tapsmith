@@ -1188,13 +1188,14 @@ export interface RunOptions {
   _preflightWarnings?: string[];
   /**
    * Run only tests whose fullName contains this value (case-insensitive
-   * substring match). All other tests are skipped. May match several tests.
+   * substring match). All other tests are left out of the run, unreported.
+   * May match several tests.
    */
   testFilter?: string;
   /**
    * Regular expressions matched against each test's fullName. When set, only
    * tests with a fullName matching at least one pattern are run; the rest are
-   * marked skipped. Mirrors Playwright's `--grep` / `config.grep`.
+   * left out of the run, unreported. Mirrors Playwright's `--grep` / `config.grep`.
    */
   grep?: RegExp[];
   /**
@@ -1206,13 +1207,13 @@ export interface RunOptions {
   projectGrep?: RegExp[];
   /**
    * Regular expressions matched against each test's fullName. When set, tests
-   * whose fullName matches any of these patterns are skipped. Mirrors
-   * Playwright's `--grep-invert` / `config.grepInvert`.
+   * whose fullName matches any of these patterns are left out of the run.
+   * Mirrors Playwright's `--grep-invert` / `config.grepInvert`.
    */
   grepInvert?: RegExp[];
   /**
    * Per-project grep-invert filter, unioned with `grepInvert`. A test that
-   * matches any pattern in either set is skipped.
+   * matches any pattern in either set is left out of the run.
    */
   projectGrepInvert?: RegExp[];
   /**
@@ -1283,7 +1284,8 @@ async function captureFailureScreenshot(
 
 /**
  * Whether a test's fullName passes all configured selection filters
- * (`testFilter`, `grep`, `grepInvert`). A test that doesn't pass is skipped.
+ * (`testFilter`, `grep`, `grepInvert`). A test that doesn't pass is left
+ * out of the run: no result, not counted as skipped (PILOT-569).
  *
  * - `testFilter`: case-insensitive substring match against the fullName
  *   (subsumes exact-name and describe-prefix matches; may match several tests).
@@ -1912,7 +1914,7 @@ async function runSuiteContext(
         beforeAllCollector.cleanup();
       }
 
-      const failed = failAll(ctx, parentPrefix, beforeAllError, opts.projectName, beforeAllScreenshot, beforeAllTrace);
+      const failed = failAll(ctx, parentPrefix, beforeAllError, opts, beforeAllScreenshot, beforeAllTrace);
       // A dialog the scope-entry reset closed may be why the scope failed.
       drainPreflightNotices(opts, null);
       const scopeWarnings = opts._preflightWarnings?.splice(0) ?? [];
@@ -1967,11 +1969,14 @@ async function runSuiteContext(
 
     const fullName = parentPrefix ? `${parentPrefix} > ${entry.name}` : entry.name;
 
+    // A test the selection filters exclude is not part of the run at all —
+    // neither reported nor counted as skipped, as Playwright filters it out
+    // (PILOT-569). testFilter is a case-insensitive substring match against
+    // the fullName; grep / grepInvert match it as regular expressions.
+    if (!passesTestFilter(fullName, opts)) continue;
+
     // Determine if this test should be skipped.
-    // testFilter is a case-insensitive substring match against the fullName.
-    // grep / grepInvert match against the fullName as regular expressions.
-    const filteredOut = !passesTestFilter(fullName, opts);
-    const shouldSkip = entry.skip || !!ctx.skipped || skippedByBeforeAll || (hasOnly && !entry.only) || filteredOut || !!serialGroup?.failed;
+    const shouldSkip = entry.skip || !!ctx.skipped || skippedByBeforeAll || (hasOnly && !entry.only) || !!serialGroup?.failed;
 
     if (shouldSkip) {
       const skippedResult: TestResult = {
@@ -2943,7 +2948,7 @@ async function runSuiteContext(
       // Mark all tests in skipped suite as skipped (we still need to discover them)
       const childCtx = materializeSuiteEntry(suiteEntry);
       const prefix = parentPrefix ? `${parentPrefix} > ${suiteEntry.name}` : suiteEntry.name;
-      const skippedResult = skipAll(childCtx, prefix);
+      const skippedResult = skipAll(childCtx, prefix, opts);
       result.suites.push(skippedResult);
       continue;
     }
@@ -2955,7 +2960,7 @@ async function runSuiteContext(
       // skips — each of its tests is reported as skipped.
       const childCtx = materializeSuiteEntry(suiteEntry);
       const prefix = parentPrefix ? `${parentPrefix} > ${suiteEntry.name}` : suiteEntry.name;
-      const skippedResult = skipAll(childCtx, prefix);
+      const skippedResult = skipAll(childCtx, prefix, opts);
       for (const t of collectResults(skippedResult)) {
         t.project = opts.projectName;
         t.filePath = opts.testFilePath;
@@ -3123,34 +3128,42 @@ async function runSuiteContext(
   return result;
 }
 
-function skipAll(ctx: SuiteContext, prefix: string): SuiteResult {
+/**
+ * Mark every test in a context skipped — those the selection filters keep:
+ * a filtered-out test is not part of the run at all (PILOT-569).
+ */
+function skipAll(ctx: SuiteContext, prefix: string, opts: RunOptions): SuiteResult {
   const result: SuiteResult = { name: prefix, tests: [], suites: [], durationMs: 0 };
   for (const t of ctx.tests) {
     const fullName = prefix ? `${prefix} > ${t.name}` : t.name;
+    if (!passesTestFilter(fullName, opts)) continue;
     result.tests.push({ name: t.name, fullName, status: 'skipped', durationMs: 0 });
   }
   for (const s of ctx.suites) {
     const childCtx = materializeSuiteEntry(s);
     const childPrefix = prefix ? `${prefix} > ${s.name}` : s.name;
-    result.suites.push(skipAll(childCtx, childPrefix));
+    result.suites.push(skipAll(childCtx, childPrefix, opts));
   }
   return result;
 }
 
 /**
- * Mark all tests in a context as failed with the given error.
+ * Mark all tests in a context as failed with the given error — those the
+ * selection filters keep, as `skipAll` does.
  * Used when beforeAll hooks throw — individual tests never got a chance to run.
  */
-function failAll(ctx: SuiteContext, prefix: string, error: Error, project?: string, screenshotPath?: string, tracePath?: string): SuiteResult {
+function failAll(ctx: SuiteContext, prefix: string, error: Error, opts: RunOptions, screenshotPath?: string, tracePath?: string): SuiteResult {
+  const project = opts.projectName;
   const result: SuiteResult = { name: prefix, tests: [], suites: [], durationMs: 0 };
   for (const t of ctx.tests) {
     const fullName = prefix ? `${prefix} > ${t.name}` : t.name;
+    if (!passesTestFilter(fullName, opts)) continue;
     result.tests.push({ name: t.name, fullName, status: 'failed', durationMs: 0, error, project, screenshotPath, tracePath });
   }
   for (const s of ctx.suites) {
     const childCtx = materializeSuiteEntry(s);
     const childPrefix = prefix ? `${prefix} > ${s.name}` : s.name;
-    result.suites.push(failAll(childCtx, childPrefix, error, project, screenshotPath, tracePath));
+    result.suites.push(failAll(childCtx, childPrefix, error, opts, screenshotPath, tracePath));
   }
   return result;
 }

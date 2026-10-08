@@ -274,6 +274,46 @@ describe('loadConfig rootDir anchoring', () => {
       expect(out).toEqual({ error: `Failed to load config file ${file}: boom 1`, cause: 'boom 1', runs: 1 });
     });
 
+    // A typo in the config used to print esbuild's "Transform failed" text
+    // three times over (PILOT-569): the message now reads file:line:col.
+    describe('a config with a syntax error', () => {
+      type Out = { error?: string; failure?: { configPath: string; location?: { file: string; line: number; column?: number } } };
+      const load = (): Out => inBareNode<Out>(
+        `const { configLoadFailureOf } = await import(${JSON.stringify(configModule)});\n`
+        + `try { await loadConfig(${JSON.stringify(root)}); emit({}); }\n`
+        + 'catch (e) { emit({ error: e.message, failure: configLoadFailureOf(e) }); }\n',
+      );
+      const BODY = 'export default {\n  platform: "ios"\n  retries: 2,\n};\n';
+
+      it('names the file, line and column of a TypeScript config\'s syntax error', () => {
+        writePackage(root, 'module');
+        const file = path.join(root, 'tapsmith.config.ts');
+        fs.writeFileSync(file, BODY, 'utf-8');
+        const out = load();
+        expect(out.error).toBe(`Failed to load config file ${file}:3:3: Expected "}" but found "retries"`);
+        expect(out.failure).toEqual({
+          configPath: file,
+          location: { file, line: 3, column: 3, text: 'Expected "}" but found "retries"' },
+        });
+      });
+
+      it('names the file, line and column of a JavaScript config\'s syntax error', () => {
+        writePackage(root, 'module');
+        const file = path.join(root, 'tapsmith.config.mjs');
+        fs.writeFileSync(file, BODY, 'utf-8');
+        const out = load();
+        expect(out.error).toBe(`Failed to load config file ${file}:3:3: Unexpected identifier 'retries'`);
+        expect(out.failure?.location).toEqual({ file, line: 3, column: 3, text: "Unexpected identifier 'retries'" });
+      });
+
+      it('marks a config that throws as a load failure with no location', () => {
+        writePackage(root, 'module');
+        const file = path.join(root, 'tapsmith.config.mjs');
+        fs.writeFileSync(file, 'throw new Error("boom");\n', 'utf-8');
+        expect(load()).toEqual({ error: `Failed to load config file ${file}: boom`, failure: { configPath: file } });
+      });
+    });
+
     // `npx tapsmith init` and a global install write a config importing
     // `tapsmith` into a project that may not have it. Node's "Cannot find
     // module 'tapsmith'" (plus tsx's Require stack) told nobody what to do

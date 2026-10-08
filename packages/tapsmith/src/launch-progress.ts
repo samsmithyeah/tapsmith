@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import type { ChildProcess, ForkOptions } from "node:child_process";
@@ -68,6 +69,12 @@ export interface LaunchProgressSink {
   fail(id: LaunchStepId, detail?: string): void;
   /** Whether any step has already been marked failed. */
   hasFailure(): boolean;
+  /**
+   * The details of the failed steps that their rows showed in full — not
+   * cut short to fit the table — so an error printed after the rows can
+   * leave out what they already said (PILOT-569).
+   */
+  shownFailures(): string[];
   skip(id: LaunchStepId, detail?: string): void;
   update(
     id: LaunchStepId,
@@ -448,6 +455,96 @@ function truncate(s: string, width: number): string {
   return `${s.slice(0, width - 1)}…`;
 }
 
+const TABLE_HEADERS = ["STEP", "STATUS", "DETAILS"];
+
+function tableWidths(
+  steps: LaunchStep[],
+  columnsOpt: number | undefined,
+  spinnerFrame?: string,
+): { stepWidth: number; statusWidth: number; detailWidth: number } {
+  // Keep one column of slack so terminals do not auto-wrap the last cell and
+  // invalidate the cursor math used for live in-place updates.
+  const columns = Math.max(48, (columnsOpt ?? 80) - 1);
+  const stepWidth = Math.max(
+    TABLE_HEADERS[0].length,
+    ...steps.map((step) => step.label.length),
+  );
+  const statusWidth = Math.max(
+    TABLE_HEADERS[1].length,
+    ...steps.map((step) => statusRaw(step, spinnerFrame).length),
+  );
+  const detailWidth = Math.max(12, columns - stepWidth - statusWidth - 6);
+  return { stepWidth, statusWidth, detailWidth };
+}
+
+/**
+ * `message` without the lines that only repeat a detail the launch rows
+ * already showed (`shownFailures`): a line ending in that detail — whatever
+ * label precedes it, which the row's own label stands in for. Whatever the
+ * error adds (a hint, the detail of a summary row) is kept (PILOT-569).
+ */
+export function unshownPart(message: string, shown: readonly string[]): string {
+  let text = message;
+  // Once per distinct detail: several rows can show the same one (every
+  // unfinished phase of a failed parallel launch), and each further copy
+  // would take another line — the next device's own.
+  for (const detail of new Set(shown.map((d) => d.trim()))) {
+    if (!detail) continue;
+    const lines = text.split("\n");
+    const detailLines = detail.split("\n");
+    for (let i = 0; i + detailLines.length <= lines.length; i++) {
+      const span = lines.slice(i, i + detailLines.length);
+      const joined = span.join("\n");
+      if (!joined.trimEnd().endsWith(detail)) continue;
+      // Only the label may precede the detail on its first line.
+      if (!span[0].includes(detailLines[0])) continue;
+      lines.splice(i, detailLines.length);
+      text = lines.join("\n");
+      break;
+    }
+  }
+  return text.trim();
+}
+
+/**
+ * `message` without its first line when that line only repeats a detail the
+ * launch rows showed (`unshownPart` on the headline alone). For the summary
+ * errors a run ends with — "No worker could start: <reason>" over one line
+ * per worker, "No device target could start" over one per target — whose
+ * later lines name the worker or target the rows do not (PILOT-569).
+ */
+export function withoutShownHeadline(message: string, shown: readonly string[]): string {
+  const [headline, ...rest] = message.split("\n");
+  if (unshownPart(headline, shown) !== "") return message;
+  return rest.join("\n").trim();
+}
+
+/**
+ * Whether two open files are the same destination (one terminal, pipe or
+ * file), by device and inode.
+ */
+export function writesToSamePlace(
+  a: { dev: number; ino: number } | undefined,
+  b: { dev: number; ino: number } | undefined,
+): boolean {
+  return !!a && !!b && a.dev === b.dev && a.ino === b.ino;
+}
+
+/**
+ * Whether the launch rows (stdout) and the errors printed after them
+ * (stderr) end up in the same place, so an error may leave out what a row
+ * already showed. Where they part — `verify --json` ignores the run's stdout
+ * and reports its stderr, a CI step may keep `2>` — the error stays whole
+ * (PILOT-569).
+ */
+export function launchRowsShareStderr(): boolean {
+  try {
+    return writesToSamePlace(fs.fstatSync(1), fs.fstatSync(2));
+  } catch {
+    return false;
+  }
+}
+
 export function formatLaunchTable(
   steps: LaunchStep[],
   opts: {
@@ -458,24 +555,8 @@ export function formatLaunchTable(
   } = {},
 ): string {
   const color = opts.color ?? true;
-  // Keep one column of slack so terminals do not auto-wrap the last cell and
-  // invalidate the cursor math used for live in-place updates.
-  const columns = Math.max(48, (opts.columns ?? 80) - 1);
-  const headers = ["STEP", "STATUS", "DETAILS"];
-  const rawRows = steps.map((step) => [
-    step.label,
-    statusRaw(step, opts.spinnerFrame),
-    step.detail,
-  ]);
-  const stepWidth = Math.max(
-    headers[0].length,
-    ...rawRows.map((r) => r[0].length),
-  );
-  const statusWidth = Math.max(
-    headers[1].length,
-    ...rawRows.map((r) => r[1].length),
-  );
-  const detailWidth = Math.max(12, columns - stepWidth - statusWidth - 6);
+  const headers = TABLE_HEADERS;
+  const { stepWidth, statusWidth, detailWidth } = tableWidths(steps, opts.columns, opts.spinnerFrame);
 
   const header = [
     color
@@ -571,6 +652,16 @@ export class UiLaunchProgress implements LaunchProgressSink {
 
   hasFailure(): boolean {
     return this.steps.some((step) => step.state === "failed");
+  }
+
+  shownFailures(): string[] {
+    const failed = this.steps.filter((step) => step.state === "failed" && step.detail);
+    // Non-interactive rows print the detail whole; the table cuts it to fit.
+    if (!this.interactive) return failed.map((step) => step.detail);
+    const { detailWidth } = tableWidths(this.steps, this.stream.columns);
+    return failed
+      .filter((step) => !step.detail.includes("\n") && step.detail.length <= detailWidth)
+      .map((step) => step.detail);
   }
 
   skip(id: LaunchStepId, detail?: string): void {

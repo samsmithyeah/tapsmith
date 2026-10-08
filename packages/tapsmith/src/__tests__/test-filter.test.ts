@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findSelectionMiss, isFilteredOutSkip, matchesTestFilter, noTestsMatchFilterMessage, passesSelectionFilters } from '../test-filter.js';
+import { filterRanNothing, findSelectionMiss, matchesTestFilter, noTestsMatchFilterMessage, passesSelectionFilters } from '../test-filter.js';
 
 describe('matchesTestFilter', () => {
   const fullName = 'Login screen > submits the form';
@@ -131,17 +131,17 @@ describe('noTestsMatchFilterMessage', () => {
 
 });
 
-describe('isFilteredOutSkip', () => {
-  it('drops the synthetic skip of a test outside the filter', () => {
-    expect(isFilteredOutSkip({ status: 'skipped', fullName: 'other > t' }, 'share')).toBe(true);
+// Tests a filter excludes report no result (PILOT-569), so a filtered run
+// that ran nothing has no results at all, not a list of skips.
+describe('filterRanNothing', () => {
+  it('is true for a filtered run with no results, or only skips', () => {
+    expect(filterRanNothing(true, [])).toBe(true);
+    expect(filterRanNothing(true, [{ status: 'skipped' }])).toBe(true);
   });
 
-  it('keeps a skip of a test the filter selected, e.g. a runtime test.skip() in a group run (PILOT-546)', () => {
-    expect(isFilteredOutSkip({ status: 'skipped', fullName: 'share > sheet' }, 'share')).toBe(false);
-  });
-
-  it('keeps every non-skipped result, and everything when there is no filter', () => {
-    expect(isFilteredOutSkip({ status: 'passed', fullName: 'other > t' }, 'share')).toBe(false);
-    expect(isFilteredOutSkip({ status: 'skipped', fullName: 'other > t' }, undefined)).toBe(false);
+  it('is false once a test ran, or without a filter', () => {
+    expect(filterRanNothing(true, [{ status: 'skipped' }, { status: 'passed' }])).toBe(false);
+    expect(filterRanNothing(true, [{ status: 'failed' }])).toBe(false);
+    expect(filterRanNothing(false, [])).toBe(false);
   });
 });
