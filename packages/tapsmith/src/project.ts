@@ -654,6 +654,42 @@ export function collectTransitiveDeps(
   return result;
 }
 
+// ─── Sharding ───
+
+/**
+ * Cut every project's `testFiles` down to one shard (`--shard=current/total`),
+ * in place, and return the shard's files as one deduplicated, sorted list.
+ *
+ * Each project is split on its own, deterministically by position, so the
+ * same command on every machine splits it the same way. A project another one
+ * depends on (a setup project) is not split: it runs whole on a shard that
+ * has files from one of its dependents, and not at all on one that has none.
+ *
+ * The run iterates the projects' lists, so the split has to land there — a
+ * config without `projects` runs under one synthesized project, which is cut
+ * like any other (PILOT-596: cutting only a flat copy ran every file on
+ * every shard).
+ */
+export function shardProjects(
+  projects: ResolvedProject[],
+  shard: { current: number; total: number },
+): string[] {
+  const { current, total } = shard;
+  const dependedOn = new Set(projects.flatMap((p) => p.dependencies));
+  for (const project of projects) {
+    if (dependedOn.has(project.name)) continue;
+    project.testFiles = project.testFiles.filter((_, i) => i % total === current - 1);
+  }
+  for (const project of projects) {
+    if (!dependedOn.has(project.name)) continue;
+    const hasDependentTests = projects.some(
+      (p) => p.dependencies.includes(project.name) && p.testFiles.length > 0,
+    );
+    if (!hasDependentTests) project.testFiles = [];
+  }
+  return [...new Set(projects.flatMap((p) => p.testFiles))].sort();
+}
+
 /**
  * Validate that every requested `--project` name matches a configured project.
  * Throws with the list of available names if any name is unknown.

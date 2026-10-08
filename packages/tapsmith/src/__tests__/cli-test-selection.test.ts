@@ -233,6 +233,18 @@ describe.skipIf(!DIST_BUILT && !process.env.CI)('tapsmith test selection', { tim
     }
   });
 
+  it('plans each shard from its own files in a config without projects (PILOT-596)', () => {
+    // The run iterates the default project's list. Before the fix only a flat
+    // copy was sharded, so every shard ran both files — visible here as a
+    // worker per file of the whole suite rather than of the shard.
+    for (const shard of ['1/2', '2/2']) {
+      const { output, reachedDevice } = run(`--shard=${shard}`, '--workers', '2');
+      expect(output).toContain(`Shard ${shard}: running 1 file(s)`);
+      expect(output).toContain('Config: 1 worker | 1 test file');
+      expect(reachedDevice).toBe(true);
+    }
+  });
+
   function writeChain(): void {
     for (const f of ['tests/auth.setup.ts', 'tests/seed.setup.ts']) fs.writeFileSync(path.join(root, f), testFile('setup', ['s']));
     fs.mkdirSync(path.join(root, 'tests', 'api'));
