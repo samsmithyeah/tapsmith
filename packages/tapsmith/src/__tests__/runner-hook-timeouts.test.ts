@@ -42,6 +42,7 @@ function makeOpts(overrides: Partial<RunOptions> = {}): RunOptions {
 
 const runnerUrl = pathToFileURL(path.resolve('src/runner.ts')).href;
 const fenceUrl = pathToFileURL(path.resolve('src/attempt-fence.ts')).href;
+const progressUrl = pathToFileURL(path.resolve('src/action-progress.ts')).href;
 let tempDir: string;
 
 function writeFile(name: string, source: string): string {
@@ -50,8 +51,10 @@ function writeFile(name: string, source: string): string {
     filePath,
     `import { test, describe, beforeAll, afterAll, beforeEach, afterEach } from ${JSON.stringify(runnerUrl)};\n`
     + `import { isCurrentAttemptClosed } from ${JSON.stringify(fenceUrl)};\n`
+    + `import { withActionProgress } from ${JSON.stringify(progressUrl)};\n`
     + `const never = () => new Promise(() => {});\n`
     + `const sleep = (ms) => new Promise((r) => setTimeout(r, ms));\n`
+    + `const slowDeviceAction = (ms) => withActionProgress('restartApp', undefined, () => sleep(ms));\n`
     + source,
   );
   return filePath;
@@ -91,10 +94,10 @@ describe('runTestFile — hook timeouts (PILOT-583)', () => {
       ['scope > two', 'failed'],
     ]);
     expect(results[1].error!.message).toBe(
-      `"beforeAll" hook at before-all.test.mjs:7 timed out after ${BUDGET}ms`,
+      `"beforeAll" hook at before-all.test.mjs:9 timed out after ${BUDGET}ms`,
     );
     // The stack points at the hook, so reporters show its code frame.
-    expect(results[1].error!.stack).toContain(`${filePath}:7`);
+    expect(results[1].error!.stack).toContain(`${filePath}:9`);
   });
 
   it('fails the test when a beforeEach never settles, and still runs afterEach and the next test', async () => {
@@ -114,7 +117,7 @@ describe('runTestFile — hook timeouts (PILOT-583)', () => {
       ['next', 'passed'],
     ]);
     expect(results[0].error!.message).toBe(
-      `"beforeEach" hook at before-each.test.mjs:8 timed out after ${BUDGET}ms`,
+      `"beforeEach" hook at before-each.test.mjs:10 timed out after ${BUDGET}ms`,
     );
     expect((globalThis as Record<string, unknown>).__pilot583).toEqual(['afterEach', 'body 2', 'afterEach']);
   });
@@ -133,7 +136,7 @@ describe('runTestFile — hook timeouts (PILOT-583)', () => {
 
     expect(result.status).toBe('failed');
     expect(result.error!.message).toBe(
-      `"afterEach" hook at after-each.test.mjs:8 timed out after ${BUDGET}ms`,
+      `"afterEach" hook at after-each.test.mjs:10 timed out after ${BUDGET}ms`,
     );
     expect((globalThis as Record<string, unknown>).__pilot583).toEqual(['outer afterEach']);
   });
@@ -149,7 +152,7 @@ describe('runTestFile — hook timeouts (PILOT-583)', () => {
     expect(result.status).toBe('failed');
     expect(result.error!.message).toBe(
       'Element not found\n\n--- Additionally ---\n'
-      + `"afterEach" hook at after-each-failed.test.mjs:6 timed out after ${BUDGET}ms`,
+      + `"afterEach" hook at after-each-failed.test.mjs:8 timed out after ${BUDGET}ms`,
     );
   });
 
@@ -170,7 +173,7 @@ describe('runTestFile — hook timeouts (PILOT-583)', () => {
       ['scope > one', 'passed'],
     ]);
     expect(stderrText(stderr)).toContain(
-      `[tapsmith] afterAll hook error: "afterAll" hook at after-all.test.mjs:7 timed out after ${BUDGET}ms`,
+      `[tapsmith] afterAll hook error: "afterAll" hook at after-all.test.mjs:9 timed out after ${BUDGET}ms`,
     );
   });
 
@@ -211,6 +214,50 @@ describe('runTestFile — hook timeouts (PILOT-583)', () => {
     const [result] = collectResults(await runTestFile(filePath, makeOpts()));
 
     expect(result.status).toBe('passed');
+  });
+
+  it('does not count time inside slow device actions against a hook\'s budget, as for a test body', async () => {
+    const filePath = writeFile('device-action.test.mjs', `
+      beforeEach(async () => { await slowDeviceAction(${BUDGET * 2}); });
+      test('passes', async () => {});
+    `);
+
+    const [result] = collectResults(await runTestFile(filePath, makeOpts()));
+
+    expect(result.status).toBe('passed');
+  });
+
+  it('names the registration line of a hook registered on a test.extend() result', async () => {
+    const filePath = writeFile('extended.test.mjs', `
+      const extended = test.extend({ answer: async ({}, use) => { await use(42); } });
+      extended.beforeEach(async ({ answer }) => { await never(); });
+      extended('t', async ({ answer }) => {});
+    `);
+
+    const [result] = collectResults(await runTestFile(filePath, makeOpts()));
+
+    expect(result.status).toBe('failed');
+    expect(result.error!.message).toBe(
+      `"beforeEach" hook at extended.test.mjs:9 timed out after ${BUDGET}ms`,
+    );
+  });
+
+  it('still tears down the fixtures of a beforeAll that timed out', async () => {
+    const filePath = writeFile('fixture-teardown.test.mjs', `
+      globalThis.__pilot583 = [];
+      const extended = test.extend({
+        resource: async ({}, use) => { await use('r'); globalThis.__pilot583.push('torn down'); },
+      });
+      describe('scope', () => {
+        extended.beforeAll(async ({ resource }) => { await never(); });
+        extended('t', async () => {});
+      });
+    `);
+
+    const [result] = collectResults(await runTestFile(filePath, makeOpts()));
+
+    expect(result.status).toBe('failed');
+    expect((globalThis as Record<string, unknown>).__pilot583).toEqual(['torn down']);
   });
 
   it('fences a timed-out hook: calls it makes afterwards are refused like a timed-out test body\'s', async () => {

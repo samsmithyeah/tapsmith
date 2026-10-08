@@ -2040,7 +2040,7 @@ Each hook call gets its own time budget, equal to the test timeout: 3× the conf
 - `afterEach`: the test fails, even if its body passed. If the test had already failed, the timeout is added to its error. The remaining `afterEach` hooks still run.
 - `afterAll`: the error is printed, like an error thrown by an `afterAll` hook, and the run carries on.
 
-Unlike Playwright, `beforeEach`/`afterEach` hooks do not share the test body's budget: slow setup such as `device.restartApp()` on a loaded machine does not eat into the time the test itself has. A hook that timed out keeps no hold on the device: device calls it still makes afterwards are refused.
+Unlike Playwright, `beforeEach`/`afterEach` hooks do not share the test body's budget: slow setup such as `device.restartApp()` on a loaded machine does not eat into the time the test itself has. A hook that timed out is fenced off like a timed-out test body: device calls it starts after the timeout are refused.
 
 ### `test.beforeAll(fn)` / `test.afterAll(fn)` / `test.beforeEach(fn)` / `test.afterEach(fn)`
 
