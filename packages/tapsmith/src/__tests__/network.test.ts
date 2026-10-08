@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   TapsmithRequest, Route, FetchedAPIResponse, NetworkRouteManager,
   matchUrlPattern, patternsEqual, runInRouteScope, currentRouteScope, type RouteScope,
@@ -482,5 +482,278 @@ describe('NetworkRouteManager route scopes', () => {
     await runInRouteScope({ label: 'Suite' }, () => manager.addRoute('**/a', () => {}));
     await manager.removeAllRoutes();
     expect(manager.hasRoutes).toBe(false);
+  });
+});
+
+// ─── NetworkRouteManager stream reconnect (PILOT-581) ───
+
+describe('NetworkRouteManager stream reconnect (PILOT-581)', () => {
+  type Write = Record<string, { routeId?: string } | undefined>;
+
+  /** A client that hands out a fresh auto-acking stream on every open. */
+  function makeManager(): { manager: NetworkRouteManager; streams: AutoAckStream[] } {
+    const streams: AutoAckStream[] = [];
+    const client = {
+      networkRouteStream: () => {
+        const s = new AutoAckStream();
+        streams.push(s);
+        return s;
+      },
+    } as unknown as TapsmithGrpcClient;
+    return { manager: new NetworkRouteManager(client), streams };
+  }
+  const writesOf = (s: FakeDuplexStream, kind: string): Write[] =>
+    (s.writes as Write[]).filter((m) => typeof m === 'object' && m !== null && kind in m);
+  const unavailable = (): Error => Object.assign(new Error('14 UNAVAILABLE: Connection dropped'), { code: 14 });
+  /** Drop a stream the way grpc-js does: an error, then the end of the read side. */
+  const drop = (s: FakeDuplexStream): void => {
+    s.emit('error', unavailable());
+    s.emit('end');
+  };
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  };
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('re-sends subscribeEvents on the replacement stream without waiting for user code', async () => {
+    const { manager, streams } = makeManager();
+    manager.addRequestListener(() => {});
+    expect(writesOf(streams[0], 'subscribeEvents')).toHaveLength(1);
+
+    drop(streams[0]);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(streams).toHaveLength(2);
+    expect(writesOf(streams[1], 'subscribeEvents')).toHaveLength(1);
+    await manager.dispose();
+  });
+
+  it('delivers events from the replacement stream to listeners added before the drop', async () => {
+    const { manager, streams } = makeManager();
+    const seen: string[] = [];
+    manager.addRequestListener((req) => { seen.push(req.url); });
+    drop(streams[0]);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    streams[1].emitData({ requestEvent: {
+      method: 'GET', url: 'https://example.com/users/1', headers: [], body: Buffer.alloc(0), isHttps: true, routeAction: '',
+    } });
+    expect(seen).toEqual(['https://example.com/users/1']);
+    await manager.dispose();
+  });
+
+  it('subscribes the replacement stream when capture subscribed eagerly with no listener yet', async () => {
+    const { manager, streams } = makeManager();
+    manager.ensureEventsSubscribed();
+    drop(streams[0]);
+    // A later waitForRequest adds a listener before any reopen timer fires.
+    manager.addRequestListener(() => {});
+    expect(streams).toHaveLength(2);
+    expect(writesOf(streams[1], 'subscribeEvents')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(streams).toHaveLength(2);
+    await manager.dispose();
+  });
+
+  it('does not re-subscribe once every listener was removed before the drop', async () => {
+    const { manager, streams } = makeManager();
+    const listener = (): void => {};
+    manager.addResponseListener(listener);
+    manager.removeResponseListener(listener);
+    drop(streams[0]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    // Nothing to restore, so nothing reopens.
+    expect(streams).toHaveLength(1);
+    await manager.dispose();
+  });
+
+  it('re-registers every confirmed route under its id, keeping its handler, scope and times counter', async () => {
+    const { manager, streams } = makeManager();
+    const scope: RouteScope = { label: 'Suite' };
+    const hits: string[] = [];
+    await runInRouteScope(scope, () => manager.addRoute('**/posts*', (route) => { hits.push('posts'); return route.continue(); }));
+    await manager.addRoute('**/users/*', (route) => { hits.push('users'); return route.continue(); }, { times: 2 });
+    const firstIds = writesOf(streams[0], 'registerRoute').map((m) => m.registerRoute!.routeId);
+    expect(firstIds).toHaveLength(2);
+
+    // Spend one of the two `times` before the drop.
+    streams[0].emitData({ interceptedRequest: {
+      interceptId: 'i0', routeId: firstIds[1], method: 'GET', url: 'https://example.com/users/1',
+      headers: [], body: Buffer.alloc(0), isHttps: true,
+    } });
+    await flush();
+
+    drop(streams[0]);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(streams).toHaveLength(2);
+    const replayed = writesOf(streams[1], 'registerRoute').map((m) => m.registerRoute!.routeId);
+    expect(replayed.sort()).toEqual([...firstIds].sort());
+    expect(manager.hasRoutes).toBe(true);
+    // The scope survives: removing the test's routes keeps the suite's.
+    expect(manager.hasTestRoutes).toBe(true);
+
+    // The replacement stream dispatches to the same handler, and the
+    // remaining `times` (1) is honoured: the route unregisters after it.
+    streams[1].emitData({ interceptedRequest: {
+      interceptId: 'i1', routeId: firstIds[1], method: 'GET', url: 'https://example.com/users/2',
+      headers: [], body: Buffer.alloc(0), isHttps: true,
+    } });
+    await flush();
+    expect(hits).toEqual(['users', 'users']);
+    expect(writesOf(streams[1], 'unregisterRoute').map((m) => m.unregisterRoute!.routeId)).toEqual([firstIds[1]]);
+    expect(manager.hasTestRoutes).toBe(false);
+    expect(manager.hasRoutes).toBe(true);
+    await manager.dispose();
+  });
+
+  it('replays state before a lazy call writes its own message, and opens only one replacement', async () => {
+    const { manager, streams } = makeManager();
+    await manager.addRoute('**/a', () => {});
+    drop(streams[0]);
+    // User code touches the manager before the reopen timer fires.
+    await manager.addRoute('**/b', () => {});
+    expect(streams).toHaveLength(2);
+    const urls = writesOf(streams[1], 'registerRoute').map((m) => (m.registerRoute as { urlPattern: string }).urlPattern);
+    expect(urls).toEqual(['**/a', '**/b']);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(streams).toHaveLength(2);
+    await manager.dispose();
+  });
+
+  it('does not replay a route whose registration the drop interrupted', async () => {
+    const streams: FakeDuplexStream[] = [];
+    const client = {
+      networkRouteStream: () => {
+        // The first stream never acknowledges; later ones do.
+        const s = streams.length === 0 ? new FakeDuplexStream() : new AutoAckStream();
+        streams.push(s);
+        return s;
+      },
+    } as unknown as TapsmithGrpcClient;
+    const manager = new NetworkRouteManager(client);
+    manager.addRequestListener(() => {});
+    const pending = manager.addRoute('**/a', () => {});
+    drop(streams[0]);
+    await expect(pending).rejects.toThrow(/during route registration/);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(streams).toHaveLength(2);
+    expect(writesOf(streams[1], 'registerRoute')).toHaveLength(0);
+    expect(manager.hasRoutes).toBe(false);
+    await manager.dispose();
+  });
+
+  it("ignores a stale stream's late end once its replacement is open", async () => {
+    const { manager, streams } = makeManager();
+    await manager.addRoute('**/a', () => {});
+    streams[0].emit('error', unavailable());
+    // Lazily reopened before the old stream's read side ended.
+    await manager.addRoute('**/b', () => {});
+    expect(streams).toHaveLength(2);
+    streams[0].emit('end');
+    await vi.advanceTimersByTimeAsync(10_000);
+    // The replacement is still the live stream: no third one, and writes land on it.
+    expect(streams).toHaveLength(2);
+    await manager.removeAllRoutes();
+    expect(writesOf(streams[1], 'unregisterRoute')).toHaveLength(2);
+    await manager.dispose();
+  });
+
+  it('backs off while replacement streams keep failing, without ever giving up', async () => {
+    const streams: FakeDuplexStream[] = [];
+    const client = {
+      networkRouteStream: () => {
+        // The first stream is healthy; the daemon then stops answering.
+        const s = streams.length === 0 ? new AutoAckStream() : new FakeDuplexStream();
+        streams.push(s);
+        return s;
+      },
+    } as unknown as TapsmithGrpcClient;
+    const manager = new NetworkRouteManager(client);
+    await manager.addRoute('**/a', () => {});
+    drop(streams[0]);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(streams).toHaveLength(2);
+    // The daemon is still unreachable: each replacement dies at once.
+    drop(streams[1]);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(streams).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(streams).toHaveLength(3);
+    drop(streams[2]);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(streams).toHaveLength(4);
+    // Retries never stop while there is state to restore, but stay spaced out.
+    for (let i = 0; i < 20; i++) {
+      drop(streams[streams.length - 1]);
+      await vi.advanceTimersByTimeAsync(5_000);
+    }
+    expect(streams.length).toBe(24);
+    expect(writesOf(streams[streams.length - 1], 'registerRoute')).toHaveLength(1);
+    await manager.dispose();
+  });
+
+  it('starts the backoff over once a replacement stream is answering', async () => {
+    const { manager, streams } = makeManager();
+    await manager.addRoute('**/a', () => {});
+    drop(streams[0]);
+    await vi.advanceTimersByTimeAsync(300);
+    // The replayed registration was acknowledged on stream 2.
+    expect(streams).toHaveLength(2);
+    drop(streams[1]);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(streams).toHaveLength(3);
+    await manager.dispose();
+  });
+
+  it('does not reopen without state to restore, and dispose cancels a pending reopen', async () => {
+    const { manager, streams } = makeManager();
+    await manager.addRoute('**/a', () => {});
+    await manager.removeAllRoutes();
+    drop(streams[0]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(streams).toHaveLength(1);
+
+    await manager.addRoute('**/b', () => {});
+    expect(streams).toHaveLength(2);
+    drop(streams[1]);
+    await manager.dispose();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(streams).toHaveLength(2);
+  });
+
+  it('leaves no replay listeners behind once the daemon acknowledges, however many routes', async () => {
+    const { manager, streams } = makeManager();
+    for (let i = 0; i < 12; i++) await manager.addRoute(`**/r${i}`, () => {});
+    const warnings: Error[] = [];
+    const onWarning = (w: Error): void => { warnings.push(w); };
+    process.on('warning', onWarning);
+    try {
+      drop(streams[0]);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(writesOf(streams[1], 'registerRoute')).toHaveLength(12);
+      await flush();
+      // Only the manager's own data/error/end listeners remain.
+      expect(streams[1].listenerCount('data')).toBe(1);
+      expect(streams[1].listenerCount('end')).toBe(1);
+      await new Promise<void>((r) => process.nextTick(r));
+      expect(warnings.filter((w) => w.name === 'MaxListenersExceededWarning')).toEqual([]);
+    } finally {
+      process.off('warning', onWarning);
+    }
+    await manager.dispose();
+  });
+
+  it('does not keep the process alive while waiting to reopen', async () => {
+    const { manager, streams } = makeManager();
+    await manager.addRoute('**/a', () => {});
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    drop(streams[0]);
+    const handle = setTimeoutSpy.mock.results.at(-1)?.value as { hasRef?: () => boolean } | undefined;
+    expect(handle?.hasRef?.()).toBe(false);
+    setTimeoutSpy.mockRestore();
+    await manager.dispose();
   });
 });
