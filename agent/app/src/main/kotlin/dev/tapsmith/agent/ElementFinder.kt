@@ -46,7 +46,38 @@ data class ElementSelector(
     val focused: Boolean? = null,
     val selected: Boolean? = null,
     val expanded: Boolean? = null,
-)
+) {
+    /**
+     * The selector as not-found errors, wait timeouts and the find-phase log
+     * name it, e.g. `role=button, name=Sign in`. Every field the finder
+     * filters on belongs here, or a failing locator reports an empty or
+     * partial selector (PILOT-606).
+     */
+    fun describe(): String {
+        val parts = mutableListOf<String>()
+        role?.let { parts.add("role=$it") }
+        name?.let { parts.add("name=$it") }
+        if (name != null && nameExact) parts.add("exact=true")
+        nameRegex?.let { parts.add("name=$it") }
+        text?.let { parts.add("text=$it") }
+        textContains?.let { parts.add("textContains=$it") }
+        textRegex?.let { parts.add("text=$it") }
+        label?.let { parts.add("label=$it") }
+        labelRegex?.let { parts.add("label=$it") }
+        contentDesc?.let { parts.add("contentDesc=$it") }
+        hint?.let { parts.add("hint=$it") }
+        className?.let { parts.add("className=$it") }
+        testId?.let { parts.add("testId=$it") }
+        id?.let { parts.add("id=$it") }
+        xpath?.let { parts.add("xpath=$it") }
+        enabled?.let { parts.add("enabled=$it") }
+        checked?.let { parts.add("checked=$it") }
+        focused?.let { parts.add("focused=$it") }
+        selected?.let { parts.add("selected=$it") }
+        expanded?.let { parts.add("expanded=$it") }
+        return parts.joinToString(", ")
+    }
+}
 
 /**
  * Information about a found UI element.
@@ -450,7 +481,7 @@ class ElementFinder(
         parentId: String? = null,
     ): ElementInfo =
         findWithStaleRetry(selector, parentId, limit = 1).firstOrNull()
-            ?: throw ElementNotFoundException("No element found matching: ${describeSelector(selector)}")
+            ?: throw ElementNotFoundException("No element found matching: ${selector.describe()}")
 
     /**
      * Find all elements matching the selector.
@@ -546,7 +577,7 @@ class ElementFinder(
         val doneAt = SystemClock.uptimeMillis()
         android.util.Log.d(
             FIND_LOG_TAG,
-            "find phases [${describeSelector(selector)}]: enumerate=${enumeratedAt - startedAt}ms " +
+            "find phases [${selector.describe()}]: enumerate=${enumeratedAt - startedAt}ms " +
                 "(candidates=${candidates.size}) match=${doneAt - enumeratedAt - extractMs}ms " +
                 "(examined=$examined) extract=${extractMs}ms (matched=${matches.size}" +
                 (if (limit != Int.MAX_VALUE) ", limit=$limit" else "") + ")" +
@@ -1272,24 +1303,5 @@ class ElementFinder(
         val (info, identity) = toElementInfo(obj, node, elementId, fresh)
         cacheElement(elementId, obj, identity)
         return info
-    }
-
-    private fun describeSelector(selector: ElementSelector): String {
-        val parts = mutableListOf<String>()
-        selector.role?.let { parts.add("role=$it") }
-        selector.name?.let { parts.add("name=$it") }
-        if (selector.name != null && selector.nameExact) parts.add("exact=true")
-        selector.nameRegex?.let { parts.add("name=$it") }
-        selector.text?.let { parts.add("text=$it") }
-        selector.textContains?.let { parts.add("textContains=$it") }
-        selector.textRegex?.let { parts.add("text=$it") }
-        selector.labelRegex?.let { parts.add("label=$it") }
-        selector.contentDesc?.let { parts.add("contentDesc=$it") }
-        selector.hint?.let { parts.add("hint=$it") }
-        selector.className?.let { parts.add("className=$it") }
-        selector.testId?.let { parts.add("testId=$it") }
-        selector.id?.let { parts.add("id=$it") }
-        selector.xpath?.let { parts.add("xpath=$it") }
-        return parts.joinToString(", ")
     }
 }
