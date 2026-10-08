@@ -928,6 +928,29 @@ describe('shardProjects()', () => {
     expect(setup.testFiles).toEqual([]);
   });
 
+  it('skips every setup project in a chain on a shard with none of the last project\'s files', () => {
+    const setup = project('setup', ['/r/auth.setup.ts']);
+    const api = project('api', ['/r/api1.test.ts'], { dependencies: ['setup'] });
+    const e2e = project('e2e', ['/r/e2e1.test.ts'], { dependencies: ['api'] });
+    expect(shardProjects([setup, api, e2e], { current: 2, total: 2 })).toEqual([]);
+    expect(setup.testFiles).toEqual([]);
+    expect(api.testFiles).toEqual([]);
+  });
+
+  it('splits files the same way whatever order the command line named them in', () => {
+    const ran = (order: string[], current: number) => {
+      const defaultProject = project('default', [...order], { synthesized: true });
+      return shardProjects([defaultProject], { current, total: 2 });
+    };
+    const reversed = [...files].reverse();
+    expect(ran(files, 1)).toEqual(ran(reversed, 1));
+    expect([...ran(files, 1), ...ran(reversed, 2)].sort()).toEqual(files);
+    // The run keeps the order the files were named in.
+    const defaultProject = project('default', [...reversed], { synthesized: true });
+    shardProjects([defaultProject], { current: 1, total: 2 });
+    expect(defaultProject.testFiles).toEqual(['/r/c.test.ts', '/r/a.test.ts']);
+  });
+
   it('lists a file two projects share once in the shard\'s flat list', () => {
     const a = project('a', ['/r/shared.test.ts']);
     const b = project('b', ['/r/shared.test.ts']);
