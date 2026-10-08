@@ -3,6 +3,7 @@ package dev.tapsmith.agent
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.BufferedReader
@@ -11,7 +12,6 @@ import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -23,7 +23,8 @@ import java.util.concurrent.atomic.AtomicReference
  * of leaving it to run on.
  */
 class CommandConnectionTest {
-    private val executor = Executors.newCachedThreadPool()
+    // The pool SocketServer serves connections on.
+    private val executor = newConnectionExecutor()
     private val logs = Collections.synchronizedList(mutableListOf<String>())
 
     @After
@@ -58,6 +59,9 @@ class CommandConnectionTest {
         }
 
         fun readLine(): String? = fromAgent.readLine()
+
+        /** Whether the agent has written anything not yet read. */
+        fun hasOutput(): Boolean = fromAgent.ready()
 
         /** The daemon giving up on the connection. */
         fun close() = toAgent.close()
@@ -146,20 +150,49 @@ class CommandConnectionTest {
     }
 
     @Test
-    fun `a command that answers after the daemon left does not throw`() {
+    fun `the answer to a command the daemon left is dropped`() {
         val release = CountDownLatch(1)
-        val answered = CountDownLatch(1)
         val wire =
             Wire { _ ->
                 release.await()
-                answered.countDown()
-                "{}"
+                """{"id":"late","result":{}}"""
             }
         wire.send(request("late"))
         wire.close()
         assertTrue(wire.awaitServed())
         release.countDown()
-        assertTrue(answered.await(5, TimeUnit.SECONDS))
+        val deadline = System.currentTimeMillis() + 5_000
+        while (logs.none { it.startsWith("Dropped the answer") } && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        assertTrue("the late answer was not dropped: $logs", logs.any { it.startsWith("Dropped the answer") })
+        assertFalse("a late answer was written", wire.hasOutput())
+    }
+
+    @Test(timeout = 10_000)
+    fun `a new connection is served while abandoned commands are stuck in calls that cannot be stopped`() {
+        // Two commands the daemon gave up on, each stuck in a native call
+        // (a hierarchy dump on a busy app) that no checkpoint can stop.
+        val release = CountDownLatch(1)
+        val stuck = CountDownLatch(2)
+        repeat(2) { i ->
+            val wire =
+                Wire { _ ->
+                    stuck.countDown()
+                    release.await()
+                    "{}"
+                }
+            wire.send(request("dump$i", "getUiHierarchy"))
+            wire.close()
+        }
+        try {
+            assertTrue(stuck.await(5, TimeUnit.SECONDS))
+            // The daemon's liveness ping, on a connection of its own.
+            val ping = Wire { line -> """{"id":"${JSONObject(line).getString("id")}","result":{"pong":true}}""" }
+            ping.send(request("ping"))
+            assertEquals("ping", idOf(ping.readLine()))
+            ping.close()
+        } finally {
+            release.countDown()
+        }
     }
 
     @Test

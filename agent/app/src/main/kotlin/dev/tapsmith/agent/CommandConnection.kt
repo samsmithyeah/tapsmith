@@ -10,6 +10,7 @@ import java.io.OutputStreamWriter
 import java.io.PrintWriter
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
 /**
@@ -111,3 +112,17 @@ internal class CommandConnection(
         }
     }
 }
+
+/**
+ * The pool connections and their commands run on: unbounded, so a new
+ * connection never queues behind one whose command the daemon gave up on
+ * (PILOT-605). The daemon drops a connection when it stops waiting and opens
+ * another for the next command — and its liveness ping opens one too. A
+ * fixed pool of 2 let two abandoned commands still running hold both threads,
+ * so every later command, ping included, waited for one of them to finish,
+ * and the daemon declared a working agent dead. A cancelled command stops at
+ * its next checkpoint, but a native call (a hierarchy dump) cannot be
+ * stopped, so it must not hold up the next connection. Idle threads exit
+ * after 60 s.
+ */
+internal fun newConnectionExecutor(): ExecutorService = Executors.newCachedThreadPool()

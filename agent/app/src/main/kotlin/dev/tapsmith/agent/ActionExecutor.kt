@@ -314,6 +314,9 @@ class ActionExecutor(
     ) {
         try {
             clickToFocus(element, resolvedBounds, budget, expected, FOCUS_FOLLOW_UP_MS)
+            // A skipped focusing tap reads the field's focus after the
+            // planner's last check (PILOT-605).
+            CommandCancellation.checkpoint()
             element.text = text
             // UiObject2.setText silently logs-and-returns when the framework
             // rejects ACTION_SET_TEXT (e.g. the field is still gaining focus
@@ -986,6 +989,8 @@ class ActionExecutor(
     ) {
         try {
             val tgtBounds = target.visibleBounds
+            // The bounds read can be slow on a busy app (PILOT-605).
+            CommandCancellation.checkpoint()
             source.drag(android.graphics.Point(tgtBounds.centerX(), tgtBounds.centerY()))
         } catch (e: StaleObjectException) {
             throw e
@@ -1143,6 +1148,8 @@ class ActionExecutor(
                 tapY = 1
             }
 
+            // The bounds read can be slow on a busy app (PILOT-605).
+            CommandCancellation.checkpoint()
             device.click(tapX, tapY)
             device.waitForIdle(FOCUS_IDLE_TIMEOUT_MS)
         } catch (e: StaleObjectException) {
