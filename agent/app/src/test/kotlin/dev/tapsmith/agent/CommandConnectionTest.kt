@@ -206,6 +206,18 @@ class CommandConnectionTest {
         assertTrue(wire.awaitServed())
     }
 
+    @Test(timeout = 10_000)
+    fun `an Error from a command is answered, not left hanging`() {
+        // A stack overflow in a deep hierarchy walk, an OOM on a huge dump.
+        val wire = Wire { _ -> throw StackOverflowError() }
+        wire.send(request("deep", "getUiHierarchy"))
+        val response = JSONObject(wire.readLine()!!)
+        assertEquals("INTERNAL_ERROR", response.getJSONObject("error").getString("type"))
+        assertEquals("java.lang.StackOverflowError", response.getJSONObject("error").getString("message"))
+        wire.close()
+        assertTrue(wire.awaitServed())
+    }
+
     @Test
     fun `blank lines are ignored`() {
         val wire = Wire { line -> """{"id":"${JSONObject(line).getString("id")}","result":{}}""" }

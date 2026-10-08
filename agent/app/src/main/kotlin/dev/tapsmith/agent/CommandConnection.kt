@@ -80,7 +80,10 @@ internal class CommandConnection(
         val response =
             try {
                 CommandCancellation.runWith(command) { handle(line) }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Errors too (a stack overflow in a deep hierarchy walk, an
+                // OOM on a huge dump): unanswered, the daemon would wait out
+                // its whole read deadline on a connection still open.
                 log("Unhandled error processing command: $e")
                 JSONObject()
                     .put("id", JSONObject.NULL)
