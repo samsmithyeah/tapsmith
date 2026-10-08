@@ -481,10 +481,6 @@ class ActionExecutor(
      */
     fun typeTextWithoutFocus(text: String) {
         if (text.isEmpty()) return
-        // Reached after idle and focus waits (the typeText fallback): keys
-        // for a command the daemon gave up on would go to whatever field is
-        // focused during the next step (PILOT-605).
-        CommandCancellation.checkpoint()
         val buffer = StringBuilder()
         // Batch consecutive control chars into a single
         // `input keyevent KEYCODE_X KEYCODE_X ...` call. Each shell
@@ -495,6 +491,7 @@ class ActionExecutor(
 
         fun flushPendingKeys() {
             if (pendingKeys.isEmpty()) return
+            CommandCancellation.checkpoint() // see flushPrintableRun
             device.executeShellCommand("input keyevent ${pendingKeys.joinToString(" ")}")
             pendingKeys.clear()
         }
@@ -537,6 +534,11 @@ class ActionExecutor(
 
     private fun flushPrintableRun(buffer: StringBuilder) {
         if (buffer.isEmpty()) return
+        // Each run is its own shell command (hundreds of ms on a loaded
+        // device), reached after idle and focus waits in the typeText
+        // fallback: keys for a command the daemon gave up on would go to
+        // whatever field is focused during the next step (PILOT-605).
+        CommandCancellation.checkpoint()
         val tokenized = buffer.toString().replace(" ", "%s")
         device.executeShellCommand("input text $tokenized")
         buffer.setLength(0)
