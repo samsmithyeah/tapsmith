@@ -159,7 +159,7 @@ class HierarchyDumper(
             val raw =
                 extras.getCharSequence(ROLE_DESCRIPTION_EXTRA_KEY)?.toString()
                     ?: extras.getCharSequence(ROLE_DESCRIPTION_LONG_FORM_KEY)?.toString()
-            return raw?.takeIf { it.isNotEmpty() }?.lowercase()
+            return FindRules.canonicalRoleDescription(raw)
         } catch (e: Exception) {
             return null
         }
