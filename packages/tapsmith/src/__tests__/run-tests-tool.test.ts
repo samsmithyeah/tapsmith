@@ -210,7 +210,35 @@ describe('tapsmith_run_tests response size', () => {
     };
     const res = await callRunTests(makeDispatcher({ runFiles: async () => result }), { files: [FILE] });
     expect(res.content.filter((c) => c.type === 'image')).toHaveLength(3);
-    expect(text(res)).toContain('screenshots for the first 3 that have one');
+    expect(text(res)).toContain('screenshots for 3 of them');
+  });
+
+  // QA of PILOT-657: traces with long steps and device logs made the ten
+  // detailed failures alone overflow the text budget, so the boundary cut
+  // failure names out of the middle.
+  it('names every listed failure when detailed traces are long, without the boundary cutting', async () => {
+    const trace = path.join(tmpDir, 'chatty.zip');
+    const events = [
+      ...Array.from({ length: 40 }, (_, i) => JSON.stringify({ type: 'action', action: 'tap', selector: `getByText("${'s'.repeat(600)}${i}")` })),
+      ...Array.from({ length: 30 }, (_, i) => JSON.stringify({ type: 'console', source: 'device', level: 'error', message: `${'w'.repeat(800)}${i}` })),
+    ].join('\n');
+    fs.writeFileSync(trace, zipSync({ 'trace.json': new TextEncoder().encode(events) }));
+    const many = failures(16, 20_000, false).map((f) => ({ ...f, tracePath: trace }));
+    const result: TestRunResult = { status: 'failed', passed: 1, failed: 16, skipped: 0, duration: 10, failures: many };
+    const t = text(await callRunTests(makeDispatcher({ runFiles: async () => result }), { files: [FILE] }));
+    for (let i = 0; i < 16; i++) expect(t).toContain(`FAIL: Suite > failing test ${i}`);
+    expect(t).not.toContain('omitted here');
+    expect(t).toMatch(/Details shown for the first \d+ failure\(s\)/);
+  });
+
+  it('attaches only the screenshots that fit the image budget, and says how many', async () => {
+    const big = traceWithScreenshot('big', 2 * 1024 * 1024); // ~2.7 MiB as base64
+    const many = failures(5, 10, false).map((f) => ({ ...f, tracePath: big }));
+    const result: TestRunResult = { status: 'failed', passed: 0, failed: 5, skipped: 0, duration: 10, failures: many };
+    const res = await callRunTests(makeDispatcher({ runFiles: async () => result }), { files: [FILE] });
+    expect(res.content.filter((c) => c.type === 'image')).toHaveLength(1);
+    expect(text(res)).toContain('screenshots for 1 of them');
+    expect(text(res)).not.toContain('image(s) omitted');
   });
 
   it('keeps a short failure exactly as before', async () => {
