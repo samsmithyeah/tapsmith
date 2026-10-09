@@ -41,6 +41,24 @@ internal object FindRules {
     }
 
     /**
+     * An element's expanded state from the accessibility actions it offers:
+     * one that can collapse is expanded, one that can only expand is
+     * collapsed, and one with neither has no expanded state (null), which
+     * neither `expanded: true` nor `expanded: false` matches. Shared by
+     * getByRole's filter and the hierarchy dump's `tapsmith-expanded`, so the
+     * Locator Playground agrees with the device (PILOT-655).
+     */
+    fun expandedState(
+        canExpand: Boolean,
+        canCollapse: Boolean,
+    ): Boolean? =
+        when {
+            canCollapse -> true
+            canExpand -> false
+            else -> null
+        }
+
+    /**
      * The post-filter for trait and dual-path roles (ElementFinder's
      * TRAIT_ONLY_ROLES and DUAL_PATH_ROLES). A role description the app published
      * (React Native's accessibilityRole) decides the role on its own: it must
