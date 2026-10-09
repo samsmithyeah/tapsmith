@@ -1,8 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { zipSync } from 'fflate';
+import { MCP_RESPONSE_MAX_BYTES } from '../mcp/response-limits.js';
 import { createMcpServer } from '../mcp/index.js';
 import { stdioTestArgs } from '../mcp/tools/run-tests.js';
 import { runCli, type CliHandlers, type TestCommandArgs } from '../cli-program.js';
-import type { TestDispatcher, TestRunResult, TestTreeEntry } from '../mcp/test-dispatcher.js';
+import type { TestDispatcher, TestFailureDetail, TestRunResult, TestTreeEntry } from '../mcp/test-dispatcher.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 const FILE = '/proj/e2e/login.test.ts';
@@ -125,6 +130,76 @@ describe('tapsmith_run_tests result handling', () => {
     const res = await callRunTests(makeDispatcher({ runFiles: async () => result }), { files: [FILE], test: 'x' });
     expect(res.isError).toBeFalsy();
     expect(text(res)).toContain('Run stopped by user');
+  });
+});
+
+// PILOT-657: a run with many long failures, each with a failure screenshot,
+// built one response big enough that the client dropped the MCP connection.
+describe('tapsmith_run_tests response size', () => {
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-run-size-')); });
+  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  /** A trace whose last screenshot is `screenshotBytes` of PNG-ish data. */
+  function traceWithScreenshot(name: string, screenshotBytes: number): string {
+    const target = path.join(tmpDir, `${name}.zip`);
+    const events = Array.from({ length: 30 }, (_, i) => JSON.stringify({
+      type: 'action', action: 'tap', selector: `getByText("${'s'.repeat(2_000)}${i}")`, error: i === 29 ? 'x'.repeat(5_000) : undefined,
+    })).join('\n');
+    fs.writeFileSync(target, zipSync({
+      'trace.json': new TextEncoder().encode(events),
+      'screenshots/001.png': new Uint8Array(screenshotBytes).fill(7),
+    }, { level: 0 }));
+    return target;
+  }
+
+  function failures(count: number, errorChars: number, withTraces: boolean): TestFailureDetail[] {
+    const trace = withTraces ? traceWithScreenshot('shared', 1024 * 1024) : undefined;
+    return Array.from({ length: count }, (_, i) => ({
+      fullName: `Suite > failing test ${i}`,
+      filePath: `/proj/e2e/file-${i % 8}.test.ts`,
+      error: `Error ${i}: ${'e'.repeat(errorChars)}`,
+      tracePath: trace,
+    }));
+  }
+
+  it('stays under the byte cap with many long failures and screenshots, and says where the rest is', async () => {
+    const result: TestRunResult = {
+      status: 'failed', passed: 2, failed: 200, skipped: 0, duration: 1000,
+      failures: failures(200, 50_000, true),
+    };
+    const res = await callRunTests(makeDispatcher({ runFiles: async () => result }), { files: [FILE] });
+    expect(res.isError).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
+    const t = text(res);
+    expect(t.startsWith('Tests failed: 2 passed, 200 failed')).toBe(true);
+    expect(t).toContain('FAIL: Suite > failing test 0');
+    expect(t).toContain('more characters');
+    expect(t).toContain('tapsmith_list_results');
+    expect(t).toMatch(/150 more failure\(s\) not listed/);
+    expect(res.content.filter((c) => c.type === 'image').length).toBeLessThanOrEqual(3);
+  });
+
+  it('lists every failure by name when there are only a few, each error clipped', async () => {
+    const result: TestRunResult = {
+      status: 'failed', passed: 0, failed: 16, skipped: 2, duration: 1000,
+      failures: failures(16, 20_000, false),
+    };
+    const res = await callRunTests(makeDispatcher({ runFiles: async () => result }), { files: [FILE] });
+    const t = text(res);
+    for (let i = 0; i < 16; i++) expect(t).toContain(`failing test ${i}`);
+    expect(t).not.toContain('not listed');
+    expect(t).not.toContain('omitted here');
+    expect(Buffer.byteLength(t, 'utf8')).toBeLessThan(100 * 1024);
+  });
+
+  it('keeps a short failure exactly as before', async () => {
+    const result: TestRunResult = {
+      status: 'failed', passed: 0, failed: 1, skipped: 0, duration: 10,
+      failures: [{ fullName: 'Login > fails', filePath: FILE, error: 'expected visible' }],
+    };
+    const t = text(await callRunTests(makeDispatcher({ runFiles: async () => result }), { files: [FILE] }));
+    expect(t).toBe('Tests failed: 0 passed, 1 failed, 0 skipped (10ms)\n\nFAIL: Login > fails\n  Error: expected visible');
   });
 });
 

@@ -218,6 +218,16 @@ No parameters.
 
 Returns a JSON array of device objects with `serial`, `model`, `platform` (android/ios), `os_version`, `is_emulator`, `state`, and `usable`. Usable devices come first. A device that is attached but cannot be used — an Android phone whose USB-debugging prompt was never accepted (`unauthorized`), an `offline` device, or one without USB permission on Linux (`no permissions (…)`) — is listed with `usable: false`, adb's state as `state`, and a `fix` with the same advice `tapsmith doctor` and `tapsmith list-devices` give. A device the session was using that has since disconnected (on either platform) is listed last with `usable: false` and `state: "Disconnected"`, or with adb's state and a `fix` when adb still lists it. In UI (HTTP) mode the list covers only the UI session's own devices, so an attached device the session is not using — usable or not — is not listed; use `tapsmith list-devices` for the whole machine.
 
+### Response size
+
+Every tool response is held to a fixed size: 100 KiB of text and 5 MiB of
+images. An MCP client drops the whole connection when one message is too
+large, so a single oversized result would otherwise end the session. A
+response that would go over the limit is cut, and the text says so. Long text
+keeps its start and its end, with a note in the middle saying how much was left
+out and which tool or filter shows the rest. Images past the limit are dropped,
+and a note gives their count.
+
 ### Test execution tools (both modes)
 
 #### `tapsmith_run_tests`
@@ -233,12 +243,18 @@ Run Tapsmith test files and return structured results. Only one test run can exe
 
 **On success:** returns a summary like "All tests passed: 5 passed, 0 skipped (12.3s)".
 
-**On failure:** returns a detailed report including:
+**On failure:** returns a report including:
 - Failed test names with error messages
 - Steps leading to the failure (from the trace)
 - Device logs around the failure time
 - Trace file path for further debugging with `tapsmith_read_trace`
 - A screenshot at the moment of failure
+
+The report stays small however many tests fail. The first 10 failures are shown
+in detail, with each error cut to 2,000 characters. The next 40 get one line each,
+and any after that are counted. Screenshots are attached for the first 3 failures.
+The report ends by pointing to `tapsmith_list_results` and `tapsmith_read_trace`,
+which hold every failure in full.
 
 A file that dies before any test reports — a failed import, a crashed or
 timed-out worker — is reported as a single failure named
@@ -258,6 +274,9 @@ Read a Tapsmith trace archive (.zip) and return step-by-step test execution data
 | `device_logs` | string | No | Include device logs: `errors` (default, error/warn only), `all`, or `none` |
 
 Returns trace metadata (device, platform, test file, duration) followed by a step-by-step action list with status, locators, durations, and error details.
+Each error, expected or actual value is cut to 2,000 characters. With
+`include_screenshots`, the response holds the latest screenshots that fit the
+response limit and says how many earlier ones it left out.
 
 ### Test session tools (both modes)
 
@@ -289,9 +308,14 @@ Browse test results from the current session. Shows pass/fail/skip status, durat
 |---|---|---|---|
 | `status` | string | No | Filter by status: `passed`, `failed`, or `skipped` |
 | `file` | string | No | Filter by file path substring |
+| `test` | string | No | Filter by test name: a case-insensitive substring of the full name (`"Describe > test name"`), matched the way `tapsmith_run_tests` matches its `test` |
 | `details` | boolean | No | Include trace steps for failed tests (default: false) |
 
 Returns a summary with counts, then per-test results including status, full name, duration, project, file path, and (when `details: true`) the steps and device logs leading to the failure.
+While several results are listed, each error is cut to 2,000 characters.
+When the filters leave a single result, its error is shown in full. If the list
+reaches the response limit, the rest of the results are counted and not shown;
+narrow the list with the filters to see them.
 
 Only covers the most recent run — use `tapsmith_suite_status` for the whole-session board.
 

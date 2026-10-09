@@ -7,6 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createMcpServer } from '../mcp/index.js';
 import { TRACE_FORMAT_VERSION } from '../trace/trace-format.js';
+import { MCP_RESPONSE_MAX_BYTES } from '../mcp/response-limits.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 // `tapsmith_read_trace` is how an agent finds out why a test failed, and it is
@@ -280,5 +281,35 @@ describe('tapsmith_read_trace screenshots', () => {
       .map((c) => (c as { text: string }).text)
       .filter((t) => t.includes('### Screenshot:'));
     expect(labels).toEqual(['\n### Screenshot: 001-before', '\n### Screenshot: 002-after']);
+  });
+});
+
+// PILOT-657: a long trace with every screenshot, or a step with a huge error,
+// must not build a response big enough for the client to drop the connection.
+describe('tapsmith_read_trace response size', () => {
+  it('keeps the latest screenshots that fit the image budget and says how many were left out', async () => {
+    const big = Buffer.alloc(1024 * 1024, 7); // ~1.33 MiB as base64
+    const screenshots: Record<string, Buffer> = {};
+    for (let i = 1; i <= 12; i++) screenshots[`${String(i).padStart(3, '0')}.png`] = big;
+    const trace = writeTrace({ events: [{ type: 'action', action: 'tap' }], screenshots });
+    const res = await readTrace({ path: trace, include_screenshots: true });
+    const images = res.content.filter((c) => c.type === 'image');
+    expect(images.length).toBeGreaterThan(0);
+    expect(images.length).toBeLessThan(12);
+    const t = text(res);
+    expect(t).toContain('### Screenshot: 012');
+    expect(t).not.toContain('### Screenshot: 001');
+    expect(t).toMatch(/earlier screenshot\(s\) omitted/);
+    expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
+  });
+
+  it('clips a huge step error and stays under the byte cap', async () => {
+    const events = Array.from({ length: 400 }, (_, i) => ({
+      type: 'assertion', assertion: 'toBeVisible', error: `${'x'.repeat(20_000)} step ${i}`, expected: 'y'.repeat(20_000),
+    }));
+    const res = await readTrace({ path: writeTrace({ events }) });
+    const t = text(res);
+    expect(t).toContain('more characters');
+    expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
   });
 });
