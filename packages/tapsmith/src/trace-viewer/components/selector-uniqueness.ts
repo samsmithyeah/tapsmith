@@ -10,10 +10,7 @@
 import type { HierarchyNode } from './hierarchy-utils.js';
 import { parseSelectorString, findMatchingNodes, getNodeBounds } from './selector-matching.js';
 import type { GeneratedSelector } from './selector-generation.js';
-
-function escapeQuotes(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-}
+import { escapeJsString } from './selector-generation.js';
 
 /**
  * Identity check across separately parsed hierarchy trees: reference equality
@@ -75,7 +72,7 @@ function tryExactTextUpgrade(
   let upgraded: string;
   // parseSelectorString returns RAW (unescaped) values — re-escape for the
   // generated code string, whatever quoting the original suggestion used.
-  const value = escapeQuotes(parsed.value);
+  const value = escapeJsString(parsed.value);
   if (parsed.type === 'textContains') {
     upgraded = `device.getByText("${value}", { exact: true })`;
   } else if (parsed.type === 'wv-text-contains') {
@@ -98,7 +95,7 @@ function tryExactRoleNameUpgrade(
 ): GeneratedSelector | null {
   const parsed = parseSelectorString(s.code);
   if (!parsed || parsed.type !== 'role' || !parsed.name || parsed.exact) return null;
-  const upgraded = `device.getByRole("${escapeQuotes(parsed.value)}", { name: "${escapeQuotes(parsed.name)}", exact: true })`;
+  const upgraded = `device.getByRole("${escapeJsString(parsed.value)}", { name: "${escapeJsString(parsed.name)}", exact: true })`;
   if (!uniquelyMatches(upgraded, roots, node)) return null;
   return { ...s, code: upgraded };
 }
@@ -115,7 +112,7 @@ function tryRoleNameUpgrade(
     node.attributes.get('content-desc') || node.attributes.get('label') || node.attributes.get('text') || '';
   if (!accessibleName) return null;
   for (const exact of ['', ', exact: true']) {
-    const upgraded = `device.getByRole("${parsed.value}", { name: "${escapeQuotes(accessibleName)}"${exact} })`;
+    const upgraded = `device.getByRole("${parsed.value}", { name: "${escapeJsString(accessibleName)}"${exact} })`;
     if (uniquelyMatches(upgraded, roots, node)) return { ...s, code: upgraded, label: 'Role + name' };
   }
   return null;

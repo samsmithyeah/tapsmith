@@ -1,3 +1,5 @@
+import { decodeXmlEntities } from '../../xml-entities.js';
+
 // ─── Types ───
 
 export interface HierarchyNode {
@@ -16,6 +18,13 @@ export interface Bounds {
 
 // ─── XML Parser ───
 
+/**
+ * Parse a hierarchy dump into a node tree. Attribute values are returned
+ * XML-entity-decoded (PILOT-658) — `Support &amp; legal` reads back as
+ * `Support & legal` — so every consumer (MCP snapshot and test-locator, the
+ * trace-viewer and UI-mode hierarchy tree and locator playground) sees the
+ * text the app shows and the runtime matches against.
+ */
 export function parseHierarchyXml(xml: string): HierarchyNode[] {
   const roots: HierarchyNode[] = [];
   const stack: HierarchyNode[] = [];
@@ -38,7 +47,7 @@ export function parseHierarchyXml(xml: string): HierarchyNode[] {
     const attrRe = /([\w:.-]+)="([^"]*)"/g;
     let attrMatch: RegExpExecArray | null;
     while ((attrMatch = attrRe.exec(attrsStr)) !== null) {
-      attributes.set(attrMatch[1], attrMatch[2]);
+      attributes.set(attrMatch[1], decodeXmlEntities(attrMatch[2]));
     }
 
     const node: HierarchyNode = {

@@ -61,12 +61,15 @@ function parseRegex(source: string | undefined, flags: string | undefined): Pars
   return { source, flags: flags ?? '' };
 }
 
+const SINGLE_CHAR_ESCAPES: Record<string, string> = { n: '\n', r: '\r', t: '\t' };
+
 /**
- * Undo source-string escaping (\" \' \\ \n) so a parsed name compares
- * against raw node attribute values.
+ * Undo source-string escaping (\" \' \\ \n \r \t) so a parsed name compares
+ * against raw node attribute values. Inverse of selector-generation's
+ * `escapeJsString`.
  */
 function unescapeSelectorValue(s: string): string {
-  return s.replace(/\\(.)/g, (_, c: string) => (c === 'n' ? '\n' : c));
+  return s.replace(/\\(.)/g, (_, c: string) => SINGLE_CHAR_ESCAPES[c] ?? c);
 }
 
 /** Parse the options-object blob of a getBy* call: `name: "x"` or `name: /x/`, and/or `exact: true`. */

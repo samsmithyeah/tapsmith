@@ -13,6 +13,7 @@
 
 import * as path from 'node:path';
 import type { AppResetMode, AppResetScope, TapsmithConfig } from './config.js';
+import { decodeXmlEntities } from './xml-entities.js';
 
 /** `appReset` with `'auto'` resolved away. */
 export type ResolvedAppResetMode = Exclude<AppResetMode, 'auto'>;
@@ -190,7 +191,7 @@ export function parseHooksMarker(hierarchyXml: string): HooksMarker | undefined 
   if (start < 0) return undefined;
   const rest = hierarchyXml.slice(start + HOOKS_MARKER_PREFIX.length);
   const end = rest.search(/["'<\n]/);
-  const raw = xmlUnescape(end < 0 ? rest : rest.slice(0, end));
+  const raw = decodeXmlEntities(end < 0 ? rest : rest.slice(0, end));
   const [versionRaw, ...fields] = raw.split(';');
   const version = Number.parseInt(versionRaw, 10);
   // Only protocol version 1 is understood. A future version may change field
@@ -219,9 +220,4 @@ export function parseHooksMarker(hierarchyXml: string): HooksMarker | undefined 
     ...(nav !== undefined && Number.isFinite(nav) ? { nav } : {}),
     ...(error ? { error } : {}),
   };
-}
-
-/** Undo the five predefined XML entities in an attribute value. */
-export function xmlUnescape(s: string): string {
-  return s.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
