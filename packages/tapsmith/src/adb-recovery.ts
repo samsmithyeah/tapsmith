@@ -37,6 +37,8 @@ export interface PinnedDeviceHealthDeps {
   now?: () => number;
   /** Prints a progress line for the user. */
   note: (message: string) => void;
+  /** Prints a line the user must not miss — the server restart's warning. */
+  warn: (message: string) => void;
 }
 
 const HEALTH_MARKER = '__tapsmith_health_ok__';
@@ -168,7 +170,7 @@ export async function checkPinnedDeviceHealth(serial: string, deps: PinnedDevice
     ].join('\n'));
   }
 
-  deps.note(
+  deps.warn(
     `Device ${serial} is still unresponsive. Restarting the ADB server as a last resort: `
     + 'this disconnects every adb client on this machine (Android Studio, logcat, scrcpy, …).',
   );

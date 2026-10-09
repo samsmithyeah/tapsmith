@@ -25,6 +25,7 @@ function devicesOutput(...lines: string[]): string {
 function fakeAdb(opts: FakeAdbOptions) {
   const calls: string[] = [];
   const notes: string[] = [];
+  const warnings: string[] = [];
   let devicesCall = 0;
   let stabilityCall = 0;
   let clock = 0;
@@ -49,10 +50,11 @@ function fakeAdb(opts: FakeAdbOptions) {
     sleep: async (ms) => { clock += ms; },
     now: () => clock,
     note: (m) => notes.push(m),
+    warn: (m) => warnings.push(m),
   };
   /** The commands that change adb's state — what the ticket is about. */
   const mutating = (): string[] => calls.filter((c) => /reconnect|kill-server|start-server/.test(c));
-  return { deps, calls, notes, mutating };
+  return { deps, calls, notes, warnings, mutating };
 }
 
 const SERIAL = 'emulator-5554';
@@ -163,7 +165,8 @@ describe('checkPinnedDeviceHealth (PILOT-475)', () => {
     });
     await checkPinnedDeviceHealth(SERIAL, adb.deps);
     expect(adb.mutating()).toEqual([`-s ${SERIAL} reconnect`, 'kill-server', 'start-server']);
-    const restartNote = adb.notes.find((n) => n.includes('Restarting the ADB server'));
+    // A warning, not a progress note: the restart must stand out.
+    const restartNote = adb.warnings.find((n) => n.includes('Restarting the ADB server'));
     expect(restartNote).toContain('this disconnects every adb client on this machine');
     expect(adb.notes.at(-1)).toBe('ADB recovered. Device is responsive.');
   });

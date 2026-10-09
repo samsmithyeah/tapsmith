@@ -212,6 +212,8 @@ function reExecWithTsx(args: string[]): never {
  */
 async function checkDeviceHealth(serial: string, progress?: LaunchProgressSink): Promise<void> {
   const note = (message: string): void => (progress ? progress.note(message) : console.log(yellow(message)));
+  // A progress note renders dim; the restart warning keeps its colour.
+  const warn = (message: string): void => (progress ? progress.note(yellow(message)) : console.log(yellow(message)));
   await checkPinnedDeviceHealth(serial, {
     adb: (args, timeoutMs) => execFileSync('adb', [...args], {
       timeout: timeoutMs,
@@ -225,6 +227,7 @@ async function checkDeviceHealth(serial: string, progress?: LaunchProgressSink):
     },
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     note,
+    warn,
   });
 }
 
