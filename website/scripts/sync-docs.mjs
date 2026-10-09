@@ -10,7 +10,9 @@
 //   2. Splits api-reference.md into 11 focused sub-pages under
 //      src/content/docs/reference/api/.
 //   3. Rewrites internal cross-reference links to match Starlight's
-//      URL scheme (e.g. `locators.md` → `/guides/locators/`).
+//      URL scheme (e.g. `locators.md` → `/guides/locators/`). A link to a
+//      heading of api-reference.md goes to the sub-page holding that
+//      heading, keeping the anchor.
 //   4. Turns a fenced block marked `<!-- package-manager-tabs -->` (one
 //      command per line, each starting with its package manager; every line
 //      after the first commented out, so copying the block on GitHub runs one
@@ -18,6 +20,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, cpSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import GithubSlugger from 'github-slugger'
 
 const ROOT = resolve(import.meta.dirname, '..', '..')
 const DOCS = join(ROOT, 'docs')
@@ -109,6 +112,24 @@ const FILES = [
     dest: 'guides/agents.md',
     title: 'AI Coding Agents',
     desc: 'Set up and run Tapsmith unattended from Claude Code, Codex, or Cursor.',
+  },
+  {
+    src: 'migrating-from-maestro.md',
+    dest: 'guides/migrating-from-maestro.md',
+    title: 'Migrating from Maestro',
+    desc: 'Port a Maestro suite to Tapsmith: YAML flows to TypeScript tests, concept by concept.',
+  },
+  {
+    src: 'migrating-from-detox.md',
+    dest: 'guides/migrating-from-detox.md',
+    title: 'Migrating from Detox',
+    desc: 'Port a Detox suite to Tapsmith: matchers to locators, synchronization to auto-waiting, .detoxrc to config.',
+  },
+  {
+    src: 'migrating-from-appium.md',
+    dest: 'guides/migrating-from-appium.md',
+    title: 'Migrating from Appium',
+    desc: 'Port an Appium suite to Tapsmith: capabilities to config, XPath to role and text locators, explicit waits to auto-waiting.',
   },
   {
     src: 'ci-setup.md',
@@ -262,6 +283,9 @@ const LINK_MAP = {
   'debugging.md': '/guides/debugging/',
   'mcp-server.md': '/guides/mcp-server/',
   'agents.md': '/guides/agents/',
+  'migrating-from-maestro.md': '/guides/migrating-from-maestro/',
+  'migrating-from-detox.md': '/guides/migrating-from-detox/',
+  'migrating-from-appium.md': '/guides/migrating-from-appium/',
   'ci-setup.md': '/platform/ci-setup/',
   'ios-physical-devices.md': '/platform/ios-physical-devices/',
   'ios-network-capture.md': '/platform/ios-network-capture/',
@@ -283,11 +307,13 @@ const LINK_REWRITES = Object.entries(LINK_MAP).map(([file, dest]) => {
   ]
 })
 
-// Special cases for api-reference.md (split into multiple pages)
-LINK_REWRITES.push(
-  [/\((?:\.\/)?api-reference\.md#video-recording\)/g, '(/reference/api/cli/)'],
-  [/\((?:\.\/)?api-reference\.md(?:#[^)]*)??\)/g, '(/reference/api/locators/)'],
-)
+// Links into api-reference.md (split into multiple pages): a heading's anchor
+// goes to the sub-page that holds the heading; anything else (no anchor, or a
+// heading in a section with no sub-page) to the first sub-page.
+LINK_REWRITES.push([
+  /\((?:\.\/)?api-reference\.md(#[^)]*)?\)/g,
+  (_, anchor) => `(${(anchor && API_ANCHORS.get(anchor.slice(1))) || '/reference/api/locators/'})`,
+])
 
 // Cross-section anchors within the monolithic API reference that now
 // point to content in different split files
@@ -299,6 +325,57 @@ LINK_REWRITES.push(
   [/\(#projects\)/g, '(/reference/api/test-runner/)'],
   [/\(#strict-mode\)/g, '(/reference/api/locators/#strict-mode)'],
 )
+
+// ─── API reference anchors ───
+
+const HEADING = /^#{1,6}\s+(.+?)\s*$/
+const FENCE = /^\s*(```|~~~)/
+
+/**
+ * Map from the anchor GitHub gives a heading of api-reference.md to that
+ * heading's URL on the sub-page holding it. GitHub numbers repeated headings
+ * over the whole file (`#configuration-1`), Starlight over each page, so both
+ * are counted. A sub-page drops its section's own heading: that anchor goes
+ * to the page itself. Headings in a section with no sub-page are left out.
+ */
+function apiAnchors() {
+  const anchors = new Map()
+  const path = join(DOCS, 'api-reference.md')
+  if (!existsSync(path)) return anchors
+  const lines = readFileSync(path, 'utf-8').split(/\r?\n/)
+
+  // Line ranges of the sub-pages, located exactly as the split below does.
+  const ranges = API_SPLITS.flatMap((split) => {
+    const start = lines.findIndex((l) => l.startsWith(split.startMarker))
+    if (start === -1) return []
+    let end = split.endMarker
+      ? lines.findIndex((l, i) => i > start && l.startsWith(split.endMarker))
+      : lines.length
+    if (end === -1) end = lines.length
+    return [
+      { start, end, page: `/${split.dest.replace(/\.md$/, '')}/`, slugger: new GithubSlugger() },
+    ]
+  })
+
+  const fileSlugger = new GithubSlugger()
+  let fenced = false
+  lines.forEach((line, n) => {
+    if (FENCE.test(line)) fenced = !fenced
+    const m = !fenced && HEADING.exec(line)
+    if (!m) return
+    const text = m[1].replace(/`/g, '')
+    const anchor = fileSlugger.slug(text)
+    const range = ranges.find((r) => n >= r.start && n < r.end)
+    if (!range) return
+    anchors.set(
+      anchor,
+      n === range.start ? range.page : `${range.page}#${range.slugger.slug(text)}`,
+    )
+  })
+  return anchors
+}
+
+const API_ANCHORS = apiAnchors()
 
 // ─── Helpers ───
 
