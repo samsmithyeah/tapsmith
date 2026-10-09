@@ -52,7 +52,7 @@ This guide is for teams with a Detox suite who want to move it to Tapsmith. Of t
 | `.tap()` | [`.tap()`](api-reference.md#elementhandletap-promisevoid) |
 | `.multiTap(2)` | [`.doubleTap()`](api-reference.md#elementhandledoubletapoptions--intervalms-number--promisevoid) |
 | `.longPress(1500)` | [`.longPress(1500)`](api-reference.md#elementhandlelongpressdurationms-number-promisevoid) |
-| `.typeText("hi")` | [`.type("hi")`](api-reference.md#elementhandletypetext-string-options--delay-number--promisevoid) |
+| `.typeText("hi")` | [`.type("hi")`](api-reference.md#elementhandletypetext-string-options--delay-number--promisevoid), into an empty field (into a field that already has text, `type()` replaces it on Android and adds to it on iOS) |
 | `.replaceText("hi")` | [`.clearAndType("hi")`](api-reference.md#elementhandleclearandtypetext-string-options--delay-number--promisevoid) (types it, so your `onChangeText` handlers run) |
 | `.clearText()` | [`.clear()`](api-reference.md#elementhandleclear-promisevoid) |
 | `.tapReturnKey()` | [`device.pressKey("ENTER")`](api-reference.md#devicepresskeykey-string-promisevoid) |

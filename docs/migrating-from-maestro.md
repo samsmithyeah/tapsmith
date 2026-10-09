@@ -21,7 +21,7 @@ This guide is for teams with a Maestro suite who want to move it to Tapsmith. It
 | `tapOn: { id: "email-input" }` | [`device.getByTestId("email-input").tap()`](api-reference.md#devicegetbytestidtestid-string-elementhandle) |
 | `tapOn: { point: "50%,50%" }` | [`device.tapXY(x, y)`](api-reference.md#devicetapxyx-number-y-number-promisevoid) (in screen coordinates, not percentages: pixels on Android, points on iOS) |
 | `doubleTapOn` / `longPressOn` | [`.doubleTap()`](api-reference.md#elementhandledoubletapoptions--intervalms-number--promisevoid) / [`.longPress()`](api-reference.md#elementhandlelongpressdurationms-number-promisevoid) |
-| `inputText` (into the focused field) | [`locator.type(text)`](api-reference.md#elementhandletypetext-string-options--delay-number--promisevoid) on the field itself, or [`device.inputText(text)`](api-reference.md#deviceinputtexttext-string-promisevoid) for the focused field |
+| `inputText` (into the focused field) | [`locator.type(text)`](api-reference.md#elementhandletypetext-string-options--delay-number--promisevoid) on the field itself (for an empty field; into a field that already has text, `type()` replaces it on Android and adds to it on iOS), or [`device.inputText(text)`](api-reference.md#deviceinputtexttext-string-promisevoid) for the focused field |
 | `eraseText` | [`.clear()`](api-reference.md#elementhandleclear-promisevoid) or [`.clearAndType(text)`](api-reference.md#elementhandleclearandtypetext-string-options--delay-number--promisevoid) |
 | `assertVisible` / `assertNotVisible` | [`await expect(locator).toBeVisible()`](api-reference.md#tobevisibleoptions-promisevoid) / [`.toBeHidden()`](api-reference.md#tobehiddenoptions-promisevoid) |
 | `extendedWaitUntil` | `expect(locator).toBeVisible({ timeout: 60_000 })`, or [`locator.waitFor()`](api-reference.md#elementhandlewaitforoptions-promisevoid) |
@@ -156,7 +156,7 @@ npx tapsmith test
 | Workspace `config.yaml` (flow order, tags) | `tapsmith.config.ts`: `testMatch`, `projects`, `retries`, `timeout`, `reporter` |
 | `-e KEY=VALUE`, `MAESTRO_*` shell variables | Ordinary environment variables, read with `process.env` (load a `.env` file with `dotenv` in your config if you like) |
 | `--device <id>` | `npx tapsmith test --device emulator-5554`, or `device` / `simulator` in the config |
-| `--shard-split N` (one machine, N devices) | `workers: N` or `--workers N`, with `launchEmulators: true` to start emulators for you ([Parallel execution](parallel-and-sharding.md)) |
+| `--shard-split N` (one machine, N devices) | `workers: N` or `--workers N`, with `launchEmulators: true` and an `avd` to start emulators for you ([Parallel execution](parallel-and-sharding.md)) |
 | Splitting across CI machines | `npx tapsmith test --shard=1/4` and `npx tapsmith merge-reports` ([CI sharding](parallel-and-sharding.md#ci-sharding)) |
 | `--format junit` | `reporter: "junit"`, with `html`, `json`, `github` and `blob` also built in ([Reporters](api-reference.md#reporters)) |
 

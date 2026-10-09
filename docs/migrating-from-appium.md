@@ -10,7 +10,7 @@ Appium has clients in many languages. The examples here use [WebdriverIO](https:
 
 - **No server to run.** Appium is a WebDriver server: you install it and its drivers, start it, and your tests talk to it over HTTP through a client library. Tapsmith is one npm package. Its test runner starts a local daemon for you, which installs an agent on the device: UIAutomator2 on Android and XCUITest on iOS, the same frameworks Appium's main drivers use underneath.
 - **No sessions or capabilities.** A capabilities object (`platformName`, `appium:app`, `appium:udid`, `appium:noReset`, …) describes each Appium session. Tapsmith reads the same information from `tapsmith.config.ts`, once for the whole suite, with a [project](configuration.md#projects-with-per-device-targeting) per device or platform.
-- **Auto-waiting replaces explicit waits.** Appium finds an element once (or polls for an implicit-wait period), and the test adds explicit waits (`waitForDisplayed`, `WebDriverWait`) wherever the app is slow. In Tapsmith every action waits for its element, and every assertion retries until it passes.
+- **Auto-waiting replaces explicit waits.** Appium finds an element when asked (WebdriverIO first waits for it to exist), and the test adds explicit waits (`waitForDisplayed`, `WebDriverWait`) wherever the app is slow. In Tapsmith every action waits for its element, and every assertion retries until it passes.
 - **Role and text locators replace XPath.** Instead of XPath or platform-specific accessibility ids, Tapsmith locators describe what the user sees: `device.getByRole("button", { name: "Sign in" })` works on Android and iOS alike.
 - **A test runner is included.** Tapsmith has Playwright's runner shape: `test()`, `describe()`, hooks, fixtures, retries, reporters, workers and sharding. You don't need Mocha, Jest, TestNG or pytest alongside it.
 
@@ -57,7 +57,7 @@ Appium has clients in many languages. The examples here use [WebdriverIO](https:
 |---|---|
 | `el.click()` | [`locator.tap()`](api-reference.md#elementhandletap-promisevoid) |
 | `el.setValue("hi")` | [`locator.clearAndType("hi")`](api-reference.md#elementhandleclearandtypetext-string-options--delay-number--promisevoid) |
-| `el.addValue("hi")` | [`locator.type("hi")`](api-reference.md#elementhandletypetext-string-options--delay-number--promisevoid) |
+| `el.addValue("hi")` | [`locator.type("hi")`](api-reference.md#elementhandletypetext-string-options--delay-number--promisevoid) (into a field that already has text, `type()` replaces it on Android and adds to it on iOS) |
 | `el.clearValue()` | [`locator.clear()`](api-reference.md#elementhandleclear-promisevoid) |
 | `el.getText()` | [`locator.getText()`](api-reference.md#elementhandlegettext-promisestring), or assert with [`expect(locator).toHaveText()`](api-reference.md#tohavetextexpected-string--regexp--arraystring--regexp-options-promisevoid) |
 | `el.isDisplayed()` | [`locator.isVisible()`](api-reference.md#elementhandleisvisible-promiseboolean) |
@@ -85,10 +85,10 @@ Appium has clients in many languages. The examples here use [WebdriverIO](https:
 | `mobile: backgroundApp` | [`device.sendToBackground()`](api-reference.md#devicesendtobackground-promisevoid) |
 | `mobile: deepLink` / `driver.url()` | [`device.openDeepLink(url)`](api-reference.md#deviceopendeeplinkuri-string-options-opendeeplinkoptions-promisevoid) |
 | `driver.setOrientation()` | [`device.setOrientation()`](api-reference.md#devicesetorientationorientation-orientation-promisevoid) |
-| `mobile: setClipboard` / `mobile: getClipboard` | [`device.setClipboard()`](api-reference.md#devicesetclipboardtext-string-promisevoid) / [`device.getClipboard()`](api-reference.md#devicegetclipboard-promisestring) |
+| `mobile: setClipboard` / `mobile: getClipboard` | [`device.setClipboard()`](api-reference.md#devicesetclipboardtext-string-promisevoid) / [`device.getClipboard()`](api-reference.md#devicegetclipboard-promisestring) (not on physical iOS devices) |
 | `mobile: changePermissions` | [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid) / `revokePermission()` (Android, and iOS simulators) |
 | `driver.takeScreenshot()` | [`device.takeScreenshot()`](api-reference.md#devicetakescreenshot-promisescreenshotresponse); failures are captured automatically |
-| `mobile: startScreenRecording` | The [`video`](api-reference.md#video-recording) option, or a [trace](trace-viewer.md) |
+| `driver.startRecordingScreen()` | The [`video`](api-reference.md#video-recording) option, or a [trace](trace-viewer.md) |
 | `driver.getContexts()` / `driver.switchContext("WEBVIEW_…")` | [`device.webview()`](api-reference.md#devicewebviewpackagename-string-promisewebviewhandle) / [`device.native()`](api-reference.md#devicenative-promisevoid) ([WebView testing](webview.md)) |
 
 ## Porting a test
@@ -198,7 +198,7 @@ What changed:
 - **The reset became a declared policy.** The `terminateApp` and `clearApp` calls in `beforeEach` are what `test.use({ appResetScope: "test" })` does, including relaunching the app and waiting for it to come up; the deep link to the screen stays in `beforeEach`. Without that line, Tapsmith resets the app once per test file.
 - **The explicit waits are gone.** `type()` and `tap()` wait for their element, and `expect(...).toBeVisible()` retries until the text appears. Each waits up to the config's `timeout`.
 - **The locators work on iOS too.** `~Email` is an accessibility id, which Appium matches against `content-desc` on Android but against the element's name (its accessibility identifier, if it has one) on iOS, so on this screen, where the field's `testID` (`email-input`) differs from its label, `~Email` finds nothing on iOS and each platform needs its own selector. `getByRole("textfield", { name: "Email" })` matches the field's role and accessible name on both platforms, and the XPath for the success message became `getByText`. To run on iOS, add `platform: "ios"`, `app` and `simulator` (or a second [project](configuration.md#projects-with-per-device-targeting)); the test itself doesn't change.
-- **`setValue` became `type`.** `type()` taps the field and types into it. Use `clearAndType()` where the field may already contain text, as `setValue` cleared it.
+- **`setValue` became `type`.** `type()` taps the field and types into it. Use `clearAndType()` where the field may already contain text, as `setValue` cleared it: `type()` replaces existing text on Android but adds to it on iOS.
 
 Run it with:
 
@@ -215,7 +215,7 @@ npx tapsmith test
 | WebDriverAgent signing for physical iPhones | `npx tapsmith ios build-agent` ([iOS physical devices](ios-physical-devices.md)) |
 | One capabilities set per device or platform | One [project](configuration.md#projects-with-per-device-targeting) per device or platform, selected with `--project` |
 | Capabilities from environment variables | Environment variables read with `process.env` in `tapsmith.config.ts` |
-| Parallel sessions (`maxInstances`, Selenium Grid) on several devices | `workers: N` or `--workers N`, one device per worker; `launchEmulators: true` starts emulators for you ([Parallel execution](parallel-and-sharding.md)) |
+| Parallel sessions (`maxInstances`, Selenium Grid) on several devices | `workers: N` or `--workers N`, one device per worker; `launchEmulators: true` with an `avd` starts emulators for you ([Parallel execution](parallel-and-sharding.md)) |
 | Splitting a suite across CI machines | `npx tapsmith test --shard=1/4` and `npx tapsmith merge-reports` ([CI sharding](parallel-and-sharding.md#ci-sharding)) |
 | Your runner's retries (Mocha `retries`, TestNG `retryAnalyzer`) | `retries` in the config or `test.use()` |
 | Allure, JUnit or HTML reporters | Built-in `junit`, `html`, `json`, `github` and `blob` [reporters](api-reference.md#reporters) |
