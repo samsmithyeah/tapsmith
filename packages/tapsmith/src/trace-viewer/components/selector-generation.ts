@@ -112,7 +112,8 @@ export function roleNameFor(accessibleName: string): string {
  */
 const GLYPH_PINNED_PRIORITY = 7.5;
 
-function glyphAware(priority: number, value: string): number {
+/** `priority`, demoted to {@link GLYPH_PINNED_PRIORITY} when `value` pins an icon glyph. */
+export function glyphAware(priority: number, value: string): number {
   return hasPrivateUseChar(value) ? Math.max(priority, GLYPH_PINNED_PRIORITY) : priority;
 }
 

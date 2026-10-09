@@ -58,7 +58,8 @@ const SINGLE_CHAR_ESCAPES: Record<string, string> = { n: '\n', r: '\r', t: '\t' 
 /**
  * Undo source-string escaping — `\" \' \\ \n \r \t`, `\uXXXX` and `\u{X…}`
  * — so a parsed locator value compares against raw node attribute values.
- * Any other escaped character stands for itself, as in JavaScript.
+ * Any other escaped character stands for itself (JavaScript's `\x`, `\0`,
+ * `\b`, `\f` and `\v` escapes are not read; the emitter never writes them).
  */
 export function unescapeJsString(s: string): string {
   return s.replace(/\\(?:u\{([0-9a-fA-F]{1,6})\}|u([0-9a-fA-F]{4})|(.))/g, (match, braced: string | undefined, four: string | undefined, c: string | undefined) => {

@@ -10,7 +10,7 @@
 import type { HierarchyNode } from './hierarchy-utils.js';
 import { parseSelectorString, findMatchingNodes, getNodeBounds } from './selector-matching.js';
 import type { GeneratedSelector } from './selector-generation.js';
-import { roleNameFor } from './selector-generation.js';
+import { glyphAware, roleNameFor } from './selector-generation.js';
 import { escapeJsString } from '../../js-string-escape.js';
 
 /**
@@ -101,7 +101,8 @@ function tryExactRoleNameUpgrade(
   const names = [parsed.name, fullAccessibleName(node)].filter((n, i, all) => n && all.indexOf(n) === i);
   for (const name of names) {
     const upgraded = `device.getByRole("${escapeJsString(parsed.value)}", { name: "${escapeJsString(name)}", exact: true })`;
-    if (uniquelyMatches(upgraded, roots, node)) return { ...s, code: upgraded };
+    // The full name may pin a glyph: rank it like any glyph-pinned locator.
+    if (uniquelyMatches(upgraded, roots, node)) return { ...s, code: upgraded, priority: glyphAware(s.priority, name) };
   }
   return null;
 }
@@ -124,7 +125,9 @@ function tryRoleNameUpgrade(
   if (!accessibleName) return null;
   for (const exact of ['', ', exact: true']) {
     const upgraded = `device.getByRole("${parsed.value}", { name: "${escapeJsString(accessibleName)}"${exact} })`;
-    if (uniquelyMatches(upgraded, roots, node)) return { ...s, code: upgraded, label: 'Role + name' };
+    if (uniquelyMatches(upgraded, roots, node)) {
+      return { ...s, code: upgraded, label: 'Role + name', priority: glyphAware(s.priority, accessibleName) };
+    }
   }
   return null;
 }

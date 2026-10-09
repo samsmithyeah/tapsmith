@@ -398,6 +398,14 @@ describe('icon-glyph accessible names (PILOT-659)', () => {
     expect(findMatchingNodes(roots, parseSelectorString(top.code)!)).toEqual([tabs[0]]);
   });
 
+  it('ranks a glyph-pinned full-name upgrade below a glyph-free test id', () => {
+    const { roots, tabs } = iconTabs([[BOOK, 'Story'], [GEAR, 'Story list']]);
+    tabs[0].attributes.set('resource-id', 'com.app:id/story-tab');
+    const ranked = disambiguateSelectors(roots, tabs[0], generateSelectors(tabs[0]));
+    expect(ranked[0].code).toBe('device.getByTestId("story-tab")');
+    expect(ranked.map((s) => s.code)).toContain('device.getByRole("tab", { name: "\\uE865, Story", exact: true })');
+  });
+
   it('keeps a playground pick on a role-less icon+label element rather than its label child', () => {
     const library = makeNode('android.view.ViewGroup', {
       class: 'android.view.ViewGroup', clickable: 'true', 'content-desc': `${BOOK}, Library`, bounds: '[0,1000][100,1100]',
