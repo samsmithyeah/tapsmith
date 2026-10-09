@@ -35,7 +35,11 @@ describe("hierarchy dump expanded state", () => {
     await openScreen(device, "/visibility")
     await expect(device.getByRole("button", { name: "Toggle details" })).toBeVisible()
     const xml = await dump(device)
-    // Only the one expandable element on the screen carries the attribute.
-    expect(xml.match(/tapsmith-expanded=/g)).toHaveLength(1)
+    // Only the one expandable element in the app carries the attribute (the
+    // dump also holds system UI windows, which are not the app's to pin).
+    const appExpandable = (xml.match(/<node\b[^>]*>/g) ?? [])
+      .filter((tag) => tag.includes('package="dev.tapsmith.testapp"') && tag.includes("tapsmith-expanded="))
+    expect(appExpandable).toHaveLength(1)
+    expect(appExpandable[0]).toContain('content-desc="Toggle details"')
   })
 })

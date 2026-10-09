@@ -134,6 +134,9 @@ describe('locatorOptionsError: why a locator\'s options are refused', () => {
     expect(locatorOptionsError('device.getByRole("tab", { name: "A", selected: true })')).toBeNull();
     expect(locatorOptionsError('device.getByText("A")')).toBeNull();
     expect(locatorOptionsError('not a locator')).toBeNull();
+    // A getter Tapsmith does not have is the problem, not its options.
+    expect(locatorOptionsError('device.getByAltText("Logo", { exact: true })')).toBeNull();
+    expect(locatorOptionsError('webview.getByTitle("Help", { exact: true })')).toBeNull();
   });
 
   it('acts with the state filter, so a tap cannot land on the unselected card', async () => {

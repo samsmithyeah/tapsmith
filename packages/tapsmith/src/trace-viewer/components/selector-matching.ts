@@ -158,10 +158,18 @@ export function locatorOptionsError(input: string): string | null {
   const device = chain.base.match(DEVICE_RE);
   const webview = device ? null : chain.base.match(WEBVIEW_GETBY_RE);
   const match = device ?? webview;
-  if (!match) return null;
+  // A getter Tapsmith does not have (Playwright's getByAltText, getByTitle)
+  // is the problem, not its options: leave it to the generic message.
+  if (!match || !KNOWN_GETTERS[device ? 'device' : 'webview'].has(match[1])) return null;
   const options = getterOptions(device ? 'device' : 'webview', match[1], match[6]);
   return 'error' in options ? options.error : null;
 }
+
+/** The getBy* methods each receiver has (device.ts / webview-handle.ts). */
+const KNOWN_GETTERS = {
+  device: new Set(['Text', 'Role', 'Description', 'Placeholder', 'TestId', 'Label']),
+  webview: new Set(['Text', 'Role', 'Label', 'Placeholder', 'TestId']),
+};
 
 /** The options each getter takes (the SDK's signatures). */
 const DEVICE_OPTION_KEYS: Record<string, readonly string[]> = {
