@@ -27,8 +27,10 @@ describe("getByRole for roles published as an RN role description", () => {
 
   test("getByRole('progressbar') finds an RN progress bar", async ({ device }) => {
     await openScreen(device, "/accessibility")
+    // Below the fold: off-screen RN views are not in the accessibility tree.
     const progress = device.getByRole("progressbar", { name: "Upload progress" })
-    await expect(progress).toExist()
+    await progress.scrollIntoView()
+    await expect(progress).toBeVisible()
     await expect(progress).toHaveRole("progressbar")
   })
 
