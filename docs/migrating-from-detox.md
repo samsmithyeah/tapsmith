@@ -217,7 +217,7 @@ What changed:
 - **Globals became fixtures and imports.** `device` arrives as an argument to each test and hook, and `test`, `describe` and `expect` are imported from `tapsmith`. Everything is typed.
 - **The reset moved into configuration.** Instead of a `launchApp` in `beforeEach`, `test.use({ appResetScope: "test" })` asks for a fresh app before every test. Without it, Tapsmith resets once per test file. The deep link that opens the screen stays in `beforeEach`.
 - **Matchers became locators.** `by.id` maps straight onto `getByTestId`, which matches a React Native `testID` on both platforms. The button is found by role and accessible name. Where a locator matches several elements, Tapsmith's [strict mode](api-reference.md#strict-mode) throws and lists the matches instead of picking one, so use `.nth()` or a narrower locator where Detox needed `.atIndex()`.
-- **`tapReturnKey()` became `device.hideKeyboard()`**, which dismisses the keyboard without submitting the field. `device.pressKey("ENTER")` is still there if you want to submit.
+- **`tapReturnKey()` became `device.hideKeyboard()`**, which dismisses the keyboard without submitting the field where it can (on iOS its last resort, when nothing else puts the keyboard away, is the return key of a single-line field, which does submit it). `device.pressKey("ENTER")` is still there if you want to submit.
 - **The build is yours.** `detox build` ran the `build` command from `.detoxrc.js`; with Tapsmith you run that command yourself (in CI, as a step before `npx tapsmith test`), and you build your normal app. The `assembleAndroidTest` APK and the Detox Gradle and `DetoxTest` setup are no longer needed.
 
 Run one platform with `npx tapsmith test --project android`, or both with `npx tapsmith test`.
