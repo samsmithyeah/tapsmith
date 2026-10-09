@@ -399,6 +399,32 @@ describe('targetSessionConfig() (PILOT-654)', () => {
     expect(cfg.package).toBe('com.example.app');
   });
 
+  it('leaves per-run keys to each run: a sibling project does not inherit them', () => {
+    // `auth` sorts first and is the target's primary; `app` sets none of
+    // these, so its runs must fall back to the root's values, not auth's.
+    const perRunRoot = makeConfig({
+      workers: 4,
+      trace: 'on',
+      baseURL: 'https://root.example',
+      projects: [
+        { name: 'auth', use: { ...ANDROID, retries: 3, timeout: 5_000, trace: 'retain-on-failure', baseURL: 'https://auth.example', extraHTTPHeaders: { 'x-auth': '1' } } },
+        { name: 'app', use: { ...ANDROID } },
+      ],
+    });
+    const [auth] = resolveProjects(perRunRoot);
+    const cfg = targetSessionConfig(auth.effectiveConfig, perRunRoot);
+    expect(cfg.package).toBe('com.example.app');
+    expect(cfg.retries).toBe(0);
+    expect(cfg.timeout).toBe(30_000);
+    expect(cfg.trace).toBe('on');
+    expect(cfg.baseURL).toBe('https://root.example');
+    expect(cfg.extraHTTPHeaders).toBeUndefined();
+    // Run-wide keys a project cannot set at all stay the root's, including a
+    // count the CLI updates after resolving projects (reporters read it).
+    perRunRoot.workers = 6;
+    expect(targetSessionConfig(auth.effectiveConfig, perRunRoot).workers).toBe(6);
+  });
+
   it('is the root config\'s own values for a project without `use`', () => {
     const plain = makeConfig({ package: 'com.example.root', devices: [{ name: 'a' }, { name: 'b' }] });
     const [only] = resolveProjects(plain);

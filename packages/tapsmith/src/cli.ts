@@ -1711,7 +1711,7 @@ async function provisionPerProjectDevices(
     reusedSimulatorCount: 0,
   };
 
-  const { allocateBucketWorkers, bucketizeProjects, sharedDeviceGroup, targetSessionConfig } = await import('./project.js');
+  const { allocateBucketWorkers, bucketizeProjects, sharedDeviceGroup } = await import('./project.js');
   const bucketEntries = bucketizeProjects(projects);
   for (const b of bucketEntries) {
     for (const p of b.projects) {
@@ -1772,7 +1772,7 @@ async function provisionPerProjectDevices(
       else process.stderr.write(`${YELLOW}${message}${RESET}\n`);
     }
 
-    const bucketSerialized = serializeConfig(targetSessionConfig(bucketEffective, rootConfig));
+    const bucketSerialized = serializeConfig({ ...bucketEffective, devices: rootConfig.devices });
     // Whole groups only: a trailing partial group has no worker to serve.
     const usable = provisioned.serials.slice(0, Math.floor(provisioned.serials.length / groupSize) * groupSize);
     const target: import('./unavailable-targets.js').ProvisionedTarget = {
