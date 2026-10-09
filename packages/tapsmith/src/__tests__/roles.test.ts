@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { ANDROID_ROLE_CLASSES, IOS_ROLE_TYPES, NATIVE_ROLES, ROLE_ALIASES, assertKnownRole, normalizeRole, unknownRoleMessage } from '../roles.js';
+import { ANDROID_DUAL_PATH_ROLES, ANDROID_ROLE_CLASSES, ANDROID_TRAIT_ONLY_ROLES, IOS_ROLE_TYPES, NATIVE_ROLES, ROLE_ALIASES, assertKnownRole, normalizeRole, unknownRoleMessage } from '../roles.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const read = (rel: string): string => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
@@ -124,6 +124,15 @@ describe('role set parity with the agents', () => {
       kotlin[m[1]!] = [...m[2]!.matchAll(/"([\w.]+)"/g)].map((c) => c[1]!);
     }
     expect(ANDROID_ROLE_CLASSES).toEqual(kotlin);
+  });
+
+  it('has the Android agent\'s description-resolved roles (PILOT-656)', () => {
+    const source = read('agent/app/src/main/kotlin/dev/tapsmith/agent/ElementFinder.kt');
+    const roles = (start: string) => [...block(source, start, ')\n').matchAll(/"([a-z]+)"/g)].map((m) => m[1]!).sort();
+    expect([...ANDROID_DUAL_PATH_ROLES].sort()).toEqual(roles('val DUAL_PATH_ROLES'));
+    expect([...ANDROID_TRAIT_ONLY_ROLES].sort()).toEqual(roles('val TRAIT_ONLY_ROLES'));
+    // React Native publishes these only as a role description on a generic view.
+    for (const role of ['tab', 'progressbar', 'toolbar']) expect(ANDROID_DUAL_PATH_ROLES).toContain(role);
   });
 
   it('has the iOS agent\'s element types per role, without .other', () => {

@@ -270,3 +270,43 @@ describe('getByRole name matching in the playground (PILOT-549)', () => {
     expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("button", { name: "Sign", exact: true })')!)).toEqual([]);
   });
 });
+
+describe('Android description-resolved roles in the playground (PILOT-656)', () => {
+  // React Navigation's bottom tab on Android: a generic View with RN's "tab"
+  // role description, named by its label text.
+  function bottomTabs() {
+    const tab = (label: string, top: number, selected: boolean) => makeNode('android.view.View', {
+      class: 'android.view.View', 'tapsmith-role': 'tab', clickable: 'true', selected: String(selected), bounds: `[${top},1000][${top + 100},1100]`,
+    }, [makeNode('android.widget.TextView', { class: 'android.widget.TextView', text: label, bounds: `[${top},1050][${top + 100},1090]` })]);
+    const library = tab('Library', 0, true);
+    const settings = tab('Settings', 100, false);
+    const tabList = makeNode('android.view.View', { class: 'android.view.View', 'tapsmith-role': 'tablist', bounds: '[0,1000][200,1100]' }, [library, settings]);
+    return { roots: [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [tabList])], library, settings };
+  }
+
+  it('matches a role-description tab, by role and by name', () => {
+    const { roots, library, settings } = bottomTabs();
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("tab")')!)).toEqual([library, settings]);
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("tab", { name: "Settings" })')!)).toEqual([settings]);
+  });
+
+  it('still matches a native TabLayout with no role description by class', () => {
+    const native = makeNode('com.google.android.material.tabs.TabLayout', { class: 'com.google.android.material.tabs.TabLayout', bounds: '[0,0][100,50]' });
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [native])];
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("tab")')!)).toEqual([native]);
+  });
+
+  it('does not match a TabLayout whose role description names another role, like the agent', () => {
+    const other = makeNode('com.google.android.material.tabs.TabLayout', { class: 'com.google.android.material.tabs.TabLayout', 'tapsmith-role': 'tablist', bounds: '[0,0][100,50]' });
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [other])];
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("tab")')!)).toEqual([]);
+  });
+
+  it('matches role-description progress bars and toolbars', () => {
+    const progress = makeNode('android.view.View', { class: 'android.view.View', 'tapsmith-role': 'progressbar', 'content-desc': 'Upload progress', bounds: '[0,0][100,50]' });
+    const toolbar = makeNode('android.view.View', { class: 'android.view.View', 'tapsmith-role': 'toolbar', 'content-desc': 'Formatting', bounds: '[0,60][100,110]' });
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [progress, toolbar])];
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("progressbar", { name: "Upload" })')!)).toEqual([progress]);
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("toolbar")')!)).toEqual([toolbar]);
+  });
+});
