@@ -515,6 +515,19 @@ describe('getByTestId parity with the Android agent (PILOT-659)', () => {
     expect(findMatchingNodes(roots, parseSelectorString('device.getByTestId("mobile_signal")')!)).toEqual([]);
   });
 
+  it('keeps a playground pick on a native id-only container rather than its text child', () => {
+    const caption = makeNode('android.widget.TextView', {
+      class: 'android.widget.TextView', text: 'Profile', bounds: '[0,60][100,100]',
+    });
+    const row = makeNode('android.widget.LinearLayout', {
+      class: 'android.widget.LinearLayout', 'resource-id': 'com.app:id/profile_row', bounds: '[0,0][100,100]',
+    }, [caption]);
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout', bounds: '[0,0][1000,2000]' }, [row])];
+    const picked = handlePickFromScreenshot(roots, 50, 20);
+    expect(picked?.node).toBe(row);
+    expect(picked?.selector).toBe('device.locator({ id: "com.app:id/profile_row" })');
+  });
+
   it('still suggests and matches an RN testID', () => {
     const node = view('email-input');
     const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [node])];

@@ -351,12 +351,14 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     });
   }
 
-  // 8. Locator fallbacks for elements with no accessible attributes
+  // 8. Locator fallbacks for elements with no accessible attributes. A
+  // native package-qualified id has no getByTestId (PILOT-659), so its
+  // locator({ id }) takes the test-id slot: it still names this element.
   if (resourceId) {
     selectors.push({
       code: `device.locator({ id: "${escapeJsString(resourceId)}" })`,
       label: 'Resource ID',
-      priority: 8,
+      priority: testIdFromResource ? 8 : 7,
     });
   }
   const className = node.attributes.get('class') ?? node.attributes.get('type') ?? '';
