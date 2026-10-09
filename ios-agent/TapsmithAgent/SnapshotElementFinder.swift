@@ -1403,12 +1403,17 @@ class SnapshotElementFinder {
             }
         } else if let role = selector.role {
             let nodeLabel = snapshotNode?["label"] as? String ?? ""
-            if selector.roleOnlyReResolvesByLabel, !nodeLabel.isEmpty, let labelIndex {
+            if selector.roleOnlyReResolvesByLabel {
                 // Role-only heading / RN checkbox, radio, alert, combobox: a
                 // type query can't tell them apart from other static texts or
                 // generic views, so find the node by its own label, as
-                // role + name does above (PILOT-608).
-                element = byOwnLabel(nodeLabel, at: labelIndex)
+                // role + name does above — and like it, cache nothing for an
+                // empty label rather than bind some other element (PILOT-608).
+                if !nodeLabel.isEmpty, let labelIndex {
+                    element = byOwnLabel(nodeLabel, at: labelIndex)
+                } else {
+                    element = nil
+                }
             } else if let types = try? RoleMapping.elementTypes(for: role), let firstType = types.first {
                 // Role-only: match by type.
                 element = resolve(app.descendants(matching: firstType))

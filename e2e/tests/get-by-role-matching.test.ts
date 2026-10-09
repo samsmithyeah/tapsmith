@@ -5,7 +5,8 @@ import { openScreen } from "../utils/app-reset.js"
 // (PILOT-608). On iOS a heading used to be any static text, and a checkbox,
 // radio button, alert or combobox any generic view. The toggles screen has
 // four section headers (plus, on iOS, the navigation bar title, which has the
-// header trait), two RN checkboxes and three RN radio buttons.
+// header trait) among its plain texts, two RN checkboxes and three RN radio
+// buttons.
 describe("getByRole role matching", () => {
   // The last test changes the selected radio button.
   test.use({ appResetScope: "test" })
@@ -15,9 +16,14 @@ describe("getByRole role matching", () => {
     await expect(togglesScreen.switchesHeading).toBeVisible()
   })
 
-  test("a heading is header text, not every text", async ({ device, platform }) => {
-    const headings = device.getByRole("heading")
-    await expect(headings).toHaveCount(platform === "ios" ? 5 : 4)
+  test("a heading is header text, not every text", async ({ device }) => {
+    // Every heading is a header text; how many are in the tree depends on the
+    // screen size (Android leaves out views scrolled off it).
+    const headerTexts = ["Toggles", "Switches", "Checkboxes", "Radio Buttons", "Status"]
+    const headings = await device.getByRole("heading").allTextContents()
+    expect(headings).toContain("Switches")
+    expect(headings).toContain("Checkboxes")
+    for (const heading of headings) expect(headerTexts).toContain(heading)
     await expect(device.getByRole("heading", { name: "Radio Buttons" })).toHaveCount(1)
     await expect(device.getByRole("heading", { name: "Dark Mode" })).toHaveCount(0)
     await expect(device.getByRole("heading", { name: "Size: medium" })).toHaveCount(0)

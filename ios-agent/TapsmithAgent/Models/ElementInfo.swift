@@ -48,7 +48,7 @@ struct ElementSelector {
     /// Whether a role-only selector's match is re-resolved by its own label
     /// too: the roles no element-type query can express (a heading's trait,
     /// an RN checkbox's description), whose type-query index would count
-    /// other elements (PILOT-608). An empty label falls back to the type query.
+    /// other elements (PILOT-608).
     var roleOnlyReResolvesByLabel: Bool {
         guard let role, !hasNameFilter else { return false }
         return RoleMapping.needsLabelReResolution(role: role)

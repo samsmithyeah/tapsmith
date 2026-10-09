@@ -197,8 +197,8 @@ enum RoleMapping {
     ///   a generic `.other` view carrying that role's React Native description
     ///   (`otherRoleDescriptions`). A generic view without one is accepted
     ///   only by a named query — the name is then what identifies it — and
-    ///   only when nothing marks it as another role (another description, or
-    ///   a trait `resolveRole` reads). RN's new architecture publishes nothing
+    ///   only when nothing marks it as another role (another of these
+    ///   descriptions, or a trait `resolveRole` reads). RN's new architecture publishes nothing
     ///   for alert and combobox, so a name is the only way to find those.
     /// - every other role: its element types, or its trait.
     static func matches(
@@ -215,22 +215,20 @@ enum RoleMapping {
         guard let types = roleToElementTypes[canonical] else { return false }
         if let description = otherRoleDescriptions[canonical] {
             if elementType != .other { return types.contains(elementType) }
-            let described = describedRoles(in: value)
-            if described.contains(description) { return true }
-            return hasNameFilter
-                && described.isDisjoint(with: otherRoleDescriptions.values)
-                && resolveRole(for: .other, traits: traits).isEmpty
+            if let described = describedRole(in: value) { return described == description }
+            return hasNameFilter && resolveRole(for: .other, traits: traits).isEmpty
         }
         return types.contains(elementType) || matchesTrait(role: canonical, traits: traits)
     }
 
-    /// The comma-separated parts of an accessibility value, lowercased, as
-    /// React Native joins its role description and states ("checkbox, checked").
-    private static func describedRoles(in value: String?) -> Set<String> {
-        guard let value, !value.isEmpty else { return [] }
-        return Set(value.split(separator: ",").map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        })
+    /// The role description React Native leads a generic view's accessibility
+    /// value with ("checkbox" in "checkbox, unchecked"), lowercased — or nil.
+    /// Only the first part counts: the states and the app's own value text
+    /// follow it, and a value text of "Alert" doesn't make a radio an alert.
+    private static func describedRole(in value: String?) -> String? {
+        guard let first = value?.split(separator: ",", omittingEmptySubsequences: false).first else { return nil }
+        let part = first.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return otherRoleDescriptions.values.contains(part) ? part : nil
     }
 
     /// Whether a role-only match must be found again as a live element by its

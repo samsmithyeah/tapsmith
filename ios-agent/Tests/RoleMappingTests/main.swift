@@ -140,6 +140,13 @@ check("an RN checkbox is not a radio button",
       matches("radiobutton", .other, value: "checkbox, checked", named: true), false)
 check("a value that only mentions the word isn't a description",
       matches("checkbox", .other, value: "tick the checkbox below"), false)
+check("only the leading part is a description: a radio valued \"Alert\" isn't an alert",
+      matches("alert", .other, value: "radio button, checked, Alert"), false)
+check("…not even by name", matches("alert", .other, value: "radio button, checked, Alert", named: true), false)
+check("…and it is still a radio button",
+      matches("radiobutton", .other, value: "radio button, checked, Alert"), true)
+check("a checkbox whose value text names another role is still a checkbox",
+      matches("checkbox", .other, value: "checkbox, checked, combo box"), true)
 check("static text is never a checkbox", matches("checkbox", .staticText, value: "checkbox", named: true), false)
 
 // alert / combobox: no native type; RN's old architecture describes them in
