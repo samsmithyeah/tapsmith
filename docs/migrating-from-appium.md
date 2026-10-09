@@ -30,7 +30,7 @@ Appium has clients in many languages. The examples here use [WebdriverIO](https:
 | `appium:appActivity` | `activity` (optional) |
 | `appium:udid` / `appium:deviceName` | `device` (serial or UDID), `simulator` (iOS simulator name), or `avd` (an emulator to launch) |
 | `appium:noReset`, `appium:fullReset` | The [`appReset`](writing-tests.md#test-isolation) policy |
-| `appium:autoGrantPermissions` | [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid-android-only) (Android) |
+| `appium:autoGrantPermissions` | [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid) for each permission |
 | Implicit wait (`timeouts: { implicit }`) | [`timeout`](configuration.md#all-options) (30 s by default) for every action and assertion |
 | `appium:newCommandTimeout` | Not needed: there is no server session to keep alive between commands |
 | Appium Inspector | [UI mode](ui-mode.md) (`npx tapsmith test --ui`): a live device mirror with a locator picker, beside your tests |
@@ -82,11 +82,11 @@ Appium has clients in many languages. The examples here use [WebdriverIO](https:
 | `mobile: clearApp` | [`device.clearAppData(pkg)`](api-reference.md#deviceclearappdatapackagename-string-promisevoid), or [`device.resetApp({ mode: "clear" })`](api-reference.md#deviceresetappoptions-promiseappresetresult) |
 | `mobile: installApp` | Automatic from `apk` / `app` in the config |
 | `mobile: queryAppState` | [`device.getAppState(pkg)`](api-reference.md#devicegetappstatepackagename-string-promiseappstate) |
-| `mobile: backgroundApp` | [`device.sendToBackground()`](api-reference.md#devicesendtobackground-promisevoid-android-only) (Android) |
+| `mobile: backgroundApp` | [`device.sendToBackground()`](api-reference.md#devicesendtobackground-promisevoid) |
 | `mobile: deepLink` / `driver.url()` | [`device.openDeepLink(url)`](api-reference.md#deviceopendeeplinkuri-string-options-opendeeplinkoptions-promisevoid) |
 | `driver.setOrientation()` | [`device.setOrientation()`](api-reference.md#devicesetorientationorientation-orientation-promisevoid) |
 | `mobile: setClipboard` / `mobile: getClipboard` | [`device.setClipboard()`](api-reference.md#devicesetclipboardtext-string-promisevoid) / [`device.getClipboard()`](api-reference.md#devicegetclipboard-promisestring) |
-| `mobile: changePermissions` | [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid-android-only) / `revokePermission()` (Android) |
+| `mobile: changePermissions` | [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid) / `revokePermission()` (Android, and iOS simulators) |
 | `driver.takeScreenshot()` | [`device.takeScreenshot()`](api-reference.md#devicetakescreenshot-promisescreenshotresponse); failures are captured automatically |
 | `mobile: startScreenRecording` | The [`video`](api-reference.md#video-recording) option, or a [trace](trace-viewer.md) |
 | `driver.getContexts()` / `driver.switchContext("WEBVIEW_…")` | [`device.webview()`](api-reference.md#devicewebviewpackagename-string-promisewebviewhandle) / [`device.native()`](api-reference.md#devicenative-promisevoid) ([WebView testing](webview.md)) |
@@ -195,7 +195,7 @@ describe("Login", () => {
 What changed:
 
 - **The capabilities became config.** `appium:app`, `appium:appPackage` and `appium:appActivity` are `apk`, `package` and (optionally) `activity`. There's no `automationName`, `deviceName` or Appium service: Tapsmith uses the one emulator or device it finds, or the one you name with `device`, `avd` or `--device`.
-- **The reset became a declared policy.** The three `mobile:` calls in `beforeEach` are what `test.use({ appResetScope: "test" })` does, including waiting for the app to come back up. Without that line, Tapsmith resets the app once per test file.
+- **The reset became a declared policy.** The `terminateApp` and `clearApp` calls in `beforeEach` are what `test.use({ appResetScope: "test" })` does, including relaunching the app and waiting for it to come up; the deep link to the screen stays in `beforeEach`. Without that line, Tapsmith resets the app once per test file.
 - **The explicit waits are gone.** `type()` and `tap()` wait for their element, and `expect(...).toBeVisible()` retries until the text appears. Each waits up to the config's `timeout`.
 - **The locators work on iOS too.** `~Email` is an accessibility id, which Appium matches against `content-desc` on Android but against the element's name (its accessibility identifier, if it has one) on iOS, so on this screen, where the field's `testID` (`email-input`) differs from its label, `~Email` finds nothing on iOS and each platform needs its own selector. `getByRole("textfield", { name: "Email" })` matches the field's role and accessible name on both platforms, and the XPath for the success message became `getByText`. To run on iOS, add `platform: "ios"`, `app` and `simulator` (or a second [project](configuration.md#projects-with-per-device-targeting)); the test itself doesn't change.
 - **`setValue` became `type`.** `type()` taps the field and types into it. Use `clearAndType()` where the field may already contain text, as `setValue` cleared it.
@@ -247,7 +247,7 @@ Appium covers more platforms and device features than Tapsmith does today:
 - **Other languages:** Tapsmith tests are written in TypeScript. A suite in Java, Python, Ruby or C# has to be rewritten, not just re-pointed.
 - **Remote and cloud devices:** Tapsmith drives emulators, simulators and devices attached to the machine it runs on. It has no WebDriver endpoint, so it can't run on Selenium Grid or a cloud device provider through Appium's protocol.
 - **Device simulation:** setting the GPS location, network conditions (airplane mode, Wi-Fi), biometrics, and pushing or pulling files have no Tapsmith methods.
-- **iOS permissions:** `grantPermission()` and `revokePermission()` are Android only.
+- **Permissions on physical iPhones:** `grantPermission()` and `revokePermission()` work on Android and on iOS simulators, not on physical iOS devices.
 - **Mobile browsers:** testing a website in Chrome or Safari on the device. Tapsmith tests apps (and the WebViews inside them).
 - **Arbitrary shell commands:** there is no counterpart to `mobile: shell`.
 

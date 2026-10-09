@@ -404,7 +404,7 @@ Check the state of an app. Returns `"not_installed"`, `"stopped"`, `"background"
 const state = await device.getAppState("com.example.myapp");
 ```
 
-### `device.sendToBackground(): Promise<void>` *(Android only)*
+### `device.sendToBackground(): Promise<void>`
 
 Press the home button to send the current app to the background.
 
@@ -514,18 +514,19 @@ Restore a previously saved app state archive. Clears the app's data first, then 
 await device.restoreAppState("com.example.myapp", "./auth-state.tar.gz");
 ```
 
-### `device.grantPermission(packageName: string, permission: string): Promise<void>` *(Android only)*
+### `device.grantPermission(packageName: string, permission: string): Promise<void>`
 
-Programmatically grant an Android runtime permission.
+Programmatically grant a permission. On Android, `permission` is a runtime permission name; on an iOS simulator, it is a `simctl privacy` service such as `camera`, `photos`, `location`, `microphone`, `contacts` or `calendar`. Not supported on physical iOS devices.
 
 ```typescript
 await device.grantPermission("com.example.myapp", "android.permission.CAMERA");
 await device.grantPermission("com.example.myapp", "android.permission.ACCESS_FINE_LOCATION");
+await device.grantPermission("com.example.myapp", "camera"); // iOS simulator
 ```
 
-### `device.revokePermission(packageName: string, permission: string): Promise<void>` *(Android only)*
+### `device.revokePermission(packageName: string, permission: string): Promise<void>`
 
-Revoke a previously granted runtime permission.
+Revoke a previously granted permission. Takes the same `permission` values as `grantPermission()`, with the same platform support.
 
 ```typescript
 await device.revokePermission("com.example.myapp", "android.permission.CAMERA");

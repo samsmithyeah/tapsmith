@@ -83,10 +83,10 @@ This guide is for teams with a Detox suite who want to move it to Tapsmith. Of t
 | `device.launchApp({ newInstance: true })` | [`device.restartApp(pkg)`](api-reference.md#devicerestartapppackagename-string-options--waitforidle-boolean--promisevoid), or `appReset: "restart"` |
 | `device.launchApp({ delete: true })` | The default `appReset` policy (clear data and relaunch; a warm, in-app reset instead when the app mounts `@tapsmith/react-native`), or [`device.resetApp({ mode: "clear" })`](api-reference.md#deviceresetappoptions-promiseappresetresult) |
 | `device.launchApp({ url })` / `device.openURL({ url })` | [`device.openDeepLink(url)`](api-reference.md#deviceopendeeplinkuri-string-options-opendeeplinkoptions-promisevoid) |
-| `device.launchApp({ permissions })` (iOS) | No iOS counterpart yet; on Android, [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid-android-only) |
+| `device.launchApp({ permissions })` (iOS) | [`device.grantPermission(bundleId, "camera")`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid) for each permission, on a simulator |
 | `device.reloadReactNative()` | A warm reset through [`@tapsmith/react-native`](warm-reset.md), automatic between files once the app mounts it |
 | `device.terminateApp()` | [`device.terminateApp()`](api-reference.md#deviceterminateapppackagename-string-promisevoid) |
-| `device.sendToHome()` | [`device.sendToBackground()`](api-reference.md#devicesendtobackground-promisevoid-android-only) (Android) |
+| `device.sendToHome()` | [`device.sendToBackground()`](api-reference.md#devicesendtobackground-promisevoid) |
 | `device.pressBack()` | [`device.pressBack()`](api-reference.md#devicepressback-promisevoid-android-only) |
 | `device.setOrientation("landscape")` | [`device.setOrientation("landscape")`](api-reference.md#devicesetorientationorientation-orientation-promisevoid) |
 | `device.takeScreenshot(name)` | [`device.takeScreenshot()`](api-reference.md#devicetakescreenshot-promisescreenshotresponse) |
@@ -270,7 +270,7 @@ Some Detox device APIs have no Tapsmith equivalent at the moment:
 
 - **Device simulation:** `setLocation`, `setBiometricEnrollment` / `matchFace` / `matchFinger`, `shake`, `setStatusBar`, and `sendUserNotification`.
 - **Launch configuration:** `launchArgs` and `languageAndLocale` on `launchApp`. Tapsmith launches the app without extra arguments.
-- **iOS permissions:** `launchApp({ permissions })` has no counterpart; `grantPermission()` and `revokePermission()` are Android only.
+- **Permissions on physical iPhones:** `grantPermission()` and `revokePermission()` work on Android and on iOS simulators, not on physical iOS devices.
 - **Jest features:** `jest.fn()` mocks, snapshot matchers and Jest's custom matchers aren't part of Tapsmith's `expect`, and Jest's watch mode is replaced by [Tapsmith's](watch-mode.md).
 - **Some actions:** `scroll()` by an offset in points, `scrollTo("bottom")` (scroll to an edge; use `scrollIntoView()` on the element you want, or `scroll()` repeatedly) and setting picker wheel columns (`setColumnToValue`).
 
@@ -279,7 +279,7 @@ Some Detox device APIs have no Tapsmith equivalent at the moment:
 Detox and Tapsmith can test the same app from the same repository while you move over:
 
 1. **Keep the two suites apart.** Leave Detox in `e2e/` with its Jest config, and put Tapsmith tests in their own folder (`tests/`) with names ending in `.tapsmith.ts`, so neither runner picks up the other's files. Run them as separate CI jobs, and never against the same device at once.
-2. **Build once, test twice.** A release build of your app works for both. A Detox build carries Detox's native code, which Tapsmith doesn't need but doesn't mind either, so one build can serve both suites until Detox is gone.
+2. **Build once, test twice.** A release build of your app works for both. Tapsmith installs the same app build Detox tests and ignores Detox's Android test APK, so one build can serve both suites until Detox is gone.
 3. **Port the flakiest tests first**, especially the ones that fight synchronization (`disableSynchronization()`, long `waitFor` timeouts). They tend to get simpler.
 4. **Port helpers before tests.** A Detox helper module (`loginAs(user)`) becomes a [screen object](writing-tests.md#screen-object-pattern) or a [custom fixture](writing-tests.md#custom-fixtures-with-testextend) that every ported test reuses.
 5. **Retire Detox when the last test is ported.** Remove the Detox Gradle setup, the `DetoxTest` class, `.detoxrc.js` and the `jest` config for e2e, and stop building the Android test APK.

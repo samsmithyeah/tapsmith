@@ -19,7 +19,7 @@ This guide is for teams with a Maestro suite who want to move it to Tapsmith. It
 | `appId:` in the flow header | `package` in [`tapsmith.config.ts`](configuration.md) (one config for the whole suite) |
 | `tapOn: "Sign in"` | [`device.getByText("Sign in").tap()`](api-reference.md#elementhandletap-promisevoid), or better [`device.getByRole("button", { name: "Sign in" }).tap()`](api-reference.md#devicegetbyrolerole-string-options-elementhandle) |
 | `tapOn: { id: "email-input" }` | [`device.getByTestId("email-input").tap()`](api-reference.md#devicegetbytestidtestid-string-elementhandle) |
-| `tapOn: { point: "50%,50%" }` | [`device.tapXY(x, y)`](api-reference.md#devicetapxyx-number-y-number-promisevoid) (in screen points, not percentages) |
+| `tapOn: { point: "50%,50%" }` | [`device.tapXY(x, y)`](api-reference.md#devicetapxyx-number-y-number-promisevoid) (in screen coordinates, not percentages: pixels on Android, points on iOS) |
 | `doubleTapOn` / `longPressOn` | [`.doubleTap()`](api-reference.md#elementhandledoubletapoptions--intervalms-number--promisevoid) / [`.longPress()`](api-reference.md#elementhandlelongpressdurationms-number-promisevoid) |
 | `inputText` (into the focused field) | [`locator.type(text)`](api-reference.md#elementhandletypetext-string-options--delay-number--promisevoid) on the field itself, or [`device.inputText(text)`](api-reference.md#deviceinputtexttext-string-promisevoid) for the focused field |
 | `eraseText` | [`.clear()`](api-reference.md#elementhandleclear-promisevoid) or [`.clearAndType(text)`](api-reference.md#elementhandleclearandtypetext-string-options--delay-number--promisevoid) |
@@ -43,7 +43,7 @@ This guide is for teams with a Maestro suite who want to move it to Tapsmith. It
 | `takeScreenshot` | [`device.takeScreenshot()`](api-reference.md#devicetakescreenshot-promisescreenshotresponse); failures are captured automatically (`screenshot: "only-on-failure"`) |
 | `startRecording` / `stopRecording` | The [`video`](api-reference.md#video-recording) option, or a [trace](trace-viewer.md), which records every action with screenshots, the view hierarchy and network traffic |
 | `setOrientation` / `setClipboard` | [`device.setOrientation()`](api-reference.md#devicesetorientationorientation-orientation-promisevoid) / [`device.setClipboard()`](api-reference.md#devicesetclipboardtext-string-promisevoid) |
-| `setPermissions` | [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid-android-only) / `revokePermission()` (Android only) |
+| `setPermissions` | [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid) / `revokePermission()` (Android, and iOS simulators) |
 | Maestro Studio | [UI mode](ui-mode.md) (`npx tapsmith test --ui`): a live device mirror, a locator picker, and your tests in one window |
 | `maestro hierarchy` | The Hierarchy tab of the [trace viewer](trace-viewer.md) or UI mode, or the [`tapsmith_snapshot`](mcp-server.md#tapsmith_snapshot) MCP tool |
 | `maestro mcp` | [`npx tapsmith mcp-server`](mcp-server.md) |
@@ -177,7 +177,7 @@ Name Tapsmith test files `*.tapsmith.ts` (what `tapsmith init` sets up), so that
 - Instead of relational selectors, scope a locator inside another (`device.getByTestId("row-5").getByRole("button", { name: "Delete" })`), or narrow it with `filter()`, `first()`, `nth()`, `and()` and `or()` ([ElementHandle](api-reference.md#elementhandle)). Position on screen (`below`, `leftOf`) has no locator equivalent.
 - Ambiguity is an error. When a locator matches several elements, Tapsmith's strict mode refuses to guess: it reports every match and suggests a unique locator for each.
 
-**Conditional steps.** `runFlow` with `when: visible:` becomes an `if`. Use `isVisible()` or `exists()`, which answer without waiting out the timeout (an absent element costs a second read once the screen settles, at most about 1.5 s):
+**Conditional steps.** `runFlow` with `when: visible:` becomes an `if`. Use `isVisible()` or `exists()`, which answer without waiting out the timeout (an absent element costs a second read once the screen settles, usually a second or two):
 
 ```typescript
 const notNow = device.getByRole("button", { name: "Not now" });
@@ -193,7 +193,7 @@ if (await notNow.isVisible()) {
 Some Maestro commands have no Tapsmith equivalent at the moment. Plan to keep these flows in Maestro, or find another way to cover them:
 
 - **Device state:** `setLocation`, `travel` (moving the device's location along a route), `setAirplaneMode` / `toggleAirplaneMode` and `addMedia`. There are no Tapsmith methods for these.
-- **iOS permissions:** `setPermissions` and `launchApp`'s `permissions` work on iOS; Tapsmith's `grantPermission()` and `revokePermission()` are Android only.
+- **Permissions on physical iPhones:** `grantPermission()` and `revokePermission()` work on Android and on iOS simulators, not on physical iOS devices.
 - **Launch arguments:** `launchApp`'s `arguments` have no counterpart; `device.launchApp()` takes an Android `activity`, not arguments.
 - **AI and visual commands:** `assertWithAI`, `assertNoDefectsWithAI`, `extractTextWithAI` and `assertScreenshot` (screenshot comparison).
 - **Web testing:** Maestro can drive a desktop browser. Tapsmith tests native mobile apps; content inside your app's WebViews is covered by [WebView testing](webview.md).
