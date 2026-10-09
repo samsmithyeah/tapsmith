@@ -143,6 +143,25 @@ test.describe("Locator playground", () => {
     await expect(locator.matchCount).toHaveText("1 match")
   })
 
+  test("applies getByRole state options, and names an option it cannot apply", async ({
+    viewer,
+    detailTabs,
+    locator,
+  }) => {
+    await viewer.open(SPEC)
+    await detailTabs.select("Locator")
+
+    // The button is not selected (PILOT-655: the state used to be ignored).
+    await locator.type('device.getByRole("button", { name: "Tap area", selected: true })')
+    await expect(locator.matchCount).toHaveText("0 matches")
+    await locator.type('device.getByRole("button", { name: "Tap area", selected: false })')
+    await expect(locator.matchCount).toHaveText("1 match")
+
+    await locator.type('device.getByRole("heading", { name: "Gesture Testing", level: 1 })')
+    await expect(locator.error).toContainText('unsupported option "level"')
+    await expect(locator.matchCount).toHaveText("")
+  })
+
   test("counts every match of an ambiguous selector", async ({ viewer, detailTabs, locator }) => {
     await viewer.open(traceWith(AMBIGUOUS_HIERARCHY))
     await detailTabs.select("Locator")

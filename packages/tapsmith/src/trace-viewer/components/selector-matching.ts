@@ -91,12 +91,12 @@ interface ParsedOptions {
 /**
  * Parse the options-object blob of a getBy* call: `name: "x"` or `name: /x/`,
  * plus boolean options (`exact`, and getByRole's `checked`, `disabled`,
- * `selected`, `expanded`). Returns null for anything else — an unknown key, a
- * non-boolean value, a missing comma — so a locator is refused rather than
- * run with an option silently dropped, which is how `selected: true` came to
- * match unselected elements (PILOT-655).
+ * `selected`, `expanded`). Anything else — an unknown key, a non-boolean
+ * value, a missing comma — is an `{ error }`, so a locator is refused rather
+ * than run with an option silently dropped, which is how `selected: true`
+ * came to match unselected elements (PILOT-655).
  */
-function parseGetByOptions(blob: string | undefined): ParsedOptions | null {
+function parseGetByOptions(blob: string | undefined): ParsedOptions | { error: string } {
   const parsed: ParsedOptions = { states: {}, keys: new Set() };
   if (!blob) return parsed;
   // Skip over escaped characters inside the quotes so an escaped quote of
@@ -113,20 +113,51 @@ function parseGetByOptions(blob: string | undefined): ParsedOptions | null {
   for (const raw of rest.split(',')) {
     const part = raw.trim();
     if (!part) continue;
-    const m = part.match(/^(\w+)\s*:\s*(true|false)$/);
-    if (!m) return null;
+    const m = part.match(/^(\w+)\s*:\s*(.*)$/s);
+    if (!m) return { error: `cannot read the option "${part}"` };
     const [, key, value] = m;
+    if (key !== 'exact' && !(ROLE_STATE_KEYS as readonly string[]).includes(key)) {
+      return { error: `unsupported option "${key}"` };
+    }
+    if (value !== 'true' && value !== 'false') return { error: `option "${key}" must be true or false, got ${value}` };
     if (key === 'exact') parsed.exact = value === 'true';
-    else if ((ROLE_STATE_KEYS as readonly string[]).includes(key)) parsed.states[key as RoleStateKey] = value === 'true';
-    else return null;
+    else parsed.states[key as RoleStateKey] = value === 'true';
     parsed.keys.add(key);
   }
   return parsed;
 }
 
-/** Whether a parsed options object uses only `allowed` keys. */
-function onlyKeys(options: ParsedOptions, allowed: readonly string[]): boolean {
-  return [...options.keys].every((k) => allowed.includes(k));
+/**
+ * The options of a `<receiver>.getBy<method>(…)` call, or why they are
+ * refused: unreadable, or a key `method` does not take (the SDK's signatures).
+ */
+function getterOptions(
+  receiver: 'device' | 'webview', method: string, blob: string | undefined,
+): ParsedOptions | { error: string } {
+  const options = parseGetByOptions(blob);
+  if ('error' in options) return options;
+  const allowed = (receiver === 'device' ? DEVICE_OPTION_KEYS : WEBVIEW_OPTION_KEYS)[method] ?? [];
+  const bad = [...options.keys].find((k) => !allowed.includes(k));
+  if (bad === undefined) return options;
+  const takes = allowed.length ? `it takes ${allowed.join(', ')}` : 'it takes no options';
+  return { error: `${receiver}.getBy${method}() has no option "${bad}" (${takes})` };
+}
+
+/**
+ * Why a locator string with an options object is refused, naming the option
+ * (PILOT-655), or null when its options are fine or it has none. The MCP
+ * tools put this in their "Invalid locator" error so a caller knows what to
+ * drop, e.g. Playwright's `level` or `includeHidden`.
+ */
+export function locatorOptionsError(input: string): string | null {
+  const chain = parseChain(input.trim());
+  if (!chain) return null;
+  const device = chain.base.match(DEVICE_RE);
+  const webview = device ? null : chain.base.match(WEBVIEW_GETBY_RE);
+  const match = device ?? webview;
+  if (!match) return null;
+  const options = getterOptions(device ? 'device' : 'webview', match[1], match[6]);
+  return 'error' in options ? options.error : null;
 }
 
 /** The options each getter takes (the SDK's signatures). */
@@ -202,8 +233,8 @@ export function parseSelectorString(input: string): ParsedSelector | null {
     const method = wvMatch[1];
     if (wvMatch[4] !== undefined) return null;
     const value = pick(wvMatch[2], wvMatch[3]);
-    const options = parseGetByOptions(wvMatch[6]);
-    if (!options || !onlyKeys(options, WEBVIEW_OPTION_KEYS[method] ?? [])) return null;
+    const options = getterOptions('webview', method, wvMatch[6]);
+    if ('error' in options) return null;
     const { name, nameRegex, exact } = options;
     if (nameRegex !== undefined) return null;
     const sel = mapWebViewMethod(method, value, name, exact);
@@ -224,8 +255,8 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   const deviceMatch = base.match(DEVICE_RE);
   if (deviceMatch) {
     const method = deviceMatch[1];
-    const options = parseGetByOptions(deviceMatch[6]);
-    if (!options || !onlyKeys(options, DEVICE_OPTION_KEYS[method] ?? [])) return null;
+    const options = getterOptions('device', method, deviceMatch[6]);
+    if ('error' in options) return null;
     const { name, nameRegex, exact, states } = options;
     if (nameRegex === null) return null; // a malformed RegExp
     let sel: ParsedSelector | null;

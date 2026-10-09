@@ -294,6 +294,18 @@ describe('tapsmith_tap', () => {
     expect(elementId).toBeUndefined();
   });
 
+  it('taps with getByRole\'s state filters, not without them (PILOT-655)', async () => {
+    // The parser used to drop `selected`, so the agent tapped whichever
+    // "Space" card came first, selected or not.
+    const daemon = makeDaemon({ elements: [makeElement({ contentDescription: 'Space', role: 'button', selected: true })] });
+    hoisted.client = daemon.client;
+    const res = await callTool('tapsmith_tap', { locator: 'device.getByRole("button", { name: "Space", exact: true, selected: true })' });
+    expect(res.isError).toBeFalsy();
+    const expected = { role: { role: 'button', name: 'Space', exact: true, selected: true } };
+    expect(selectorToProto(daemon.findElements.mock.calls[0][0])).toEqual(expected);
+    expect(selectorToProto(daemon.tap.mock.calls[0][0])).toEqual(expected);
+  });
+
   it('refuses an ambiguous locator and taps nothing (PILOT-226)', async () => {
     // Strict mode is only worth anything if the tap does not happen. Before
     // this path existed the agent tapped the first match — the subtitle, not
@@ -686,6 +698,15 @@ describe('tapsmith_test_locator', () => {
     expect(res.isError).toBe(true);
     expect(text(res)).toContain('Invalid locator');
     expect(text(res)).toContain('getByTestId()');
+  });
+
+  it('names the option it refuses instead of running the locator without it (PILOT-655)', async () => {
+    const daemon = makeDaemon({ elements: [makeElement({ text: 'A' })] });
+    hoisted.client = daemon.client;
+    const res = await callTool('tapsmith_test_locator', { locator: 'device.getByRole("heading", { name: "A", level: 2 })' });
+    expect(res.isError).toBe(true);
+    expect(text(res)).toBe('Invalid locator: "device.getByRole("heading", { name: "A", level: 2 })": unsupported option "level".');
+    expect(daemon.findElements).not.toHaveBeenCalled();
   });
 
   it('surfaces a daemon error instead of reporting no match', async () => {

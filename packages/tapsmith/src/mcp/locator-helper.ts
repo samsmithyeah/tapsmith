@@ -1,4 +1,4 @@
-import { parseSelectorString, resolvePositionalIndex } from '../trace-viewer/components/selector-matching.js';
+import { locatorOptionsError, parseSelectorString, resolvePositionalIndex } from '../trace-viewer/components/selector-matching.js';
 import type { ParsedSelector } from '../trace-viewer/components/selector-matching.js';
 import type { RoleSelectorValue, Selector, SelectorKind } from '../selectors.js';
 import { makeSelector } from '../selectors.js';
@@ -16,6 +16,8 @@ export interface ParsedRuntimeSelector {
 export function parseSelectorToInternal(input: string): ParsedRuntimeSelector {
   const parsed = parseSelectorString(input);
   if (!parsed) {
+    const optionsError = locatorOptionsError(input);
+    if (optionsError) throw new Error(`Invalid locator: "${input}": ${optionsError}.`);
     throw new Error(`Invalid locator: "${input}". Use a Tapsmith locator like device.getByRole("button", { name: "Login" })`);
   }
   return { selector: makeSelector(parsedSelectorToKind(parsed)), index: parsed.index };

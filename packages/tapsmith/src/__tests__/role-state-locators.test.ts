@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { HierarchyNode } from '../trace-viewer/components/hierarchy-utils.js';
-import { parseSelectorString, findMatchingNodes } from '../trace-viewer/components/selector-matching.js';
+import { parseSelectorString, findMatchingNodes, locatorOptionsError } from '../trace-viewer/components/selector-matching.js';
 import { parseSelectorToInternal, resolveActionTarget } from '../mcp/locator-helper.js';
 import { selectorToProto } from '../selectors.js';
 import type { Selector } from '../selectors.js';
@@ -102,8 +102,28 @@ describe('parseSelectorToInternal: states reach the runtime selector', () => {
     expect(selectorToProto(selector)).toMatchObject({ role: { role: 'tab', selected: true } });
   });
 
-  it('refuses an unknown option as an invalid locator', () => {
-    expect(() => parseSelectorToInternal('device.getByRole("heading", { level: 1 })')).toThrow(/Invalid locator/);
+  it('refuses an unknown option as an invalid locator, naming the option', () => {
+    expect(() => parseSelectorToInternal('device.getByRole("heading", { name: "A", level: 1 })'))
+      .toThrow('Invalid locator: "device.getByRole("heading", { name: "A", level: 1 })": unsupported option "level".');
+  });
+});
+
+describe('locatorOptionsError: why a locator\'s options are refused', () => {
+  it('names an unknown option, a non-boolean value and an option the getter does not take', () => {
+    expect(locatorOptionsError('device.getByRole("button", { includeHidden: true })')).toBe('unsupported option "includeHidden"');
+    expect(locatorOptionsError('device.getByRole("button", { selected: "yes" })')).toBe('option "selected" must be true or false, got "yes"');
+    expect(locatorOptionsError('device.getByText("A", { selected: true }).first()'))
+      .toBe('device.getByText() has no option "selected" (it takes exact)');
+    expect(locatorOptionsError('device.getByLabel("A", { exact: true })'))
+      .toBe('device.getByLabel() has no option "exact" (it takes no options)');
+    expect(locatorOptionsError('webview.getByRole("tab", { name: "A", selected: true })'))
+      .toBe('webview.getByRole() has no option "selected" (it takes name)');
+  });
+
+  it('is null for valid options and for locators without any', () => {
+    expect(locatorOptionsError('device.getByRole("tab", { name: "A", selected: true })')).toBeNull();
+    expect(locatorOptionsError('device.getByText("A")')).toBeNull();
+    expect(locatorOptionsError('not a locator')).toBeNull();
   });
 
   it('acts with the state filter, so a tap cannot land on the unselected card', async () => {

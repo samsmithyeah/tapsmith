@@ -70,29 +70,7 @@ class HierarchyDumper(
      * expand/collapse actions, so the Locator Playground can apply it —
      * PILOT-655).
      */
-    private fun injectAttributes(xml: String): String {
-        val attrMap = collectAttributeMap()
-        if (attrMap.isEmpty()) return xml
-
-        val sb = StringBuilder(xml.length + attrMap.size * 30)
-        // Match <node ... bounds="[l,t][r,b]" and inject the attributes
-        // after it, before the closing > or /> of each element that has any.
-        val boundsRe = Regex("""(<node\b[^>]*\bbounds="(\[\d+,\d+]\[\d+,\d+])")""")
-        var lastEnd = 0
-        for (match in boundsRe.findAll(xml)) {
-            val bounds = match.groupValues[2]
-            val attrs = attrMap[bounds]
-            sb.append(xml, lastEnd, match.range.last + 1)
-            attrs?.forEach { (name, value) ->
-                sb.append(' ').append(name).append("=\"")
-                sb.append(escapeXmlAttr(value))
-                sb.append('"')
-            }
-            lastEnd = match.range.last + 1
-        }
-        sb.append(xml, lastEnd, xml.length)
-        return sb.toString()
-    }
+    private fun injectAttributes(xml: String): String = HierarchyAttributes.inject(xml, collectAttributeMap())
 
     /**
      * Walk all accessibility windows and build a map of bounds → the
@@ -109,11 +87,17 @@ class HierarchyDumper(
         val attrMap = mutableMapOf<String, MutableMap<String, String>>()
         try {
             val automation = instrumentation.uiAutomation
+            val displayWidth = device.displayWidth
+            val displayHeight = device.displayHeight
             for (window in automation.windows) {
                 try {
                     val root = window.root ?: continue
+                    val windowRect = Rect()
+                    window.getBoundsInScreen(windowRect)
+                    val windowBox = HierarchyAttributes.Box(windowRect.left, windowRect.top, windowRect.right, windowRect.bottom)
+                    val clip = DumpClip(displayWidth, displayHeight, windowBox)
                     try {
-                        walkNodeInfo(root, attrMap)
+                        walkNodeInfo(root, clip, attrMap)
                     } finally {
                         @Suppress("DEPRECATION")
                         root.recycle()
@@ -132,6 +116,7 @@ class HierarchyDumper(
     @Suppress("DEPRECATION")
     private fun walkNodeInfo(
         node: AccessibilityNodeInfo,
+        clip: DumpClip,
         attrMap: MutableMap<String, MutableMap<String, String>>,
     ) {
         val role = extractRoleFromNodeInfo(node)
@@ -139,14 +124,23 @@ class HierarchyDumper(
         if (role != null || expanded != null) {
             val rect = Rect()
             node.getBoundsInScreen(rect)
-            val bounds = "[${rect.left},${rect.top}][${rect.right},${rect.bottom}]"
+            // Keyed by the bounds the stock dump writes for this node, which
+            // are clipped to the display and window.
+            val bounds =
+                HierarchyAttributes
+                    .dumpedBounds(
+                        HierarchyAttributes.Box(rect.left, rect.top, rect.right, rect.bottom),
+                        clip.displayWidth,
+                        clip.displayHeight,
+                        clip.window,
+                    ).key()
             val attrs = attrMap.getOrPut(bounds) { mutableMapOf() }
             role?.let { attrs["tapsmith-role"] = it }
             expanded?.let { attrs["tapsmith-expanded"] = it.toString() }
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            walkNodeInfo(child, attrMap)
+            walkNodeInfo(child, clip, attrMap)
             child.recycle()
         }
     }
@@ -184,10 +178,10 @@ class HierarchyDumper(
         }
     }
 
-    private fun escapeXmlAttr(s: String): String {
-        return s.replace("&", "&amp;")
-            .replace("\"", "&quot;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-    }
+    /** What the stock dump clips a node's bounds to: the display, then its window. */
+    private class DumpClip(
+        val displayWidth: Int,
+        val displayHeight: Int,
+        val window: HierarchyAttributes.Box,
+    )
 }
