@@ -1,6 +1,6 @@
 import type { HierarchyNode } from '../trace-viewer/components/hierarchy-utils.js';
 import { getNodeRole } from '../trace-viewer/components/hierarchy-utils.js';
-import { generateSelectors } from '../trace-viewer/components/selector-generation.js';
+import { generateSelectors, escapeJsString } from '../trace-viewer/components/selector-generation.js';
 import { disambiguateSelectors } from '../trace-viewer/components/selector-uniqueness.js';
 
 interface FormattedResult {
@@ -79,9 +79,12 @@ function formatNode(
 
     const parts: string[] = [`${indent}- ${refTag}`];
     parts.push(role || node.tagName);
-    if (text) parts.push(` "${truncate(text, 60)}"`);
+    // Values are shown the way a suggested locator spells them (PILOT-658):
+    // decoded text, JS-escaped so a newline reads `\n` and the node stays on
+    // one tree line. Truncate first so an escape is never cut in half.
+    if (text) parts.push(` "${escapeJsString(truncate(text, 60))}"`);
     if (states.length > 0) parts.push(` [${states.join(', ')}]`);
-    if (hint) parts.push(` placeholder="${truncate(hint, 40)}"`);
+    if (hint) parts.push(` placeholder="${escapeJsString(truncate(hint, 40))}"`);
 
     lines.push(parts.join(''));
   }

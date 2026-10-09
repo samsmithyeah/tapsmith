@@ -2,8 +2,14 @@ import type { HierarchyNode } from './hierarchy-utils.js';
 import { getNodeRole, WEBVIEW_TAG_TO_ROLE, ANDROID_CLASS_TO_ROLE, IOS_TYPE_TO_ROLE } from './hierarchy-utils.js';
 import { unknownRoleMessage } from '../../roles.js';
 
-function escapeQuotes(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+/**
+ * Escape a raw value for the inside of a double-quoted JavaScript string
+ * literal: backslash, double quote, and the two line terminators a literal
+ * cannot hold raw (a newline becomes `\n`, a carriage return `\r`).
+ * `unescapeSelectorValue` (selector-matching.ts) is the inverse.
+ */
+export function escapeJsString(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
 }
 
 // ─── Attribute Helpers ───
@@ -121,7 +127,7 @@ function generateWebViewSelectors(node: HierarchyNode): GeneratedSelector[] {
   const accessibleName = ariaLabel || text || placeholder;
   if (role && accessibleName) {
     selectors.push({
-      code: `webview.getByRole("${escapeQuotes(role)}", { name: "${escapeQuotes(accessibleName)}" })`,
+      code: `webview.getByRole("${escapeJsString(role)}", { name: "${escapeJsString(accessibleName)}" })`,
       label: 'Role + name',
       priority: 1,
     });
@@ -130,7 +136,7 @@ function generateWebViewSelectors(node: HierarchyNode): GeneratedSelector[] {
   // 2. Role alone
   if (role && !accessibleName) {
     selectors.push({
-      code: `webview.getByRole("${escapeQuotes(role)}")`,
+      code: `webview.getByRole("${escapeJsString(role)}")`,
       label: 'Role',
       priority: 2,
     });
@@ -139,7 +145,7 @@ function generateWebViewSelectors(node: HierarchyNode): GeneratedSelector[] {
   // 3. Label (aria-label) — Testing Library getByLabelText
   if (ariaLabel) {
     selectors.push({
-      code: `webview.getByLabel("${escapeQuotes(ariaLabel)}")`,
+      code: `webview.getByLabel("${escapeJsString(ariaLabel)}")`,
       label: 'Label',
       priority: 3,
     });
@@ -148,7 +154,7 @@ function generateWebViewSelectors(node: HierarchyNode): GeneratedSelector[] {
   // 4. Placeholder — Testing Library getByPlaceholderText
   if (placeholder) {
     selectors.push({
-      code: `webview.getByPlaceholder("${escapeQuotes(placeholder)}")`,
+      code: `webview.getByPlaceholder("${escapeJsString(placeholder)}")`,
       label: 'Placeholder',
       priority: 4,
     });
@@ -157,7 +163,7 @@ function generateWebViewSelectors(node: HierarchyNode): GeneratedSelector[] {
   // 5. Text content — Testing Library getByText
   if (text) {
     selectors.push({
-      code: `webview.getByText("${escapeQuotes(text)}")`,
+      code: `webview.getByText("${escapeJsString(text)}")`,
       label: 'Text',
       priority: 5,
     });
@@ -166,7 +172,7 @@ function generateWebViewSelectors(node: HierarchyNode): GeneratedSelector[] {
   // 6. Test ID (last resort for semantic selectors)
   if (testId) {
     selectors.push({
-      code: `webview.getByTestId("${escapeQuotes(testId)}")`,
+      code: `webview.getByTestId("${escapeJsString(testId)}")`,
       label: 'Test ID',
       priority: 6,
     });
@@ -175,7 +181,7 @@ function generateWebViewSelectors(node: HierarchyNode): GeneratedSelector[] {
   // 7. CSS id selector
   if (id) {
     selectors.push({
-      code: `webview.locator("#${escapeQuotes(id)}")`,
+      code: `webview.locator("#${escapeJsString(id)}")`,
       label: 'CSS #id',
       priority: 7,
     });
@@ -186,13 +192,13 @@ function generateWebViewSelectors(node: HierarchyNode): GeneratedSelector[] {
     const cssClass = (node.attributes.get('webview-class') ?? '').split(/\s+/).filter(Boolean)[0];
     if (cssClass) {
       selectors.push({
-        code: `webview.locator("${tag}.${escapeQuotes(cssClass)}")`,
+        code: `webview.locator("${tag}.${escapeJsString(cssClass)}")`,
         label: 'CSS tag.class',
         priority: 8,
       });
     } else {
       selectors.push({
-        code: `webview.locator("${escapeQuotes(tag)}")`,
+        code: `webview.locator("${escapeJsString(tag)}")`,
         label: 'CSS tag',
         priority: 9,
       });
@@ -240,7 +246,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   // 1. Role + name (highest priority — Testing Library getByRole)
   if (role && accessibleName) {
     selectors.push({
-      code: `device.getByRole("${escapeQuotes(role)}", { name: "${escapeQuotes(accessibleName)}" })`,
+      code: `device.getByRole("${escapeJsString(role)}", { name: "${escapeJsString(accessibleName)}" })`,
       label: 'Role + name',
       priority: genericRole ? 7 : 1,
     });
@@ -249,7 +255,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   // 2. Role without name
   if (role && !accessibleName) {
     selectors.push({
-      code: `device.getByRole("${escapeQuotes(role)}")`,
+      code: `device.getByRole("${escapeJsString(role)}")`,
       label: 'Role',
       priority: genericRole ? 10 : 2,
     });
@@ -260,7 +266,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   // iOS: getByLabel matches inputs by accessibilityLabel
   if (role && FORM_FIELD_ROLES.has(role) && accessibleName) {
     selectors.push({
-      code: `device.getByLabel("${escapeQuotes(accessibleName)}")`,
+      code: `device.getByLabel("${escapeJsString(accessibleName)}")`,
       label: 'Label',
       priority: 3,
     });
@@ -272,7 +278,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   // getByText instead of a redundant second selector.
   if (contentDesc) {
     selectors.push({
-      code: `device.getByDescription("${escapeQuotes(contentDesc)}")`,
+      code: `device.getByDescription("${escapeJsString(contentDesc)}")`,
       label: 'Description',
       priority: 4,
     });
@@ -281,7 +287,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   // 5. Placeholder / hint — Testing Library getByPlaceholderText
   if (hint) {
     selectors.push({
-      code: `device.getByPlaceholder("${escapeQuotes(hint)}")`,
+      code: `device.getByPlaceholder("${escapeJsString(hint)}")`,
       label: 'Placeholder',
       priority: 5,
     });
@@ -290,7 +296,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   // 6. Text — Testing Library getByText (visible text content)
   if (text) {
     selectors.push({
-      code: `device.getByText("${escapeQuotes(text)}")`,
+      code: `device.getByText("${escapeJsString(text)}")`,
       label: 'Text',
       priority: 6,
     });
@@ -299,7 +305,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   // iOS label as text (when label serves as visible text, no text attr)
   if (ios && label && !text) {
     selectors.push({
-      code: `device.getByText("${escapeQuotes(label)}")`,
+      code: `device.getByText("${escapeJsString(label)}")`,
       label: 'Text (label)',
       priority: 6,
     });
@@ -309,7 +315,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   const testIdFromResource = extractTestId(resourceId);
   if (testIdFromResource) {
     selectors.push({
-      code: `device.getByTestId("${escapeQuotes(testIdFromResource)}")`,
+      code: `device.getByTestId("${escapeJsString(testIdFromResource)}")`,
       label: 'Test ID',
       priority: 7,
     });
@@ -318,7 +324,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   // 8. Locator fallbacks for elements with no accessible attributes
   if (resourceId) {
     selectors.push({
-      code: `device.locator({ id: "${escapeQuotes(resourceId)}" })`,
+      code: `device.locator({ id: "${escapeJsString(resourceId)}" })`,
       label: 'Resource ID',
       priority: 8,
     });
@@ -326,7 +332,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   const className = node.attributes.get('class') ?? node.attributes.get('type') ?? '';
   if (className) {
     selectors.push({
-      code: `device.locator({ className: "${escapeQuotes(className)}" })`,
+      code: `device.locator({ className: "${escapeJsString(className)}" })`,
       label: 'Class name',
       priority: 9,
     });
