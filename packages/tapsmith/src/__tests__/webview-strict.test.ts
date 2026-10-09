@@ -112,6 +112,19 @@ describe('WebView strict mode (PILOT-227)', () => {
       expect(message).toContain('aka webview.getByText("Save", { exact: true })');
     });
 
+    it('suggests copy-paste-safe literals, and a long text as a substring prefix (PILOT-659)', async () => {
+      const long = 'Terms and conditions apply to every order placed through this store';
+      const { handle } = makeHandle([
+        { tag: 'button', ariaLabel: 'Pay\u00A0now' },
+        { tag: 'p', text: long },
+      ]);
+      const err = await handle.locator('*').click().catch((e: unknown) => e);
+      const message = (err as Error).message;
+      expect(message).toContain('aka webview.getByLabel("Pay\\u00A0now")');
+      expect(message).toContain(`aka webview.getByText("${long.slice(0, 60)}")`);
+      expect(message).not.toContain('…", { exact: true })');
+    });
+
     it('reports the total match count when more elements match than are sampled', async () => {
       const matches = Array.from({ length: 14 }, (_, i) => ({ tag: 'li', text: `Row ${i}` }));
       const { handle } = makeHandle(matches);

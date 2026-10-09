@@ -2,6 +2,7 @@ import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
 import { parseBounds, getNodeRole } from './hierarchy-utils.js';
 import { FORM_FIELD_ROLES } from './selector-generation.js';
 import { toJsRegExp } from '../../text-regex.js';
+import { unescapeJsString } from '../../js-string-escape.js';
 import { ANDROID_DUAL_PATH_ROLES, ANDROID_ROLE_CLASSES, IOS_ROLE_TYPES, normalizeRole, unknownRoleMessage } from '../../roles.js';
 
 // ─── Selector Parsing ───
@@ -71,17 +72,6 @@ function parseRegex(source: string | undefined, flags: string | undefined): Pars
   return { source, flags: flags ?? '' };
 }
 
-const SINGLE_CHAR_ESCAPES: Record<string, string> = { n: '\n', r: '\r', t: '\t' };
-
-/**
- * Undo source-string escaping (\" \' \\ \n \r \t) so a parsed name compares
- * against raw node attribute values. Inverse of selector-generation's
- * `escapeJsString`.
- */
-function unescapeSelectorValue(s: string): string {
-  return s.replace(/\\(.)/g, (_, c: string) => SINGLE_CHAR_ESCAPES[c] ?? c);
-}
-
 interface ParsedOptions {
   name?: string
   nameRegex?: ParsedRegex | null
@@ -108,7 +98,7 @@ function parseGetByOptions(blob: string | undefined): ParsedOptions | { error: s
   if (nameMatch) {
     parsed.keys.add('name');
     const rawName = nameMatch[1] !== undefined ? nameMatch[1] : nameMatch[2];
-    if (rawName !== undefined) parsed.name = unescapeSelectorValue(rawName);
+    if (rawName !== undefined) parsed.name = unescapeJsString(rawName);
     if (nameMatch[3] !== undefined) parsed.nameRegex = parseRegex(nameMatch[3], nameMatch[4]);
   }
   // The other options, outside the name's own value: each `key: true|false`.
@@ -233,7 +223,7 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   // Parsed values are UNESCAPED (raw) — they compare directly against raw
   // node attribute values; emitters re-escape when generating code strings.
   const pick = (dq: string | undefined, sq: string | undefined): string =>
-    unescapeSelectorValue(dq !== undefined ? dq : (sq ?? ''));
+    unescapeJsString(dq !== undefined ? dq : (sq ?? ''));
 
   // WebView locator: webview.locator("#email")
   const locatorMatch = base.match(WEBVIEW_LOCATOR_RE);
@@ -506,7 +496,11 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
     case 'label': {
       const role = getNodeRole(node);
       if (!FORM_FIELD_ROLES.has(role)) return false;
-      return normalizeWhitespace(getNodeAccessibleName(node)) === normalizeWhitespace(selector.value);
+      // Android's agent reads the label from content-desc (or a labelling
+      // view the dump does not carry), never the field's own text — its
+      // typed value or hint (PILOT-659).
+      const name = node.attributes.has('class') ? (node.attributes.get('content-desc') ?? '') : getNodeAccessibleName(node);
+      return name !== '' && normalizeWhitespace(name) === normalizeWhitespace(selector.value);
     }
     case 'labelRegex': {
       if (!FORM_FIELD_ROLES.has(getNodeRole(node)) || selector.regex === undefined) return false;
@@ -514,7 +508,8 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
     }
     case 'testId': {
       const rid = getNodeId(node);
-      return rid === selector.value || rid.endsWith(`:id/${selector.value}`);
+      // Whole resource-id, like the agent's By.res (PILOT-659).
+      return rid === selector.value;
     }
     case 'role': {
       // Like getByRole at runtime (PILOT-556): case-insensitive, aliases

@@ -310,3 +310,228 @@ describe('Android description-resolved roles in the playground (PILOT-656)', () 
     expect(findMatchingNodes(roots, parseSelectorString('device.getByRole("toolbar")')!)).toEqual([toolbar]);
   });
 });
+
+describe('icon-glyph accessible names (PILOT-659)', () => {
+  // React Navigation bottom tabs with an icon-font icon (MaterialIcons via
+  // IconSymbol): RN names the tab "<glyph>, <label>", and the glyph is a
+  // private-use character that renders as nothing — copied by hand or by an
+  // agent, getByDescription("<glyph>, Library") arrives as ", Library" and
+  // matches 0 elements.
+  const BOOK = '\uE865';
+  const GEAR = '\uE8B8';
+  function iconTabs(names: Array<[string, string]> = [[BOOK, 'Library'], [GEAR, 'Settings']]) {
+    const tabs = names.map(([glyph, label], i) => makeNode('android.view.View', {
+      class: 'android.view.View', 'tapsmith-role': 'tab', clickable: 'true', 'content-desc': `${glyph}, ${label}`,
+      bounds: `[${i * 100},1000][${i * 100 + 100},1100]`,
+    }, [
+      makeNode('android.widget.TextView', { class: 'android.widget.TextView', text: glyph, bounds: `[${i * 100},1000][${i * 100 + 100},1040]` }),
+      makeNode('android.widget.TextView', { class: 'android.widget.TextView', text: label, bounds: `[${i * 100},1050][${i * 100 + 100},1090]` }),
+    ]));
+    const root = makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, tabs);
+    return { roots: [root], tabs };
+  }
+
+  it('suggests getByRole("tab", { name }) without the glyph as the top locator, and it resolves', () => {
+    const { roots, tabs } = iconTabs();
+    const top = disambiguateSelectors(roots, tabs[0], generateSelectors(tabs[0]))[0];
+    expect(top.code).toBe('device.getByRole("tab", { name: "Library" })');
+    expect(findMatchingNodes(roots, parseSelectorString(top.code)!)).toEqual([tabs[0]]);
+  });
+
+  it('snapshot refs for icon tabs are copy-paste safe and resolve to exactly one element', () => {
+    const { roots, tabs } = iconTabs();
+    const { locators, tree } = formatHierarchy(roots);
+    for (const line of [...locators, tree]) {
+      expect(line).not.toMatch(/\p{Co}/u);
+    }
+    const settingsRef = locators.find((l) => l.includes('"tab"') && l.includes('Settings'));
+    expect(settingsRef).toMatch(/^\[\d+\] device\.getByRole\("tab", \{ name: "Settings" \}\)$/);
+    expect(findMatchingNodes(roots, parseSelectorString(settingsRef!.replace(/^\[\d+\] /, ''))!)).toEqual([tabs[1]]);
+  });
+
+  it('escapes the glyph in getByDescription and reads the escape back to the raw value', () => {
+    const { roots, tabs } = iconTabs();
+    const desc = generateSelectors(tabs[0]).find((s) => s.label === 'Description')!;
+    expect(desc.code).toBe('device.getByDescription("\\uE865, Library")');
+    expect(parseSelectorString(desc.code)!.value).toBe(`${BOOK}, Library`);
+    expect(findMatchingNodes(roots, parseSelectorString(desc.code)!)).toEqual([tabs[0]]);
+  });
+
+  it('ranks a glyph-pinning locator below the glyph-free role locator', () => {
+    const { tabs } = iconTabs();
+    const selectors = generateSelectors(tabs[0]);
+    const role = selectors.findIndex((s) => s.code === 'device.getByRole("tab", { name: "Library" })');
+    const desc = selectors.findIndex((s) => s.label === 'Description');
+    expect(role).toBeGreaterThanOrEqual(0);
+    expect(role).toBeLessThan(desc);
+  });
+
+  it('escapes astral private-use glyphs (decoded &#NNN; references) as \\u{…} and round-trips them', () => {
+    const astral = String.fromCodePoint(0xF0001);
+    const { roots, tabs } = iconTabs([[astral, 'Library'], [GEAR, 'Settings']]);
+    const desc = generateSelectors(tabs[0]).find((s) => s.label === 'Description')!;
+    expect(desc.code).toBe('device.getByDescription("\\u{F0001}, Library")');
+    expect(findMatchingNodes(roots, parseSelectorString(desc.code)!)).toEqual([tabs[0]]);
+  });
+
+  it('keeps the glyph (escaped) when it sits inside the name, so the name stays a substring', () => {
+    const node = makeNode('android.widget.Button', { class: 'android.widget.Button', clickable: 'true', 'content-desc': `Save ${BOOK} draft`, bounds: '[0,0][10,10]' });
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [node])];
+    const top = disambiguateSelectors(roots, node, generateSelectors(node))[0];
+    expect(top.code).toBe('device.getByRole("button", { name: "Save \\uE865 draft" })');
+    expect(findMatchingNodes(roots, parseSelectorString(top.code)!)).toEqual([node]);
+  });
+
+  it('never suggests an empty role name for an icon-only element', () => {
+    const icon = makeNode('android.widget.Button', { class: 'android.widget.Button', clickable: 'true', 'content-desc': GEAR, bounds: '[0,0][10,10]' });
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [icon])];
+    const codes = generateSelectors(icon).map((s) => s.code);
+    expect(codes).not.toContain('device.getByRole("button", { name: "" })');
+    const top = disambiguateSelectors(roots, icon, generateSelectors(icon))[0];
+    expect(findMatchingNodes(roots, parseSelectorString(top.code)!)).toEqual([icon]);
+  });
+
+  it('pins a tab whose glyph-free name is a substring of another by its full name, not its position', () => {
+    const { roots, tabs } = iconTabs([[BOOK, 'Story'], [GEAR, 'Story list']]);
+    const top = disambiguateSelectors(roots, tabs[0], generateSelectors(tabs[0]))[0];
+    expect(top.code).toBe('device.getByRole("tab", { name: "\\uE865, Story", exact: true })');
+    expect(findMatchingNodes(roots, parseSelectorString(top.code)!)).toEqual([tabs[0]]);
+  });
+
+  it('ranks a glyph-pinned full-name upgrade below a glyph-free test id', () => {
+    const { roots, tabs } = iconTabs([[BOOK, 'Story'], [GEAR, 'Story list']]);
+    tabs[0].attributes.set('resource-id', 'story-tab');
+    const ranked = disambiguateSelectors(roots, tabs[0], generateSelectors(tabs[0]));
+    expect(ranked[0].code).toBe('device.getByTestId("story-tab")');
+    expect(ranked.map((s) => s.code)).toContain('device.getByRole("tab", { name: "\\uE865, Story", exact: true })');
+  });
+
+  it('keeps a playground pick on a role-less icon+label element rather than its label child', () => {
+    const library = makeNode('android.view.ViewGroup', {
+      class: 'android.view.ViewGroup', clickable: 'true', 'content-desc': `${BOOK}, Library`, bounds: '[0,1000][100,1100]',
+    }, [makeNode('android.widget.TextView', { class: 'android.widget.TextView', text: 'Library', bounds: '[0,1050][100,1090]' })]);
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout', bounds: '[0,0][1000,2000]' }, [library])];
+    const picked = handlePickFromScreenshot(roots, 50, 1010);
+    expect(picked?.node).toBe(library);
+    expect(picked?.selector).toBe('device.getByDescription("\\uE865, Library")');
+  });
+
+  it('disambiguates glyph-free tab names that are substrings of each other', () => {
+    const { roots, tabs } = iconTabs([[BOOK, 'Story'], [GEAR, 'Story list']]);
+    const locators = formatHierarchy(roots).locators.filter((l) => l.includes('"tab"'));
+    expect(locators).toHaveLength(2);
+    for (const [i, line] of locators.entries()) {
+      const code = line.replace(/^\[\d+\] /, '');
+      const parsed = parseSelectorString(code)!;
+      const matches = findMatchingNodes(roots, parsed);
+      const picked = parsed.index === undefined ? matches : [matches[parsed.index === 'first' ? 0 : parsed.index === 'last' ? matches.length - 1 : parsed.index]];
+      expect(picked).toEqual([tabs[i]]);
+    }
+  });
+});
+
+describe('copy-paste safe escaping (PILOT-659)', () => {
+  it.each([
+    ['no-break space', 'Pay\u00A0now'],
+    ['tab', 'Col\tA'],
+    ['zero-width space', 'Zero\u200Bwidth'],
+    ['line separator', 'Line\u2028break'],
+    ['backslash-u text', 'C:\\users\\new'],
+  ])('round-trips a %s through suggestion code', (_label, value) => {
+    const node = makeNode('android.view.View', { class: 'android.view.View', 'content-desc': value, clickable: 'true', bounds: '[0,0][10,10]' });
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [node])];
+    const desc = generateSelectors(node).find((s) => s.label === 'Description')!;
+    expect(desc.code).toMatch(/^[\x20-\x7E]*$/);
+    expect(parseSelectorString(desc.code)!.value).toBe(value);
+    expect(findMatchingNodes(roots, parseSelectorString(desc.code)!)).toEqual([node]);
+  });
+
+  it('leaves visible non-ASCII text and emoji ZWJ sequences readable', () => {
+    const value = 'T, ✓, Tester 👩‍💻 café';
+    const node = makeNode('android.view.View', { class: 'android.view.View', 'content-desc': value, clickable: 'true', bounds: '[0,0][10,10]' });
+    const desc = generateSelectors(node).find((s) => s.label === 'Description')!;
+    expect(desc.code).toBe(`device.getByDescription("${value}")`);
+  });
+});
+
+describe('getByLabel parity with the Android agent (PILOT-659)', () => {
+  // The agent reads an Android label from content-desc (or a labelling view),
+  // never the field's own text — the typed value, or the hint shown as text.
+  const field = (attrs: Record<string, string>) => makeNode('android.widget.EditText', {
+    class: 'android.widget.EditText', clickable: 'true', focusable: 'true', bounds: '[0,0][100,50]', ...attrs,
+  });
+
+  it('does not suggest getByLabel from a field\'s typed text', () => {
+    const email = field({ text: 'e2e-test@example.com', hint: 'Enter your email' });
+    expect(generateSelectors(email).map((s) => s.code)).not.toContain('device.getByLabel("e2e-test@example.com")');
+  });
+
+  it('does not match getByLabel against a field\'s own text', () => {
+    const email = field({ text: 'Enter your email', hint: 'Enter your email' });
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [email])];
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByLabel("Enter your email")')!)).toEqual([]);
+  });
+
+  it('still suggests and matches getByLabel from content-desc', () => {
+    const email = field({ text: 'typed', 'content-desc': 'Email' });
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [email])];
+    expect(generateSelectors(email).map((s) => s.code)).toContain('device.getByLabel("Email")');
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByLabel("Email")')!)).toEqual([email]);
+  });
+});
+
+describe('glyph-only names (PILOT-659)', () => {
+  it('names an icon-only text by its glyph rather than a positional bare role', () => {
+    const { roots } = (() => {
+      const glyphs = ['\uE865', '\uE8B8'].map((g, i) => makeNode('android.widget.TextView', {
+        class: 'android.widget.TextView', text: g, bounds: `[${i * 100},0][${i * 100 + 100},40]`,
+      }));
+      return { roots: [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, glyphs)] };
+    })();
+    const { locators } = formatHierarchy(roots);
+    expect(locators).toEqual([
+      '[1] device.getByRole("text", { name: "\\uE865" })',
+      '[2] device.getByRole("text", { name: "\\uE8B8" })',
+    ]);
+  });
+});
+
+describe('getByTestId parity with the Android agent (PILOT-659)', () => {
+  // The agent matches getByTestId against the whole resource-id
+  // (UiAutomator By.res): an RN testID ("email-input") matches, a native
+  // package-qualified id ("com.android.systemui:id/mobile_signal") does not.
+  const view = (rid: string) => makeNode('android.widget.ImageView', {
+    class: 'android.widget.ImageView', 'resource-id': rid, bounds: '[0,0][10,10]',
+  });
+
+  it('does not suggest getByTestId from a package-qualified resource id', () => {
+    const codes = generateSelectors(view('com.android.systemui:id/mobile_signal')).map((s) => s.code);
+    expect(codes.some((c) => c.startsWith('device.getByTestId('))).toBe(false);
+    expect(codes).toContain('device.locator({ id: "com.android.systemui:id/mobile_signal" })');
+  });
+
+  it('does not match getByTestId against the name part of a package-qualified id', () => {
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [view('com.android.systemui:id/mobile_signal')])];
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByTestId("mobile_signal")')!)).toEqual([]);
+  });
+
+  it('keeps a playground pick on a native id-only container rather than its text child', () => {
+    const caption = makeNode('android.widget.TextView', {
+      class: 'android.widget.TextView', text: 'Profile', bounds: '[0,60][100,100]',
+    });
+    const row = makeNode('android.widget.LinearLayout', {
+      class: 'android.widget.LinearLayout', 'resource-id': 'com.app:id/profile_row', bounds: '[0,0][100,100]',
+    }, [caption]);
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout', bounds: '[0,0][1000,2000]' }, [row])];
+    const picked = handlePickFromScreenshot(roots, 50, 20);
+    expect(picked?.node).toBe(row);
+    expect(picked?.selector).toBe('device.locator({ id: "com.app:id/profile_row" })');
+  });
+
+  it('still suggests and matches an RN testID', () => {
+    const node = view('email-input');
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [node])];
+    expect(generateSelectors(node).map((s) => s.code)).toContain('device.getByTestId("email-input")');
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByTestId("email-input")')!)).toEqual([node]);
+  });
+});

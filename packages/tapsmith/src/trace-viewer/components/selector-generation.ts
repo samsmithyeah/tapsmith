@@ -1,16 +1,7 @@
 import type { HierarchyNode } from './hierarchy-utils.js';
 import { getNodeRole, WEBVIEW_TAG_TO_ROLE, ANDROID_CLASS_TO_ROLE, IOS_TYPE_TO_ROLE } from './hierarchy-utils.js';
 import { unknownRoleMessage } from '../../roles.js';
-
-/**
- * Escape a raw value for the inside of a double-quoted JavaScript string
- * literal: backslash, double quote, and the two line terminators a literal
- * cannot hold raw (a newline becomes `\n`, a carriage return `\r`).
- * `unescapeSelectorValue` (selector-matching.ts) is the inverse.
- */
-export function escapeJsString(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
-}
+import { escapeJsString, hasPrivateUseChar } from '../../js-string-escape.js';
 
 // ─── Attribute Helpers ───
 
@@ -92,6 +83,38 @@ function hasNativeRole(node: HierarchyNode): boolean {
   const iosType = node.attributes.get('type') ?? node.tagName;
   if (IOS_TYPE_TO_ROLE[iosType]) return true;
   return false;
+}
+
+/**
+ * Icon-font glyphs (private-use characters) and the separators that join
+ * them to a label, at either end of a name. React Navigation names an icon
+ * tab "<glyph>, Library" (PILOT-659).
+ */
+const EDGE_GLYPHS_RE = /^[\p{Co}\s,;:|·•\-–—]+|[\p{Co}\s,;:|·•\-–—]+$/gu;
+
+/**
+ * The name to give getByRole: the accessible name without the icon glyphs at
+ * its ends, so the locator reads "Library" rather than pinning an invisible
+ * glyph's code point. The result is a substring of the full name, which the
+ * runtime's default role-name match (case-insensitive substring, PILOT-549)
+ * accepts; a name with no glyph is returned unchanged.
+ */
+export function roleNameFor(accessibleName: string): string {
+  if (!hasPrivateUseChar(accessibleName)) return accessibleName;
+  return accessibleName.replace(EDGE_GLYPHS_RE, '');
+}
+
+/**
+ * A locator whose value still pins an icon glyph works, but breaks when the
+ * app changes icon, so it ranks after every glyph-free semantic locator
+ * (PILOT-659) — yet below FALLBACK_PRIORITY_THRESHOLD, since it still names
+ * this element (a pick must not move to a descendant over it).
+ */
+const GLYPH_PINNED_PRIORITY = 7.5;
+
+/** `priority`, demoted to {@link GLYPH_PINNED_PRIORITY} when `value` pins an icon glyph. */
+export function glyphAware(priority: number, value: string): number {
+  return hasPrivateUseChar(value) ? Math.max(priority, GLYPH_PINNED_PRIORITY) : priority;
 }
 
 export interface GeneratedSelector {
@@ -228,8 +251,15 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   const ios = isIos(node);
 
   // The accessible name for role-based selectors: on iOS use label, on
-  // Android prefer content-desc, then text.
-  const accessibleName = ios ? label : (contentDesc || text);
+  // Android prefer content-desc, then text — less any icon glyph at its ends.
+  // A name that is nothing but glyphs (an icon-only element) stays whole:
+  // it is the element's only name.
+  const fullName = ios ? label : (contentDesc || text);
+  const accessibleName = roleNameFor(fullName) || fullName;
+  // getByLabel matches Android's content-desc (or a labelling view, which
+  // the dump does not carry) — never the field's own text, which is its
+  // typed value or hint — and iOS's label.
+  const labelName = ios ? label : contentDesc;
 
   // Demote role-based selectors when the role is generic OR when it came from
   // the agent's accessibility-trait heuristic (tapsmith-role) on a node whose
@@ -248,7 +278,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     selectors.push({
       code: `device.getByRole("${escapeJsString(role)}", { name: "${escapeJsString(accessibleName)}" })`,
       label: 'Role + name',
-      priority: genericRole ? 7 : 1,
+      priority: glyphAware(genericRole ? 7 : 1, accessibleName),
     });
   }
 
@@ -264,11 +294,11 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   // 3. Label — Testing Library getByLabelText (form fields only)
   // Android: getByLabel matches inputs by contentDescription
   // iOS: getByLabel matches inputs by accessibilityLabel
-  if (role && FORM_FIELD_ROLES.has(role) && accessibleName) {
+  if (role && FORM_FIELD_ROLES.has(role) && labelName) {
     selectors.push({
-      code: `device.getByLabel("${escapeJsString(accessibleName)}")`,
+      code: `device.getByLabel("${escapeJsString(labelName)}")`,
       label: 'Label',
-      priority: 3,
+      priority: glyphAware(3, labelName),
     });
   }
 
@@ -280,7 +310,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     selectors.push({
       code: `device.getByDescription("${escapeJsString(contentDesc)}")`,
       label: 'Description',
-      priority: 4,
+      priority: glyphAware(4, contentDesc),
     });
   }
 
@@ -289,7 +319,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     selectors.push({
       code: `device.getByPlaceholder("${escapeJsString(hint)}")`,
       label: 'Placeholder',
-      priority: 5,
+      priority: glyphAware(5, hint),
     });
   }
 
@@ -298,7 +328,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     selectors.push({
       code: `device.getByText("${escapeJsString(text)}")`,
       label: 'Text',
-      priority: 6,
+      priority: glyphAware(6, text),
     });
   }
 
@@ -307,7 +337,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     selectors.push({
       code: `device.getByText("${escapeJsString(label)}")`,
       label: 'Text (label)',
-      priority: 6,
+      priority: glyphAware(6, label),
     });
   }
 
@@ -321,12 +351,14 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     });
   }
 
-  // 8. Locator fallbacks for elements with no accessible attributes
+  // 8. Locator fallbacks for elements with no accessible attributes. A
+  // native package-qualified id has no getByTestId (PILOT-659), so its
+  // locator({ id }) takes the test-id slot: it still names this element.
   if (resourceId) {
     selectors.push({
       code: `device.locator({ id: "${escapeJsString(resourceId)}" })`,
       label: 'Resource ID',
-      priority: 8,
+      priority: testIdFromResource ? 8 : 7,
     });
   }
   const className = node.attributes.get('class') ?? node.attributes.get('type') ?? '';
@@ -349,10 +381,14 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     });
 }
 
+/**
+ * The getByTestId value for a resource id, if it has one. The Android agent
+ * matches getByTestId against the whole resource-id: a React Native testID
+ * ("email-input") matches, a native package-qualified id ("com.app:id/x")
+ * does not — that one is addressed by locator({ id }) (PILOT-659).
+ */
 function extractTestId(resourceId: string): string | null {
-  if (!resourceId) return null;
-  const colonIdx = resourceId.indexOf(':id/');
-  if (colonIdx !== -1) return resourceId.slice(colonIdx + 4);
+  if (!resourceId || resourceId.includes(':id/')) return null;
   return resourceId;
 }
 

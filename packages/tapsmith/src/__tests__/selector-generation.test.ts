@@ -65,7 +65,8 @@ describe('generateNativeSelectors priority order', () => {
       text: 'current value',
       'content-desc': 'Email',
       hint: 'Enter email',
-      'resource-id': 'com.example:id/email_input',
+      // An RN testID: a package-qualified id gets no getByTestId (PILOT-659).
+      'resource-id': 'email_input',
     });
     const selectors = generateSelectors(node);
     const labels = selectors.map(s => s.label);
