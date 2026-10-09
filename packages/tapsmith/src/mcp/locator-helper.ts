@@ -1,6 +1,6 @@
 import { parseSelectorString, resolvePositionalIndex } from '../trace-viewer/components/selector-matching.js';
 import type { ParsedSelector } from '../trace-viewer/components/selector-matching.js';
-import type { Selector, SelectorKind } from '../selectors.js';
+import type { RoleSelectorValue, Selector, SelectorKind } from '../selectors.js';
 import { makeSelector } from '../selectors.js';
 import { textRegexValue } from '../text-regex.js';
 import { assertKnownRole } from '../roles.js';
@@ -44,12 +44,18 @@ function parsedSelectorToKind(parsed: ParsedSelector): SelectorKind {
             role: parsed.value,
             name: '',
             nameRegex: textRegexValue(regexOf(parsed.nameRegex), 'getByRole() option `name`'),
+            ...roleStates(parsed),
           },
         };
       }
       return {
         type: 'role',
-        value: { role: parsed.value, name: parsed.name ?? '', ...(parsed.exact ? { exact: true } : {}) },
+        value: {
+          role: parsed.value,
+          name: parsed.name ?? '',
+          ...(parsed.exact ? { exact: true } : {}),
+          ...roleStates(parsed),
+        },
       };
     case 'contentDesc':
       return { type: 'contentDesc', value: parsed.value };
@@ -66,6 +72,19 @@ function parsedSelectorToKind(parsed: ParsedSelector): SelectorKind {
     default:
       throw new Error(`Unsupported locator type "${parsed.type}" for device actions. Use device.getByRole(), getByText(), getByDescription(), getByPlaceholder(), getByLabel(), or getByTestId().`);
   }
+}
+
+/**
+ * getByRole's state filters, carried to the agent exactly as device.getByRole
+ * sends them — dropping them made `selected: true` match unselected elements
+ * (PILOT-655).
+ */
+function roleStates(parsed: ParsedSelector): Pick<RoleSelectorValue, 'checked' | 'disabled' | 'selected' | 'expanded'> {
+  const states: Pick<RoleSelectorValue, 'checked' | 'disabled' | 'selected' | 'expanded'> = {};
+  for (const key of ['checked', 'disabled', 'selected', 'expanded'] as const) {
+    if (parsed[key] !== undefined) states[key] = parsed[key];
+  }
+  return states;
 }
 
 /** The RegExp a parsed RegExp locator carries (the parser already checked it compiles). */
