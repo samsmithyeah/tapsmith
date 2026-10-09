@@ -83,7 +83,7 @@ This guide is for teams with a Detox suite who want to move it to Tapsmith. Of t
 | `device.launchApp({ newInstance: true })` | [`device.restartApp(pkg)`](api-reference.md#devicerestartapppackagename-string-options--waitforidle-boolean--promisevoid), or `appReset: "restart"` |
 | `device.launchApp({ delete: true })` | The default `appReset` policy (clear data and relaunch; a warm, in-app reset instead when the app mounts `@tapsmith/react-native`), or [`device.resetApp({ mode: "clear" })`](api-reference.md#deviceresetappoptions-promiseappresetresult) |
 | `device.launchApp({ url })` / `device.openURL({ url })` | [`device.openDeepLink(url)`](api-reference.md#deviceopendeeplinkuri-string-options-opendeeplinkoptions-promisevoid) |
-| `device.launchApp({ permissions })` (iOS) | On a simulator, [`device.grantPermission(bundleId, "photos")`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid) for each service `simctl privacy` supports (not notifications or the camera); some changes make iOS terminate the app, which Tapsmith does not relaunch for you |
+| `device.launchApp({ permissions })` (iOS) | On a simulator, [`device.grantPermission(bundleId, "photos")`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid) for each service `simctl privacy` supports (not notifications); some changes make iOS terminate the app, which Tapsmith does not relaunch for you |
 | `device.reloadReactNative()` | A warm reset through [`@tapsmith/react-native`](warm-reset.md), automatic between files once the app mounts it |
 | `device.terminateApp()` | [`device.terminateApp()`](api-reference.md#deviceterminateapppackagename-string-promisevoid) |
 | `device.sendToHome()` | [`device.sendToBackground()`](api-reference.md#devicesendtobackground-promisevoid) |
@@ -270,7 +270,7 @@ Some Detox device APIs have no Tapsmith equivalent at the moment:
 
 - **Device simulation:** `setLocation`, `setBiometricEnrollment` / `matchFace` / `matchFinger`, `shake`, `setStatusBar`, and `sendUserNotification`.
 - **Launch configuration:** `launchArgs` and `languageAndLocale` on `launchApp`. Tapsmith launches the app without extra arguments.
-- **Some iOS permissions:** on an iOS simulator, `grantPermission()` and `revokePermission()` cover the services `xcrun simctl privacy` supports (photos, location, contacts, calendar, microphone, …), which leaves out notifications and the camera, among others. On physical iOS devices they are not supported at all.
+- **Some iOS permissions:** on an iOS simulator, `grantPermission()` and `revokePermission()` cover the services `xcrun simctl privacy` supports (photos, location, contacts, calendar, microphone, camera, …), which leaves out notifications, among others. On physical iOS devices they are not supported at all.
 - **Jest features:** `jest.fn()` mocks, snapshot matchers and Jest's custom matchers aren't part of Tapsmith's `expect`, and Jest's watch mode is replaced by [Tapsmith's](watch-mode.md).
 - **Some actions:** `scroll()` by an offset in points, `scrollTo("bottom")` (scroll to an edge; use `scrollIntoView()` on the element you want, or `scroll()` repeatedly) and setting picker wheel columns (`setColumnToValue`).
 

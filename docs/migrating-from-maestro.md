@@ -193,7 +193,7 @@ if (await notNow.isVisible()) {
 Some Maestro commands have no Tapsmith equivalent at the moment. Plan to keep these flows in Maestro, or find another way to cover them:
 
 - **Device state:** `setLocation`, `travel` (moving the device's location along a route), `setAirplaneMode` / `toggleAirplaneMode` and `addMedia`. There are no Tapsmith methods for these.
-- **Some iOS permissions:** on an iOS simulator, `grantPermission()` and `revokePermission()` cover the services `xcrun simctl privacy` supports (photos, location, contacts, calendar, microphone, …), which leaves out notifications and the camera, among others. On physical iOS devices they are not supported at all.
+- **Some iOS permissions:** on an iOS simulator, `grantPermission()` and `revokePermission()` cover the services `xcrun simctl privacy` supports (photos, location, contacts, calendar, microphone, camera, …), which leaves out notifications, among others. On physical iOS devices they are not supported at all.
 - **Launch arguments:** `launchApp`'s `arguments` have no counterpart; `device.launchApp()` takes an Android `activity`, not arguments.
 - **AI and visual commands:** `assertWithAI`, `assertNoDefectsWithAI`, `extractTextWithAI` and `assertScreenshot` (screenshot comparison).
 - **Web testing:** Maestro can drive a desktop browser. Tapsmith tests native mobile apps; content inside your app's WebViews is covered by [WebView testing](webview.md).

@@ -247,7 +247,7 @@ Appium covers more platforms and device features than Tapsmith does today:
 - **Other languages:** Tapsmith tests are written in TypeScript. A suite in Java, Python, Ruby or C# has to be rewritten, not just re-pointed.
 - **Remote and cloud devices:** Tapsmith drives emulators, simulators and devices attached to the machine it runs on. It has no WebDriver endpoint, so it can't run on Selenium Grid or a cloud device provider through Appium's protocol.
 - **Device simulation:** setting the GPS location, network conditions (airplane mode, Wi-Fi), biometrics, and pushing or pulling files have no Tapsmith methods.
-- **Some iOS permissions:** on an iOS simulator, `grantPermission()` and `revokePermission()` cover the services `xcrun simctl privacy` supports (photos, location, contacts, calendar, microphone, …), which leaves out notifications and the camera, among others. On physical iOS devices they are not supported at all.
+- **Some iOS permissions:** on an iOS simulator, `grantPermission()` and `revokePermission()` cover the services `xcrun simctl privacy` supports (photos, location, contacts, calendar, microphone, camera, …), which leaves out notifications, among others. On physical iOS devices they are not supported at all.
 - **Mobile browsers:** testing a website in Chrome or Safari on the device. Tapsmith tests apps (and the WebViews inside them).
 - **Arbitrary shell commands:** there is no counterpart to `mobile: shell`.
 

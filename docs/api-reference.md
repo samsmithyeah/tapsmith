@@ -516,7 +516,7 @@ await device.restoreAppState("com.example.myapp", "./auth-state.tar.gz");
 
 ### `device.grantPermission(packageName: string, permission: string): Promise<void>`
 
-Programmatically grant a permission. On Android, `permission` is a runtime permission name; on an iOS simulator, it is a service that `xcrun simctl privacy` accepts, such as `photos`, `location`, `contacts`, `calendar` or `microphone` (`xcrun simctl help privacy` lists them; notifications and the camera are not among them). Some changes make iOS terminate the app if it is running. Not supported on physical iOS devices.
+Programmatically grant a permission. On Android, `permission` is a runtime permission name; on an iOS simulator, it is a service that `xcrun simctl privacy` accepts, such as `photos`, `location`, `contacts`, `calendar` or `microphone` (`xcrun simctl help privacy` lists them, and `camera` is accepted too; notifications are not). Some changes make iOS terminate the app if it is running. Not supported on physical iOS devices.
 
 ```typescript
 await device.grantPermission("com.example.myapp", "android.permission.CAMERA");
