@@ -439,6 +439,20 @@ describe('configLoadFailure', () => {
     expect(failure.hint).toBe('Run: pnpm add -D tapsmith');
   });
 
+  // PILOT-631: no package.json beside the config.
+  it('says why the install command creates a package.json first', () => {
+    const note = "There's no package.json in /p: on its own, `npm i -D tapsmith` would add Tapsmith to / instead. If that is this project's root, run it there; otherwise create a package.json here first.";
+    const err = new TapsmithNotInstalledError(
+      '/p/tapsmith.config.ts',
+      { command: 'npm', args: ['i', '-D', 'tapsmith'], display: 'npm init -y && npm i -D tapsmith', note },
+      new Error("Cannot find module 'tapsmith'"),
+    );
+    const failure = configLoadFailure(err);
+    expect(failure.message).toBe(`Tapsmith isn't installed in this project (/p/tapsmith.config.ts imports it). ${note}`);
+    expect(failure.hint).toBe('Run: npm init -y && npm i -D tapsmith');
+    expect(err.message).toBe(`Failed to load config file /p/tapsmith.config.ts: Tapsmith isn't installed in this project. Run \`npm init -y && npm i -D tapsmith\`. ${note}`);
+  });
+
   it('points a missing --config file at the flag', () => {
     expect(configLoadFailure('Config file not found: /p/ci.config.ts').hint).toBe('Check the -c/--config path');
   });

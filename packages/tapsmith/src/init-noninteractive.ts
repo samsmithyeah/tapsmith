@@ -550,7 +550,7 @@ export function executeInitPlan(
   filesCreated.push(...written.filter((f) => f !== 'tapsmith.config.ts'));
 
   if (missingTapsmith) {
-    warnings.push(`Tapsmith isn't installed in this project, and the files init wrote import it: run ${missingTapsmith.display} before anything else`);
+    warnings.push(`Tapsmith isn't installed in this project, and the files init wrote import it: run ${missingTapsmith.display} before anything else${missingTapsmith.note ? `. ${missingTapsmith.note}` : ''}`);
   }
 
   const nextSteps = [

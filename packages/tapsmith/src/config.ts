@@ -1433,10 +1433,16 @@ export function configPathOf(config: TapsmithConfig): string | undefined {
 // of Tapsmith's own modules, which lets its loader tests run it in bare Node.
 
 export interface InstallCommand {
+  /** The add command, to run in the directory: only where it has a package.json. */
   command: string;
   args: string[];
-  /** The command as a user would type it: `npm i -D tapsmith`. */
+  /**
+   * What the user should type: `npm i -D tapsmith`, or, in a directory without
+   * a package.json, `npm init -y && npm i -D tapsmith` (PILOT-631).
+   */
   display: string;
+  /** Set when the directory has no package.json: says so, naming the project a bare add would change. */
+  note?: string;
 }
 
 /** Whether `import 'tapsmith'` from a file in `dir` finds a package. */
@@ -1459,9 +1465,50 @@ export async function tapsmithInstallCommand(dir: string): Promise<InstallComman
   // Loaded only when needed: config.ts is part of the SDK every test imports.
   const { detect, resolveCommand } = await import('package-manager-detector');
   const detected = await detect({ cwd: dir }).catch(() => null);
-  const resolved = resolveCommand(detected?.agent ?? 'npm', 'add', ['-D', 'tapsmith'])
+  const agent = detected?.agent ?? 'npm';
+  const resolved = resolveCommand(agent, 'add', ['-D', 'tapsmith'])
     ?? { command: 'npm', args: ['i', '-D', 'tapsmith'] };
-  return { ...resolved, display: [resolved.command, ...resolved.args].join(' ') };
+  const add = [resolved.command, ...resolved.args].join(' ');
+  if (fs.existsSync(path.join(dir, 'package.json'))) return { ...resolved, display: add };
+
+  // Without a package.json here, the add goes to the nearest ancestor project
+  // (PILOT-631): right for a monorepo root, wrong for the home directory or an
+  // unrelated parent. Only the user knows which, so the note says where it
+  // would go and the command creates this directory's package.json first.
+  const ancestor = nearestProjectAbove(dir, agent === 'npm' || agent === 'deno');
+  return {
+    ...resolved,
+    display: `${PACKAGE_JSON_INIT[agent] ?? 'npm init -y'} && ${add}`,
+    note: ancestor
+      ? `There's no package.json in ${dir}: on its own, \`${add}\` would add Tapsmith to ${ancestor} instead. If that is this project's root, run it there; otherwise create a package.json here first.`
+      : `There's no package.json in ${dir}: create one before installing Tapsmith.`,
+  };
+}
+
+/**
+ * Each package manager's non-interactive way to create a package.json. Bun's
+ * `bun init -y` also scaffolds an entry file and a tsconfig, so npm's.
+ */
+const PACKAGE_JSON_INIT: Record<string, string> = {
+  yarn: 'yarn init -y',
+  'yarn@berry': 'yarn init -y',
+  pnpm: 'pnpm init',
+  'pnpm@6': 'pnpm init',
+};
+
+/**
+ * The project an add run in `dir` would change: the nearest ancestor with a
+ * package.json — or, for npm, one with a node_modules folder too (npm's
+ * prefix rule) — or undefined when there is none, or when npm would use
+ * `dir` itself for its node_modules.
+ */
+function nearestProjectAbove(dir: string, nodeModulesCounts: boolean): string | undefined {
+  if (nodeModulesCounts && fs.existsSync(path.join(dir, 'node_modules'))) return undefined;
+  for (let current = path.dirname(dir), prev = dir; current !== prev; prev = current, current = path.dirname(current)) {
+    if (fs.existsSync(path.join(current, 'package.json'))) return current;
+    if (nodeModulesCounts && fs.existsSync(path.join(current, 'node_modules'))) return current;
+  }
+  return undefined;
 }
 
 /**
@@ -1485,7 +1532,7 @@ export class TapsmithNotInstalledError extends Error {
   // No parameter properties: Node's type stripping cannot run them.
   constructor(configPath: string, installCommand: InstallCommand, cause: unknown) {
     super(
-      `Failed to load config file ${configPath}: Tapsmith isn't installed in this project. Run \`${installCommand.display}\`.`,
+      `Failed to load config file ${configPath}: Tapsmith isn't installed in this project. Run \`${installCommand.display}\`.${installCommand.note ? ` ${installCommand.note}` : ''}`,
       { cause },
     );
     this.name = 'TapsmithNotInstalledError';

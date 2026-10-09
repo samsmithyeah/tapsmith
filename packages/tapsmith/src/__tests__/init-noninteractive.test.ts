@@ -683,6 +683,22 @@ describe('executeInitPlan()', () => {
     }
   });
 
+  // PILOT-631: no package.json in the project directory.
+  it('says why the install step creates a package.json first', () => {
+    const tmp = makeTmp();
+    try {
+      const args = initArgs({ yes: true, platform: 'android' });
+      const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
+      const note = `There's no package.json in ${tmp}: on its own, \`npm i -D tapsmith\` would add Tapsmith to /home/u instead. If that is this project's root, run it there; otherwise create a package.json here first.`;
+      const install = { command: 'npm', args: ['i', '-D', 'tapsmith'], display: 'npm init -y && npm i -D tapsmith', note };
+      const result = executeInitPlan(plan, args, tmp, install);
+      expect(result.nextSteps[0]).toBe('Install Tapsmith in this project: npm init -y && npm i -D tapsmith');
+      expect(result.warnings).toContain(`Tapsmith isn't installed in this project, and the files init wrote import it: run npm init -y && npm i -D tapsmith before anything else. ${note}`);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('adds no install step when the project has tapsmith', () => {
     const tmp = makeTmp();
     try {

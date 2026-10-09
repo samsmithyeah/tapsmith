@@ -28,6 +28,13 @@ function write(rel: string, content: string): void {
   fs.writeFileSync(file, content, 'utf-8');
 }
 
+function hasProjectAbove(start: string): boolean {
+  for (let d = fs.realpathSync(start); ; d = path.dirname(d)) {
+    if (fs.existsSync(path.join(d, 'package.json')) || fs.existsSync(path.join(d, 'node_modules'))) return true;
+    if (path.dirname(d) === d) return false;
+  }
+}
+
 function installTapsmithStub(at: string): void {
   write(path.join(at, 'node_modules/tapsmith/package.json'), '{ "name": "tapsmith", "exports": { ".": { "default": "./index.js" } } }\n');
   write(path.join(at, 'node_modules/tapsmith/index.js'), 'export {};\n');
@@ -77,6 +84,73 @@ describe('tapsmithInstallCommand()', () => {
     write('yarn.lock', '');
     write('apps/mobile/package.json', '{}\n');
     expect((await tapsmithInstallCommand(path.join(dir, 'apps/mobile'))).display).toBe('yarn add -D tapsmith');
+  });
+});
+
+// In a directory without package.json, a bare `npm i -D tapsmith` installs
+// into the nearest ancestor project — a monorepo root, the home directory —
+// and the config written here still cannot import it (PILOT-631).
+describe('tapsmithInstallCommand() without a package.json in the directory', () => {
+  const app = (): string => path.join(dir, 'apps/mobile');
+
+  it('creates the package.json first and names the ancestor the bare command would change', async () => {
+    write('package.json', '{}\n');
+    fs.mkdirSync(app(), { recursive: true });
+    const install = await tapsmithInstallCommand(app());
+    expect(install.display).toBe('npm init -y && npm i -D tapsmith');
+    // What init runs in place is still the bare add (only where a package.json exists).
+    expect(install.command).toBe('npm');
+    expect(install.args).toEqual(['i', '-D', 'tapsmith']);
+    expect(install.note).toBe(`There's no package.json in ${app()}: on its own, \`npm i -D tapsmith\` would add Tapsmith to ${dir} instead. If that is this project's root, run it there; otherwise create a package.json here first.`);
+  });
+
+  it.each([
+    ['yarn.lock', 'yarn init -y && yarn add -D tapsmith'],
+    ['pnpm-lock.yaml', 'pnpm init && pnpm add -D tapsmith'],
+    // `bun init -y` scaffolds an index.ts and tsconfig too; npm only writes package.json.
+    ['bun.lock', 'npm init -y && bun add -D tapsmith'],
+  ])("uses the package manager's init for the ancestor's %s", async (lockfile, display) => {
+    write('package.json', '{}\n');
+    write(lockfile, '');
+    fs.mkdirSync(app(), { recursive: true });
+    const install = await tapsmithInstallCommand(app());
+    expect(install.display).toBe(display);
+    expect(install.note).toContain(`would add Tapsmith to ${dir} instead.`);
+  });
+
+  // npm's prefix is the nearest directory with a package.json or a node_modules.
+  it('names an ancestor that npm would use for its node_modules alone', async () => {
+    fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true });
+    fs.mkdirSync(app(), { recursive: true });
+    expect((await tapsmithInstallCommand(app())).note).toContain(`would add Tapsmith to ${dir} instead.`);
+  });
+
+  it('names no ancestor when npm would use this directory\'s own node_modules', async () => {
+    write('package.json', '{}\n');
+    fs.mkdirSync(path.join(app(), 'node_modules'), { recursive: true });
+    const install = await tapsmithInstallCommand(app());
+    expect(install.display).toBe('npm init -y && npm i -D tapsmith');
+    expect(install.note).toBe(`There's no package.json in ${app()}: create one before installing Tapsmith.`);
+  });
+
+  it('names the nearest ancestor, not a further one', async () => {
+    write('package.json', '{}\n');
+    write('apps/package.json', '{}\n');
+    fs.mkdirSync(app(), { recursive: true });
+    expect((await tapsmithInstallCommand(app())).note).toContain(`would add Tapsmith to ${path.join(dir, 'apps')} instead.`);
+  });
+
+  // The temp dir's own ancestors are outside the test's control: skipped,
+  // not passed, on a host with a project above it.
+  it.skipIf(hasProjectAbove(os.tmpdir()))('still says to create one when no ancestor has a project', async () => {
+    const install = await tapsmithInstallCommand(dir);
+    expect(install.display).toBe('npm init -y && npm i -D tapsmith');
+    expect(install.note).toBe(`There's no package.json in ${dir}: create one before installing Tapsmith.`);
+  });
+
+  it('adds no note where the package.json is', async () => {
+    write('package.json', '{}\n');
+    expect((await tapsmithInstallCommand(dir)).note).toBeUndefined();
   });
 });
 
