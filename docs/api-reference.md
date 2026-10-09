@@ -610,7 +610,7 @@ Wake the screen and dismiss the lock screen. Works with non-secure lock screens 
 await device.unlock();
 ```
 
-### `device.pressHome(): Promise<void>` *(Android only)*
+### `device.pressHome(): Promise<void>`
 
 Press the home button. Convenience method equivalent to `device.pressKey("HOME")`.
 
@@ -1173,8 +1173,10 @@ await device.locator({ id: "search_box" }).clear();
 Scroll this element in the given direction.
 
 ```typescript
-await device.getByTestId("product-list").scroll("down", { distance: 300 }); // a FlatList with testID="product-list"
+await device.getByTestId("product-list").scroll("down"); // a FlatList with testID="product-list"
 ```
+
+The device agents don't apply `distance` yet: each call scrolls by a fixed step of the element's size, whatever `distance` says. To reach a particular element, use [`scrollIntoView()`](#elementhandlescrollintoviewoptions--direction-string-maxscrolls-number-speed-number--promisevoid).
 
 #### `elementHandle.scrollIntoView(options?: { direction?: string; maxScrolls?: number; speed?: number }): Promise<void>`
 

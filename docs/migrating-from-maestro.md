@@ -133,7 +133,7 @@ export default defineConfig({
 
 What changed, line by line:
 
-- **`appId`** moved into the config as `package`, along with the build to install (`apk`, or `app` and `platform: "ios"` for iOS). Tapsmith installs the build and launches the app before the first test of each file; there is no `launchApp` step.
+- **`appId`** moved into the config as `package`, along with the build to install (`apk`, or for iOS `platform: "ios"`, `app` and the `simulator` to boot). Tapsmith installs the build and launches the app before the first test of each file; there is no `launchApp` step.
 - **`launchApp: { clearState: true }`** became `test.use({ appResetScope: "test" })`. Without that line, Tapsmith resets the app once per test file rather than before every test (a clear, or a warm reset when the app mounts [`@tapsmith/react-native`](warm-reset.md)), which is faster and is often what a suite of separate flows really needs. See [Test isolation](writing-tests.md#test-isolation).
 - **`tapOn` followed by `inputText`** became one call: `type()` taps the field and types into it. The fields are found by role and accessible name (`accessibilityLabel` in React Native) rather than by `testID`. `getByTestId("email-input")` also works; Tapsmith recommends user-visible locators first, as Playwright does ([Locators](locators.md)).
 - **`tapOn: "Sign in"`** became `getByRole("button", { name: "Sign in" })`. Maestro treats `text` as a regular expression; `getByText` matches a substring unless you pass `{ exact: true }`, and `getByRole`'s `name` is a case-insensitive substring. If a locator matches more than one element, Tapsmith throws a [strict mode](api-reference.md#strict-mode) error listing them instead of tapping the first.

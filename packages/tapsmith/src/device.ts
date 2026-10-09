@@ -845,7 +845,7 @@ export class Device {
       'Unlock device failed');
   }
 
-  /** Press the home button. @platform android */
+  /** Press the home button. */
   async pressHome(): Promise<void> {
     return this.pressKey('HOME');
   }
