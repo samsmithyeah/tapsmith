@@ -2,7 +2,7 @@ import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
 import { parseBounds, getNodeRole } from './hierarchy-utils.js';
 import { FORM_FIELD_ROLES } from './selector-generation.js';
 import { toJsRegExp } from '../../text-regex.js';
-import { ANDROID_ROLE_CLASSES, IOS_ROLE_TYPES, normalizeRole, unknownRoleMessage } from '../../roles.js';
+import { ANDROID_DUAL_PATH_ROLES, ANDROID_ROLE_CLASSES, IOS_ROLE_TYPES, normalizeRole, unknownRoleMessage } from '../../roles.js';
 
 // ─── Selector Parsing ───
 
@@ -535,12 +535,9 @@ export function applyPositionalIndex<T>(items: T[], index: ParsedSelector['index
 }
 
 /**
- * Android roles the agent resolves on two paths (ElementFinder.kt
- * DUAL_PATH_ROLES): a node with a role description matches only through it,
- * one without falls back to its class — except heading and link, whose class
- * (TextView) the agent never accepts on its own.
+ * Of the Android dual-path roles, those whose class (TextView) the agent never
+ * accepts on its own: without a role description a node is neither.
  */
-const ANDROID_DUAL_PATH_ROLES = new Set(['heading', 'link', 'image', 'searchfield']);
 const ANDROID_DESCRIPTION_ONLY_ROLES = new Set(['heading', 'link']);
 
 /**
@@ -557,6 +554,9 @@ function nodeHasRole(node: HierarchyNode, role: string): boolean {
   if (reported && normalizeRole(reported) === role) return true;
   const className = node.attributes.get('class');
   if (className) {
+    // Like the agent's dual-path post-filter: a published role description
+    // decides the role on its own (it did not match above), and only a node
+    // without one falls back to its class.
     if (ANDROID_DUAL_PATH_ROLES.has(role)
       && (ANDROID_DESCRIPTION_ONLY_ROLES.has(role) || node.attributes.has('tapsmith-role'))) return false;
     return ANDROID_ROLE_CLASSES[role]?.includes(className) ?? false;
