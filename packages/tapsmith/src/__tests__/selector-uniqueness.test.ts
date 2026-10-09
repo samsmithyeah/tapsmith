@@ -391,6 +391,23 @@ describe('icon-glyph accessible names (PILOT-659)', () => {
     expect(findMatchingNodes(roots, parseSelectorString(top.code)!)).toEqual([icon]);
   });
 
+  it('pins a tab whose glyph-free name is a substring of another by its full name, not its position', () => {
+    const { roots, tabs } = iconTabs([[BOOK, 'Story'], [GEAR, 'Story list']]);
+    const top = disambiguateSelectors(roots, tabs[0], generateSelectors(tabs[0]))[0];
+    expect(top.code).toBe('device.getByRole("tab", { name: "\\uE865, Story", exact: true })');
+    expect(findMatchingNodes(roots, parseSelectorString(top.code)!)).toEqual([tabs[0]]);
+  });
+
+  it('keeps a playground pick on a role-less icon+label element rather than its label child', () => {
+    const library = makeNode('android.view.ViewGroup', {
+      class: 'android.view.ViewGroup', clickable: 'true', 'content-desc': `${BOOK}, Library`, bounds: '[0,1000][100,1100]',
+    }, [makeNode('android.widget.TextView', { class: 'android.widget.TextView', text: 'Library', bounds: '[0,1050][100,1090]' })]);
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout', bounds: '[0,0][1000,2000]' }, [library])];
+    const picked = handlePickFromScreenshot(roots, 50, 1010);
+    expect(picked?.node).toBe(library);
+    expect(picked?.selector).toBe('device.getByDescription("\\uE865, Library")');
+  });
+
   it('disambiguates glyph-free tab names that are substrings of each other', () => {
     const { roots, tabs } = iconTabs([[BOOK, 'Story'], [GEAR, 'Story list']]);
     const locators = formatHierarchy(roots).locators.filter((l) => l.includes('"tab"'));

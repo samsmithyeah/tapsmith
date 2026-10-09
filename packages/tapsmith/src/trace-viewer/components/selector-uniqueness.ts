@@ -96,9 +96,19 @@ function tryExactRoleNameUpgrade(
 ): GeneratedSelector | null {
   const parsed = parseSelectorString(s.code);
   if (!parsed || parsed.type !== 'role' || !parsed.name || parsed.exact) return null;
-  const upgraded = `device.getByRole("${escapeJsString(parsed.value)}", { name: "${escapeJsString(parsed.name)}", exact: true })`;
-  if (!uniquelyMatches(upgraded, roots, node)) return null;
-  return { ...s, code: upgraded };
+  // The suggested name may be the full name less its icon glyphs, which an
+  // exact match never equals (PILOT-659): fall back to the full name.
+  const names = [parsed.name, fullAccessibleName(node)].filter((n, i, all) => n && all.indexOf(n) === i);
+  for (const name of names) {
+    const upgraded = `device.getByRole("${escapeJsString(parsed.value)}", { name: "${escapeJsString(name)}", exact: true })`;
+    if (uniquelyMatches(upgraded, roots, node)) return { ...s, code: upgraded };
+  }
+  return null;
+}
+
+/** The node's whole accessible name, as role-name matching reads it first. */
+function fullAccessibleName(node: HierarchyNode): string {
+  return node.attributes.get('content-desc') || node.attributes.get('label') || node.attributes.get('text') || '';
 }
 
 /** (b) Ambiguous getByRole without a name → try adding the accessible name. */
@@ -109,7 +119,7 @@ function tryRoleNameUpgrade(
 ): GeneratedSelector | null {
   const parsed = parseSelectorString(s.code);
   if (!parsed || parsed.type !== 'role' || parsed.name || parsed.nameRegex) return null;
-  const fullName = node.attributes.get('content-desc') || node.attributes.get('label') || node.attributes.get('text') || '';
+  const fullName = fullAccessibleName(node);
   const accessibleName = roleNameFor(fullName) || fullName;
   if (!accessibleName) return null;
   for (const exact of ['', ', exact: true']) {

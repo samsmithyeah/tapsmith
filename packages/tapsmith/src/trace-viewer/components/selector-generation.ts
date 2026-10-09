@@ -106,9 +106,11 @@ export function roleNameFor(accessibleName: string): string {
 
 /**
  * A locator whose value still pins an icon glyph works, but breaks when the
- * app changes icon, so it ranks with the fallbacks (PILOT-659).
+ * app changes icon, so it ranks after every glyph-free semantic locator
+ * (PILOT-659) — yet below FALLBACK_PRIORITY_THRESHOLD, since it still names
+ * this element (a pick must not move to a descendant over it).
  */
-const GLYPH_PINNED_PRIORITY = 8;
+const GLYPH_PINNED_PRIORITY = 7.5;
 
 function glyphAware(priority: number, value: string): number {
   return hasPrivateUseChar(value) ? Math.max(priority, GLYPH_PINNED_PRIORITY) : priority;
