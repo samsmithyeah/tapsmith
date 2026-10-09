@@ -135,6 +135,6 @@ describe('offerTapsmithInstall()', () => {
     expect(step).toBe('npm init -y && npm i -D tapsmith');
     expect(questions).toEqual([]);
     expect(ran).toEqual([]);
-    expect(logged.join('\n')).toContain(`⚠ There's no package.json in ${app}: on its own, \`npm i -D tapsmith\` would install Tapsmith into ${dir}, not this project.`);
+    expect(logged.join('\n')).toContain(`⚠ There's no package.json in ${app}: on its own, \`npm i -D tapsmith\` would add Tapsmith to ${dir} instead. If that is this project's root, run it there; otherwise create a package.json here first.`);
   });
 });

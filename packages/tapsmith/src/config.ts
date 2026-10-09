@@ -1472,14 +1472,15 @@ export async function tapsmithInstallCommand(dir: string): Promise<InstallComman
   if (fs.existsSync(path.join(dir, 'package.json'))) return { ...resolved, display: add };
 
   // Without a package.json here, the add goes to the nearest ancestor project
-  // (a monorepo root, the home directory), where the config written here
-  // still cannot import it (PILOT-631).
+  // (PILOT-631): right for a monorepo root, wrong for the home directory or an
+  // unrelated parent. Only the user knows which, so the note says where it
+  // would go and the command creates this directory's package.json first.
   const ancestor = nearestProjectAbove(dir, agent === 'npm' || agent === 'deno');
   return {
     ...resolved,
     display: `${PACKAGE_JSON_INIT[agent] ?? 'npm init -y'} && ${add}`,
     note: ancestor
-      ? `There's no package.json in ${dir}: on its own, \`${add}\` would install Tapsmith into ${ancestor}, not this project.`
+      ? `There's no package.json in ${dir}: on its own, \`${add}\` would add Tapsmith to ${ancestor} instead. If that is this project's root, run it there; otherwise create a package.json here first.`
       : `There's no package.json in ${dir}: create one before installing Tapsmith.`,
   };
 }

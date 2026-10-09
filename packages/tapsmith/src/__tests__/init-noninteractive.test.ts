@@ -689,7 +689,7 @@ describe('executeInitPlan()', () => {
     try {
       const args = initArgs({ yes: true, platform: 'android' });
       const plan = resolveInitPlan(args, baseEnv, detectStubs, tmp);
-      const note = `There's no package.json in ${tmp}: on its own, \`npm i -D tapsmith\` would install Tapsmith into /home/u, not this project.`;
+      const note = `There's no package.json in ${tmp}: on its own, \`npm i -D tapsmith\` would add Tapsmith to /home/u instead. If that is this project's root, run it there; otherwise create a package.json here first.`;
       const install = { command: 'npm', args: ['i', '-D', 'tapsmith'], display: 'npm init -y && npm i -D tapsmith', note };
       const result = executeInitPlan(plan, args, tmp, install);
       expect(result.nextSteps[0]).toBe('Install Tapsmith in this project: npm init -y && npm i -D tapsmith');

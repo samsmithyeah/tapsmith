@@ -441,7 +441,7 @@ describe('configLoadFailure', () => {
 
   // PILOT-631: no package.json beside the config.
   it('says why the install command creates a package.json first', () => {
-    const note = "There's no package.json in /p: on its own, `npm i -D tapsmith` would install Tapsmith into /, not this project.";
+    const note = "There's no package.json in /p: on its own, `npm i -D tapsmith` would add Tapsmith to / instead. If that is this project's root, run it there; otherwise create a package.json here first.";
     const err = new TapsmithNotInstalledError(
       '/p/tapsmith.config.ts',
       { command: 'npm', args: ['i', '-D', 'tapsmith'], display: 'npm init -y && npm i -D tapsmith', note },
