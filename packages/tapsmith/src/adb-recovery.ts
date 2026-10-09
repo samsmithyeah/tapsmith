@@ -18,7 +18,7 @@
  */
 
 import { parseAdbDevicesOutput, type AdbDevice } from './adb-devices.js';
-import { pinnedDeviceUnusableMessage, waitForPinnedDeviceAuthorization } from './device-advice.js';
+import { describeUnusableAndroidDevice, isUsableAndroidState, pinnedDeviceUnusableMessage, waitForPinnedDeviceAuthorization } from './device-advice.js';
 import { describeHolder, type DeviceClaim } from './device-claims.js';
 import type { DeviceHealthResult } from './emulator.js';
 import { platformOfSerial } from './project.js';
@@ -134,9 +134,15 @@ export async function checkPinnedDeviceHealth(serial: string, deps: PinnedDevice
       // The probes below decide whether it came back.
     }
     await deps.sleep(2_000);
-    if ((await deps.waitForStable(serial)).healthy) {
+    const after = await deps.waitForStable(serial);
+    if (after.healthy) {
       deps.note(`Device ${serial} reconnected and is responsive.`);
       return;
+    }
+    // The shell answers again; what is left (boot, package manager, a
+    // dialog) is the device's own, and no server restart fixes it.
+    if (after.reason && !after.reason.includes('ADB shell')) {
+      throw new Error(`Device ${serial} is not ready: ${after.reason}.`);
     }
   }
 
@@ -144,8 +150,14 @@ export async function checkPinnedDeviceHealth(serial: string, deps: PinnedDevice
   // is driving an Android device, which the restart would disconnect.
   const others = deps.heldElsewhere().filter((c) => platformOfSerial(c.device) === 'android');
   if (others.length > 0) {
+    // adb's state for the pin, with advice that does not contradict the refusal.
     const state = listDevices(deps);
-    const unusable = state ? pinnedDeviceUnusableMessage(serial, state, 'any') : undefined;
+    const unusable = state && pinnedDeviceUnusableMessage(serial, state, 'any')
+      ? `Device ${describeUnusableAndroidDevice(
+        state.find((d) => d.serial === serial && !isUsableAndroidState(d.state))!,
+        serial.startsWith('emulator-') ? 'Restart the emulator' : 'Reconnect the cable, or restart the device',
+      )}`
+      : undefined;
     const holders = others.map((c) => `${c.device} (${describeHolder(c)})`).join('; ');
     throw new Error([
       unusable ?? `Device ${serial} is not responding${listed ? ', even after `adb reconnect`' : ', and the ADB server is not answering'}.`,

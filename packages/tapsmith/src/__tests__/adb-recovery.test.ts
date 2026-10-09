@@ -119,6 +119,28 @@ describe('checkPinnedDeviceHealth (PILOT-475)', () => {
     expect(err?.message).toContain(`Device ${SERIAL} is not responding, even after \`adb reconnect\`.`);
   });
 
+  it('stops after the reconnect, without a restart, when the shell answers but the device is not ready', async () => {
+    const adb = fakeAdb({
+      devices: [devicesOutput(`${SERIAL}\tdevice`)],
+      stability: [shellDead, { serial: SERIAL, healthy: false, reason: 'package manager is not ready' }],
+    });
+    await expect(checkPinnedDeviceHealth(SERIAL, adb.deps)).rejects.toThrow(`Device ${SERIAL} is not ready: package manager is not ready.`);
+    expect(adb.mutating()).toEqual([`-s ${SERIAL} reconnect`]);
+  });
+
+  it('never advises `adb kill-server` for an offline phone when it refused the restart', async () => {
+    const adb = fakeAdb({
+      devices: [devicesOutput('R58M123\toffline', 'emulator-5556\tdevice')],
+      stability: [{ serial: 'R58M123', healthy: false, reason: 'ADB shell is unresponsive' }],
+      heldElsewhere: [claim('emulator-5556')],
+    });
+    const err = await checkPinnedDeviceHealth('R58M123', adb.deps).then(() => undefined, (e: Error) => e);
+    expect(adb.mutating()).toEqual(['-s R58M123 reconnect']);
+    const headline = err?.message.split('\n')[0];
+    expect(headline).toBe('Device R58M123 is attached, but adb reports it offline. Reconnect the cable, or restart the device.');
+    expect(err?.message).toContain('Tapsmith did not restart the ADB server');
+  });
+
   it('still refuses the restart when the ADB server does not answer and another session holds an Android device', async () => {
     const adb = fakeAdb({ devices: [new Error('ETIMEDOUT')], stability: [shellDead], heldElsewhere: [claim('R58M123')] });
     const err = await checkPinnedDeviceHealth(SERIAL, adb.deps).then(() => undefined, (e: Error) => e);
