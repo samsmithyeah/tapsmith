@@ -116,6 +116,9 @@ function parseGetByOptions(blob: string | undefined): ParsedOptions | { error: s
     const m = part.match(/^(\w+)\s*:\s*(.*)$/s);
     if (!m) return { error: `cannot read the option "${part}"` };
     const [, key, value] = m;
+    // A `name` the name pattern above could not read: a template literal,
+    // an expression, a second name.
+    if (key === 'name') return { error: 'cannot read the name option (use one quoted string or a RegExp literal)' };
     if (key !== 'exact' && !(ROLE_STATE_KEYS as readonly string[]).includes(key)) {
       return { error: `unsupported option "${key}"` };
     }

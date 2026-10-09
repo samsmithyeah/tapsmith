@@ -120,6 +120,16 @@ describe('locatorOptionsError: why a locator\'s options are refused', () => {
       .toBe('webview.getByRole() has no option "selected" (it takes name)');
   });
 
+  it('says the name could not be read rather than that getByRole has no name', () => {
+    for (const input of [
+      'device.getByRole("button", { name: `A` })',
+      'device.getByRole("button", { name: "A", name: "B" })',
+      'device.getByRole("button", { name : "A" })',
+    ]) {
+      expect(locatorOptionsError(input), input).toBe('cannot read the name option (use one quoted string or a RegExp literal)');
+    }
+  });
+
   it('is null for valid options and for locators without any', () => {
     expect(locatorOptionsError('device.getByRole("tab", { name: "A", selected: true })')).toBeNull();
     expect(locatorOptionsError('device.getByText("A")')).toBeNull();
