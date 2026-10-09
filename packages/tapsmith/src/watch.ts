@@ -59,6 +59,14 @@ const CYAN = '\x1b[36m';
 
 export interface WatchModeContext {
   config: TapsmithConfig
+  /**
+   * The config the session's workers and run children run under — the primary
+   * device target's (`targetSessionConfig`), not the root `config`, which may
+   * hold none of the device keys a config keeps in its projects' `use`
+   * (PILOT-654). Multi-target sessions override it per device through
+   * `configByDevice`.
+   */
+  targetConfig: TapsmithConfig
   device: Device
   client: TapsmithGrpcClient
   deviceSerial: string
@@ -230,7 +238,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
   }
 
 
-  const serializedConfig: SerializedConfig = serializeConfig(ctx.config);
+  const serializedConfig: SerializedConfig = serializeConfig(ctx.targetConfig);
 
   /** A worker's device group, primary first: its bucket's config, or the session's group. */
   function workerDeviceGroup(deviceSerial: string): DeviceGroupEntry[] {
