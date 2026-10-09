@@ -309,9 +309,10 @@ const LINK_REWRITES = Object.entries(LINK_MAP).map(([file, dest]) => {
 
 // Links into api-reference.md (split into multiple pages): a heading's anchor
 // goes to the sub-page that holds the heading, a link with no anchor to the
-// first sub-page. An anchor that is no heading of api-reference.md (a typo, or
-// a heading since renamed) stops the sync, since the link would otherwise land
-// on the wrong page without the link validator noticing.
+// first sub-page. An anchor with no sub-page to go to (a typo, a heading since
+// renamed, or a heading of the unsplit Configuration section) stops the sync,
+// since the link would otherwise land on the wrong page without the link
+// validator noticing.
 const API_REFERENCE_HOME = '/reference/api/locators/'
 LINK_REWRITES.push([
   /\((?:\.\/)?api-reference\.md(#[^)]*)?\)/g,
@@ -320,7 +321,7 @@ LINK_REWRITES.push([
     const url = API_ANCHORS.get(anchor.slice(1))
     if (!url) {
       throw new Error(
-        `sync-docs: a link to api-reference.md${anchor} names no heading of api-reference.md`,
+        `sync-docs: a link to api-reference.md${anchor} names no heading on a docs-site API page`,
       )
     }
     return `(${url})`
@@ -348,8 +349,9 @@ const FENCE = /^\s*(```|~~~)/
  * heading's URL on the sub-page holding it. GitHub numbers repeated headings
  * over the whole file (`#configuration-1`), Starlight over each page, so both
  * are counted. A sub-page drops its section's own heading: that anchor goes
- * to the page itself. A heading in a section with no sub-page goes to the
- * first sub-page.
+ * to the page itself. A heading in a section with no sub-page (Configuration,
+ * which configuration.md covers on the site) is left out, so a link to it
+ * fails the sync like a dead anchor: link configuration.md instead.
  */
 function apiAnchors() {
   const anchors = new Map()
@@ -379,10 +381,7 @@ function apiAnchors() {
     const text = m[1].replace(/`/g, '')
     const anchor = fileSlugger.slug(text)
     const range = ranges.find((r) => n >= r.start && n < r.end)
-    if (!range) {
-      anchors.set(anchor, API_REFERENCE_HOME)
-      return
-    }
+    if (!range) return
     anchors.set(
       anchor,
       n === range.start ? range.page : `${range.page}#${range.slugger.slug(text)}`,

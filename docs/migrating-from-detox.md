@@ -83,7 +83,7 @@ This guide is for teams with a Detox suite who want to move it to Tapsmith. Of t
 | `device.launchApp({ newInstance: true })` | [`device.restartApp(pkg)`](api-reference.md#devicerestartapppackagename-string-options--waitforidle-boolean--promisevoid), or `appReset: "restart"` |
 | `device.launchApp({ delete: true })` | The default `appReset` policy (clear data and relaunch; a warm, in-app reset instead when the app mounts `@tapsmith/react-native`), or [`device.resetApp({ mode: "clear" })`](api-reference.md#deviceresetappoptions-promiseappresetresult) |
 | `device.launchApp({ url })` / `device.openURL({ url })` | [`device.openDeepLink(url)`](api-reference.md#deviceopendeeplinkuri-string-options-opendeeplinkoptions-promisevoid) |
-| `device.launchApp({ permissions })` (iOS) | [`device.grantPermission(bundleId, "camera")`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid) for each permission, on a simulator |
+| `device.launchApp({ permissions })` (iOS) | On a simulator, [`device.grantPermission(bundleId, "photos")`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid) for each service `simctl privacy` supports (not notifications or the camera); iOS may restart the app for some changes |
 | `device.reloadReactNative()` | A warm reset through [`@tapsmith/react-native`](warm-reset.md), automatic between files once the app mounts it |
 | `device.terminateApp()` | [`device.terminateApp()`](api-reference.md#deviceterminateapppackagename-string-promisevoid) |
 | `device.sendToHome()` | [`device.sendToBackground()`](api-reference.md#devicesendtobackground-promisevoid) |
@@ -227,12 +227,12 @@ Run one platform with `npx tapsmith test --project android`, or both with `npx t
 | Detox | Tapsmith |
 |---|---|
 | `npm install -D detox jest`, `detox init`, native Android setup | `npm install -D tapsmith`, then [`npx tapsmith init`](getting-started.md#quick-setup-recommended) |
-| `applesimutils` (iOS) | Nothing extra: Xcode's `simctl` is enough. `npx tapsmith doctor` checks the setup |
+| `applesimutils` (iOS) | Nothing extra: Xcode's `simctl` is enough (it grants fewer permissions than `applesimutils`; see below). `npx tapsmith doctor` checks the setup |
 | `devices.*.device.avdName` | `avd` (with `launchEmulators: true` to start it for you) |
 | `devices.*.device.type` (simulator) | `simulator` |
 | `apps.*.binaryPath` | `apk` (Android) or `app` with `platform: "ios"` |
 | `configurations.*` | [`projects`](configuration.md#projects-with-per-device-targeting), selected with `--project` |
-| `detox test --headless` | Emulators Tapsmith launches run headless in CI automatically ([How Tapsmith launches emulators](configuration.md#how-tapsmith-launches-emulators)) |
+| `detox test --headless` | Emulators Tapsmith launches run headless in CI automatically, and locally with `emulatorLaunchOptions: { headless: true }` ([How Tapsmith launches emulators](configuration.md#how-tapsmith-launches-emulators)) |
 | `--reuse` | The default: Tapsmith installs the app when the build changed |
 | `detox test e2e/login.test.js` | `npx tapsmith test tests/login.tapsmith.ts` |
 | `--retries` | `retries` in the config, `test.use()` or `test.describe.configure()` |
@@ -270,7 +270,7 @@ Some Detox device APIs have no Tapsmith equivalent at the moment:
 
 - **Device simulation:** `setLocation`, `setBiometricEnrollment` / `matchFace` / `matchFinger`, `shake`, `setStatusBar`, and `sendUserNotification`.
 - **Launch configuration:** `launchArgs` and `languageAndLocale` on `launchApp`. Tapsmith launches the app without extra arguments.
-- **Permissions on physical iPhones:** `grantPermission()` and `revokePermission()` work on Android and on iOS simulators, not on physical iOS devices.
+- **Some iOS permissions:** on an iOS simulator, `grantPermission()` and `revokePermission()` cover the services `xcrun simctl privacy` supports (photos, location, contacts, calendar, microphone, …), which leaves out notifications and the camera, among others. On physical iOS devices they are not supported at all.
 - **Jest features:** `jest.fn()` mocks, snapshot matchers and Jest's custom matchers aren't part of Tapsmith's `expect`, and Jest's watch mode is replaced by [Tapsmith's](watch-mode.md).
 - **Some actions:** `scroll()` by an offset in points, `scrollTo("bottom")` (scroll to an edge; use `scrollIntoView()` on the element you want, or `scroll()` repeatedly) and setting picker wheel columns (`setColumnToValue`).
 
