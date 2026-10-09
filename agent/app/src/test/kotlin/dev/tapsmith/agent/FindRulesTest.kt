@@ -15,6 +15,16 @@ import org.junit.Test
  * snapshot instead changes the cost of a query, not its answer.
  */
 class FindRulesTest {
+    // ─── Expanded state (PILOT-655) ───
+
+    @Test
+    fun `a collapsible element is expanded, an expand-only one collapsed, and one with neither has no state`() {
+        assertEquals(true, FindRules.expandedState(canExpand = false, canCollapse = true))
+        assertEquals(true, FindRules.expandedState(canExpand = true, canCollapse = true))
+        assertEquals(false, FindRules.expandedState(canExpand = true, canCollapse = false))
+        assertNull(FindRules.expandedState(canExpand = false, canCollapse = false))
+    }
+
     // ─── Trait / dual-path roles ───
 
     private val textViewSet = setOf("android.widget.TextView")

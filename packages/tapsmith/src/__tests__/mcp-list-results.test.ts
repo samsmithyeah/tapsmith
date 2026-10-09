@@ -212,3 +212,52 @@ describe('tapsmith_list_results details', () => {
     expect(out).not.toContain('Steps leading to failure');
   });
 });
+
+// PILOT-657: list_results is the way back to every failure a bounded
+// run_tests summary left out, so it must stay within the response limit
+// itself and still reach any single result in full.
+describe('tapsmith_list_results size', () => {
+  const longError = (i: number): string => `Error ${i}: ${'e'.repeat(30_000)} END-${i}`;
+  const many = Array.from({ length: 300 }, (_, i) => result({
+    fullName: `Suite > test ${i}`, status: 'failed', error: longError(i),
+  }));
+
+  it('clips each error when listing several results, and says how to see one in full', async () => {
+    const out = await listResults(dispatcherWith(many.slice(0, 5)));
+    expect(out).toContain('Results: 0 passed, 5 failed, 0 skipped (5 total)');
+    for (let i = 0; i < 5; i++) expect(out).toContain(`[FAIL] Suite > test ${i}`);
+    expect(out).not.toContain('END-0');
+    expect(out).toContain('more characters');
+    expect(out).toContain('`test`');
+  });
+
+  it('stops listing at the response budget and counts the rest', async () => {
+    const out = await listResults(dispatcherWith(many));
+    expect(out).toContain('Results: 0 passed, 300 failed, 0 skipped (300 total)');
+    expect(out).toMatch(/\d+ more result\(s\) not shown/);
+    expect(out).not.toContain('omitted here');
+    expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(100 * 1024);
+  });
+
+  it('filters by a test name substring, case-insensitively', async () => {
+    const out = await listResults(dispatcherWith(many), { test: 'SUITE > TEST 42' });
+    expect(out).toContain('(1 total)');
+    expect(out).toContain('[FAIL] Suite > test 42');
+  });
+
+  it('shows full errors when the filtered results fit, even if the filter matches a sibling test', async () => {
+    const out = await listResults(dispatcherWith([
+      result({ fullName: 'Login > submits', status: 'failed', error: `${'a'.repeat(5_000)} END-A` }),
+      result({ fullName: 'Login > submits twice', status: 'failed', error: `${'b'.repeat(5_000)} END-B`, projectName: 'ios' }),
+    ]), { test: 'Login > submits' });
+    expect(out).toContain('(2 total)');
+    expect(out).toContain('END-A');
+    expect(out).toContain('END-B');
+  });
+
+  it('shows the full error when the filters leave one result', async () => {
+    const out = await listResults(dispatcherWith(many), { test: 'suite > test 299', status: 'failed', file: 'login' });
+    expect(out).toContain('END-299');
+    expect(out).not.toContain('more characters');
+  });
+});

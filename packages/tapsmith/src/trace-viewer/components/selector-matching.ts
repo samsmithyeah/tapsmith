@@ -17,8 +17,18 @@ export interface ParsedSelector {
   regex?: ParsedRegex
   /** getByRole `{ name: RegExp }` (PILOT-520). */
   nameRegex?: ParsedRegex
+  /** getByRole's state filters (PILOT-655). Absent means "either". */
+  checked?: boolean
+  disabled?: boolean
+  selected?: boolean
+  expanded?: boolean
   index?: number | 'first' | 'last'
 }
+
+/** getByRole's state options, in the SDK's RoleLocatorOptions. */
+const ROLE_STATE_KEYS = ['checked', 'disabled', 'selected', 'expanded'] as const;
+type RoleStateKey = typeof ROLE_STATE_KEYS[number];
+type RoleStates = Partial<Record<RoleStateKey, boolean>>;
 
 /** A RegExp literal from a locator string: its source and flags. */
 export interface ParsedRegex {
@@ -62,22 +72,107 @@ function parseRegex(source: string | undefined, flags: string | undefined): Pars
   return { source, flags: flags ?? '' };
 }
 
-/** Parse the options-object blob of a getBy* call: `name: "x"` or `name: /x/`, and/or `exact: true`. */
-function parseGetByOptions(blob: string | undefined): { name?: string; nameRegex?: ParsedRegex | null; exact?: boolean } {
-  if (!blob) return {};
+interface ParsedOptions {
+  name?: string
+  nameRegex?: ParsedRegex | null
+  exact?: boolean
+  states: RoleStates
+  /** Every option key given, so a getter can refuse the ones it does not take. */
+  keys: Set<string>
+}
+
+/**
+ * Parse the options-object blob of a getBy* call: `name: "x"` or `name: /x/`,
+ * plus boolean options (`exact`, and getByRole's `checked`, `disabled`,
+ * `selected`, `expanded`). Anything else — an unknown key, a non-boolean
+ * value, a missing comma — is an `{ error }`, so a locator is refused rather
+ * than run with an option silently dropped, which is how `selected: true`
+ * came to match unselected elements (PILOT-655).
+ */
+function parseGetByOptions(blob: string | undefined): ParsedOptions | { error: string } {
+  const parsed: ParsedOptions = { states: {}, keys: new Set() };
+  if (!blob) return parsed;
   // Skip over escaped characters inside the quotes so an escaped quote of
   // the same type (name: "Say \"hi\"") doesn't truncate the capture.
-  const nameMatch = blob.match(new RegExp(String.raw`name:\s*(?:${DQ}|${SQ}|${REGEX_SOURCE})`));
-  // `exact` outside the name's own value.
-  const rest = nameMatch ? blob.replace(nameMatch[0], '') : blob;
-  const exactMatch = rest.match(/exact:\s*(true|false)/);
-  const rawName = nameMatch ? (nameMatch[1] !== undefined ? nameMatch[1] : nameMatch[2]) : undefined;
-  return {
-    name: rawName !== undefined ? unescapeJsString(rawName) : undefined,
-    nameRegex: nameMatch && nameMatch[3] !== undefined ? parseRegex(nameMatch[3], nameMatch[4]) : undefined,
-    exact: exactMatch ? exactMatch[1] === 'true' : undefined,
-  };
+  const nameMatch = blob.match(new RegExp(String.raw`(?:^|,)\s*name:\s*(?:${DQ}|${SQ}|${REGEX_SOURCE})\s*(?=,|$)`));
+  if (nameMatch) {
+    parsed.keys.add('name');
+    const rawName = nameMatch[1] !== undefined ? nameMatch[1] : nameMatch[2];
+    if (rawName !== undefined) parsed.name = unescapeJsString(rawName);
+    if (nameMatch[3] !== undefined) parsed.nameRegex = parseRegex(nameMatch[3], nameMatch[4]);
+  }
+  // The other options, outside the name's own value: each `key: true|false`.
+  const rest = nameMatch ? blob.slice(0, nameMatch.index) + ',' + blob.slice(nameMatch.index! + nameMatch[0].length) : blob;
+  for (const raw of rest.split(',')) {
+    const part = raw.trim();
+    if (!part) continue;
+    const m = part.match(/^(\w+)\s*:\s*(.*)$/s);
+    if (!m) return { error: `cannot read the option "${part}"` };
+    const [, key, value] = m;
+    // A `name` the name pattern above could not read: a template literal,
+    // an expression, a second name.
+    if (key === 'name') return { error: 'cannot read the name option (use one quoted string or a RegExp literal)' };
+    if (key !== 'exact' && !(ROLE_STATE_KEYS as readonly string[]).includes(key)) {
+      return { error: `unsupported option "${key}"` };
+    }
+    if (value !== 'true' && value !== 'false') return { error: `option "${key}" must be true or false, got ${value}` };
+    if (key === 'exact') parsed.exact = value === 'true';
+    else parsed.states[key as RoleStateKey] = value === 'true';
+    parsed.keys.add(key);
+  }
+  return parsed;
 }
+
+/**
+ * The options of a `<receiver>.getBy<method>(…)` call, or why they are
+ * refused: unreadable, or a key `method` does not take (the SDK's signatures).
+ */
+function getterOptions(
+  receiver: 'device' | 'webview', method: string, blob: string | undefined,
+): ParsedOptions | { error: string } {
+  const options = parseGetByOptions(blob);
+  if ('error' in options) return options;
+  const allowed = (receiver === 'device' ? DEVICE_OPTION_KEYS : WEBVIEW_OPTION_KEYS)[method] ?? [];
+  const bad = [...options.keys].find((k) => !allowed.includes(k));
+  if (bad === undefined) return options;
+  const takes = allowed.length ? `it takes ${allowed.join(', ')}` : 'it takes no options';
+  return { error: `${receiver}.getBy${method}() has no option "${bad}" (${takes})` };
+}
+
+/**
+ * Why a locator string with an options object is refused, naming the option
+ * (PILOT-655), or null when its options are fine or it has none. The MCP
+ * tools put this in their "Invalid locator" error so a caller knows what to
+ * drop, e.g. Playwright's `level` or `includeHidden`.
+ */
+export function locatorOptionsError(input: string): string | null {
+  const chain = parseChain(input.trim());
+  if (!chain) return null;
+  const device = chain.base.match(DEVICE_RE);
+  const webview = device ? null : chain.base.match(WEBVIEW_GETBY_RE);
+  const match = device ?? webview;
+  // A getter Tapsmith does not have (Playwright's getByAltText, getByTitle)
+  // is the problem, not its options: leave it to the generic message.
+  if (!match || !KNOWN_GETTERS[device ? 'device' : 'webview'].has(match[1])) return null;
+  const options = getterOptions(device ? 'device' : 'webview', match[1], match[6]);
+  return 'error' in options ? options.error : null;
+}
+
+/** The getBy* methods each receiver has (device.ts / webview-handle.ts). */
+const KNOWN_GETTERS = {
+  device: new Set(['Text', 'Role', 'Description', 'Placeholder', 'TestId', 'Label']),
+  webview: new Set(['Text', 'Role', 'Label', 'Placeholder', 'TestId']),
+};
+
+/** The options each getter takes (the SDK's signatures). */
+const DEVICE_OPTION_KEYS: Record<string, readonly string[]> = {
+  Text: ['exact'],
+  Role: ['name', 'exact', ...ROLE_STATE_KEYS],
+};
+const WEBVIEW_OPTION_KEYS: Record<string, readonly string[]> = {
+  Text: ['exact'],
+  Role: ['name'],
+};
 // Matches: webview.locator("css-selector") — groups: 1 = dq value, 2 = sq value
 const WEBVIEW_LOCATOR_RE = /^webview\.locator\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*\)/;
 // Matches: device.locator({ className: "value" }) or device.locator({ id: "value" })
@@ -142,7 +237,9 @@ export function parseSelectorString(input: string): ParsedSelector | null {
     const method = wvMatch[1];
     if (wvMatch[4] !== undefined) return null;
     const value = pick(wvMatch[2], wvMatch[3]);
-    const { name, nameRegex, exact } = parseGetByOptions(wvMatch[6]);
+    const options = getterOptions('webview', method, wvMatch[6]);
+    if ('error' in options) return null;
+    const { name, nameRegex, exact } = options;
     if (nameRegex !== undefined) return null;
     const sel = mapWebViewMethod(method, value, name, exact);
     if (sel) sel.index = index;
@@ -162,7 +259,9 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   const deviceMatch = base.match(DEVICE_RE);
   if (deviceMatch) {
     const method = deviceMatch[1];
-    const { name, nameRegex, exact } = parseGetByOptions(deviceMatch[6]);
+    const options = getterOptions('device', method, deviceMatch[6]);
+    if ('error' in options) return null;
+    const { name, nameRegex, exact, states } = options;
     if (nameRegex === null) return null; // a malformed RegExp
     let sel: ParsedSelector | null;
     if (deviceMatch[4] !== undefined) {
@@ -171,6 +270,7 @@ export function parseSelectorString(input: string): ParsedSelector | null {
     } else {
       sel = mapDeviceMethod(method, pick(deviceMatch[2], deviceMatch[3]), name, exact, nameRegex);
     }
+    if (sel?.type === 'role') Object.assign(sel, states);
     if (sel) sel.index = index;
     return sel;
   }
@@ -416,6 +516,7 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
       // resolved, and a role it rejects matches nothing.
       if (unknownRoleMessage(selector.value) !== null) return false;
       if (!nodeHasRole(node, normalizeRole(selector.value))) return false;
+      if (!nodeMatchesRoleStates(node, selector)) return false;
       if (selector.nameRegex) return roleNameMatchesRegex(node, toJsRegExp(selector.nameRegex));
       if (selector.name) return roleNameMatches(node, selector.name, selector.exact === true);
       return true;
@@ -423,6 +524,56 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
     default:
       return false;
   }
+}
+
+// ─── Role state filters (PILOT-655) ───
+
+/** The iOS element types whose checked state falls back to isSelected (the agent's deriveCheckedState). */
+const IOS_TOGGLE_TYPES = new Set([
+  'XCUIElementTypeSwitch', 'XCUIElementTypeToggle', 'XCUIElementTypeCheckBox', 'XCUIElementTypeRadioButton',
+]);
+
+/** The iOS agent's ElementInfo.deriveCheckedState: the value first, then a toggle's selected state. */
+function iosChecked(node: HierarchyNode): boolean {
+  const value = (node.attributes.get('value') ?? '').trim().toLowerCase();
+  if (['1', 'true', 'on', 'yes', 'selected', 'checked'].includes(value)) return true;
+  if (['0', 'false', 'off', 'no', 'not selected', 'unchecked'].includes(value)) return false;
+  if (value.endsWith(', checked') || value.endsWith(', selected')) return true;
+  if (value.endsWith(', unchecked') || value.endsWith(', not selected')) return false;
+  const type = node.attributes.get('type') ?? node.tagName;
+  return IOS_TOGGLE_TYPES.has(type) && node.attributes.get('selected') === 'true';
+}
+
+/**
+ * A node's state as the agents read it at runtime, from the hierarchy
+ * snapshot; undefined when the node has no such state, which no filter
+ * matches (the Android agent's expanded state of a node with neither an
+ * expand nor a collapse action).
+ */
+function nodeState(node: HierarchyNode, key: 'checked' | 'disabled' | 'selected' | 'expanded'): boolean | undefined {
+  const isAndroid = node.attributes.has('class');
+  switch (key) {
+    case 'disabled': return node.attributes.get('enabled') === 'false';
+    case 'selected': return node.attributes.get('selected') === 'true';
+    case 'checked': return isAndroid ? node.attributes.get('checked') === 'true' : iosChecked(node);
+    case 'expanded': {
+      // Android: the dump's tapsmith-expanded (from the expand/collapse
+      // actions). iOS: React Native puts "expanded" in the value, and its
+      // absence means collapsed.
+      if (!isAndroid) return (node.attributes.get('value') ?? '').toLowerCase().includes('expanded');
+      const expanded = node.attributes.get('tapsmith-expanded');
+      return expanded === undefined ? undefined : expanded === 'true';
+    }
+  }
+}
+
+/** getByRole's checked / disabled / selected / expanded filters against the snapshot. */
+function nodeMatchesRoleStates(node: HierarchyNode, selector: ParsedSelector): boolean {
+  for (const key of ['checked', 'disabled', 'selected', 'expanded'] as const) {
+    const want = selector[key];
+    if (want !== undefined && nodeState(node, key) !== want) return false;
+  }
+  return true;
 }
 
 function webViewNodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boolean {

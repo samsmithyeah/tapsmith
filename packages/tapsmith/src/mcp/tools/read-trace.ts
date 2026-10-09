@@ -4,11 +4,30 @@ import * as path from 'node:path';
 import { unzipSync } from 'fflate';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { traceFormatProblem } from '../../trace/trace-format.js';
+import {
+  clipText, MCP_IMAGE_BUDGET_BYTES, MCP_TEXT_BUDGET_BYTES, serializedTextBytes, truncateMiddle,
+} from '../response-limits.js';
+
+/**
+ * One step value (an error, an expected or actual value) as shown. Errors can
+ * carry a whole hierarchy dump; a few hundred such steps made one response
+ * too big for the MCP client (PILOT-657).
+ */
+const STEP_VALUE_CHARS = 2_000;
+const LOG_LINE_CHARS = 500;
+/**
+ * Most of the text budget the device logs may take. They come after the
+ * steps, so left to the response boundary a long log section would fill the
+ * kept tail and cut the failing step — the end of the steps — instead.
+ */
+const LOGS_BUDGET_BYTES = 24 * 1024;
+/** Text budget held back for the screenshot labels and notes. */
+const NOTES_RESERVE_BYTES = 4 * 1024;
 
 export function registerReadTraceTool(server: McpServer): void {
   server.tool(
     'tapsmith_read_trace',
-    'Read a Tapsmith trace archive (.zip) and get step-by-step test execution data. Returns actions with their locators, durations, and pass/fail status. Use to debug why a test failed.',
+    'Read a Tapsmith trace archive (.zip) and get step-by-step test execution data. Returns actions with their locators, durations, and pass/fail status. Use to debug why a test failed. Long step values are shortened, and with include_screenshots the latest screenshots that fit the response limit are returned.',
     {
       path: z.string().describe('Path to the trace .zip file'),
       include_screenshots: z.boolean().optional().describe('Include base64 screenshots for each step (default false)'),
@@ -103,18 +122,19 @@ function readTraceArchive(tracePath: string, includeScreenshots: boolean, device
       if (event.type === 'action') {
         lines.push(`${i + 1}. [${status}] ${who}${event.action ?? 'action'}${duration}`);
         if (event.selector) lines.push(`   Locator: ${event.selector}`);
-        if (event.error) lines.push(`   Error: ${event.error}`);
+        if (event.error) lines.push(`   Error: ${clipText(String(event.error), STEP_VALUE_CHARS)}`);
       } else if (event.type === 'assertion') {
         lines.push(`${i + 1}. [${status}] ${who}expect ${event.assertion ?? 'assertion'}${duration}`);
-        if (event.expected !== undefined) lines.push(`   Expected: ${event.expected}`);
-        if (event.actual !== undefined) lines.push(`   Actual: ${event.actual}`);
-        if (event.error) lines.push(`   Error: ${event.error}`);
+        if (event.expected !== undefined) lines.push(`   Expected: ${clipText(String(event.expected), STEP_VALUE_CHARS)}`);
+        if (event.actual !== undefined) lines.push(`   Actual: ${clipText(String(event.actual), STEP_VALUE_CHARS)}`);
+        if (event.error) lines.push(`   Error: ${clipText(String(event.error), STEP_VALUE_CHARS)}`);
       } else if (event.type === 'group-start') {
         lines.push(`\n### ${event.title ?? 'Test'}`);
       }
     }
 
     // Device logs
+    const logLines: string[] = [];
     if (deviceLogs !== 'none') {
       const isErrorOnly = deviceLogs === 'errors';
       const logEvents = events.filter((e: Record<string, unknown>) =>
@@ -133,14 +153,22 @@ function readTraceArchive(tracePath: string, includeScreenshots: boolean, device
       for (const [deviceId, bucket] of byDevice) {
         const cap = isErrorOnly ? 50 : 200;
         const shown = bucket.slice(-cap);
-        lines.push('');
-        lines.push(`## Device Logs${deviceId ? ` — ${deviceId}` : ''} (${bucket.length} entries${bucket.length > cap ? `, showing last ${cap}` : ''})`);
-        lines.push('');
+        logLines.push('');
+        logLines.push(`## Device Logs${deviceId ? ` — ${deviceId}` : ''} (${bucket.length} entries${bucket.length > cap ? `, showing last ${cap}` : ''})`);
+        logLines.push('');
         for (const ev of shown) {
-          lines.push(`[${(ev.level as string)?.toUpperCase()}] ${ev.message ?? ''}`);
+          logLines.push(`[${(ev.level as string)?.toUpperCase()}] ${clipText(String(ev.message ?? ''), LOG_LINE_CHARS)}`);
         }
       }
     }
+    // Bound the two parts separately: the steps keep their start and their
+    // end (where the failure is) however long the log section is.
+    const logsText = truncateMiddle(logLines.join('\n'), LOGS_BUDGET_BYTES, 'Pass device_logs "none" to leave them out.');
+    const stepsBudget = MCP_TEXT_BUDGET_BYTES - NOTES_RESERVE_BYTES - serializedTextBytes(logsText);
+    const stepsText = truncateMiddle(lines.join('\n'), stepsBudget, 'The trace\'s first and last steps are kept; the failure is at the end.');
+    lines.length = 0;
+    lines.push(stepsText);
+    if (logsText) lines.push(logsText);
   }
 
   const content: ContentItem[] = [{ type: 'text', text: lines.join('\n') }];
@@ -149,7 +177,23 @@ function readTraceArchive(tracePath: string, includeScreenshots: boolean, device
     const screenshotNames = Object.keys(files)
       .filter(name => name.startsWith('screenshots/') && name.endsWith('.png'))
       .sort();
-    for (const name of screenshotNames) {
+    // The latest screenshots matter most (the failure is at the end), so fill
+    // the response's image budget from the last one backwards.
+    let budget = MCP_IMAGE_BUDGET_BYTES;
+    let first = screenshotNames.length;
+    while (first > 0) {
+      const encoded = Math.ceil(files[screenshotNames[first - 1]].length / 3) * 4;
+      if (encoded > budget) break;
+      budget -= encoded;
+      first -= 1;
+    }
+    if (first > 0) {
+      content.push({
+        type: 'text',
+        text: `\n[${first} earlier screenshot(s) omitted to stay within the MCP response limit; showing the last ${screenshotNames.length - first}.]`,
+      });
+    }
+    for (const name of screenshotNames.slice(first)) {
       const label = path.basename(name, '.png');
       content.push({ type: 'text', text: `\n### Screenshot: ${label}` });
       content.push({

@@ -3,11 +3,12 @@ import { spawn } from 'node:child_process';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult, ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
-import type { ProjectInfo, TestDispatcher, TestResultEntry, TestTreeEntry } from '../test-dispatcher.js';
+import type { ProjectInfo, TestDispatcher, TestFailureDetail, TestResultEntry, TestTreeEntry } from '../test-dispatcher.js';
 import { readTraceSummary } from './trace-utils.js';
 import { getAllDaemonAddresses } from '../connection.js';
 import { matchesTestFilter } from '../../test-filter.js';
 import { getSessionResultsStore } from '../session-results.js';
+import { clipText, MCP_IMAGE_BUDGET_BYTES, serializedTextBytes } from '../response-limits.js';
 
 /**
  * How often a running test suite reports progress to the MCP client. Clients
@@ -19,6 +20,31 @@ import { getSessionResultsStore } from '../session-results.js';
 const PROGRESS_INTERVAL_MS = 10_000;
 
 let _running = false;
+
+// ─── Response size ───
+//
+// One run can fail hundreds of tests, each with a long error and a failure
+// screenshot; reported in full, that is one MCP message big enough for the
+// client to drop the connection (PILOT-657). The summary lists the first
+// failures in detail, the next ones a line each, and counts the rest — every
+// result stays in tapsmith_list_results, and every failure's trace has the
+// whole story. The response boundary (response-limits.ts) is the backstop.
+
+/** Failures reported with their error, steps, device logs and trace. */
+const DETAILED_FAILURES = 10;
+/** Failures named at all (the ones past DETAILED_FAILURES get one line each). */
+const LISTED_FAILURES = 50;
+/** Failure screenshots attached: the first ones found among the detailed failures that fit the image budget. */
+const SCREENSHOT_FAILURES = 3;
+/** Text for the detailed failures; past it, failures get one line each. */
+const DETAILS_BUDGET_BYTES = 64 * 1024;
+const ERROR_CHARS = 2_000;
+const ONE_LINE_ERROR_CHARS = 200;
+const LINE_CHARS = 500;
+const MAX_WARNING_LINES = 20;
+/** Tail of the CLI's output kept by the dispatcher-less path (its summary is last). */
+const CLI_OUTPUT_CHARS = 60_000;
+const FULL_ERROR_HINT = 'tapsmith_list_results with this test\'s name as `test` shows it in full';
 
 /**
  * The `tapsmith test` argv for a run without a dispatcher (only a
@@ -111,28 +137,76 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
         // and failed branches.
         const appendFailureDetails = (lines: string[]): void => {
           if (!result.failures || result.failures.length === 0) return;
-          for (const f of result.failures) {
+          const failures = result.failures;
+          let detailed = 0;
+          let detailBytes = 0;
+          let imageBytes = 0;
+          const oneLine = (f: TestFailureDetail, proj: string): string[] => {
+            const firstLine = f.error.split('\n')[0];
+            const out = [`FAIL: ${f.fullName}${proj} — ${clipText(firstLine, ONE_LINE_ERROR_CHARS)}`];
+            if (f.tracePath) out.push(`  Trace: ${f.tracePath}`);
+            return out;
+          };
+          failures.slice(0, LISTED_FAILURES).forEach((f, index) => {
             const proj = f.projectName ? ` [${f.projectName}]` : '';
             lines.push('');
-            lines.push(`FAIL: ${f.fullName}${proj}`);
-            lines.push(`  Error: ${f.error}`);
+            // Once the details stop fitting, the rest are one line each, so
+            // every listed failure is named rather than cut by the boundary.
+            if (index >= DETAILED_FAILURES || detailed < index) {
+              lines.push(...oneLine(f, proj));
+              return;
+            }
+            const block: string[] = [];
+            let screenshot: Buffer | undefined;
+            block.push(`FAIL: ${f.fullName}${proj}`);
+            block.push(`  Error: ${clipText(f.error, ERROR_CHARS, FULL_ERROR_HINT)}`);
             if (f.tracePath) {
               const summary = readTraceSummary(f.tracePath);
               if (summary) {
                 if (summary.steps.length > 0) {
-                  lines.push('');
-                  lines.push('  Steps leading to failure:');
-                  for (const step of summary.steps) lines.push(`    ${step}`);
+                  block.push('');
+                  block.push('  Steps leading to failure:');
+                  for (const step of summary.steps) block.push(`    ${clipText(step, LINE_CHARS)}`);
                 }
                 if (summary.deviceLogs.length > 0) {
-                  lines.push('');
-                  lines.push('  Device logs (errors/warnings):');
-                  for (const log of summary.deviceLogs) lines.push(`    ${log}`);
+                  block.push('');
+                  block.push('  Device logs (errors/warnings):');
+                  for (const log of summary.deviceLogs) block.push(`    ${clipText(log, LINE_CHARS)}`);
                 }
-                if (summary.failureScreenshot) screenshots.push(summary.failureScreenshot);
+                screenshot = summary.failureScreenshot;
               }
-              lines.push(`  Trace: ${f.tracePath}`);
+              block.push(`  Trace: ${f.tracePath}`);
             }
+            const blockBytes = serializedTextBytes(block.join('\n'));
+            if (detailed > 0 && detailBytes + blockBytes > DETAILS_BUDGET_BYTES) {
+              lines.push(...oneLine(f, proj));
+              return;
+            }
+            detailed += 1;
+            detailBytes += blockBytes;
+            lines.push(...block);
+            // Attach what fits the response's image budget, in failure order.
+            const encoded = screenshot ? Math.ceil(screenshot.length / 3) * 4 : 0;
+            if (screenshot && screenshots.length < SCREENSHOT_FAILURES && imageBytes + encoded <= MCP_IMAGE_BUDGET_BYTES) {
+              screenshots.push(screenshot);
+              imageBytes += encoded;
+            }
+          });
+          const unlisted = failures.length - LISTED_FAILURES;
+          // Only failures with a trace have a screenshot to attach: mention
+          // screenshots only when some are attached and not every failure got one.
+          const partialScreenshots = screenshots.length > 0 && screenshots.length < failures.length;
+          if (unlisted > 0 || detailed < failures.length || partialScreenshots) {
+            lines.push('');
+            const parts: string[] = [];
+            if (unlisted > 0) parts.push(`... ${unlisted} more failure(s) not listed.`);
+            parts.push(
+              `Details shown for the first ${detailed} failure(s)`
+              + (partialScreenshots ? `, screenshots for ${screenshots.length} of them` : '')
+              + '. Use tapsmith_list_results (status "failed"; file or test to narrow it) for every failure,'
+              + ' and tapsmith_read_trace on a failure\'s trace for its full detail.',
+            );
+            lines.push(parts.join(' '));
           }
         };
         // Warnings on any result of this run (e.g. the app under test showed
@@ -143,9 +217,13 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
           if (warned.length === 0) return;
           lines.push('');
           lines.push('Warnings:');
-          for (const r of warned) {
+          const warningLines = warned.flatMap((r) => {
             const proj = r.projectName ? ` [${r.projectName}]` : '';
-            for (const w of r.warnings ?? []) lines.push(`  ${r.fullName}${proj}: ${w}`);
+            return (r.warnings ?? []).map((w) => `  ${r.fullName}${proj}: ${clipText(w, LINE_CHARS)}`);
+          });
+          lines.push(...warningLines.slice(0, MAX_WARNING_LINES));
+          if (warningLines.length > MAX_WARNING_LINES) {
+            lines.push(`  ... ${warningLines.length - MAX_WARNING_LINES} more warning(s) — tapsmith_list_results lists each test's warnings.`);
           }
         };
         const pushScreenshots = (): void => {
@@ -231,12 +309,24 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
 
         const result = await runTapsmithProcess(args, (line) => { lastLine = line; })
           .finally(() => clearInterval(heartbeat));
-        return { content: [{ type: 'text' as const, text: result }] };
+        return { content: [{ type: 'text' as const, text: keepTail(result, CLI_OUTPUT_CHARS) }] };
       } finally {
         _running = false;
       }
     },
   );
+}
+
+/**
+ * The end of a CLI run's output, where its summary is, when the whole of it is
+ * too long to return.
+ */
+function keepTail(output: string, maxChars: number): string {
+  if (output.length <= maxChars) return output;
+  let start = output.length - maxChars;
+  const first = output.charCodeAt(start);
+  if (first >= 0xdc00 && first <= 0xdfff) start += 1;
+  return `[… first ${start} characters of the run's output omitted]\n${output.slice(start)}`;
 }
 
 /**

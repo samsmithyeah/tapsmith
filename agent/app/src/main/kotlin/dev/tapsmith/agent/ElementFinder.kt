@@ -1007,11 +1007,10 @@ class ElementFinder(
         val actions = node.actionList ?: return null
         val expandId = AccessibilityNodeInfo.AccessibilityAction.ACTION_EXPAND.id
         val collapseId = AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE.id
-        return when {
-            actions.any { it.id == collapseId } -> true
-            actions.any { it.id == expandId } -> false
-            else -> null
-        }
+        return FindRules.expandedState(
+            canExpand = actions.any { it.id == expandId },
+            canCollapse = actions.any { it.id == collapseId },
+        )
     }
 
     /**
