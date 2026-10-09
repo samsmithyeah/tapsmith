@@ -434,10 +434,12 @@ export function truncateText(s: string, max: number): string {
 
 /** Best-effort unambiguous locator suggestion for one resolved element. */
 function suggestSelectorFor(el: ElementInfo): string | undefined {
-  if (el.resourceId) {
-    // Android resource ids look like "com.pkg:id/foo"; getByTestId matches the suffix.
-    const testId = el.resourceId.includes(':id/') ? el.resourceId.split(':id/').pop()! : el.resourceId;
-    return `device.getByTestId("${escapeJsString(testId)}")`;
+  // getByTestId matches the whole resource-id — an RN testID. A native
+  // package-qualified id ("com.pkg:id/foo") is often shared by every row of a
+  // list, so it is the last resort, as locator({ id }) (PILOT-659).
+  const nativeId = el.resourceId?.includes(':id/') ? el.resourceId : undefined;
+  if (el.resourceId && !nativeId) {
+    return `device.getByTestId("${escapeJsString(el.resourceId)}")`;
   }
   const name = el.contentDescription || el.text;
   // Static text elements read better as getByText; real widgets as getByRole.
@@ -458,6 +460,7 @@ function suggestSelectorFor(el: ElementInfo): string | undefined {
     const shown = exact ? el.text : el.text.slice(0, 60);
     return `device.getByText("${escapeJsString(shown)}"${exact ? ', { exact: true }' : ''})`;
   }
+  if (nativeId) return `device.locator({ id: "${escapeJsString(nativeId)}" })`;
   return undefined;
 }
 

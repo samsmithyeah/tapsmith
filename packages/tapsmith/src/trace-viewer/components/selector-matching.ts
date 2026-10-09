@@ -408,7 +408,8 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
     }
     case 'testId': {
       const rid = getNodeId(node);
-      return rid === selector.value || rid.endsWith(`:id/${selector.value}`);
+      // Whole resource-id, like the agent's By.res (PILOT-659).
+      return rid === selector.value;
     }
     case 'role': {
       // Like getByRole at runtime (PILOT-556): case-insensitive, aliases

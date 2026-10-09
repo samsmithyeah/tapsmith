@@ -379,10 +379,14 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     });
 }
 
+/**
+ * The getByTestId value for a resource id, if it has one. The Android agent
+ * matches getByTestId against the whole resource-id: a React Native testID
+ * ("email-input") matches, a native package-qualified id ("com.app:id/x")
+ * does not — that one is addressed by locator({ id }) (PILOT-659).
+ */
 function extractTestId(resourceId: string): string | null {
-  if (!resourceId) return null;
-  const colonIdx = resourceId.indexOf(':id/');
-  if (colonIdx !== -1) return resourceId.slice(colonIdx + 4);
+  if (!resourceId || resourceId.includes(':id/')) return null;
   return resourceId;
 }
 

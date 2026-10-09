@@ -888,6 +888,18 @@ describe('tap()', () => {
     expect(err.message).toContain('aka device.getByText("Terms", { exact: true })');
   });
 
+  it('suggests getByTestId only for an RN testID, never the name part of a native id (PILOT-659)', () => {
+    const err = buildStrictModeViolationError('getByRole("image")', [
+      makeElementInfo({ role: 'image', resourceId: 'avatar' }),
+      makeElementInfo({ role: 'image', resourceId: 'com.android.systemui:id/mobile_signal', contentDescription: '5G' }),
+      makeElementInfo({ role: 'image', resourceId: 'com.android.systemui:id/wifi', text: '' }),
+    ]);
+    expect(err.message).toContain('aka device.getByTestId("avatar")');
+    expect(err.message).toContain('aka device.getByRole("image", { name: "5G", exact: true })');
+    expect(err.message).toContain('aka device.locator({ id: "com.android.systemui:id/wifi" })');
+    expect(err.message).not.toContain('getByTestId("mobile_signal")');
+  });
+
   it('never suggests getByRole for a role getByRole rejects (PILOT-556)', () => {
     // Android reports an RN roleDescription ("menuitem") as the element's
     // role, but getByRole only takes the native role names.

@@ -400,7 +400,7 @@ describe('icon-glyph accessible names (PILOT-659)', () => {
 
   it('ranks a glyph-pinned full-name upgrade below a glyph-free test id', () => {
     const { roots, tabs } = iconTabs([[BOOK, 'Story'], [GEAR, 'Story list']]);
-    tabs[0].attributes.set('resource-id', 'com.app:id/story-tab');
+    tabs[0].attributes.set('resource-id', 'story-tab');
     const ranked = disambiguateSelectors(roots, tabs[0], generateSelectors(tabs[0]));
     expect(ranked[0].code).toBe('device.getByTestId("story-tab")');
     expect(ranked.map((s) => s.code)).toContain('device.getByRole("tab", { name: "\\uE865, Story", exact: true })');
@@ -493,5 +493,32 @@ describe('glyph-only names (PILOT-659)', () => {
       '[1] device.getByRole("text", { name: "\\uE865" })',
       '[2] device.getByRole("text", { name: "\\uE8B8" })',
     ]);
+  });
+});
+
+describe('getByTestId parity with the Android agent (PILOT-659)', () => {
+  // The agent matches getByTestId against the whole resource-id
+  // (UiAutomator By.res): an RN testID ("email-input") matches, a native
+  // package-qualified id ("com.android.systemui:id/mobile_signal") does not.
+  const view = (rid: string) => makeNode('android.widget.ImageView', {
+    class: 'android.widget.ImageView', 'resource-id': rid, bounds: '[0,0][10,10]',
+  });
+
+  it('does not suggest getByTestId from a package-qualified resource id', () => {
+    const codes = generateSelectors(view('com.android.systemui:id/mobile_signal')).map((s) => s.code);
+    expect(codes.some((c) => c.startsWith('device.getByTestId('))).toBe(false);
+    expect(codes).toContain('device.locator({ id: "com.android.systemui:id/mobile_signal" })');
+  });
+
+  it('does not match getByTestId against the name part of a package-qualified id', () => {
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [view('com.android.systemui:id/mobile_signal')])];
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByTestId("mobile_signal")')!)).toEqual([]);
+  });
+
+  it('still suggests and matches an RN testID', () => {
+    const node = view('email-input');
+    const roots = [makeNode('android.widget.FrameLayout', { class: 'android.widget.FrameLayout' }, [node])];
+    expect(generateSelectors(node).map((s) => s.code)).toContain('device.getByTestId("email-input")');
+    expect(findMatchingNodes(roots, parseSelectorString('device.getByTestId("email-input")')!)).toEqual([node]);
   });
 });
