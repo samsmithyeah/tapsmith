@@ -245,6 +245,16 @@ describe('tapsmith_list_results size', () => {
     expect(out).toContain('[FAIL] Suite > test 42');
   });
 
+  it('shows full errors when the filtered results fit, even if the filter matches a sibling test', async () => {
+    const out = await listResults(dispatcherWith([
+      result({ fullName: 'Login > submits', status: 'failed', error: `${'a'.repeat(5_000)} END-A` }),
+      result({ fullName: 'Login > submits twice', status: 'failed', error: `${'b'.repeat(5_000)} END-B`, projectName: 'ios' }),
+    ]), { test: 'Login > submits' });
+    expect(out).toContain('(2 total)');
+    expect(out).toContain('END-A');
+    expect(out).toContain('END-B');
+  });
+
   it('shows the full error when the filters leave one result', async () => {
     const out = await listResults(dispatcherWith(many), { test: 'suite > test 299', status: 'failed', file: 'login' });
     expect(out).toContain('END-299');

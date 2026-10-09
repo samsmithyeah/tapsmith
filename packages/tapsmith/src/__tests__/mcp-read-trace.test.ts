@@ -310,6 +310,9 @@ describe('tapsmith_read_trace response size', () => {
     const res = await readTrace({ path: writeTrace({ events }) });
     const t = text(res);
     expect(t).toContain('more characters');
+    expect(t).toContain('omitted here');
+    // device_logs already defaults to errors: suggesting it would change nothing.
+    expect(t).not.toContain('device_logs');
     expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
   });
 });

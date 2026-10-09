@@ -312,10 +312,10 @@ Browse test results from the current session. Shows pass/fail/skip status, durat
 | `details` | boolean | No | Include trace steps for failed tests (default: false) |
 
 Returns a summary with counts, then per-test results including status, full name, duration, project, file path, and (when `details: true`) the steps and device logs leading to the failure.
-While several results are listed, each error is cut to 2,000 characters.
-When the filters leave a single result, its error is shown in full. If the list
-reaches the response limit, the rest of the results are counted and not shown;
-narrow the list with the filters to see them.
+Errors are shown in full when the whole list fits the response limit with them.
+When it does not, each error is cut to 2,000 characters, and the results that
+still do not fit are counted rather than shown. Narrow the list with the filters,
+for example a test's name as `test`, to see the errors in full.
 
 Only covers the most recent run — use `tapsmith_suite_status` for the whole-session board.
 

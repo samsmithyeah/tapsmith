@@ -2,6 +2,14 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { TestDispatcher, TestResultEntry, TestTreeEntry } from '../test-dispatcher.js';
 import { getSessionResultsStore } from '../session-results.js';
+import { clipText } from '../response-limits.js';
+
+// The board names every failure, so each error is shortened to keep the whole
+// board inside one MCP response (PILOT-657): its first line on the summary,
+// 2,000 characters with details.
+const BOARD_ERROR_CHARS = 200;
+const DETAIL_ERROR_CHARS = 2_000;
+const LINE_CHARS = 500;
 
 type SuiteTestStatus = 'passed' | 'failed' | 'skipped' | 'interrupted' | 'not run';
 
@@ -81,13 +89,14 @@ export function registerSuiteStatusTool(server: McpServer, dispatcher: TestDispa
         for (const row of groupRows) {
           if (details) {
             lines.push(`  [${statusIcon(row.status)}] ${row.fullName}`);
-            if (row.error) lines.push(`         Error: ${row.error}`);
-            for (const w of row.warnings ?? []) lines.push(`         Warning: ${w}`);
+            if (row.error) lines.push(`         Error: ${clipText(row.error, DETAIL_ERROR_CHARS)}`);
+            for (const w of row.warnings ?? []) lines.push(`         Warning: ${clipText(w, LINE_CHARS)}`);
           } else if (row.status === 'failed') {
-            lines.push(`  FAIL: ${row.fullName}${row.error ? ` — ${row.error}` : ''}`);
+            const firstLine = row.error?.split('\n')[0];
+            lines.push(`  FAIL: ${row.fullName}${firstLine ? ` — ${clipText(firstLine, BOARD_ERROR_CHARS)}` : ''}`);
           }
           if (!details) {
-            for (const w of row.warnings ?? []) lines.push(`  WARN: ${row.fullName} — ${w}`);
+            for (const w of row.warnings ?? []) lines.push(`  WARN: ${row.fullName} — ${clipText(w, LINE_CHARS)}`);
           }
         }
       }

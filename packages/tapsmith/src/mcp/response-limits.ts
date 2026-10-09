@@ -31,9 +31,9 @@ const TRUNCATION_HINTS: Record<string, string> = {
   tapsmith_run_tests: 'Use tapsmith_list_results (status "failed", or test "<name>") for each failure, and tapsmith_read_trace on its trace for the full detail.',
   tapsmith_list_results: 'Narrow it with the status, file or test filters to see the omitted results in full.',
   tapsmith_list_tests: 'Pass the file paths you need to tapsmith_run_tests, or read them directly, for the omitted part of the tree.',
-  tapsmith_suite_status: 'Use tapsmith_list_results with the status, file or test filters for the omitted results.',
+  tapsmith_suite_status: 'Pass file to narrow the board; tapsmith_list_results has the latest run\'s results in full.',
   tapsmith_snapshot: 'The middle of the accessibility tree was omitted; use tapsmith_test_locator to check a specific locator.',
-  tapsmith_read_trace: 'Pass device_logs "errors" or "none" to shrink the response.',
+  tapsmith_read_trace: 'The middle steps were omitted; tapsmith_list_results with the test\'s name as `test` shows its error in full.',
 };
 
 // ─── Sizing ───
