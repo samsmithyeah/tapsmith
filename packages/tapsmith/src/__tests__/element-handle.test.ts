@@ -867,6 +867,17 @@ describe('tap()', () => {
     expect(err.message).toContain('aka device.getByRole("button", { name: "Other", exact: true })');
   });
 
+  it('escapes an icon glyph in a suggested name so it survives copy-paste (PILOT-659)', () => {
+    // React Navigation names an icon-font tab "<glyph>, Library"; the glyph
+    // is a private-use character that renders as nothing.
+    const err = buildStrictModeViolationError('getByRole("tab")', [
+      makeElementInfo({ role: 'tab', contentDescription: '\uE865, Library' }),
+      makeElementInfo({ role: 'tab', contentDescription: '\uE8B8, Settings' }),
+    ]);
+    expect(err.message).toContain('aka device.getByRole("tab", { name: "\\uE865, Library", exact: true })');
+    expect(err.message).not.toMatch(/\p{Co}/u);
+  });
+
   it('never suggests getByRole for a role getByRole rejects (PILOT-556)', () => {
     // Android reports an RN roleDescription ("menuitem") as the element's
     // role, but getByRole only takes the native role names.

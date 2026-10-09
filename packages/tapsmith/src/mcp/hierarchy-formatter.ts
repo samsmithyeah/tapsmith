@@ -1,6 +1,7 @@
 import type { HierarchyNode } from '../trace-viewer/components/hierarchy-utils.js';
 import { getNodeRole } from '../trace-viewer/components/hierarchy-utils.js';
-import { generateSelectors, escapeJsString } from '../trace-viewer/components/selector-generation.js';
+import { generateSelectors } from '../trace-viewer/components/selector-generation.js';
+import { escapeJsString } from '../js-string-escape.js';
 import { disambiguateSelectors } from '../trace-viewer/components/selector-uniqueness.js';
 
 interface FormattedResult {
@@ -69,11 +70,13 @@ function formatNode(
     // Disambiguate against the full hierarchy (PILOT-226): a suggested
     // locator that matches multiple elements would throw a strict mode
     // violation the moment a test acts on it.
-    const selectors = disambiguateSelectors(roots, node, generateSelectors(node));
+    // A suggestion that failed validation (it does not resolve to this
+    // node) is never offered: fall back to the next one (PILOT-659).
+    const best = disambiguateSelectors(roots, node, generateSelectors(node)).find((s) => !s.mayNotMatch);
     let refTag = '';
-    if (selectors.length > 0) {
+    if (best) {
       const ref = refs.length + 1;
-      refs.push({ ref, selector: selectors[0].code });
+      refs.push({ ref, selector: best.code });
       refTag = `[${ref}] `;
     }
 

@@ -30,6 +30,7 @@ import type { ActionCategory } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
 import { sleep, isAbortError } from './abort.js';
 import { defineRenamedMethods } from './not-supported.js';
+import { escapeJsString } from './js-string-escape.js';
 
 // ─── Public types ───
 
@@ -431,17 +432,12 @@ export function truncateText(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + '…';
 }
 
-/** Escape a raw attribute value for embedding in a generated selector string. */
-function escapeForSelector(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-}
-
 /** Best-effort unambiguous locator suggestion for one resolved element. */
 function suggestSelectorFor(el: ElementInfo): string | undefined {
   if (el.resourceId) {
     // Android resource ids look like "com.pkg:id/foo"; getByTestId matches the suffix.
     const testId = el.resourceId.includes(':id/') ? el.resourceId.split(':id/').pop()! : el.resourceId;
-    return `device.getByTestId("${escapeForSelector(testId)}")`;
+    return `device.getByTestId("${escapeJsString(testId)}")`;
   }
   const name = el.contentDescription || el.text;
   // Static text elements read better as getByText; real widgets as getByRole.
@@ -453,10 +449,10 @@ function suggestSelectorFor(el: ElementInfo): string | undefined {
     // which the name doesn't contain), still a valid substring locator.
     const exact = name.length <= 60;
     const shown = exact ? name : name.slice(0, 60);
-    return `device.getByRole("${el.role}", { name: "${escapeForSelector(shown)}"${exact ? ', exact: true' : ''} })`;
+    return `device.getByRole("${el.role}", { name: "${escapeJsString(shown)}"${exact ? ', exact: true' : ''} })`;
   }
   if (el.text) {
-    return `device.getByText("${escapeForSelector(truncateText(el.text, 60))}", { exact: true })`;
+    return `device.getByText("${escapeJsString(truncateText(el.text, 60))}", { exact: true })`;
   }
   return undefined;
 }

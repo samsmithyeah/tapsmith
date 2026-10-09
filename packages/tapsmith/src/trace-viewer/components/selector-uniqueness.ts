@@ -10,7 +10,8 @@
 import type { HierarchyNode } from './hierarchy-utils.js';
 import { parseSelectorString, findMatchingNodes, getNodeBounds } from './selector-matching.js';
 import type { GeneratedSelector } from './selector-generation.js';
-import { escapeJsString } from './selector-generation.js';
+import { roleNameFor } from './selector-generation.js';
+import { escapeJsString } from '../../js-string-escape.js';
 
 /**
  * Identity check across separately parsed hierarchy trees: reference equality
@@ -108,8 +109,8 @@ function tryRoleNameUpgrade(
 ): GeneratedSelector | null {
   const parsed = parseSelectorString(s.code);
   if (!parsed || parsed.type !== 'role' || parsed.name || parsed.nameRegex) return null;
-  const accessibleName =
-    node.attributes.get('content-desc') || node.attributes.get('label') || node.attributes.get('text') || '';
+  const fullName = node.attributes.get('content-desc') || node.attributes.get('label') || node.attributes.get('text') || '';
+  const accessibleName = roleNameFor(fullName) || fullName;
   if (!accessibleName) return null;
   for (const exact of ['', ', exact: true']) {
     const upgraded = `device.getByRole("${parsed.value}", { name: "${escapeJsString(accessibleName)}"${exact} })`;
