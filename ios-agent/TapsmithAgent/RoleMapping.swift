@@ -1,5 +1,16 @@
 import XCTest
 
+/// UIAccessibilityTraits bits (from UIKit) that carry a role.
+enum AccessibilityTrait {
+    static let button: UInt64 = 1 << 0        // UIAccessibilityTraitButton
+    static let link: UInt64 = 1 << 1          // UIAccessibilityTraitLink
+    static let image: UInt64 = 1 << 2         // UIAccessibilityTraitImage
+    static let staticText: UInt64 = 1 << 6    // UIAccessibilityTraitStaticText
+    static let header: UInt64 = 1 << 16       // UIAccessibilityTraitHeader
+    static let adjustable: UInt64 = 1 << 17   // UIAccessibilityTraitAdjustable (slider/picker)
+    static let searchField: UInt64 = 1 << 20  // UIAccessibilityTraitSearchField
+}
+
 /// Maps Tapsmith role names to XCUIElement.ElementType values.
 /// Mirrors the Android agent's roleClassMap in ElementFinder.kt.
 enum RoleMapping {
@@ -15,7 +26,8 @@ enum RoleMapping {
         "switch": [.switch, .toggle],
         "image": [.image],
         "text": [.staticText],
-        "heading": [.staticText],  // filtered by trait in practice
+        // Candidate types for queries; `matches` requires the header trait.
+        "heading": [.staticText],
         "link": [.link],
         "list": [.table, .collectionView],
         "listitem": [.cell],
@@ -31,10 +43,10 @@ enum RoleMapping {
         // here so getByRole("searchfield") is symmetric and doesn't throw
         // "Unknown role".
         "searchfield": [.searchField],
-        // RN renders these as .other with no distinguishing trait.
-        // The name filter narrows the query; resolveRole won't report
-        // these roles back (no trait to detect), so toHaveRole won't
-        // match — but getByRole(..., { name }) will find the element.
+        // RN renders these (and its checkbox and radio) as .other with no
+        // distinguishing trait: `matches` looks for RN's role description in
+        // the value, or takes a named query's word for it. resolveRole
+        // won't report these roles back, so toHaveRole won't match.
         "alert": [.other],
         "combobox": [.other],
     ]
@@ -89,26 +101,21 @@ enum RoleMapping {
     /// a trait bit (e.g. UIAccessibilityTraitHeader for `accessibilityRole="header"`),
     /// and the trait carries semantic intent that the element type doesn't.
     static func resolveRole(for elementType: XCUIElement.ElementType, traits: UInt64) -> String {
-        let headerTrait: UInt64 = 1 << 16
-        let buttonTrait: UInt64 = 1 << 0
-        let linkTrait: UInt64 = 1 << 1
-        let imageTrait: UInt64 = 1 << 2
-        let adjustableTrait: UInt64 = 1 << 17
-        let searchFieldTrait: UInt64 = 1 << 20
+        typealias Trait = AccessibilityTrait
 
         // Trait-derived semantic roles take priority — these are the ones an
         // app explicitly declares via `accessibilityRole`.
-        if traits & headerTrait != 0 { return "heading" }
-        if traits & searchFieldTrait != 0 { return "searchfield" }
-        if traits & adjustableTrait != 0 { return "seekbar" }
-        if traits & linkTrait != 0 { return "link" }
+        if traits & Trait.header != 0 { return "heading" }
+        if traits & Trait.searchField != 0 { return "searchfield" }
+        if traits & Trait.adjustable != 0 { return "seekbar" }
+        if traits & Trait.link != 0 { return "link" }
 
         let typeRole = elementTypeToRole[elementType] ?? ""
         if !typeRole.isEmpty { return typeRole }
 
         // Generic .other elements with a button/image trait still convey role.
-        if traits & buttonTrait != 0 { return "button" }
-        if traits & imageTrait != 0 { return "image" }
+        if traits & Trait.button != 0 { return "button" }
+        if traits & Trait.image != 0 { return "image" }
 
         return ""
     }
@@ -147,25 +154,91 @@ enum RoleMapping {
     /// This handles React Native components (Pressable, TouchableOpacity) that
     /// set accessibilityRole but render as generic UIViews (.other element type).
     static func matchesTrait(role: String, traits: UInt64) -> Bool {
-        // UIAccessibilityTrait constants (from UIKit)
-        let buttonTrait: UInt64 = 1 << 0           // UIAccessibilityTraitButton
-        let linkTrait: UInt64 = 1 << 1              // UIAccessibilityTraitLink
-        let headerTrait: UInt64 = 1 << 16           // UIAccessibilityTraitHeader
-        let searchFieldTrait: UInt64 = 1 << 20      // UIAccessibilityTraitSearchField
-        let imageTrait: UInt64 = 1 << 2             // UIAccessibilityTraitImage
-        let staticTextTrait: UInt64 = 1 << 6        // UIAccessibilityTraitStaticText
-        let adjustableTrait: UInt64 = 1 << 17       // UIAccessibilityTraitAdjustable (slider/picker)
-
+        typealias Trait = AccessibilityTrait
         switch role.lowercased() {
-        case "button": return traits & buttonTrait != 0
-        case "link": return traits & linkTrait != 0
-        case "heading", "header": return traits & headerTrait != 0
-        case "image": return traits & imageTrait != 0
-        case "text": return traits & staticTextTrait != 0
-        case "seekbar", "slider": return traits & adjustableTrait != 0
-        case "searchfield": return traits & searchFieldTrait != 0
+        case "button": return traits & Trait.button != 0
+        case "link": return traits & Trait.link != 0
+        case "heading", "header": return traits & Trait.header != 0
+        case "image": return traits & Trait.image != 0
+        case "text": return traits & Trait.staticText != 0
+        case "seekbar", "slider": return traits & Trait.adjustable != 0
+        case "searchfield": return traits & Trait.searchField != 0
         default: return false
         }
+    }
+
+    // ─── Role matching (PILOT-608) ───
+
+    /// The descriptions React Native puts first in a generic view's
+    /// `accessibilityValue` for roles iOS has no trait for ("checkbox,
+    /// unchecked"). The new architecture (Fabric) publishes the checkbox and
+    /// radio ones; the old one (RCTView) also publishes alert and combobox.
+    /// They are RN's English strings: a localized app publishes its own
+    /// translation, which only a named query's fallback finds.
+    static let otherRoleDescriptions: [String: String] = [
+        "checkbox": "checkbox",
+        "radiobutton": "radio button",
+        "alert": "alert",
+        "combobox": "combo box",
+    ]
+
+    /// The role names a selector may use for the same role, normalized to
+    /// the canonical key of `roleToElementTypes`.
+    static func normalize(_ role: String) -> String {
+        let lowered = role.lowercased()
+        return roleAliases[lowered] ?? lowered
+    }
+
+    /// Whether an element is `role`, as `getByRole` matches it.
+    ///
+    /// - heading: the header trait, on any element type. Static text alone is
+    ///   "text"; querying `.staticText` as a heading over-matched every label.
+    /// - checkbox, radiobutton, alert, combobox: their native type, if any, or
+    ///   a generic `.other` view carrying that role's React Native description
+    ///   (`otherRoleDescriptions`). A generic view without one is accepted
+    ///   only by a named query — the name is then what identifies it — and
+    ///   only when nothing marks it as another role (another of these
+    ///   descriptions, or a trait `resolveRole` reads). RN's new architecture publishes nothing
+    ///   for alert and combobox, so a name is the only way to find those.
+    /// - every other role: its element types, or its trait.
+    static func matches(
+        role: String,
+        elementType: XCUIElement.ElementType,
+        traits: UInt64,
+        value: String?,
+        hasNameFilter: Bool
+    ) -> Bool {
+        let canonical = normalize(role)
+        if canonical == "heading" {
+            return traits & AccessibilityTrait.header != 0
+        }
+        guard let types = roleToElementTypes[canonical] else { return false }
+        if let description = otherRoleDescriptions[canonical] {
+            if elementType != .other { return types.contains(elementType) }
+            if let described = describedRole(in: value) { return described == description }
+            return hasNameFilter && resolveRole(for: .other, traits: traits).isEmpty
+        }
+        return types.contains(elementType) || matchesTrait(role: canonical, traits: traits)
+    }
+
+    /// The role description React Native leads a generic view's accessibility
+    /// value with ("checkbox" in "checkbox, unchecked"), lowercased — or nil.
+    /// Only the first part counts: the states and the app's own value text
+    /// follow it, and a value text of "Alert" doesn't make a radio an alert.
+    private static func describedRole(in value: String?) -> String? {
+        guard let first = value?.split(separator: ",", omittingEmptySubsequences: false).first else { return nil }
+        let part = first.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return otherRoleDescriptions.values.contains(part) ? part : nil
+    }
+
+    /// Whether a role-only match must be found again as a live element by its
+    /// own label (QueryIndex) rather than by the role's first element type:
+    /// a type query can't express a trait or a description, so its positional
+    /// index would count every static text (heading) or look for a native
+    /// type an RN app never has (checkbox).
+    static func needsLabelReResolution(role: String) -> Bool {
+        let canonical = normalize(role)
+        return canonical == "heading" || otherRoleDescriptions[canonical] != nil
     }
 
     /// Convert an XCUIElement.ElementType to a string name for the className field.

@@ -81,23 +81,23 @@ As in Playwright, `name` is a **case-insensitive substring match** by default, s
 await device.getByRole("button", { name: "Show overlay", exact: true }).tap()  // not "Show overlay briefly"
 ```
 
-Supported roles map to platform-native element types. On iOS, many React Native components render as `XCUIElementTypeOther` — Tapsmith identifies roles from accessibility traits (e.g. a `Pressable` with `accessibilityRole="button"` gets the button trait) and falls back to matching `.other` elements by name. Native iOS and Android apps use typed elements that map directly.
+Supported roles map to platform-native element types. On iOS, many React Native components render as `XCUIElementTypeOther` — Tapsmith identifies roles from accessibility traits (e.g. a `Pressable` with `accessibilityRole="button"` gets the button trait) and, for roles iOS has no trait for, from the role description React Native puts in the element's accessibility value (`"checkbox, unchecked"`). A plain `.other` element with neither is never matched by an unnamed `getByRole()`; a named one (`getByRole("alert", { name: "…" })`) still finds it by its name, unless a role trait or another of those descriptions marks it as a different role. Native iOS and Android apps use typed elements that map directly.
 
 | Role | Android classes | iOS types |
 |---|---|---|
 | `button` | `Button`, `ImageButton`, Material/AppCompat variants | `XCUIElementTypeButton`, `.other` with button trait |
 | `textfield` | `EditText` | `XCUIElementTypeTextField`, `XCUIElementTypeSecureTextField` |
-| `checkbox` | `CheckBox` | `XCUIElementTypeCheckBox`, `.other` (RN fallback) |
+| `checkbox` | `CheckBox` | `XCUIElementTypeCheckBox`, `.other` described as a checkbox (RN), or a named `.other` |
 | `switch` | `Switch` | `XCUIElementTypeSwitch`, `XCUIElementTypeToggle` |
-| `radiobutton` | `RadioButton` | `XCUIElementTypeRadioButton`, `.other` (RN fallback) |
-| `heading` | RN `accessibilityRole="header"` / native `isHeading` | `.other` with header trait, `XCUIElementTypeStaticText` with header trait |
+| `radiobutton` | `RadioButton` | `XCUIElementTypeRadioButton`, `.other` described as a radio button (RN), or a named `.other` |
+| `heading` | RN `accessibilityRole="header"` / native `isHeading` | any element with the header trait (plain static text is `text`, not a heading) |
 | `link` | RN `accessibilityRole="link"` | `XCUIElementTypeLink`, `.other` with link trait |
 | `image` | `ImageView` or RN `accessibilityRole="image"` | `XCUIElementTypeImage`, `.other` with image trait |
 | `text` | `TextView` | `XCUIElementTypeStaticText` |
-| `alert` | RN `accessibilityRole="alert"` | `.other` (RN — matched by name) |
+| `alert` | RN `accessibilityRole="alert"` | `.other` described as an alert (RN old architecture), or a named `.other` |
 | `progressbar` | `ProgressBar` or RN `accessibilityRole="progressbar"` | `XCUIElementTypeProgressIndicator` |
 | `seekbar` / `slider` | `SeekBar` | `XCUIElementTypeSlider`, `.other` with adjustable trait |
-| `combobox` | RN `accessibilityRole="combobox"` | `.other` (RN — matched by name) |
+| `combobox` | RN `accessibilityRole="combobox"` | `.other` described as a combo box (RN old architecture), or a named `.other` |
 | `searchfield` | `SearchView` | `XCUIElementTypeSearchField`, `.other` with search trait |
 | `spinner` | `Spinner` | `XCUIElementTypePicker`, `XCUIElementTypeActivityIndicator` |
 | `toolbar` | `Toolbar` or RN `accessibilityRole="toolbar"` | `XCUIElementTypeToolbar` |

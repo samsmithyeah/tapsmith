@@ -44,6 +44,15 @@ struct ElementSelector {
     var reResolvesByLabel: Bool {
         (role != nil && hasNameFilter) || textRegex != nil || labelRegex != nil
     }
+
+    /// Whether a role-only selector's match is re-resolved by its own label
+    /// too: the roles no element-type query can express (a heading's trait,
+    /// an RN checkbox's description), whose type-query index would count
+    /// other elements (PILOT-608).
+    var roleOnlyReResolvesByLabel: Bool {
+        guard let role, !hasNameFilter else { return false }
+        return RoleMapping.needsLabelReResolution(role: role)
+    }
 }
 
 /// Bounding rectangle for an element.

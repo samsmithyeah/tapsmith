@@ -695,8 +695,8 @@ const ANDROID_DESCRIPTION_ONLY_ROLES = new Set(['heading', 'link']);
  * types — which covers roles the reverse map leaves out (list, listitem,
  * scrollview, …) without making every layout suggest getByRole("listitem").
  *
- * iOS heading stays header-trait only here; the iOS agent currently also
- * type-matches every static text for "heading", which is its bug to fix.
+ * iOS heading is header-trait only (its reported role), like the agent since
+ * PILOT-608: static text is a heading's candidate type, not proof of one.
  */
 function nodeHasRole(node: HierarchyNode, role: string): boolean {
   const reported = getNodeRole(node);

@@ -104,5 +104,88 @@ check("a pin naming a role that doesn't list the type is ignored",
 check(".other is never reverse-mapped, even when only one role lists it",
       RoleMapping.buildReverseMap([(key: "only", value: [.other])], pins: [:])[.other], nil)
 
+// ─── Role matching (PILOT-608) ───
+
+let linkTrait: UInt64 = 1 << 1
+
+func matches(_ role: String, _ type: ElementType, traits: UInt64 = 0, value: String? = nil, named: Bool = false) -> Bool {
+    RoleMapping.matches(role: role, elementType: type, traits: traits, value: value, hasNameFilter: named)
+}
+
+// heading: the header trait, whatever the element type.
+check("plain static text is not a heading", matches("heading", .staticText), false)
+check("plain static text is not a heading, even by name", matches("heading", .staticText, named: true), false)
+check("static text with the header trait is a heading", matches("heading", .staticText, traits: headerTrait), true)
+check("a generic view with the header trait is a heading", matches("heading", .other, traits: headerTrait), true)
+check("the \"header\" alias matches by the trait too", matches("header", .other, traits: headerTrait), true)
+check("the \"header\" alias doesn't match plain static text", matches("Header", .staticText), false)
+check("plain static text is still \"text\"", matches("text", .staticText), true)
+
+// checkbox / radiobutton: the native type, or a generic view carrying React
+// Native's role description (the first part of its accessibilityValue).
+check("a native checkbox is a checkbox", matches("checkbox", .checkBox), true)
+check("a native radio button is a radio button", matches("radiobutton", .radioButton), true)
+check("a generic view is not a checkbox", matches("checkbox", .other), false)
+check("a generic view is not a radio button", matches("radiobutton", .other), false)
+check("an RN checkbox (\"checkbox, unchecked\") is a checkbox",
+      matches("checkbox", .other, value: "checkbox, unchecked"), true)
+check("an RN checkbox with a custom value is a checkbox",
+      matches("checkbox", .other, value: "Checkbox, checked, 3 of 4"), true)
+check("an RN radio (\"radio button, checked\") is a radio button",
+      matches("radiobutton", .other, value: "radio button, checked"), true)
+check("an RN radio is not a checkbox", matches("checkbox", .other, value: "radio button, checked"), false)
+check("an RN radio is not a checkbox, even by name",
+      matches("checkbox", .other, value: "radio button, checked", named: true), false)
+check("an RN checkbox is not a radio button",
+      matches("radiobutton", .other, value: "checkbox, checked", named: true), false)
+check("a value that only mentions the word isn't a description",
+      matches("checkbox", .other, value: "tick the checkbox below"), false)
+check("only the leading part is a description: a radio valued \"Alert\" isn't an alert",
+      matches("alert", .other, value: "radio button, checked, Alert"), false)
+check("…not even by name", matches("alert", .other, value: "radio button, checked, Alert", named: true), false)
+check("…and it is still a radio button",
+      matches("radiobutton", .other, value: "radio button, checked, Alert"), true)
+check("a checkbox whose value text names another role is still a checkbox",
+      matches("checkbox", .other, value: "checkbox, checked, combo box"), true)
+check("static text is never a checkbox", matches("checkbox", .staticText, value: "checkbox", named: true), false)
+
+// alert / combobox: no native type; RN's old architecture describes them in
+// the value, the new architecture publishes nothing at all.
+check("a generic view is not an alert", matches("alert", .other), false)
+check("a generic view is not a combobox", matches("combobox", .other), false)
+check("an \"alert\"-described view is an alert", matches("alert", .other, value: "alert"), true)
+check("a \"combo box\"-described view is a combobox", matches("combobox", .other, value: "combo box, expanded"), true)
+
+// A named query still finds an undescribed generic view (Fabric alert/combobox,
+// or a description in another language) — but not one that is evidently
+// something else.
+check("a named alert query finds an undescribed generic view", matches("alert", .other, named: true), true)
+check("a named checkbox query finds an undescribed generic view", matches("checkbox", .other, named: true), true)
+check("a named alert query skips a button-trait view",
+      matches("alert", .other, traits: buttonTrait, named: true), false)
+check("a named combobox query skips a link-trait view",
+      matches("combobox", .other, traits: linkTrait, named: true), false)
+check("a named alert query skips a heading",
+      matches("alert", .other, traits: headerTrait, named: true), false)
+check("a named alert query skips a described checkbox",
+      matches("alert", .other, value: "checkbox, checked", named: true), false)
+
+// Roles matched by type or trait alone are unchanged.
+check("a button is a button", matches("button", .button), true)
+check("a button-trait view is a button", matches("button", .other, traits: buttonTrait), true)
+check("a generic view is not a button", matches("button", .other, named: true), false)
+check("a link-trait view is a link", matches("link", .other, traits: linkTrait), true)
+check("a switch is a switch", matches("switch", .switch), true)
+check("an unknown role matches nothing", matches("row", .other, named: true), false)
+
+// Role-only live re-resolution goes by the matched node's label for the roles
+// a type query can't express.
+for role in ["heading", "header", "checkbox", "radiobutton", "alert", "combobox"] {
+    check("role-only \(role) re-resolves by label", RoleMapping.needsLabelReResolution(role: role), true)
+}
+for role in ["button", "text", "switch", "textfield"] {
+    check("role-only \(role) re-resolves by type", RoleMapping.needsLabelReResolution(role: role), false)
+}
+
 print(failures == 0 ? "ALL OK" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)
