@@ -103,6 +103,8 @@ Locate an element by its dedicated test identifier.
 device.getByTestId("submit-button")
 ```
 
+On Android the value is compared with the element's whole resource ID, which is what a React Native `testID` becomes. A native view's package-qualified ID (`com.myapp:id/submit`) is addressed with `device.locator({ id: "com.myapp:id/submit" })` instead.
+
 ### `device.getByLabel(text: string | RegExp): ElementHandle`
 
 Locate an input element by its associated label text. Finds form controls (text fields, checkboxes, switches, etc.) whose accessible name matches the label.
