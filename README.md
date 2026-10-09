@@ -179,6 +179,11 @@ npx tapsmith test --ui
 - [Parallel Execution and Sharding](docs/parallel-and-sharding.md) -- multi-device parallelism and CI sharding
 - [Debugging](docs/debugging.md) -- diagnosing failures, common errors, flaky test mitigation
 
+### Migrating
+- [From Maestro](docs/migrating-from-maestro.md) -- YAML flows to TypeScript tests
+- [From Detox](docs/migrating-from-detox.md) -- matchers, synchronization and `.detoxrc` to Tapsmith
+- [From Appium](docs/migrating-from-appium.md) -- capabilities, XPath and explicit waits to Tapsmith
+
 ### Reference
 - [API Reference](docs/api-reference.md) -- complete reference for all public APIs
 - [Configuration](docs/configuration.md) -- all config options with examples

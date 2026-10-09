@@ -228,7 +228,7 @@ Run one platform with `npx tapsmith test --project android`, or both with `npx t
 |---|---|
 | `npm install -D detox jest`, `detox init`, native Android setup | `npm install -D tapsmith`, then [`npx tapsmith init`](getting-started.md#quick-setup-recommended) |
 | `applesimutils` (iOS) | Nothing extra: Xcode's `simctl` is enough (it grants fewer permissions than `applesimutils`; see below). `npx tapsmith doctor` checks the setup |
-| `devices.*.device.avdName` | `avd` (with `launchEmulators: true` to start it for you) |
+| `devices.*.device.avdName` | `avd` (Tapsmith launches it when it isn't running) |
 | `devices.*.device.type` (simulator) | `simulator` |
 | `apps.*.binaryPath` | `apk` (Android) or `app` with `platform: "ios"` |
 | `configurations.*` | [`projects`](configuration.md#projects-with-per-device-targeting), selected with `--project` |
@@ -246,7 +246,7 @@ Name Tapsmith test files `*.tapsmith.ts` (what `tapsmith init` sets up), so that
 
 ## What works differently
 
-**Waiting.** Detox's synchronization means most Detox tests have no explicit waits, and you only reach for `waitFor()` when synchronization can't see the work (or has been turned off). Tapsmith gets the same effect differently: each action waits for its element to be on screen, enabled and not covered by something else (the keyboard, a sheet, another view); each `expect()` on an element keeps checking until it passes. Both wait up to the `timeout` in your config (30 s by default). Some consequences:
+**Waiting.** Detox's synchronization means most Detox tests have no explicit waits, and you only reach for `waitFor()` when synchronization can't see the work (or has been turned off). Tapsmith gets the same effect differently: each action waits for its element to appear, and a tap also waits for it to be enabled and not covered by something else (the keyboard, a sheet, another view); each `expect()` on an element keeps checking until it passes. Both wait up to the `timeout` in your config (30 s by default). Some consequences:
 
 - You can delete `device.disableSynchronization()`, `setURLBlacklist()` and the waits around screens with endless animations or long-polling: Tapsmith doesn't wait for the app to go idle, so those screens are not a problem.
 - `waitFor(...).withTimeout(ms)` becomes the assertion with `{ timeout: ms }`.
@@ -255,7 +255,7 @@ Name Tapsmith test files `*.tapsmith.ts` (what `tapsmith init` sets up), so that
 **Resetting the app.** Detox suites reset with `device.launchApp({ delete: true })` (reinstall), `newInstance: true` (relaunch), or `device.reloadReactNative()` (reload the JavaScript, keeping the process and its storage). In Tapsmith the reset is a declared policy, `appReset`, rather than a call in a hook:
 
 - By default the app's data is cleared and the app relaunched once per test file. The tests in a file share the app, so add `test.use({ appResetScope: "test" })` where each test needs a fresh one.
-- React Native apps that mount [`@tapsmith/react-native`](warm-reset.md) get a **warm** reset: the hooks clear the stores you list (AsyncStorage, for example), navigate to a route and confirm the reset finished, in-process and in well under a second. This is faster than `reloadReactNative()` and, unlike it, clears persisted state.
+- React Native apps that mount [`@tapsmith/react-native`](warm-reset.md) get a **warm** reset: the hooks clear the stores you list (AsyncStorage, for example), navigate to a route and confirm the reset finished, in-process, in about a second. Unlike `reloadReactNative()`, it clears persisted state. A release build needs the hooks switched on at build time ([Release builds for e2e](warm-reset.md#release-builds-for-e2e)); without that, every reset is a clear and relaunch.
 - To start tests already signed in, sign in once in a setup project and restore the saved app state ([Authentication patterns](writing-tests.md#authentication-patterns)).
 
 **Mocking.** Detox suites often mock modules at build time (an `.e2e.js` file extension picked up by Metro) or block URLs. Tapsmith doesn't change your bundle. To mock or inspect HTTP traffic, use [`device.route()`](network.md), Playwright's network interception for the device (it needs tracing with network capture turned on). Build-time module mocks still work if you keep building with them; Tapsmith tests whatever build you give it.
