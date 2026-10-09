@@ -308,6 +308,7 @@ const threeThings = [
                 class="tp-npm-icon">⧉</span
               >
             </a>
+            <span class="tp-hero-req">Requires Node.js 22+</span>
           </div>
 
           <div class="tp-hero-visual">
@@ -1069,6 +1070,14 @@ const threeThings = [
         margin-left: 12px;
         color: var(--tp-ink-4);
         font-size: 16px;
+      }
+      /* The CLI refuses older Node, and npm on older Node can resolve a stale
+         pre-floor release, so the floor sits where people copy the command. */
+      .tp-hero-req {
+        align-self: center;
+        font-size: 13px;
+        color: var(--tp-ink-3);
+        white-space: nowrap;
       }
 
       /* Hero visual */
