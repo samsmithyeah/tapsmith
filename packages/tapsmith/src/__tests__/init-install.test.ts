@@ -121,8 +121,20 @@ describe('offerTapsmithInstall()', () => {
   // npm installs into the nearest ancestor with a package.json, which is not
   // necessarily this project: leave that to the user.
   it('does not offer to install without a package.json here, but still names the command', async () => {
-    expect(await offerTapsmithInstall(dir, run)).toBe('npm i -D tapsmith');
+    expect(await offerTapsmithInstall(dir, run)).toBe('npm init -y && npm i -D tapsmith');
     expect(questions).toEqual([]);
     expect(ran).toEqual([]);
+  });
+
+  // PILOT-631: a bare `npm i -D tapsmith` there would change the parent project.
+  it('says there is no package.json here and names the parent a bare install would change', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}\n');
+    const app = path.join(dir, 'app');
+    fs.mkdirSync(app);
+    const step = await offerTapsmithInstall(app, run);
+    expect(step).toBe('npm init -y && npm i -D tapsmith');
+    expect(questions).toEqual([]);
+    expect(ran).toEqual([]);
+    expect(logged.join('\n')).toContain(`⚠ There's no package.json in ${app}: on its own, \`npm i -D tapsmith\` would install Tapsmith into ${dir}, not this project.`);
   });
 });

@@ -591,7 +591,8 @@ class SetupCancelled extends Error {}
  * resolve it, offer the project's package manager's install and run it.
  * Returns the command still to run (declined, failed, or not offered because
  * there is no package.json here — npm would install into whichever ancestor
- * has one), or undefined when Tapsmith is in place. Cancelling the prompt
+ * has one, so the command creates one first and a warning says why,
+ * PILOT-631), or undefined when Tapsmith is in place. Cancelling the prompt
  * throws SetupCancelled.
  */
 export async function offerTapsmithInstall(
@@ -600,7 +601,10 @@ export async function offerTapsmithInstall(
 ): Promise<string | undefined> {
   if (isTapsmithResolvableFrom(cwd)) return undefined;
   const install = await tapsmithInstallCommand(cwd);
-  if (!fs.existsSync(path.join(cwd, 'package.json'))) return install.display;
+  if (!fs.existsSync(path.join(cwd, 'package.json'))) {
+    if (install.note) console.log(`  ${YELLOW}⚠${RESET} ${install.note}`);
+    return install.display;
+  }
 
   let go: boolean;
   try {
