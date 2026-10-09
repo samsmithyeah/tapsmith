@@ -208,7 +208,7 @@ Find an element by a dedicated test identifier.
 await device.getByTestId("submit-button").tap()
 ```
 
-On Android, `getByTestId` matches React Native's `testID` prop (mapped to a content-description prefix). On iOS, it matches the `accessibilityIdentifier`.
+On Android, `getByTestId` matches React Native's `testID` prop, which becomes the element's whole resource ID; a native view's package-qualified ID (`com.myapp:id/submit`) is found with `locator({ id })` instead. On iOS, it matches the `accessibilityIdentifier`.
 
 ### `locator({ id })`
 
