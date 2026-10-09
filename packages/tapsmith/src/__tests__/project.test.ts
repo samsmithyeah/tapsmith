@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, deviceSignature, allocateBucketWorkers as allocateWithPins, bucketizeProjects, pinnedBucketSignatures, workerPlanNote, devicePinWorkersConflict, platformOfSerial, scopeDevicePinToPlatform, devicesPinnedByManyBuckets, shardProjects, type ResolvedProject } from '../project.js';
+import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, deviceSignature, allocateBucketWorkers as allocateWithPins, bucketizeProjects, pinnedBucketSignatures, workerPlanNote, devicePinWorkersConflict, platformOfSerial, scopeDevicePinToPlatform, devicesPinnedByManyBuckets, shardProjects, targetSessionConfig, type ResolvedProject } from '../project.js';
+import { serializeConfig } from '../worker-protocol.js';
 import { effectiveConfigForProject, type TapsmithConfig } from '../config.js';
 
 function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
@@ -358,6 +359,52 @@ describe('effectiveConfigForProject()', () => {
     const root = makeConfig({ timeout: 5000 });
     const merged = effectiveConfigForProject(root, { use: { timeout: undefined } });
     expect(merged.timeout).toBe(5000);
+  });
+});
+
+// ─── targetSessionConfig ───
+
+describe('targetSessionConfig() (PILOT-654)', () => {
+  // The DreamSpinner shape: every device-shaping key lives in the projects'
+  // `use`, none at the root.
+  const ANDROID = { platform: 'android' as const, package: 'com.example.app', apk: './app.apk', avd: 'Pixel_6' };
+  const root = makeConfig({
+    projects: [
+      { name: 'auth', use: { ...ANDROID } },
+      { name: 'app', dependencies: ['auth'], use: { ...ANDROID, appState: './auth.tar.gz' } },
+    ],
+  });
+
+  it('carries the target\'s project-only device keys to its workers', () => {
+    const projects = resolveProjects(root);
+    expect(new Set(projects.map((p) => p.deviceSignature)).size).toBe(1);
+    const serialized = serializeConfig(targetSessionConfig(projects[0].effectiveConfig, root));
+    expect(serialized.package).toBe('com.example.app');
+    expect(serialized.platform).toBe('android');
+    expect(serialized.apk).toBe('./app.apk');
+    // The root alone, which single-target workers used to get, has none of it.
+    expect(serializeConfig(root).package).toBeUndefined();
+  });
+
+  it('keeps the root `devices`, so a project without a group stays single-device', () => {
+    const groupRoot = makeConfig({
+      projects: [
+        { name: 'solo', use: { ...ANDROID } },
+        { name: 'pair', use: { ...ANDROID, devices: [{ name: 'alice' }, { name: 'bob' }] } },
+      ],
+    });
+    const [, pair] = resolveProjects(groupRoot);
+    const cfg = targetSessionConfig(pair.effectiveConfig, groupRoot);
+    expect(cfg.devices).toBeUndefined();
+    expect(cfg.package).toBe('com.example.app');
+  });
+
+  it('is the root config\'s own values for a project without `use`', () => {
+    const plain = makeConfig({ package: 'com.example.root', devices: [{ name: 'a' }, { name: 'b' }] });
+    const [only] = resolveProjects(plain);
+    const cfg = targetSessionConfig(only.effectiveConfig, plain);
+    expect(cfg.package).toBe('com.example.root');
+    expect(cfg.devices).toEqual([{ name: 'a' }, { name: 'b' }]);
   });
 });
 

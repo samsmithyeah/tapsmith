@@ -141,6 +141,27 @@ export function sharedDeviceGroup(
   return { config: largest.effectiveConfig, group };
 }
 
+/**
+ * The config a device target's workers run under: the effective config of a
+ * project on that target (root merged with its `use`), keeping the root's
+ * `devices`.
+ *
+ * Not the root config: a config may keep its device-shaping keys (`package`,
+ * `platform`, `apk`/`app`, `avd`/`simulator`) only in its projects' `use`, and
+ * a worker given the root then has no default package — the test's
+ * `device.restartApp()` threw "Package name is required" (PILOT-654). Those
+ * keys are part of `deviceSignature`, so every project on the target agrees on
+ * them. `devices` is per project instead: each run takes its own group from
+ * `use.devices` (`sessionsForRun`), and a project without one falls back to
+ * the run config's — which must be the root's, not another project's group.
+ */
+export function targetSessionConfig(
+  effective: TapsmithConfig,
+  root: Pick<TapsmithConfig, 'devices'>,
+): TapsmithConfig {
+  return { ...effective, devices: root.devices };
+}
+
 // ─── Worker allocation ───
 
 /**
