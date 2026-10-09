@@ -251,9 +251,9 @@ Run Tapsmith test files and return structured results. Only one test run can exe
 - A screenshot at the moment of failure
 
 The report stays small however many tests fail. Up to the first 10 failures are
-shown in detail, with each error cut to 2,000 characters (fewer when their traces
-are long). The failures after those, up to the 50th, get one line each, and any
-after that are counted. Screenshots are attached for up to the first 3 failures
+shown in detail, with each error cut to 2,000 characters; when their traces are
+long, fewer failures are shown in detail. The failures after those, up to the
+50th, get one line each, and any after that are counted. Screenshots are attached for up to the first 3 failures
 that have one, as many as fit the response limit. The report ends by pointing to `tapsmith_list_results`, which lists
 every failure, and `tapsmith_read_trace` for a failure's steps.
 
