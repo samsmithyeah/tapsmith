@@ -878,6 +878,16 @@ describe('tap()', () => {
     expect(err.message).not.toMatch(/\p{Co}/u);
   });
 
+  it('suggests a long text as a matching prefix, not an exact ellipsis (PILOT-659)', () => {
+    const long = 'Terms and conditions apply to every order placed through this store';
+    const err = buildStrictModeViolationError('getByText("Terms")', [
+      makeElementInfo({ text: long }),
+      makeElementInfo({ text: 'Terms' }),
+    ]);
+    expect(err.message).toContain(`aka device.getByText("${long.slice(0, 60)}")`);
+    expect(err.message).toContain('aka device.getByText("Terms", { exact: true })');
+  });
+
   it('never suggests getByRole for a role getByRole rejects (PILOT-556)', () => {
     // Android reports an RN roleDescription ("menuitem") as the element's
     // role, but getByRole only takes the native role names.

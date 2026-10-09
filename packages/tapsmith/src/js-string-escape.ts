@@ -43,7 +43,7 @@ export function escapeJsString(s: string): string {
     .replace(/\\/g, '\\\\')
     .replace(/"/g, '\\"')
     .replace(COPY_UNSAFE_RE, (ch) => {
-      if (ch === ' ' || ch === '‍') return ch;
+      if (ch === ' ' || ch === '\u200D') return ch;
       const named = NAMED_ESCAPES[ch];
       if (named) return named;
       const cp = ch.codePointAt(0)!;

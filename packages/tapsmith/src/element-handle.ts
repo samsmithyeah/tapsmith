@@ -452,7 +452,11 @@ function suggestSelectorFor(el: ElementInfo): string | undefined {
     return `device.getByRole("${el.role}", { name: "${escapeJsString(shown)}"${exact ? ', exact: true' : ''} })`;
   }
   if (el.text) {
-    return `device.getByText("${escapeJsString(truncateText(el.text, 60))}", { exact: true })`;
+    // Like the role name above: an exact match needs the whole text, so a
+    // long one is suggested as its leading part, matched as a substring.
+    const exact = el.text.length <= 60;
+    const shown = exact ? el.text : el.text.slice(0, 60);
+    return `device.getByText("${escapeJsString(shown)}"${exact ? ', { exact: true }' : ''})`;
   }
   return undefined;
 }
