@@ -35,6 +35,7 @@ import { avdHomeDir, scanAvdImageTags } from './avd-images.js';
 import { DEFAULT_API_LEVEL, DEFAULT_DEVICE_PROFILE, defaultAbi, defaultAvdName } from './avd-defaults.js';
 import type { CreateAvdCommandOptions } from './cli-program.js';
 import { confirmQuestion } from './confirm-prompt.js';
+import { tolerateClosedReadline } from './prompt-cancel.js';
 
 const enquirer = new Enquirer();
 
@@ -323,7 +324,9 @@ async function ensureSdkTools(opts: CreateAvdOptions, sdkRoot: string | undefine
       const answer = await enquirer.prompt({
         ...confirmQuestion(`Download and install them into ${path.join(sdkRoot, 'cmdline-tools', 'latest')} now?`, true),
         name: 'install',
-      }) as { install: boolean };
+        onRun: tolerateClosedReadline,
+        // enquirer's typings leave out the `onRun` option its prompts honour.
+      } as Parameters<typeof enquirer.prompt>[0]) as { install: boolean };
       consented = answer.install;
     } catch {
       consented = false; // ctrl-c on the prompt
