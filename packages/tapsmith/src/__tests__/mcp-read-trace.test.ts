@@ -313,6 +313,7 @@ describe('tapsmith_read_trace response size', () => {
     expect(t).toContain('omitted here');
     // device_logs already defaults to errors: suggesting it would change nothing.
     expect(t).not.toContain('device_logs');
+    expect(t).toContain('first and last steps are kept');
     expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
   });
 });

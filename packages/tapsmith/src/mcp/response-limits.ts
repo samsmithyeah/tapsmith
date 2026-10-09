@@ -33,7 +33,7 @@ const TRUNCATION_HINTS: Record<string, string> = {
   tapsmith_list_tests: 'Pass the file paths you need to tapsmith_run_tests, or read them directly, for the omitted part of the tree.',
   tapsmith_suite_status: 'Pass file to narrow the board; tapsmith_list_results has the latest run\'s results in full.',
   tapsmith_snapshot: 'The middle of the accessibility tree was omitted; use tapsmith_test_locator to check a specific locator.',
-  tapsmith_read_trace: 'The middle steps were omitted; tapsmith_list_results with the test\'s name as `test` shows its error in full.',
+  tapsmith_read_trace: 'The trace\'s first and last steps are kept; the failure is at the end.',
 };
 
 // ─── Sizing ───
