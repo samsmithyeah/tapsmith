@@ -18,7 +18,7 @@ import { promisify } from 'node:util';
 import { isCI as runningInCi } from 'ci-info';
 import lockfile from 'proper-lockfile';
 import type { DeviceStrategy, EmulatorLaunchOptions } from './config.js';
-import { xmlUnescape } from './app-reset.js';
+import { decodeXmlEntities } from './xml-entities.js';
 import { parseAdbDevicesOutput } from './adb-devices.js';
 import { describeEmulatorAppNap, disableEmulatorAppNap, type EmulatorAppNapResult } from './emulator-app-nap.js';
 
@@ -1133,7 +1133,7 @@ function blockingDialogTitle(rawHierarchy: string, patterns: RegExp[]): string |
   for (const [node] of rawHierarchy.matchAll(/<node\b[^>]*>/g)) {
     const text = node.match(/\btext="([^"]*)"/)?.[1];
     if (!text) continue;
-    const decoded = xmlUnescape(text).trim();
+    const decoded = decodeXmlEntities(text).trim();
     if (!matches(decoded)) continue;
     if (node.includes('resource-id="android:id/alertTitle"')) return decoded;
     if (node.includes('package="android"')) systemDrawn ??= decoded;
@@ -1151,7 +1151,7 @@ export function isSystemDrawnDialog(rawHierarchy: string): boolean {
   for (const [node] of rawHierarchy.matchAll(/<node\b[^>]*>/g)) {
     if (!node.includes('package="android"')) continue;
     const text = node.match(/\btext="([^"]*)"/)?.[1];
-    if (text && STRONG_DIALOG_PATTERNS.some((p) => p.test(xmlUnescape(text).toLowerCase()))) return true;
+    if (text && STRONG_DIALOG_PATTERNS.some((p) => p.test(decodeXmlEntities(text).toLowerCase()))) return true;
   }
   return false;
 }

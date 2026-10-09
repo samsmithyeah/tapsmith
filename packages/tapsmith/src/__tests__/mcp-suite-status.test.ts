@@ -460,4 +460,28 @@ describe('tapsmith_suite_status', () => {
     const text = textOf(await tools.get('tapsmith_suite_status')!({}, extra));
     expect(text).toBe('No test files discovered.');
   });
+
+  // PILOT-657: the board lists every failure; whole errors made it big enough
+  // for the response boundary to cut failures out of the middle.
+  it('keeps every failure on the board with its error shortened', async () => {
+    const files = Array.from({ length: 8 }, (_, i) => `/app/f${i}.test.ts`);
+    const tree = files.map((f) => fileNode(f, [testNode(f, 'suite > a'), testNode(f, 'suite > b')]));
+    const results = files.flatMap((f) => [
+      result(f, 'suite > a', 'failed', { error: `first line ${'x'.repeat(30_000)}\nsecond line` }),
+      result(f, 'suite > b', 'failed', { error: 'y'.repeat(30_000) }),
+    ]);
+    const dispatcher = makeDispatcher({ getTestTree: () => tree, getResults: () => results });
+    const { server, tools } = makeToolCapture();
+    registerSuiteStatusTool(server, dispatcher);
+
+    const board = textOf(await tools.get('tapsmith_suite_status')!({}, extra));
+    expect(board.match(/FAIL: suite > /g)).toHaveLength(16);
+    expect(board).not.toContain('second line');
+    expect(Buffer.byteLength(board, 'utf8')).toBeLessThan(20 * 1024);
+
+    const detailed = textOf(await tools.get('tapsmith_suite_status')!({ details: true }, extra));
+    expect(detailed.match(/\[FAIL\] suite > /g)).toHaveLength(16);
+    expect(detailed).toContain('more characters');
+    expect(Buffer.byteLength(detailed, 'utf8')).toBeLessThan(100 * 1024);
+  });
 });

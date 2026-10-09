@@ -2319,7 +2319,7 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
   // so reporters can correctly suppress file headings / show project tags
   // when buckets or per-project `workers:` push the actual concurrency above
   // the global `config.workers` value.
-  const { allocateBucketWorkers, bucketizeProjects, pinnedBucketSignatures, sharedDeviceGroup, workerPlanNote, platformOfSerial, scopeDevicePinToPlatform, devicePinWorkersConflict, devicesPinnedByManyBuckets } = await import('./project.js');
+  const { allocateBucketWorkers, bucketizeProjects, pinnedBucketSignatures, sharedDeviceGroup, targetSessionConfig, workerPlanNote, platformOfSerial, scopeDevicePinToPlatform, devicePinWorkersConflict, devicesPinnedByManyBuckets } = await import('./project.js');
   // A root `device` (from `--device` or the config) reached every project,
   // the other platform's too, whose bucket then counted as pinned to a serial
   // it cannot drive. Keep it on the projects of the device's own platform.
@@ -2466,7 +2466,10 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
       let fullResult: Awaited<ReturnType<typeof runParallel>>;
       try {
         fullResult = await runParallel({
-          config,
+          // One device target: its workers run under the target's config, not
+          // the root, which may lack the device keys its projects' `use` holds
+          // (PILOT-654). A multi-target run gives each bucket its own.
+          config: runBuckets.length === 1 ? targetSessionConfig(initialEffectiveConfig, config) : config,
           reporter,
           testFiles,
           workers: totalWorkers,
@@ -2704,6 +2707,9 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
 
       const uiServer = await startUIServer({
         config,
+        // The primary target's config, which carries the device keys a config
+        // may keep only in its projects' `use` (PILOT-654).
+        targetConfig: targetSessionConfig(currentSequentialState.effectiveConfig, config),
         configPath,
         device,
         client,
@@ -2793,6 +2799,8 @@ async function runTestCommand(args: TestCommandArgs): Promise<void> {
 
       await runWatchMode({
         config,
+        // As UI mode: the primary target's config, not the root (PILOT-654).
+        targetConfig: targetSessionConfig(currentSequentialState.effectiveConfig, config),
         device,
         client,
         deviceSerial: config.device!,

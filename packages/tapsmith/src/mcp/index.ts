@@ -31,6 +31,7 @@ import {
   type McpToolCallEvent,
 } from './events.js';
 import { HeadlessTestDispatcher } from './headless-dispatcher.js';
+import { boundThrownError, boundToolResult } from './response-limits.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { TestDispatcher } from './test-dispatcher.js';
 
@@ -77,8 +78,19 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
   });
 
   if (events) {
-    wrapToolRegistrationsWithEvents(server, events);
+    wrapToolCallbacks(server, (toolName, callback) => (toolArgs) =>
+      callToolWithEvents(events, toolName, toolArgs, callback));
   }
+  // Installed after the events wrapper so it runs inside it: the activity log
+  // and the UI's MCP panel then show the same bounded result the client gets.
+  // Every tool, on both transports, including ones added later (PILOT-657).
+  wrapToolCallbacks(server, (toolName, callback) => async () => {
+    try {
+      return boundToolResult(await callback() as CallToolResult, toolName);
+    } catch (err) {
+      throw boundThrownError(err);
+    }
+  });
 
   // The dispatcher is what turns a project name into a platform, and so into a
   // device. Both transports build the server here, so both route device tools
@@ -142,7 +154,17 @@ export function attachMcpClientEventReporting(
   };
 }
 
-function wrapToolRegistrationsWithEvents(server: McpServer, events: McpEventEmitter): void {
+type ToolCallbackWrapper = (
+  toolName: string,
+  callback: () => unknown,
+) => (toolArgs: Record<string, unknown>) => Promise<CallToolResult>;
+
+/**
+ * Route every tool registered from here on through `wrap`. Patches
+ * `server.tool` itself, so a later call wraps the callbacks an earlier one
+ * already wrapped (the later wrapper runs innermost).
+ */
+function wrapToolCallbacks(server: McpServer, wrap: ToolCallbackWrapper): void {
   const originalTool = server.tool.bind(server) as (...args: unknown[]) => unknown;
   (server as unknown as { tool: (...args: unknown[]) => unknown }).tool = (...args: unknown[]): unknown => {
     const toolName = typeof args[0] === 'string' ? args[0] : 'unknown_tool';
@@ -154,7 +176,7 @@ function wrapToolRegistrationsWithEvents(server: McpServer, events: McpEventEmit
       const toolArgs = callbackArgs.length >= 2 && isRecord(callbackArgs[0])
         ? callbackArgs[0]
         : {};
-      return callToolWithEvents(events, toolName, toolArgs, () => callback(...callbackArgs));
+      return wrap(toolName, () => callback(...callbackArgs))(toolArgs);
     };
 
     const wrappedArgs = [...args];

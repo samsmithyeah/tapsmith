@@ -294,8 +294,12 @@ class ElementFinder(
         // Roles that CAN be resolved by class (they have roleClassMap
         // entries) but also have trait-based variants via RN
         // accessibilityRole. The post-filter accepts both class-matched
-        // AND roleDescription-matched elements.
-        val DUAL_PATH_ROLES: Set<String> = setOf("heading", "link", "image", "searchfield")
+        // AND roleDescription-matched elements. React Native (and Compose)
+        // render tab, progressbar and toolbar as a generic android.view.View
+        // with only a role description, so they must be here too (PILOT-656).
+        // The SDK's ANDROID_DUAL_PATH_ROLES (roles.ts) is pinned to this list.
+        val DUAL_PATH_ROLES: Set<String> =
+            setOf("heading", "link", "image", "searchfield", "tab", "progressbar", "toolbar")
     }
 
     /**
@@ -1003,11 +1007,10 @@ class ElementFinder(
         val actions = node.actionList ?: return null
         val expandId = AccessibilityNodeInfo.AccessibilityAction.ACTION_EXPAND.id
         val collapseId = AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE.id
-        return when {
-            actions.any { it.id == collapseId } -> true
-            actions.any { it.id == expandId } -> false
-            else -> null
-        }
+        return FindRules.expandedState(
+            canExpand = actions.any { it.id == expandId },
+            canCollapse = actions.any { it.id == collapseId },
+        )
     }
 
     /**
@@ -1016,7 +1019,9 @@ class ElementFinder(
      *   - `AccessibilityNodeInfo.setHeading(true)` for "header"
      *   - `AccessibilityNodeInfoCompat.setRoleDescription(...)` for other roles
      *
-     * The role description is returned (lowercased) including custom or
+     * The role description is returned lowercased, with RN's multi-word
+     * descriptions ("Progress Bar") read as the role name
+     * ([FindRules.canonicalRoleDescription]), including custom or
      * localized values the SDK doesn't otherwise know about. This lets apps
      * surface their own roles to tests without us maintaining an allowlist.
      * Lowercasing is a deliberate compromise: it lets the SDK's
@@ -1053,12 +1058,12 @@ class ElementFinder(
             val raw =
                 extras?.getCharSequence(ROLE_DESCRIPTION_EXTRA_KEY)?.toString()
                     ?: extras?.getCharSequence(ROLE_DESCRIPTION_LONG_FORM_KEY)?.toString()
-            // Lowercase the value before returning so the SDK's
-            // case-insensitive normalizeRole + ROLE_ALIASES table can
-            // match. Without this, an app setting accessibilityRole="Header"
-            // (capitalized) would surface as the literal "Header" and
-            // toHaveRole("heading") would not match through the alias.
-            return raw?.takeIf { it.isNotEmpty() }?.lowercase()
+            // Lowercase the value so the SDK's case-insensitive
+            // normalizeRole + ROLE_ALIASES table can match (an app setting
+            // accessibilityRole="Header" would otherwise surface as
+            // "Header"), and read RN's multi-word descriptions ("Progress
+            // Bar") as the role name.
+            return FindRules.canonicalRoleDescription(raw)
         } catch (e: Exception) {
             // A malformed extras bundle must not fail the whole find; log so
             // a regression in every role-from-RN mapping is visible.

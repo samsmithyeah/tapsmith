@@ -15,6 +15,16 @@ import org.junit.Test
  * snapshot instead changes the cost of a query, not its answer.
  */
 class FindRulesTest {
+    // ─── Expanded state (PILOT-655) ───
+
+    @Test
+    fun `a collapsible element is expanded, an expand-only one collapsed, and one with neither has no state`() {
+        assertEquals(true, FindRules.expandedState(canExpand = false, canCollapse = true))
+        assertEquals(true, FindRules.expandedState(canExpand = true, canCollapse = true))
+        assertEquals(false, FindRules.expandedState(canExpand = true, canCollapse = false))
+        assertNull(FindRules.expandedState(canExpand = false, canCollapse = false))
+    }
+
     // ─── Trait / dual-path roles ───
 
     private val textViewSet = setOf("android.widget.TextView")
@@ -38,6 +48,49 @@ class FindRulesTest {
         // Trait-only roles have no class set at all.
         assertFalse(FindRules.matchesTraitRole(null, "android.widget.TextView", setOf("alert"), emptySet(), false))
         assertFalse(FindRules.matchesTraitRole(null, null, setOf("image"), imageSet, false))
+    }
+
+    // ─── Role descriptions (PILOT-656) ───
+
+    @Test
+    fun `RN and Compose multi-word role descriptions read as the role name`() {
+        // React Native's (and Compose's) English role descriptions.
+        assertEquals("progressbar", FindRules.canonicalRoleDescription("Progress Bar"))
+        assertEquals("toolbar", FindRules.canonicalRoleDescription("Tool Bar"))
+        assertEquals("combobox", FindRules.canonicalRoleDescription("Combo Box"))
+        assertEquals("tab", FindRules.canonicalRoleDescription("Tab"))
+        assertEquals("tablist", FindRules.canonicalRoleDescription("Tab List"))
+        assertEquals("menuitem", FindRules.canonicalRoleDescription("Menu Item"))
+        assertEquals("menubar", FindRules.canonicalRoleDescription("Menu Bar"))
+        assertEquals("radiogroup", FindRules.canonicalRoleDescription("Radio Group"))
+        assertEquals("scrollbar", FindRules.canonicalRoleDescription("Scroll Bar"))
+        assertEquals("spinbutton", FindRules.canonicalRoleDescription("Spin Button"))
+        // RN's accessibilityRole="imagebutton" is an ImageButton: a button.
+        assertEquals("button", FindRules.canonicalRoleDescription("Button, Image"))
+    }
+
+    @Test
+    fun `other role descriptions are only lowercased`() {
+        assertEquals("link", FindRules.canonicalRoleDescription("Link"))
+        assertEquals("search", FindRules.canonicalRoleDescription("search"))
+        assertEquals("shopping cart item", FindRules.canonicalRoleDescription("Shopping Cart Item"))
+        assertNull(FindRules.canonicalRoleDescription(null))
+        assertNull(FindRules.canonicalRoleDescription(""))
+    }
+
+    @Test
+    fun `roles RN publishes only as a description resolve through it`() {
+        // RN renders these on a generic android.view.View with a role
+        // description, so getByRole must read the description (PILOT-656).
+        for (role in listOf("tab", "progressbar", "toolbar", "heading", "link", "image", "searchfield")) {
+            assertTrue("$role is dual-path", role in ElementFinder.DUAL_PATH_ROLES)
+        }
+        val tabClasses = setOf("android.widget.TabWidget", "com.google.android.material.tabs.TabLayout")
+        assertTrue(FindRules.matchesTraitRole("tab", "android.view.View", setOf("tab"), tabClasses, false))
+        // A native TabLayout without a description still matches by class.
+        assertTrue(FindRules.matchesTraitRole(null, "com.google.android.material.tabs.TabLayout", setOf("tab"), tabClasses, false))
+        // RN's tab list container is not a tab.
+        assertFalse(FindRules.matchesTraitRole("tablist", "android.view.View", setOf("tab"), tabClasses, false))
     }
 
     // ─── Effective text ───

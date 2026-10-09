@@ -1,6 +1,7 @@
 import type { HierarchyNode } from '../trace-viewer/components/hierarchy-utils.js';
 import { getNodeRole } from '../trace-viewer/components/hierarchy-utils.js';
 import { generateSelectors } from '../trace-viewer/components/selector-generation.js';
+import { escapeJsString } from '../js-string-escape.js';
 import { disambiguateSelectors } from '../trace-viewer/components/selector-uniqueness.js';
 
 interface FormattedResult {
@@ -69,19 +70,24 @@ function formatNode(
     // Disambiguate against the full hierarchy (PILOT-226): a suggested
     // locator that matches multiple elements would throw a strict mode
     // violation the moment a test acts on it.
-    const selectors = disambiguateSelectors(roots, node, generateSelectors(node));
+    // A suggestion that failed validation (it does not resolve to this
+    // node) is never offered: fall back to the next one (PILOT-659).
+    const best = disambiguateSelectors(roots, node, generateSelectors(node)).find((s) => !s.mayNotMatch);
     let refTag = '';
-    if (selectors.length > 0) {
+    if (best) {
       const ref = refs.length + 1;
-      refs.push({ ref, selector: selectors[0].code });
+      refs.push({ ref, selector: best.code });
       refTag = `[${ref}] `;
     }
 
     const parts: string[] = [`${indent}- ${refTag}`];
     parts.push(role || node.tagName);
-    if (text) parts.push(` "${truncate(text, 60)}"`);
+    // Values are shown the way a suggested locator spells them (PILOT-658):
+    // decoded text, JS-escaped so a newline reads `\n` and the node stays on
+    // one tree line. Truncate first so an escape is never cut in half.
+    if (text) parts.push(` "${escapeJsString(truncate(text, 60))}"`);
     if (states.length > 0) parts.push(` [${states.join(', ')}]`);
-    if (hint) parts.push(` placeholder="${truncate(hint, 40)}"`);
+    if (hint) parts.push(` placeholder="${escapeJsString(truncate(hint, 40))}"`);
 
     lines.push(parts.join(''));
   }

@@ -95,13 +95,13 @@ Supported roles map to platform-native element types. On iOS, many React Native 
 | `image` | `ImageView` or RN `accessibilityRole="image"` | `XCUIElementTypeImage`, `.other` with image trait |
 | `text` | `TextView` | `XCUIElementTypeStaticText` |
 | `alert` | RN `accessibilityRole="alert"` | `.other` described as an alert (RN old architecture), or a named `.other` |
-| `progressbar` | `ProgressBar` | `XCUIElementTypeProgressIndicator` |
+| `progressbar` | `ProgressBar` or RN `accessibilityRole="progressbar"` | `XCUIElementTypeProgressIndicator` |
 | `seekbar` / `slider` | `SeekBar` | `XCUIElementTypeSlider`, `.other` with adjustable trait |
 | `combobox` | RN `accessibilityRole="combobox"` | `.other` described as a combo box (RN old architecture), or a named `.other` |
 | `searchfield` | `SearchView` | `XCUIElementTypeSearchField`, `.other` with search trait |
 | `spinner` | `Spinner` | `XCUIElementTypePicker`, `XCUIElementTypeActivityIndicator` |
-| `toolbar` | `Toolbar` | `XCUIElementTypeToolbar` |
-| `tab` | `TabLayout` | `XCUIElementTypeTab`, `XCUIElementTypeTabBar` |
+| `toolbar` | `Toolbar` or RN `accessibilityRole="toolbar"` | `XCUIElementTypeToolbar` |
+| `tab` | `TabLayout` or RN `accessibilityRole="tab"` (e.g. React Navigation bottom tabs) | `XCUIElementTypeTab`, `XCUIElementTypeTabBar` |
 | `list` | `ListView`, `GridView`, `RecyclerView` | `XCUIElementTypeTable`, `XCUIElementTypeCollectionView` |
 | `listitem` | `LinearLayout`, `RelativeLayout`, `FrameLayout` | `XCUIElementTypeCell` |
 | `scrollview` | `ScrollView`, `HorizontalScrollView`, `NestedScrollView` | `XCUIElementTypeScrollView` |
@@ -109,6 +109,8 @@ Supported roles map to platform-native element types. On iOS, many React Native 
 Role names are case-insensitive. Any other role throws as soon as the locator is built — `Unknown role "row". Supported: alert, button, …` — instead of waiting out the timeout. Playwright's ARIA names that differ here get a hint (`textbox` → `textfield`, `img` → `image`, `radio` → `radiobutton`, `searchbox` → `searchfield`). WebView locators (`webview.getByRole()`) take the page's ARIA roles instead.
 
 > **Lists in React Native:** `list` and `listitem` match native list widgets. A React Native `FlatList`, `SectionList` or `ScrollView` and its rows are not those widgets, so `getByRole("list")` finds nothing in them. Give the list a `testID` and target it with `getByTestId()`; target a row by its text, or by `getByRole("button")` when the row is a `Pressable` or `TouchableOpacity` with `accessibilityRole="button"`.
+
+> **React Native tabs:** on Android, React Navigation's bottom tabs are `tab` elements named by their label — `getByRole("tab", { name: "Settings" })`. On iOS React Navigation gives them the `button` role and a label like `"Settings, tab, 2 of 4"`, so `getByRole("button", { name: "Settings" })` finds them there.
 
 > **React Native note:** RN components that set `accessibilityRole` (e.g. `accessibilityRole="button"`) expose the corresponding iOS accessibility trait, and `getByRole` will find them. Components that don't set `accessibilityRole` (common in many RN apps) render as generic `XCUIElementTypeOther` with no role — use `getByText`, `getByPlaceholder`, or `getByDescription` instead.
 
@@ -206,7 +208,7 @@ Find an element by a dedicated test identifier.
 await device.getByTestId("submit-button").tap()
 ```
 
-On Android, `getByTestId` matches React Native's `testID` prop (mapped to a content-description prefix). On iOS, it matches the `accessibilityIdentifier`.
+On Android, `getByTestId` matches React Native's `testID` prop, which becomes the element's whole resource ID; a native view's package-qualified ID (`com.myapp:id/submit`) is found with `locator({ id })` instead. On iOS, it matches the `accessibilityIdentifier`.
 
 ### `locator({ id })`
 

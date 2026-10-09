@@ -141,6 +141,73 @@ export function sharedDeviceGroup(
   return { config: largest.effectiveConfig, group };
 }
 
+/**
+ * Which project `use` keys a single-target session takes from its device
+ * target, and which it leaves to each run.
+ *
+ * `target` keys describe the device, the app and the agent: the session reads
+ * them once, when it opens the device and builds the test's `Device`, so the
+ * workers must get them from the target even when a config keeps them only in
+ * its projects' `use` — a worker given the root had no default package, and
+ * the test's `device.restartApp()` threw "Package name is required"
+ * (PILOT-654). The ones `deviceSignature` covers are the same in every project
+ * on the target.
+ *
+ * `run` keys are applied per run from the running project's own `use` (the
+ * runner layers it over the session config), so the session keeps the root's
+ * value: a sibling project that leaves one unset must not inherit another
+ * project's `baseURL` or `trace`.
+ *
+ * Typed over every `UseOptions` key, so a new one does not compile until it
+ * is classified.
+ */
+const USE_KEY_SCOPE = {
+  platform: 'target',
+  device: 'target',
+  avd: 'target',
+  simulator: 'target',
+  apk: 'target',
+  app: 'target',
+  package: 'target',
+  activity: 'target',
+  agentApk: 'target',
+  agentTestApk: 'target',
+  iosXctestrun: 'target',
+  deviceStrategy: 'target',
+  launchEmulators: 'target',
+  resetAppDeepLink: 'target',
+  resetAppWaitMs: 'target',
+  doubleTapInterval: 'target',
+  timeout: 'run',
+  screenshot: 'run',
+  retries: 'run',
+  trace: 'run',
+  video: 'run',
+  devices: 'run',
+  appReset: 'run',
+  appResetScope: 'run',
+  appResetColdEvery: 'run',
+  baseURL: 'run',
+  extraHTTPHeaders: 'run',
+  appState: 'run',
+} as const satisfies { readonly [K in keyof Required<UseOptions>]: 'target' | 'run' };
+
+const TARGET_KEYS = (Object.keys(USE_KEY_SCOPE) as Array<keyof typeof USE_KEY_SCOPE>)
+  .filter((key) => USE_KEY_SCOPE[key] === 'target') as Array<keyof UseOptions & keyof TapsmithConfig>;
+
+/**
+ * The config a single-target session's workers run under: the root config
+ * with the device target's `target` keys (`USE_KEY_SCOPE`) taken from
+ * `effective`, the effective config of a project on that target. Run-wide
+ * keys (`workers`, `trace`, `baseURL`, `devices`, …) stay the root's.
+ */
+export function targetSessionConfig(effective: TapsmithConfig, root: TapsmithConfig): TapsmithConfig {
+  const config = { ...root } as Record<string, unknown>;
+  const source = effective as unknown as Record<string, unknown>;
+  for (const key of TARGET_KEYS) config[key] = source[key];
+  return config as unknown as TapsmithConfig;
+}
+
 // ─── Worker allocation ───
 
 /**

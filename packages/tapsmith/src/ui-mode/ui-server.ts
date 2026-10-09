@@ -146,6 +146,14 @@ function isEmulatorOrSimulator(serial: string, platform?: 'android' | 'ios'): bo
 export interface UIServerContext {
   config: TapsmithConfig
   /**
+   * The config the session's workers run under — the primary device target's
+   * (`targetSessionConfig`), not the root `config`, which may hold none of the
+   * device keys a config keeps in its projects' `use` (PILOT-654). Multi-target
+   * sessions override it per device through `configByDevice`. Required so an
+   * embedder cannot fall back to the root by omission.
+   */
+  targetConfig: TapsmithConfig
+  /**
    * The config file backing this session, reported over MCP. Absent means the
    * session really is running on built-in defaults — so it must not be left
    * unset when a config was loaded, or `session_info` says the opposite.
@@ -852,10 +860,10 @@ export async function startUIServer(
   }
 
   const serializedConfig: SerializedConfig = {
-    ...serializeConfig(ctx.config),
+    ...serializeConfig(ctx.targetConfig),
     // UI mode always enables tracing for the trace viewer
-    trace: typeof ctx.config.trace === 'string' || typeof ctx.config.trace === 'object'
-      ? ctx.config.trace
+    trace: typeof ctx.targetConfig.trace === 'string' || typeof ctx.targetConfig.trace === 'object'
+      ? ctx.targetConfig.trace
       : 'on',
   };
 
@@ -2024,7 +2032,7 @@ function wireStatus(status: TestResultEntry['status']): TestNodeStatus {
     }
 
     // Resolve per-worker config (multi-bucket) or fall back to the
-    // server-wide serializedConfig built from ctx.config.
+    // server-wide serializedConfig built from ctx.targetConfig.
     const workerConfig = ctx.configByDevice?.get(deviceSerial) ?? serializedConfig;
     const workerBucketSig = ctx.bucketByDevice?.get(deviceSerial);
 

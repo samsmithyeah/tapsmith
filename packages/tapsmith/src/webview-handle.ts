@@ -3,11 +3,11 @@ import type { ElementInfo, TapsmithGrpcClient } from './grpc-client.js';
 import {
   buildStrictModeViolationError,
   STRICT_ERROR_MAX_ELEMENTS,
-  truncateText,
   type StrictModeViolationError,
   POLL_INTERVAL_MS,
 } from './element-handle.js';
 import { WebViewLocator } from './webview-locator.js';
+import { escapeJsString } from './js-string-escape.js';
 import type { TraceCollector } from './trace/trace-collector.js';
 import { extractStack } from './trace/trace-collector.js';
 import type { WebKitInspectorClient } from './webkit-inspector.js';
@@ -68,10 +68,17 @@ export interface WebViewLocatorProbe {
 /** Best-effort unambiguous WebView locator suggestion for one DOM match. */
 function suggestWebViewSelectorFor(d: WebViewDomDescription | undefined): string | undefined {
   if (!d) return undefined;
-  if (d.testId) return `webview.getByTestId(${JSON.stringify(d.testId)})`;
-  if (d.id) return `webview.locator(${JSON.stringify('#' + d.id)})`;
-  if (d.ariaLabel) return `webview.getByLabel(${JSON.stringify(d.ariaLabel)})`;
-  if (d.text) return `webview.getByText(${JSON.stringify(truncateText(d.text, 60))}, { exact: true })`;
+  // Copy-paste-safe string literals, like the native suggestions (PILOT-659).
+  const lit = (v: string): string => `"${escapeJsString(v)}"`;
+  if (d.testId) return `webview.getByTestId(${lit(d.testId)})`;
+  if (d.id) return `webview.locator(${lit('#' + d.id)})`;
+  if (d.ariaLabel) return `webview.getByLabel(${lit(d.ariaLabel)})`;
+  if (d.text) {
+    // An exact match needs the whole text: a long one is suggested as its
+    // leading part, matched as a substring.
+    const exact = d.text.length <= 60;
+    return `webview.getByText(${lit(exact ? d.text : d.text.slice(0, 60))}${exact ? ', { exact: true }' : ''})`;
+  }
   return undefined;
 }
 

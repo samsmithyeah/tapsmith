@@ -18,7 +18,8 @@ import java.io.ByteArrayOutputStream
  * Post-processes the stock UIAutomator XML to inject `tapsmith-role`
  * attributes for elements with trait-based roles (heading, alert, link,
  * combobox, etc.) that React Native surfaces via AccessibilityNodeInfo
- * bundle extras but the stock dump doesn't include.
+ * bundle extras but the stock dump doesn't include, and `tapsmith-expanded`
+ * for elements with an expanded state (their expand/collapse actions).
  */
 class HierarchyDumper(
     private val device: UiDevice,
@@ -38,7 +39,8 @@ class HierarchyDumper(
 
     /**
      * Dump the full UI hierarchy as an XML string, augmented with
-     * `tapsmith-role` attributes for trait-based roles.
+     * `tapsmith-role` attributes for trait-based roles and
+     * `tapsmith-expanded` for elements with an expanded state.
      *
      * @return XML string representing the current UI hierarchy
      * @throws ActionFailedException if the hierarchy cannot be dumped
@@ -51,7 +53,7 @@ class HierarchyDumper(
             if (xml.isBlank()) {
                 throw ActionFailedException("UI hierarchy dump returned empty result")
             }
-            injectRoles(xml)
+            injectAttributes(xml)
         } catch (e: ActionFailedException) {
             throw e
         } catch (e: Exception) {
@@ -61,52 +63,41 @@ class HierarchyDumper(
     }
 
     /**
-     * Walk the AccessibilityNodeInfo tree to collect trait-based roles,
-     * then inject `tapsmith-role` attributes into the stock UIAutomator XML.
+     * Walk the AccessibilityNodeInfo tree to collect what the stock dump
+     * leaves out, then inject it into the stock UIAutomator XML:
+     * `tapsmith-role` (trait-based roles) and `tapsmith-expanded` (the
+     * expanded state getByRole's `expanded` filter reads from the
+     * expand/collapse actions, so the Locator Playground can apply it —
+     * PILOT-655).
      */
-    private fun injectRoles(xml: String): String {
-        val roleMap = collectRoleMap()
-        if (roleMap.isEmpty()) return xml
-
-        val sb = StringBuilder(xml.length + roleMap.size * 30)
-        // Match <node ... bounds="[l,t][r,b]" and inject tapsmith-role before
-        // the closing > or /> of each element that has a role.
-        val boundsRe = Regex("""(<node\b[^>]*\bbounds="(\[\d+,\d+]\[\d+,\d+])")""")
-        var lastEnd = 0
-        for (match in boundsRe.findAll(xml)) {
-            val bounds = match.groupValues[2]
-            val role = roleMap[bounds]
-            sb.append(xml, lastEnd, match.range.last + 1)
-            if (role != null) {
-                sb.append(" tapsmith-role=\"")
-                sb.append(escapeXmlAttr(role))
-                sb.append('"')
-            }
-            lastEnd = match.range.last + 1
-        }
-        sb.append(xml, lastEnd, xml.length)
-        return sb.toString()
-    }
+    private fun injectAttributes(xml: String): String = HierarchyAttributes.inject(xml, collectAttributeMap())
 
     /**
-     * Walk all accessibility windows and build a map of bounds → role
-     * for nodes that have a trait-based role not derivable from the class name.
+     * Walk all accessibility windows and build a map of bounds → the
+     * attributes to inject for that element (see [injectAttributes]).
      *
      * Limitation: uses bounds as the join key between the AccessibilityNodeInfo
      * tree and the UIAutomator XML. If two elements share identical bounds
-     * (overlapping views, zero-size elements), only one role survives. This is
-     * acceptable in practice since trait-based roles are uncommon and
-     * overlapping elements with *different* trait roles are rarer still.
+     * (overlapping views, zero-size elements), the attributes land on both
+     * and the last one walked wins. This is acceptable in practice since
+     * trait-based roles and expandable elements are uncommon, and
+     * overlapping elements with *different* ones are rarer still.
      */
-    private fun collectRoleMap(): Map<String, String> {
-        val roleMap = mutableMapOf<String, String>()
+    private fun collectAttributeMap(): Map<String, Map<String, String>> {
+        val attrMap = mutableMapOf<String, MutableMap<String, String>>()
         try {
             val automation = instrumentation.uiAutomation
+            val displayWidth = device.displayWidth
+            val displayHeight = device.displayHeight
             for (window in automation.windows) {
                 try {
                     val root = window.root ?: continue
+                    val windowRect = Rect()
+                    window.getBoundsInScreen(windowRect)
+                    val windowBox = HierarchyAttributes.Box(windowRect.left, windowRect.top, windowRect.right, windowRect.bottom)
+                    val clip = DumpClip(displayWidth, displayHeight, windowBox)
                     try {
-                        walkNodeInfo(root, roleMap)
+                        walkNodeInfo(root, clip, attrMap)
                     } finally {
                         @Suppress("DEPRECATION")
                         root.recycle()
@@ -117,28 +108,50 @@ class HierarchyDumper(
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to collect roles from accessibility tree", e)
+            Log.w(TAG, "Failed to collect attributes from accessibility tree", e)
         }
-        return roleMap
+        return attrMap
     }
 
     @Suppress("DEPRECATION")
     private fun walkNodeInfo(
         node: AccessibilityNodeInfo,
-        roleMap: MutableMap<String, String>,
+        clip: DumpClip,
+        attrMap: MutableMap<String, MutableMap<String, String>>,
     ) {
         val role = extractRoleFromNodeInfo(node)
-        if (role != null) {
+        val expanded = extractExpandedFromNodeInfo(node)
+        if (role != null || expanded != null) {
             val rect = Rect()
             node.getBoundsInScreen(rect)
-            val bounds = "[${rect.left},${rect.top}][${rect.right},${rect.bottom}]"
-            roleMap[bounds] = role
+            // Keyed by the bounds the stock dump writes for this node, which
+            // are clipped to the display and window.
+            val bounds =
+                HierarchyAttributes
+                    .dumpedBounds(
+                        HierarchyAttributes.Box(rect.left, rect.top, rect.right, rect.bottom),
+                        clip.displayWidth,
+                        clip.displayHeight,
+                        clip.window,
+                    ).key()
+            val attrs = attrMap.getOrPut(bounds) { mutableMapOf() }
+            role?.let { attrs["tapsmith-role"] = it }
+            expanded?.let { attrs["tapsmith-expanded"] = it.toString() }
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            walkNodeInfo(child, roleMap)
+            walkNodeInfo(child, clip, attrMap)
             child.recycle()
         }
+    }
+
+    /** The element's expanded state, as ElementFinder's `expanded` filter reads it. */
+    private fun extractExpandedFromNodeInfo(node: AccessibilityNodeInfo): Boolean? {
+        val actions = node.actionList ?: return null
+        return FindRules.expandedState(
+            canExpand = actions.any { it.id == AccessibilityNodeInfo.AccessibilityAction.ACTION_EXPAND.id },
+            canCollapse = actions.any { it.id == AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE.id },
+        )
     }
 
     /**
@@ -159,16 +172,16 @@ class HierarchyDumper(
             val raw =
                 extras.getCharSequence(ROLE_DESCRIPTION_EXTRA_KEY)?.toString()
                     ?: extras.getCharSequence(ROLE_DESCRIPTION_LONG_FORM_KEY)?.toString()
-            return raw?.takeIf { it.isNotEmpty() }?.lowercase()
+            return FindRules.canonicalRoleDescription(raw)
         } catch (e: Exception) {
             return null
         }
     }
 
-    private fun escapeXmlAttr(s: String): String {
-        return s.replace("&", "&amp;")
-            .replace("\"", "&quot;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-    }
+    /** What the stock dump clips a node's bounds to: the display, then its window. */
+    private class DumpClip(
+        val displayWidth: Int,
+        val displayHeight: Int,
+        val window: HierarchyAttributes.Box,
+    )
 }
