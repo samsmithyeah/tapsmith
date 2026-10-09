@@ -753,7 +753,7 @@ export class Device {
     return res.state as AppState;
   }
 
-  /** Send the app to the background by pressing the home key. @platform android */
+  /** Send the app to the background by pressing the home key. */
   async sendToBackground(): Promise<void> {
     return this.pressKey('HOME');
   }
@@ -786,14 +786,14 @@ export class Device {
         'Clear app data failed'));
   }
 
-  /** Programmatically grant a runtime permission. @platform android */
+  /** Programmatically grant a permission (Android runtime permission; iOS simulator `simctl privacy` service). */
   async grantPermission(packageName: string, permission: string): Promise<void> {
     return this._tracedAction('grantPermission', 'device', undefined,
       () => this._client.grantPermission(packageName, permission),
       'Grant permission failed');
   }
 
-  /** Revoke a previously granted runtime permission. @platform android */
+  /** Revoke a previously granted permission (same values and platforms as `grantPermission`). */
   async revokePermission(packageName: string, permission: string): Promise<void> {
     return this._tracedAction('revokePermission', 'device', undefined,
       () => this._client.revokePermission(packageName, permission),
@@ -845,7 +845,7 @@ export class Device {
       'Unlock device failed');
   }
 
-  /** Press the home button. @platform android */
+  /** Press the home button. */
   async pressHome(): Promise<void> {
     return this.pressKey('HOME');
   }

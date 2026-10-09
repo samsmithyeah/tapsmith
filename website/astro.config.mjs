@@ -47,6 +47,14 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Migrating',
+          items: [
+            { label: 'From Maestro', slug: 'guides/migrating-from-maestro' },
+            { label: 'From Detox', slug: 'guides/migrating-from-detox' },
+            { label: 'From Appium', slug: 'guides/migrating-from-appium' },
+          ],
+        },
+        {
           label: 'Platform',
           items: [
             { label: 'CI Setup', slug: 'platform/ci-setup' },

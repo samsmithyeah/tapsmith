@@ -4,6 +4,8 @@ This guide walks you through installing Tapsmith, writing your first test, and r
 
 > **Tapsmith requires Node.js 22 or newer.** Check with `node --version` before you install. On older Node, npm can install an old Tapsmith release whose commands don't match this guide (or fail with `No matching version found`).
 
+> **Moving an existing suite?** The migration guides map your current tool onto Tapsmith and port a test side by side: [from Maestro](migrating-from-maestro.md), [from Detox](migrating-from-detox.md) and [from Appium](migrating-from-appium.md).
+
 > **Setting up with an AI coding agent?** See [Using Tapsmith with AI coding agents](agents.md) for the non-interactive setup loop (`doctor --json` → `init --yes` → `verify --json`).
 
 ## Prerequisites
@@ -472,3 +474,4 @@ describe("Login flow", () => {
 - Run tests faster with the [Parallel Execution and Sharding](parallel-and-sharding.md) guide.
 - Set up automated testing in the [CI Setup](ci-setup.md) guide.
 - When things go wrong, check the [Debugging](debugging.md) guide.
+- Moving tests over from another tool? See the migration guides for [Maestro](migrating-from-maestro.md), [Detox](migrating-from-detox.md) and [Appium](migrating-from-appium.md).

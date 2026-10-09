@@ -642,6 +642,12 @@ const threeThings = [
             <a href="/guides/mcp-server/">MCP server</a>
           </div>
           <div class="tp-footer-col">
+            <h4>Migrate</h4>
+            <a href="/guides/migrating-from-maestro/">From Maestro</a>
+            <a href="/guides/migrating-from-detox/">From Detox</a>
+            <a href="/guides/migrating-from-appium/">From Appium</a>
+          </div>
+          <div class="tp-footer-col">
             <h4>Community</h4>
             <a
               href="https://github.com/tapsmith/tapsmith"
@@ -1559,7 +1565,7 @@ const threeThings = [
       }
       .tp-footer-top {
         display: grid;
-        grid-template-columns: 1.5fr 1fr 1fr 1fr;
+        grid-template-columns: 1.5fr 1fr 1fr 1fr 1fr;
         gap: 40px;
         align-items: flex-start;
       }
@@ -1660,6 +1666,9 @@ const threeThings = [
         }
         .tp-footer-top {
           grid-template-columns: 1fr 1fr;
+        }
+        .tp-footer-brand {
+          grid-column: 1 / -1;
         }
         /* Keep the feature column readable while the table scrolls */
         .tp-table .tp-table-feature {

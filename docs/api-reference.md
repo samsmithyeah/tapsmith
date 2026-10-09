@@ -404,7 +404,7 @@ Check the state of an app. Returns `"not_installed"`, `"stopped"`, `"background"
 const state = await device.getAppState("com.example.myapp");
 ```
 
-### `device.sendToBackground(): Promise<void>` *(Android only)*
+### `device.sendToBackground(): Promise<void>`
 
 Press the home button to send the current app to the background.
 
@@ -514,18 +514,19 @@ Restore a previously saved app state archive. Clears the app's data first, then 
 await device.restoreAppState("com.example.myapp", "./auth-state.tar.gz");
 ```
 
-### `device.grantPermission(packageName: string, permission: string): Promise<void>` *(Android only)*
+### `device.grantPermission(packageName: string, permission: string): Promise<void>`
 
-Programmatically grant an Android runtime permission.
+Programmatically grant a permission. On Android, `permission` is a runtime permission name; on an iOS simulator, it is a service that `xcrun simctl privacy` accepts, such as `photos`, `location`, `contacts`, `calendar` or `microphone` (`xcrun simctl help privacy` lists them, and `camera` is accepted too; notifications are not). Some changes make iOS terminate the app if it is running. Not supported on physical iOS devices.
 
 ```typescript
 await device.grantPermission("com.example.myapp", "android.permission.CAMERA");
 await device.grantPermission("com.example.myapp", "android.permission.ACCESS_FINE_LOCATION");
+await device.grantPermission("com.example.myapp", "photos"); // iOS simulator
 ```
 
-### `device.revokePermission(packageName: string, permission: string): Promise<void>` *(Android only)*
+### `device.revokePermission(packageName: string, permission: string): Promise<void>`
 
-Revoke a previously granted runtime permission.
+Revoke a previously granted permission. Takes the same `permission` values as `grantPermission()`, with the same platform support.
 
 ```typescript
 await device.revokePermission("com.example.myapp", "android.permission.CAMERA");
@@ -609,7 +610,7 @@ Wake the screen and dismiss the lock screen. Works with non-secure lock screens 
 await device.unlock();
 ```
 
-### `device.pressHome(): Promise<void>` *(Android only)*
+### `device.pressHome(): Promise<void>`
 
 Press the home button. Convenience method equivalent to `device.pressKey("HOME")`.
 
@@ -1172,8 +1173,10 @@ await device.locator({ id: "search_box" }).clear();
 Scroll this element in the given direction.
 
 ```typescript
-await device.getByTestId("product-list").scroll("down", { distance: 300 }); // a FlatList with testID="product-list"
+await device.getByTestId("product-list").scroll("down"); // a FlatList with testID="product-list"
 ```
+
+The device agents don't apply `distance` yet: each call scrolls by a fixed step of the element's size, whatever `distance` says. To reach a particular element, use [`scrollIntoView()`](#elementhandlescrollintoviewoptions--direction-string-maxscrolls-number-speed-number--promisevoid).
 
 #### `elementHandle.scrollIntoView(options?: { direction?: string; maxScrolls?: number; speed?: number }): Promise<void>`
 
