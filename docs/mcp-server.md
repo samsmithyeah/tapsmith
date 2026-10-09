@@ -379,7 +379,10 @@ device.getByDescription("Close menu")
 device.getByTestId("submit-button")
 device.getByPlaceholder("Email")
 device.locator({ id: "com.myapp:id/input" })
+device.getByRole("tab", { name: "Settings", selected: true })
 ```
+
+`getByRole` takes the same options as in test code: `name` (a string or a RegExp), `exact`, and the state filters `checked`, `disabled`, `selected` and `expanded`. A locator with an option the tools don't recognize is rejected as invalid instead of run without it.
 
 Use `tapsmith_snapshot` to see suggested locators for every interactive element on screen.
 
