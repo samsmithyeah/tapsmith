@@ -9,8 +9,8 @@
  * last resort, only when no other Tapsmith session holds an Android device,
  * and says so when it does:
  *
- * 1. a pinned serial adb does not list fails at once — no restart brings back
- *    a device that is not there;
+ * 1. a pinned serial adb does not list fails at once — usually a wrong
+ *    serial; the error says how to restart adb if the device is attached;
  * 2. a slow reply is not a dead device: one patient `echo` before any
  *    recovery, so a loaded host does not set it off;
  * 3. `adb -s <serial> reconnect` kicks only this device's transport;
@@ -58,7 +58,9 @@ export function pinnedDeviceNotListedMessage(serial: string, devices: readonly A
     ? `adb lists ${devices.map((d) => `${d.serial} (${d.state})`).join(', ')}`
     : 'adb lists no devices';
   return `Device ${serial} is not connected: adb does not list it (${listed}). `
-    + 'Check the serial Tapsmith was given (`device` in your config, or `--device`), or connect the device.';
+    + 'Check the serial Tapsmith was given (`device` in your config, or `--device`), or connect the device. '
+    + 'If it is attached but adb has lost it, restart adb with `adb kill-server` and try again '
+    + '(this disconnects every adb client on this machine, other Tapsmith sessions included).';
 }
 
 function respondsToEcho(serial: string, deps: PinnedDeviceHealthDeps, timeoutMs: number): boolean {

@@ -90,6 +90,12 @@ describe('checkPinnedDeviceHealth (PILOT-475)', () => {
     expect(pinnedDeviceNotListedMessage('X', [])).toContain('(adb lists no devices)');
   });
 
+  it('tells the user how to recover a device adb has lost, and what that costs', () => {
+    const msg = pinnedDeviceNotListedMessage('X', []);
+    expect(msg).toContain('If it is attached but adb has lost it, restart adb with `adb kill-server`');
+    expect(msg).toContain('disconnects every adb client on this machine');
+  });
+
   it('accepts a slow device that answers a patient echo (a loaded host), with no recovery', async () => {
     const adb = fakeAdb({
       devices: [devicesOutput(`${SERIAL}\tdevice`)],

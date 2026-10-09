@@ -336,7 +336,7 @@ Device emulator-5554 is unresponsive. Reconnecting it (adb reconnect)...
 2. `adb -s <serial> reconnect` reconnects only that device.
 3. As a last resort, Tapsmith restarts the ADB server (`adb kill-server`), and prints a note first. A restart disconnects **every** adb client on the machine: Android Studio, logcat, scrcpy, and other Tapsmith sessions. So Tapsmith skips the restart while another Tapsmith session is using an Android device. The error then names that session.
 
-A serial that adb does not list at all (`Device … is not connected: adb does not list it`) fails at once, with the devices adb does list, because no recovery brings back a device that is not there. Check the `device` in your config or the `--device` flag.
+A serial that adb does not list at all (`Device … is not connected: adb does not list it`) fails at once, with the devices adb does list, without restarting adb: usually the serial is wrong. Check the `device` in your config or the `--device` flag. If the device is attached and adb has lost track of it (after the host slept, say), restarting adb yourself brings it back.
 
 **Fixes:**
 
