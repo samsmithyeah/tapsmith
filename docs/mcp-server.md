@@ -141,7 +141,7 @@ Get the current screen's accessibility tree with copy-paste-ready Tapsmith locat
 
 Returns a text representation of the accessibility tree with suggested locators like `device.getByRole("button", { name: "Login" })` for each interactive element.
 
-Each suggestion is checked against the snapshot to resolve to exactly one element, and one that fails the check is not offered. A character that does not survive copy-paste, such as the icon-font glyph in a React Navigation tab's name, is written as a `\uXXXX` escape: JavaScript and `tapsmith_test_locator` read it back to the same character.
+Each suggestion is checked against the snapshot to resolve to exactly one element, and one that fails the check is not offered. When nothing else singles an element out, its suggestion ends in `.first()`, `.nth(i)` or `.last()`, which depends on the order of the matching elements on screen. A character that does not survive copy-paste, such as the icon-font glyph in a React Navigation tab's name, is written as a `\uXXXX` escape: JavaScript and `tapsmith_test_locator` read it back to the same character.
 
 #### `tapsmith_screenshot`
 
