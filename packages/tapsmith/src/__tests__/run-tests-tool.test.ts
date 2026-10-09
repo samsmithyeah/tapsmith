@@ -193,6 +193,15 @@ describe('tapsmith_run_tests response size', () => {
     expect(Buffer.byteLength(t, 'utf8')).toBeLessThan(100 * 1024);
   });
 
+  it('promises no screenshots when no failure had a trace to take one from', async () => {
+    const result: TestRunResult = {
+      status: 'failed', passed: 0, failed: 5, skipped: 0, duration: 10,
+      failures: failures(5, 10, false),
+    };
+    const t = text(await callRunTests(makeDispatcher({ runFiles: async () => result }), { files: [FILE] }));
+    expect(t).not.toContain('screenshots');
+  });
+
   it('keeps a short failure exactly as before', async () => {
     const result: TestRunResult = {
       status: 'failed', passed: 0, failed: 1, skipped: 0, duration: 10,

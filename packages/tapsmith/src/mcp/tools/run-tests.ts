@@ -166,14 +166,15 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
             }
           });
           const unlisted = failures.length - LISTED_FAILURES;
-          const unscreenshotted = failures.length > SCREENSHOT_FAILURES;
+          // Only failures with a trace have a screenshot to attach.
+          const unscreenshotted = failures.length > SCREENSHOT_FAILURES && screenshots.length > 0;
           if (unlisted > 0 || failures.length > DETAILED_FAILURES || unscreenshotted) {
             lines.push('');
             const parts: string[] = [];
             if (unlisted > 0) parts.push(`... ${unlisted} more failure(s) not listed.`);
             parts.push(
               `Details shown for the first ${Math.min(DETAILED_FAILURES, failures.length)} failure(s)`
-              + (unscreenshotted ? `, screenshots for the first ${SCREENSHOT_FAILURES}` : '')
+              + (unscreenshotted ? `, screenshots for the first ${SCREENSHOT_FAILURES} that have one` : '')
               + '. Use tapsmith_list_results (status "failed"; file or test to narrow it) for every failure,'
               + ' and tapsmith_read_trace on a failure\'s trace for its full detail.',
             );

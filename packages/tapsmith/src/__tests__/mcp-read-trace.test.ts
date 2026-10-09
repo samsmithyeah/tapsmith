@@ -316,4 +316,18 @@ describe('tapsmith_read_trace response size', () => {
     expect(t).toContain('first and last steps are kept');
     expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
   });
+
+  it('keeps the failing last step when a long device log section follows the steps', async () => {
+    const steps = Array.from({ length: 400 }, (_, i) => ({
+      type: 'assertion', assertion: 'toBeVisible', error: `${'x'.repeat(1_000)} step ${i}`,
+    }));
+    const logs = Array.from({ length: 400 }, (_, i) => ({
+      type: 'console', source: 'device', level: 'info', message: `${'l'.repeat(600)} log ${i}`,
+    }));
+    const res = await readTrace({ path: writeTrace({ events: [...steps, ...logs] }), device_logs: 'all' });
+    const t = text(res);
+    expect(t).toContain('step 399');
+    expect(t).toContain('## Device Logs');
+    expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
+  });
 });

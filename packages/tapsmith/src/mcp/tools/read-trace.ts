@@ -4,7 +4,9 @@ import * as path from 'node:path';
 import { unzipSync } from 'fflate';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { traceFormatProblem } from '../../trace/trace-format.js';
-import { clipText, MCP_IMAGE_BUDGET_BYTES } from '../response-limits.js';
+import {
+  clipText, MCP_IMAGE_BUDGET_BYTES, MCP_TEXT_BUDGET_BYTES, serializedTextBytes, truncateMiddle,
+} from '../response-limits.js';
 
 /**
  * One step value (an error, an expected or actual value) as shown. Errors can
@@ -13,6 +15,14 @@ import { clipText, MCP_IMAGE_BUDGET_BYTES } from '../response-limits.js';
  */
 const STEP_VALUE_CHARS = 2_000;
 const LOG_LINE_CHARS = 500;
+/**
+ * Most of the text budget the device logs may take. They come after the
+ * steps, so left to the response boundary a long log section would fill the
+ * kept tail and cut the failing step — the end of the steps — instead.
+ */
+const LOGS_BUDGET_BYTES = 24 * 1024;
+/** Text budget held back for the screenshot labels and notes. */
+const NOTES_RESERVE_BYTES = 4 * 1024;
 
 export function registerReadTraceTool(server: McpServer): void {
   server.tool(
@@ -124,6 +134,7 @@ function readTraceArchive(tracePath: string, includeScreenshots: boolean, device
     }
 
     // Device logs
+    const logLines: string[] = [];
     if (deviceLogs !== 'none') {
       const isErrorOnly = deviceLogs === 'errors';
       const logEvents = events.filter((e: Record<string, unknown>) =>
@@ -142,14 +153,22 @@ function readTraceArchive(tracePath: string, includeScreenshots: boolean, device
       for (const [deviceId, bucket] of byDevice) {
         const cap = isErrorOnly ? 50 : 200;
         const shown = bucket.slice(-cap);
-        lines.push('');
-        lines.push(`## Device Logs${deviceId ? ` — ${deviceId}` : ''} (${bucket.length} entries${bucket.length > cap ? `, showing last ${cap}` : ''})`);
-        lines.push('');
+        logLines.push('');
+        logLines.push(`## Device Logs${deviceId ? ` — ${deviceId}` : ''} (${bucket.length} entries${bucket.length > cap ? `, showing last ${cap}` : ''})`);
+        logLines.push('');
         for (const ev of shown) {
-          lines.push(`[${(ev.level as string)?.toUpperCase()}] ${clipText(String(ev.message ?? ''), LOG_LINE_CHARS)}`);
+          logLines.push(`[${(ev.level as string)?.toUpperCase()}] ${clipText(String(ev.message ?? ''), LOG_LINE_CHARS)}`);
         }
       }
     }
+    // Bound the two parts separately: the steps keep their start and their
+    // end (where the failure is) however long the log section is.
+    const logsText = truncateMiddle(logLines.join('\n'), LOGS_BUDGET_BYTES, 'Pass device_logs "none" to leave them out.');
+    const stepsBudget = MCP_TEXT_BUDGET_BYTES - NOTES_RESERVE_BYTES - serializedTextBytes(logsText);
+    const stepsText = truncateMiddle(lines.join('\n'), stepsBudget, 'The trace\'s first and last steps are kept; the failure is at the end.');
+    lines.length = 0;
+    lines.push(stepsText);
+    if (logsText) lines.push(logsText);
   }
 
   const content: ContentItem[] = [{ type: 'text', text: lines.join('\n') }];
