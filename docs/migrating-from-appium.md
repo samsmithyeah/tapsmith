@@ -31,7 +31,8 @@ Appium has clients in many languages. The examples here use [WebdriverIO](https:
 | `appium:udid` / `appium:deviceName` | `device` (serial or UDID), `simulator` (iOS simulator name), or `avd` (an emulator to launch) |
 | `appium:noReset`, `appium:fullReset` | The [`appReset`](writing-tests.md#test-isolation) policy |
 | `appium:autoGrantPermissions` | [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid-android-only) (Android) |
-| `appium:newCommandTimeout`, implicit wait | [`timeout`](configuration.md#all-options) (30 s by default) for every action and assertion |
+| Implicit wait (`timeouts: { implicit }`) | [`timeout`](configuration.md#all-options) (30 s by default) for every action and assertion |
+| `appium:newCommandTimeout` | Not needed: there is no server session to keep alive between commands |
 | Appium Inspector | [UI mode](ui-mode.md) (`npx tapsmith test --ui`): a live device mirror with a locator picker, beside your tests |
 | `driver.getPageSource()` | The Hierarchy tab of the [trace viewer](trace-viewer.md) or UI mode, or the [`tapsmith_snapshot`](mcp-server.md#tapsmith_snapshot) MCP tool |
 
@@ -194,9 +195,9 @@ describe("Login", () => {
 What changed:
 
 - **The capabilities became config.** `appium:app`, `appium:appPackage` and `appium:appActivity` are `apk`, `package` and (optionally) `activity`. There's no `automationName`, `deviceName` or Appium service: Tapsmith uses the one emulator or device it finds, or the one you name with `device`, `avd` or `--device`.
-- **The reset became a declared policy.** The three `mobile:` calls in `beforeEach` are what `test.use({ appResetScope: "test" })` does, including waiting for the app to come back up. Without that line, Tapsmith clears the app once per test file.
+- **The reset became a declared policy.** The three `mobile:` calls in `beforeEach` are what `test.use({ appResetScope: "test" })` does, including waiting for the app to come back up. Without that line, Tapsmith resets the app once per test file.
 - **The explicit waits are gone.** `type()` and `tap()` wait for their element, and `expect(...).toBeVisible()` retries until the text appears. Each waits up to the config's `timeout`.
-- **The locators work on iOS too.** `~Email` is an accessibility id, which Appium matches against `content-desc` on Android but against the element's name (its accessibility identifier, if it has one) on iOS, so the same screen usually needs two selectors (or a `testID` that differs from the label). `getByRole("textfield", { name: "Email" })` matches the field's role and accessible name on both platforms, and the XPath for the success message became `getByText`. To run on iOS, add `platform: "ios"`, `app` and `simulator` (or a second [project](configuration.md#projects-with-per-device-targeting)); the test itself doesn't change.
+- **The locators work on iOS too.** `~Email` is an accessibility id, which Appium matches against `content-desc` on Android but against the element's name (its accessibility identifier, if it has one) on iOS, so on this screen, where the field's `testID` (`email-input`) differs from its label, `~Email` finds nothing on iOS and each platform needs its own selector. `getByRole("textfield", { name: "Email" })` matches the field's role and accessible name on both platforms, and the XPath for the success message became `getByText`. To run on iOS, add `platform: "ios"`, `app` and `simulator` (or a second [project](configuration.md#projects-with-per-device-targeting)); the test itself doesn't change.
 - **`setValue` became `type`.** `type()` taps the field and types into it. Use `clearAndType()` where the field may already contain text, as `setValue` cleared it.
 
 Run it with:
@@ -236,7 +237,7 @@ For CI, the [CI setup guide](ci-setup.md) has complete GitHub Actions workflows 
 
 **WebViews.** The model is close to Appium's contexts: `const webview = await device.webview()` connects to the app's WebView, and `await device.native()` switches back. The difference is what you get in between: a handle with Playwright-style web locators and assertions (`webview.getByRole()`, `webview.locator(css)`, `expect(webview.getByText("Paid")).toBeVisible()`) instead of a WebDriver session pointed at a browser, and no Chromedriver version to match to the device's WebView. The app must have WebView debugging enabled, as it must for Appium ([WebView testing](webview.md)).
 
-**Debugging.** A failed test leaves a screenshot by default. Set `trace: "retain-on-failure"` to also record a step-by-step trace (a screenshot, the view hierarchy and the network traffic for every action), opened with [`npx tapsmith show-trace`](trace-viewer.md). [UI mode](ui-mode.md) replaces Appium Inspector for finding locators, and [watch mode](watch-mode.md) re-runs a file on save without restarting the app.
+**Debugging.** A failed test leaves a screenshot by default. Set `trace: "retain-on-failure"` to also record a step-by-step trace (a screenshot, the view hierarchy and the network traffic for every action), opened with [`npx tapsmith show-trace`](trace-viewer.md). [UI mode](ui-mode.md) replaces Appium Inspector for finding locators, and [watch mode](watch-mode.md) re-runs a file on save on a device session that stays up: only the app reset runs again, not the daemon, agent and install.
 
 ### Not supported yet
 

@@ -39,8 +39,8 @@ This guide is for teams with a Detox suite who want to move it to Tapsmith. Of t
 | `element(by.label("Close"))` | [`device.getByDescription("Close")`](api-reference.md#devicegetbydescriptiontext-string-elementhandle), or `getByRole(role, { name: "Close" })` |
 | `element(by.traits(["button"]))` (iOS) | [`device.getByRole("button")`](api-reference.md#devicegetbyrolerole-string-options-elementhandle), on both platforms |
 | `element(by.type("RCTTextInput"))` | [`device.locator({ className: … })`](api-reference.md#devicelocatoroptions-locatoroptions-elementhandle) (native class names differ per platform) |
-| `by.id("row").withDescendant(by.text("Premium"))` | [`device.getByTestId("row").filter({ has: device.getByText("Premium") })`](api-reference.md#elementhandlefiltercriteria-filteroptions-elementhandle) |
-| `by.text("Delete").withAncestor(by.id("row-5"))` | [`device.getByTestId("row-5").getByText("Delete")`](api-reference.md#scoping) (scoping) |
+| `by.id("row").withDescendant(by.text("Premium"))` | [`device.getByTestId("row").filter({ has: device.getByText("Premium", { exact: true }) })`](api-reference.md#elementhandlefiltercriteria-filteroptions-elementhandle) |
+| `by.text("Delete").withAncestor(by.id("row-5"))` | [`device.getByTestId("row-5").getByText("Delete", { exact: true })`](api-reference.md#scoping) (scoping) |
 | `by.id("a").and(by.text("b"))` | [`device.getByTestId("a").and(device.getByText("b"))`](api-reference.md#elementhandleandother-elementhandle-elementhandle) |
 | `.atIndex(2)` | [`.nth(2)`](api-reference.md#elementhandlenthindex-number-elementhandle), `.first()`, `.last()` |
 | `element(…).getAttributes()` | [`locator.find()`](api-reference.md#elementhandlefind-promiseelementinfo), or `getText()`, `isEnabled()`, `boundingBox()`, … |
@@ -56,7 +56,7 @@ This guide is for teams with a Detox suite who want to move it to Tapsmith. Of t
 | `.replaceText("hi")` | [`.clearAndType("hi")`](api-reference.md#elementhandleclearandtypetext-string-options--delay-number--promisevoid) (types it, so your `onChangeText` handlers run) |
 | `.clearText()` | [`.clear()`](api-reference.md#elementhandleclear-promisevoid) |
 | `.tapReturnKey()` | [`device.pressKey("ENTER")`](api-reference.md#devicepresskeykey-string-promisevoid) |
-| `.scroll(200, "down")` | [`.scroll("down", { distance: 200 })`](api-reference.md#elementhandlescrolldirection-string-options--distance-number--promisevoid) |
+| `.scroll(200, "down")` | [`.scroll("down")`](api-reference.md#elementhandlescrolldirection-string-options--distance-number--promisevoid) scrolls the view by a step of its own size (no offset in points); to reach an element, prefer `scrollIntoView()` |
 | `waitFor(el).toBeVisible().whileElement(by.id("list")).scroll(50, "down")` | [`el.scrollIntoView()`](api-reference.md#elementhandlescrollintoviewoptions--direction-string-maxscrolls-number-speed-number--promisevoid) |
 | `.swipe("up")` | [`device.swipe("up")`](api-reference.md#deviceswipedirection-string-options-swipeoptions-promisevoid) |
 | `.pinch(0.5)` (iOS) | [`.pinchIn()`](api-reference.md#elementhandlepinchinoptions--scale-number--promisevoid) / [`.pinchOut()`](api-reference.md#elementhandlepinchoutoptions--scale-number--promisevoid), on both platforms |
@@ -81,9 +81,9 @@ This guide is for teams with a Detox suite who want to move it to Tapsmith. Of t
 |---|---|
 | `device.launchApp()` | Automatic before each test file; [`device.launchApp(pkg)`](api-reference.md#devicelaunchapppackagename-string-options-launchappoptions-promisevoid) mid-test |
 | `device.launchApp({ newInstance: true })` | [`device.restartApp(pkg)`](api-reference.md#devicerestartapppackagename-string-options--waitforidle-boolean--promisevoid), or `appReset: "restart"` |
-| `device.launchApp({ delete: true })` | The default `appReset` policy (clear data and relaunch), or [`device.resetApp({ mode: "clear" })`](api-reference.md#deviceresetappoptions-promiseappresetresult) |
+| `device.launchApp({ delete: true })` | The default `appReset` policy (clear data and relaunch; a warm, in-app reset instead when the app mounts `@tapsmith/react-native`), or [`device.resetApp({ mode: "clear" })`](api-reference.md#deviceresetappoptions-promiseappresetresult) |
 | `device.launchApp({ url })` / `device.openURL({ url })` | [`device.openDeepLink(url)`](api-reference.md#deviceopendeeplinkuri-string-options-opendeeplinkoptions-promisevoid) |
-| `device.launchApp({ permissions })` (iOS) | [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid-android-only) (Android only) |
+| `device.launchApp({ permissions })` (iOS) | No iOS counterpart yet; on Android, [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid-android-only) |
 | `device.reloadReactNative()` | A warm reset through [`@tapsmith/react-native`](warm-reset.md), automatic between files once the app mounts it |
 | `device.terminateApp()` | [`device.terminateApp()`](api-reference.md#deviceterminateapppackagename-string-promisevoid) |
 | `device.sendToHome()` | [`device.sendToBackground()`](api-reference.md#devicesendtobackground-promisevoid-android-only) (Android) |
@@ -262,7 +262,7 @@ Name Tapsmith test files `*.tapsmith.ts` (what `tapsmith init` sets up), so that
 
 **Locators.** Detox's `by.id` and `by.text` keep working as `getByTestId` and `getByText`, so a first port can be mechanical. Over time, prefer `getByRole` with a name: it checks what the element is as well as its label, and pushes the app towards being accessible ([Locators](locators.md)). Two details to watch for: `getByText("Sign in")` without `{ exact: true }` matches any text containing "Sign in", and an ambiguous locator throws rather than acting on the first match.
 
-**Debugging.** Detox's artifacts (screenshots, videos, logs) map to Tapsmith's `screenshot`, `video` and `trace` options. A trace records every action with a screenshot, the view hierarchy and the network traffic, and opens with [`npx tapsmith show-trace`](trace-viewer.md). For writing tests, [UI mode](ui-mode.md) (`npx tapsmith test --ui`) shows a live, clickable device mirror with a locator picker, and [watch mode](watch-mode.md) re-runs a file on save without restarting the app.
+**Debugging.** Detox's artifacts (screenshots, videos, logs) map to Tapsmith's `screenshot`, `video` and `trace` options. A trace records every action with a screenshot, the view hierarchy and the network traffic, and opens with [`npx tapsmith show-trace`](trace-viewer.md). For writing tests, [UI mode](ui-mode.md) (`npx tapsmith test --ui`) shows a live, clickable device mirror with a locator picker, and [watch mode](watch-mode.md) re-runs a file on save on a device session that stays up: only the app reset runs again, not the daemon, agent and install.
 
 ### Not supported yet
 
@@ -272,7 +272,7 @@ Some Detox device APIs have no Tapsmith equivalent at the moment:
 - **Launch configuration:** `launchArgs` and `languageAndLocale` on `launchApp`. Tapsmith launches the app without extra arguments.
 - **iOS permissions:** `launchApp({ permissions })` has no counterpart; `grantPermission()` and `revokePermission()` are Android only.
 - **Jest features:** `jest.fn()` mocks, snapshot matchers and Jest's custom matchers aren't part of Tapsmith's `expect`, and Jest's watch mode is replaced by [Tapsmith's](watch-mode.md).
-- **Some actions:** `scrollTo("bottom")` (scroll to an edge; use `scrollIntoView()` on the element you want, or `scroll()` repeatedly) and setting picker wheel columns (`setColumnToValue`).
+- **Some actions:** `scroll()` by an offset in points, `scrollTo("bottom")` (scroll to an edge; use `scrollIntoView()` on the element you want, or `scroll()` repeatedly) and setting picker wheel columns (`setColumnToValue`).
 
 ## Migrating incrementally
 

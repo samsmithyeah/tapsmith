@@ -134,7 +134,7 @@ export default defineConfig({
 What changed, line by line:
 
 - **`appId`** moved into the config as `package`, along with the build to install (`apk`, or `app` and `platform: "ios"` for iOS). Tapsmith installs the build and launches the app before the first test of each file; there is no `launchApp` step.
-- **`launchApp: { clearState: true }`** became `test.use({ appResetScope: "test" })`. Without that line, Tapsmith clears the app once per test file rather than before every test, which is faster and is often what a suite of separate flows really needs. See [Test isolation](writing-tests.md#test-isolation).
+- **`launchApp: { clearState: true }`** became `test.use({ appResetScope: "test" })`. Without that line, Tapsmith resets the app once per test file rather than before every test (a clear, or a warm reset when the app mounts [`@tapsmith/react-native`](warm-reset.md)), which is faster and is often what a suite of separate flows really needs. See [Test isolation](writing-tests.md#test-isolation).
 - **`tapOn` followed by `inputText`** became one call: `type()` taps the field and types into it. The fields are found by role and accessible name (`accessibilityLabel` in React Native) rather than by `testID`. `getByTestId("email-input")` also works; Tapsmith recommends user-visible locators first, as Playwright does ([Locators](locators.md)).
 - **`tapOn: "Sign in"`** became `getByRole("button", { name: "Sign in" })`. Maestro treats `text` as a regular expression; `getByText` matches a substring unless you pass `{ exact: true }`, and `getByRole`'s `name` is a case-insensitive substring. If a locator matches more than one element, Tapsmith throws a [strict mode](api-reference.md#strict-mode) error listing them instead of tapping the first.
 - **`assertVisible`** became `await expect(...).toBeVisible()`, which retries until the text appears or the timeout passes.
@@ -177,7 +177,7 @@ Name Tapsmith test files `*.tapsmith.ts` (what `tapsmith init` sets up), so that
 - Instead of relational selectors, scope a locator inside another (`device.getByTestId("row-5").getByRole("button", { name: "Delete" })`), or narrow it with `filter()`, `first()`, `nth()`, `and()` and `or()` ([ElementHandle](api-reference.md#elementhandle)). Position on screen (`below`, `leftOf`) has no locator equivalent.
 - Ambiguity is an error. When a locator matches several elements, Tapsmith's strict mode refuses to guess: it reports every match and suggests a unique locator for each.
 
-**Conditional steps.** `runFlow` with `when: visible:` becomes an `if`. Use `isVisible()` or `exists()`, which answer at once rather than waiting, so a missing element costs nothing:
+**Conditional steps.** `runFlow` with `when: visible:` becomes an `if`. Use `isVisible()` or `exists()`, which answer without waiting out the timeout (an absent element costs a second read once the screen settles, at most about 1.5 s):
 
 ```typescript
 const notNow = device.getByRole("button", { name: "Not now" });
@@ -186,13 +186,13 @@ if (await notNow.isVisible()) {
 }
 ```
 
-**Debugging.** A failed test leaves a screenshot by default. Turn on traces (`trace: "retain-on-failure"` in the config) to get a step-by-step record of each failed test with a screenshot, the view hierarchy and the network traffic for every action, opened with [`npx tapsmith show-trace`](trace-viewer.md). For writing tests interactively, [UI mode](ui-mode.md) and [watch mode](watch-mode.md) keep the device and app running between runs.
+**Debugging.** A failed test leaves a screenshot by default. Turn on traces (`trace: "retain-on-failure"` in the config) to get a step-by-step record of each failed test with a screenshot, the view hierarchy and the network traffic for every action, opened with [`npx tapsmith show-trace`](trace-viewer.md). For writing tests interactively, [UI mode](ui-mode.md) and [watch mode](watch-mode.md) keep the device session (daemon, agent and installed app) up between runs, so a re-run only resets the app.
 
 ### Not supported yet
 
 Some Maestro commands have no Tapsmith equivalent at the moment. Plan to keep these flows in Maestro, or find another way to cover them:
 
-- **Device state:** `setLocation`, `travel` (clock changes), `setAirplaneMode` / `toggleAirplaneMode` and `addMedia`. There are no Tapsmith methods for these.
+- **Device state:** `setLocation`, `travel` (moving the device's location along a route), `setAirplaneMode` / `toggleAirplaneMode` and `addMedia`. There are no Tapsmith methods for these.
 - **iOS permissions:** `setPermissions` and `launchApp`'s `permissions` work on iOS; Tapsmith's `grantPermission()` and `revokePermission()` are Android only.
 - **Launch arguments:** `launchApp`'s `arguments` have no counterpart; `device.launchApp()` takes an Android `activity`, not arguments.
 - **AI and visual commands:** `assertWithAI`, `assertNoDefectsWithAI`, `extractTextWithAI` and `assertScreenshot` (screenshot comparison).
