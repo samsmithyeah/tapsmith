@@ -324,6 +324,26 @@ Error: 14 UNAVAILABLE: failed to connect to all addresses
 3. Check that no other process is using port 50051 (the default daemon port)
 4. If using a custom `daemonAddress`, verify the daemon is running at that address
 
+### Device is unresponsive or not connected (Android)
+
+```
+Device emulator-5554 is unresponsive. Reconnecting it (adb reconnect)...
+```
+
+**What happened:** Before a local `tapsmith test` run, Tapsmith checks that the Android device answers adb. When it does not, Tapsmith recovers it in steps, from the least to the most disruptive:
+
+1. A device that answers slowly (a busy host) is accepted as it is.
+2. `adb -s <serial> reconnect` reconnects only that device.
+3. As a last resort, Tapsmith restarts the ADB server (`adb kill-server`), and prints a note first. A restart disconnects **every** adb client on the machine: Android Studio, logcat, scrcpy, and other Tapsmith sessions. So Tapsmith skips the restart while another Tapsmith session is using an Android device. The error then names that session.
+
+A serial that adb does not list at all (`Device … is not connected: adb does not list it`) fails at once, with the devices adb does list, because no recovery brings back a device that is not there. Check the `device` in your config or the `--device` flag.
+
+**Fixes:**
+
+1. Restart a frozen emulator (`adb -s <serial> emu kill`, then boot it again), or reconnect a USB cable
+2. Once the other sessions have finished, restart adb yourself: `adb kill-server && adb start-server`
+3. Run `adb devices -l` to see what adb reports for the device
+
 ### A system dialog is blocking the device (Android)
 
 ```

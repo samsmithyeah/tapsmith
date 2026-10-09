@@ -31,7 +31,7 @@ import {
   type DeviceSession,
 } from './device-session.js';
 import type { PreparedState, ResetCapabilities } from './app-reset.js';
-import { claimDeviceOrThrow, claimFirstFree, claimUpTo, currentSession, ensureClaimSession, devicesHeldByThisProcess, heldDevicesNote, releaseDeviceClaim, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
+import { claimDeviceOrThrow, claimFirstFree, claimUpTo, currentSession, ensureClaimSession, devicesHeldByThisProcess, heldDevicesNote, listDeviceClaims, releaseDeviceClaim, skippedHeldDeviceMessage, withoutHeldDevices } from './device-claims.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { discoverTestFiles, noTestFilesFoundMessage, relativeTestPath, resolveTestFileArgs } from './test-file-discovery.js';
 import { resolveTsxBin, tsxIpcPathProblem } from './child-scripts.js';
@@ -66,7 +66,8 @@ import { DEFAULT_AGENT_PORT, daemonsOnAgentPort, findPidsOnPort, freeStaleAgentP
 import { findDaemonBin } from './daemon-bin.js';
 import { awaitDaemonStart, captureDaemonOutput, daemonStartFailure, spawnDaemonBinary } from './daemon-start.js';
 import { splitHeadline } from './error-detail.js';
-import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage, pinnedDeviceUnusableMessage, waitForPinnedDeviceAuthorization } from './device-advice.js';
+import { attachedDeviceAdvice, moreDevicesAdvice, noOnlineDeviceMessage } from './device-advice.js';
+import { checkPinnedDeviceHealth } from './adb-recovery.js';
 import { rosettaNodeWarning } from './host-arch.js';
 import { yarnPnpRefusal } from './yarn-pnp.js';
 import { androidToolchainBlocker, assertAdbForEmulatorLaunch, iosToolchainBlocker, toolchainBlocker } from './toolchain.js';
@@ -204,95 +205,27 @@ function reExecWithTsx(args: string[]): never {
 // ─── Device health check ───
 
 /**
- * Verify the target device is responsive before running tests.
- * Attempts ADB restart recovery if unresponsive, throws if not recoverable
+ * Verify the target device is responsive before running tests, recovering it
+ * if it is not — targeted `adb reconnect` first, an ADB server restart only
+ * as a last resort (PILOT-475, `adb-recovery.ts`). Throws if not recoverable
  * (the caller decides whether the run can go on without this device).
  */
-async function checkDeviceHealth(serial: string | undefined, progress?: LaunchProgressSink): Promise<void> {
-  const target = serial ?? 'any connected device';
-
-  if (serial) {
-    // Attached but unauthorized (or, on Linux, no USB permission): no restart
-    // of the ADB server fixes that. Give the user time to accept the prompt,
-    // then say what to do instead of "not responding" (PILOT-457).
-    const blocked = await waitForPinnedDeviceAuthorization(serial, {
-      listAdbDevices: () => listAdbDevices(),
-      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-      onWaiting: (message) => (progress ? progress.note(message) : console.log(yellow(message))),
-    });
-    if (blocked) throw new Error(blocked);
-
-    const stable = await waitForDeviceStability(serial, 20_000, probeDeviceHealth);
-    if (stable.healthy) return;
-
-    if (stable.reason && !stable.reason.includes('ADB shell')) {
-      throw new Error(`Device ${target} is not ready: ${stable.reason}.`);
-    }
-  }
-
-  // Quick ADB responsiveness check (5s timeout)
-  const adbArgs = serial
-    ? ['-s', serial, 'shell', 'echo', '__tapsmith_health_ok__']
-    : ['shell', 'echo', '__tapsmith_health_ok__'];
-
-  const tryAdb = (): boolean => {
-    try {
-      const result = execFileSync('adb', adbArgs, {
-        timeout: 5_000,
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      return result.trim().includes('__tapsmith_health_ok__');
-    } catch {
-      return false;
-    }
-  };
-
-  if (tryAdb()) {
-    return;
-  }
-
-  // Device is unresponsive — try ADB restart recovery
-  console.log(yellow(`Device ${target} is unresponsive. Restarting ADB server...`));
-
-  try {
-    execFileSync('adb', ['kill-server'], { timeout: 5_000, stdio: 'ignore' });
-  } catch {
-    // kill-server can fail if daemon isn't running
-  }
-  // Give ADB time to fully shut down
-  await new Promise((r) => setTimeout(r, 2_000));
-
-  try {
-    execFileSync('adb', ['start-server'], { timeout: 10_000, stdio: 'ignore' });
-  } catch {
-    throw new Error('Failed to restart ADB server.\n  Check that Android SDK platform-tools are installed and on PATH.');
-  }
-
-  // Wait for device to come back
-  await new Promise((r) => setTimeout(r, 3_000));
-
-  if (!serial ? tryAdb() : (await waitForDeviceStability(serial, 20_000, probeDeviceHealth)).healthy) {
-    console.log(dim('ADB recovered. Device is responsive.'));
-    return;
-  }
-
-  // Still unusable, and adb says why: that beats a list of possible causes.
-  const unusable = serial ? pinnedDeviceUnusableMessage(serial, listAdbDevices(), 'after-adb-restart') : undefined;
-  if (unusable) throw new Error(unusable);
-
-  // Still unresponsive — give the user actionable guidance
-  throw new Error([
-    `Device ${target} is not responding.`,
-    '  Possible causes:',
-    '    • Emulator crashed or froze — restart it',
-    '    • Multiple emulators competing for the same port',
-    '    • USB device disconnected',
-    '  Try:',
-    '    $ adb kill-server && adb start-server',
-    '    $ adb devices -l',
-    ...(serial?.startsWith('emulator') ? [`    $ adb -s ${serial} emu kill  # restart the emulator`] : []),
-  ].join('\n'));
+async function checkDeviceHealth(serial: string, progress?: LaunchProgressSink): Promise<void> {
+  const note = (message: string): void => (progress ? progress.note(message) : console.log(yellow(message)));
+  await checkPinnedDeviceHealth(serial, {
+    adb: (args, timeoutMs) => execFileSync('adb', [...args], {
+      timeout: timeoutMs,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }),
+    waitForStable: (s) => waitForDeviceStability(s, 20_000, probeDeviceHealth),
+    heldElsewhere: () => {
+      const session = currentSession();
+      return listDeviceClaims().filter((c) => c.live && c.session.id !== session.id);
+    },
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    note,
+  });
 }
 
 // ─── Daemon management ───
