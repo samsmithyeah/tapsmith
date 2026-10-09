@@ -252,9 +252,9 @@ Run Tapsmith test files and return structured results. Only one test run can exe
 
 The report stays small however many tests fail. The first 10 failures are shown
 in detail, with each error cut to 2,000 characters. The next 40 get one line each,
-and any after that are counted. Screenshots are attached for the first 3 failures.
-The report ends by pointing to `tapsmith_list_results` and `tapsmith_read_trace`,
-which hold every failure in full.
+and any after that are counted. Screenshots are attached for the first 3 failures
+that have one. The report ends by pointing to `tapsmith_list_results`, which lists
+every failure, and `tapsmith_read_trace` for a failure's steps.
 
 A file that dies before any test reports — a failed import, a crashed or
 timed-out worker — is reported as a single failure named

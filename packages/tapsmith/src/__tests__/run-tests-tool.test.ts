@@ -202,6 +202,17 @@ describe('tapsmith_run_tests response size', () => {
     expect(t).not.toContain('screenshots');
   });
 
+  it('attaches screenshots from the first failures that have one, skipping a failure with no trace', async () => {
+    const withTraces = failures(5, 10, true);
+    const result: TestRunResult = {
+      status: 'failed', passed: 0, failed: 6, skipped: 0, duration: 10,
+      failures: [{ fullName: 'file failed to load', filePath: FILE, error: 'Cannot find module' }, ...withTraces],
+    };
+    const res = await callRunTests(makeDispatcher({ runFiles: async () => result }), { files: [FILE] });
+    expect(res.content.filter((c) => c.type === 'image')).toHaveLength(3);
+    expect(text(res)).toContain('screenshots for the first 3 that have one');
+  });
+
   it('keeps a short failure exactly as before', async () => {
     const result: TestRunResult = {
       status: 'failed', passed: 0, failed: 1, skipped: 0, duration: 10,

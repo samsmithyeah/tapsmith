@@ -34,7 +34,7 @@ let _running = false;
 const DETAILED_FAILURES = 10;
 /** Failures named at all (the ones past DETAILED_FAILURES get one line each). */
 const LISTED_FAILURES = 50;
-/** Failures whose screenshot is attached. */
+/** Failure screenshots attached: the first ones found among the detailed failures. */
 const SCREENSHOT_FAILURES = 3;
 const ERROR_CHARS = 2_000;
 const ONE_LINE_ERROR_CHARS = 200;
@@ -160,14 +160,15 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
                   lines.push('  Device logs (errors/warnings):');
                   for (const log of summary.deviceLogs) lines.push(`    ${clipText(log, LINE_CHARS)}`);
                 }
-                if (summary.failureScreenshot && index < SCREENSHOT_FAILURES) screenshots.push(summary.failureScreenshot);
+                if (summary.failureScreenshot && screenshots.length < SCREENSHOT_FAILURES) screenshots.push(summary.failureScreenshot);
               }
               lines.push(`  Trace: ${f.tracePath}`);
             }
           });
           const unlisted = failures.length - LISTED_FAILURES;
-          // Only failures with a trace have a screenshot to attach.
-          const unscreenshotted = failures.length > SCREENSHOT_FAILURES && screenshots.length > 0;
+          // Only failures with a trace have a screenshot to attach; say so
+          // only when the cap actually left some out.
+          const unscreenshotted = screenshots.length === SCREENSHOT_FAILURES && failures.length > SCREENSHOT_FAILURES;
           if (unlisted > 0 || failures.length > DETAILED_FAILURES || unscreenshotted) {
             lines.push('');
             const parts: string[] = [];
