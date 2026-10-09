@@ -161,7 +161,7 @@ class ActionExecutor(
         val deadline = SystemClock.uptimeMillis() + timeoutMs
         var prev = element.visibleBounds
         while (SystemClock.uptimeMillis() < deadline) {
-            SystemClock.sleep(STABLE_BOUNDS_POLL_MS)
+            CommandCancellation.sleep(STABLE_BOUNDS_POLL_MS)
             val readStart = SystemClock.uptimeMillis()
             val current = element.visibleBounds
             val readMs = SystemClock.uptimeMillis() - readStart
@@ -314,6 +314,9 @@ class ActionExecutor(
     ) {
         try {
             clickToFocus(element, resolvedBounds, budget, expected, FOCUS_FOLLOW_UP_MS)
+            // A skipped focusing tap reads the field's focus after the
+            // planner's last check (PILOT-605).
+            CommandCancellation.checkpoint()
             element.text = text
             // UiObject2.setText silently logs-and-returns when the framework
             // rejects ACTION_SET_TEXT (e.g. the field is still gaining focus
@@ -323,6 +326,7 @@ class ActionExecutor(
             // idempotent re-set and a persistent mismatch only logs.
             if (element.text != text) {
                 device.waitForIdle(500)
+                CommandCancellation.checkpoint()
                 element.text = text
                 if (element.text != text) {
                     Log.w(
@@ -377,7 +381,7 @@ class ActionExecutor(
                 // Transient read failure (mid-layout, window transition) —
                 // keep waiting.
             }
-            SystemClock.sleep(100)
+            CommandCancellation.sleep(100)
         }
     }
 
@@ -441,10 +445,11 @@ class ActionExecutor(
     /**
      * Rethrow a touch that was refused rather than attempted (covered, changed
      * into another element, too late) so a fallback path does not retry it —
-     * or bury its error type in a generic ACTION_FAILED.
+     * or bury its error type in a generic ACTION_FAILED. A command the daemon
+     * gave up on (PILOT-605) is not retried either.
      */
     private fun rethrowTouchRefusal(e: Exception) {
-        if (e is TouchRefusedException) throw e
+        if (e is TouchRefusedException || e is CommandCancelledException) throw e
     }
 
     /**
@@ -486,6 +491,7 @@ class ActionExecutor(
 
         fun flushPendingKeys() {
             if (pendingKeys.isEmpty()) return
+            CommandCancellation.checkpoint() // see flushPrintableRun
             device.executeShellCommand("input keyevent ${pendingKeys.joinToString(" ")}")
             pendingKeys.clear()
         }
@@ -528,6 +534,11 @@ class ActionExecutor(
 
     private fun flushPrintableRun(buffer: StringBuilder) {
         if (buffer.isEmpty()) return
+        // Each run is its own shell command (hundreds of ms on a loaded
+        // device), reached after idle and focus waits in the typeText
+        // fallback: keys for a command the daemon gave up on would go to
+        // whatever field is focused during the next step (PILOT-605).
+        CommandCancellation.checkpoint()
         val tokenized = buffer.toString().replace(" ", "%s")
         device.executeShellCommand("input text $tokenized")
         buffer.setLength(0)
@@ -544,6 +555,9 @@ class ActionExecutor(
         try {
             clickToFocus(element, null, budget, expected, FOCUS_FOLLOW_UP_MS)
             device.waitForIdle(500)
+            // A skipped focusing tap and the idle wait both run after the
+            // planner's last check (PILOT-605).
+            CommandCancellation.checkpoint()
             // Select all (Ctrl+A) then delete
             element.clear()
         } catch (e: StaleObjectException) {
@@ -554,6 +568,7 @@ class ActionExecutor(
             try {
                 refocusForFallback(element, budget, expected)
                 device.waitForIdle(200)
+                CommandCancellation.checkpoint()
                 // Use shell to select all and delete
                 device.executeShellCommand("input keyevent KEYCODE_MOVE_HOME")
                 device.executeShellCommand("input keyevent --longpress KEYCODE_SHIFT_LEFT KEYCODE_MOVE_END")
@@ -689,7 +704,7 @@ class ActionExecutor(
             val lastScroll = if (vertical) lastVerticalScrollAt else lastHorizontalScrollAt
             val wait = SwipeSettle.remainingQuietMs(now, start, lastScroll, SWIPE_SETTLE_QUIET_MS)
             if (wait <= 0 || now >= deadline) break
-            SystemClock.sleep(wait.coerceAtMost(deadline - now))
+            CommandCancellation.sleep(wait.coerceAtMost(deadline - now))
         }
         Log.d(TAG, "swipe settle: ${SystemClock.uptimeMillis() - start}ms")
     }
@@ -825,6 +840,9 @@ class ActionExecutor(
         maxScrolls: Int = 20,
     ) {
         for (i in 0 until maxScrolls) {
+            // Up to 20 scrolls with no deadline of their own: never scroll on
+            // after the daemon has given up (PILOT-605).
+            CommandCancellation.checkpoint()
             // Check if target is already visible
             val targetBy =
                 when {
@@ -840,6 +858,7 @@ class ActionExecutor(
             val found = container.findObject(targetBy)
             if (found != null) return
 
+            CommandCancellation.checkpoint()
             val canScroll = container.scroll(direction, 0.8f)
             if (!canScroll) {
                 throw ElementNotFoundException(
@@ -981,6 +1000,8 @@ class ActionExecutor(
     ) {
         try {
             val tgtBounds = target.visibleBounds
+            // The bounds read can be slow on a busy app (PILOT-605).
+            CommandCancellation.checkpoint()
             source.drag(android.graphics.Point(tgtBounds.centerX(), tgtBounds.centerY()))
         } catch (e: StaleObjectException) {
             throw e
@@ -1006,6 +1027,8 @@ class ActionExecutor(
             val option =
                 device.wait(Until.findObject(By.text(optionText)), DROPDOWN_WAIT_TIMEOUT_MS)
                     ?: throw ElementNotFoundException("Option '$optionText' not found in dropdown")
+            // The dropdown wait cannot be cut short (PILOT-605).
+            CommandCancellation.checkpoint()
             option.click()
         } catch (e: StaleObjectException) {
             throw e
@@ -1043,6 +1066,8 @@ class ActionExecutor(
             if (index < 0 || index >= children.size) {
                 throw ActionFailedException("Index $index out of range (0..${children.size - 1})")
             }
+            // The popup wait cannot be cut short (PILOT-605).
+            CommandCancellation.checkpoint()
             children[index].click()
         } catch (e: StaleObjectException) {
             throw e
@@ -1134,6 +1159,8 @@ class ActionExecutor(
                 tapY = 1
             }
 
+            // The bounds read can be slow on a busy app (PILOT-605).
+            CommandCancellation.checkpoint()
             device.click(tapX, tapY)
             device.waitForIdle(FOCUS_IDLE_TIMEOUT_MS)
         } catch (e: StaleObjectException) {

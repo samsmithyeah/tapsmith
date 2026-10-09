@@ -517,7 +517,7 @@ class ElementFinder(
             } catch (e: StaleObjectException) {
                 lastStale = e
                 if (attempt < maxAttempts - 1) {
-                    SystemClock.sleep(STALE_RETRY_DELAY_MS)
+                    CommandCancellation.sleep(STALE_RETRY_DELAY_MS)
                 }
             }
         }
@@ -571,6 +571,9 @@ class ElementFinder(
         var extractMs = 0L
         for (obj in candidates) {
             if (matches.size >= limit) break
+            // Each candidate can cost an accessibility round-trip on a busy
+            // app: stop once the daemon has given up (PILOT-605).
+            CommandCancellation.checkpoint()
             examined++
             val node = snapshotOf(obj, fresh)
             if (!matchesSelector(node, selector, fresh) || !matchesStateFilters(node, selector)) continue

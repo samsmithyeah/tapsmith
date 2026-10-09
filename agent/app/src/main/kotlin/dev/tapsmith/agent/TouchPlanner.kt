@@ -132,6 +132,9 @@ class TouchPlanner(
             }
         }
         while (true) {
+            // A command the daemon gave up on reads and touches nothing more
+            // (PILOT-605).
+            CommandCancellation.checkpoint()
             val snapshot = target.read()
             if (snapshot != null) {
                 if (expected != null && !snapshot.matches(expected)) throw TargetChangedException()
@@ -155,6 +158,9 @@ class TouchPlanner(
                     // refuses it. A cover that outlasts the budget is still
                     // reported as the cover, below.
                     if (deadlines.isTooLateToAct(now)) throw TouchTooLateException()
+                    // The pass's reads can be slow: the daemon may have given
+                    // up during them.
+                    CommandCancellation.checkpoint()
                     return TouchPlan.Point(verdict.x, verdict.y)
                 }
                 // Not on screen, or not visible to the user (mid-fade, a

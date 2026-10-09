@@ -406,4 +406,52 @@ class TouchPlannerTest {
         assertEquals(3_000, budget(timeoutMs = 5_000).shortenedBy(2_000).timeoutMs)
         assertEquals(0, budget(timeoutMs = 1_000).shortenedBy(5_000).timeoutMs)
     }
+
+    // ─── plan: abandoned command (PILOT-605) ───
+
+    @Test
+    fun `an abandoned command does not touch an uncovered element`() {
+        val token = CommandCancellation()
+        token.cancel("the daemon closed the connection")
+        assertThrows<CommandCancelledException> {
+            CommandCancellation.runWith(token) { planner.plan(target, BUTTON, budget(), LABELLED) }
+        }
+        assertEquals("nothing is read for a command nobody waits for", 0, target.reads)
+    }
+
+    @Test
+    fun `a command abandoned while a cover is waited out stops waiting and does not touch`() {
+        target.readAt = { snapshot(LOW) }
+        keyboardUntil(600)
+        val token = CommandCancellation()
+        // The daemon gives up during the wait, before the cover clears.
+        val cancellingClock =
+            object : GuardClock {
+                override fun now() = clock.now()
+
+                override fun sleep(ms: Long) {
+                    clock.sleep(ms)
+                    token.cancel("the daemon closed the connection")
+                }
+            }
+        val cancellingPlanner = TouchPlanner(screen, cancellingClock)
+        assertThrows<CommandCancelledException> {
+            CommandCancellation.runWith(token) { cancellingPlanner.plan(target, LOW, budget(), LABELLED) }
+        }
+        assertTrue("stopped at the first pass after the cancel", clock.nowMs < 600)
+    }
+
+    @Test
+    fun `a command abandoned during the last pass's reads does not touch`() {
+        val token = CommandCancellation()
+        // The element is clear, but the daemon gives up while it is read.
+        target.readAt = {
+            token.cancel("the daemon closed the connection")
+            snapshot(BUTTON)
+        }
+        assertThrows<CommandCancelledException> {
+            CommandCancellation.runWith(token) { planner.plan(target, BUTTON, budget(), LABELLED) }
+        }
+        assertEquals(1, target.reads)
+    }
 }

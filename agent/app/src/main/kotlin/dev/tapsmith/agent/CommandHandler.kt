@@ -78,6 +78,10 @@ class CommandHandler(
             errorResponse(id, "ACTION_FAILED", e.message ?: "Action failed")
         } catch (e: StaleObjectException) {
             errorResponse(id, "ELEMENT_NOT_FOUND", "Element is stale (UI changed): ${e.message}")
+        } catch (e: CommandCancelledException) {
+            // The daemon gave up on it (PILOT-605); nobody reads this answer.
+            Log.i(TAG, "'$method' stopped: ${e.message}")
+            errorResponse(id, "TIMEOUT", e.message ?: "Command abandoned")
         } catch (e: Exception) {
             // Defense in depth: reflection anywhere in the dispatch can wrap
             // the real failure in an InvocationTargetException whose message
